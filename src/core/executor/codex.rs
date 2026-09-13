@@ -156,6 +156,22 @@ fn normalize_codex_tool(tool: &Value) -> Option<Value> {
 
 fn normalize_codex_input_items(items: &mut [Value]) {
     for item in items {
+        if item.get("role").and_then(Value::as_str) == Some("tool") {
+            let call_id = item
+                .get("tool_call_id")
+                .or_else(|| item.get("call_id"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let output = codex_tool_output(item.get("content"));
+            *item = json!({
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": output,
+            });
+            continue;
+        }
+
         if item.get("role").and_then(Value::as_str) != Some("assistant") {
             continue;
         }
@@ -187,6 +203,42 @@ fn normalize_codex_input_items(items: &mut [Value]) {
             }
         }
     }
+}
+
+fn codex_tool_output(content: Option<&Value>) -> String {
+    match content {
+        Some(Value::String(value)) => value.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Some(value) => value.to_string(),
+        None => String::new(),
+    }
+}
+
+fn codex_function_calls(message: &Value) -> Vec<Value> {
+    message
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|tool_call| {
+            let function = tool_call.get("function").unwrap_or(tool_call);
+            let name = function
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())?;
+            Some(json!({
+                "type": "function_call",
+                "call_id": tool_call.get("id").and_then(Value::as_str).unwrap_or(""),
+                "name": name,
+                "arguments": function.get("arguments").and_then(Value::as_str).unwrap_or("{}"),
+                "status": "completed",
+            }))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -625,6 +677,21 @@ impl CodexExecutor {
                 .unwrap_or("user")
                 .to_string();
 
+            if role == "tool" {
+                items.push(json!({
+                    "type": "function_call_output",
+                    "call_id": msg.get("tool_call_id").and_then(Value::as_str).unwrap_or(""),
+                    "output": codex_tool_output(msg.get("content")),
+                }));
+                continue;
+            }
+
+            let function_calls = if role == "assistant" {
+                codex_function_calls(msg)
+            } else {
+                Vec::new()
+            };
+
             // Convert "system" role to "developer" (Responses API convention)
             if role == "system" {
                 role = "developer".to_string();
@@ -634,12 +701,14 @@ impl CodexExecutor {
             let content_arr: Value = match msg.get("content") {
                 Some(Value::String(s)) => {
                     if s.is_empty() {
+                        items.extend(function_calls);
                         continue;
                     }
                     json!([{"type": "input_text", "text": s}])
                 }
                 Some(Value::Array(arr)) => {
                     if arr.is_empty() {
+                        items.extend(function_calls);
                         continue;
                     }
                     let mut parts: Vec<Value> = Vec::new();
@@ -688,6 +757,7 @@ impl CodexExecutor {
             }
 
             items.push(item);
+            items.extend(function_calls);
         }
 
         if items.is_empty() {
@@ -1110,6 +1180,34 @@ mod tests {
         assert!(transformed["input"][1]["content"][0]
             .get("annotations")
             .is_none());
+    }
+
+    #[test]
+    fn test_codex_converts_chat_tool_history() {
+        let executor = CodexExecutor::new(Arc::new(ClientPool::new()), None).unwrap();
+        let body = json!({
+            "messages": [
+                {"role": "assistant", "content": "", "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "test_tool", "arguments": "{}"}
+                }]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "done"},
+                {"role": "user", "content": "continue"}
+            ]
+        });
+
+        let transformed = executor
+            .transform_request_body(&body, "gpt-5.6-luna", false)
+            .unwrap();
+        assert_eq!(transformed["input"][0]["type"], "function_call");
+        assert_eq!(transformed["input"][1]["type"], "function_call_output");
+        assert_eq!(transformed["input"][1]["call_id"], "call_1");
+        assert!(transformed["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item.get("role").and_then(Value::as_str) != Some("tool")));
     }
 
     #[test]
