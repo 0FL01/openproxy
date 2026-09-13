@@ -416,4 +416,31 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn codex_catalog_contains_only_current_model_generations() {
+        let catalog = provider_catalog();
+        for id in [
+            "gpt-6-astra",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.5",
+        ] {
+            assert!(catalog.find_model("codex", id).is_some(), "missing {id}");
+        }
+
+        for id in ["gpt-5.4", "gpt-5.3-codex", "gpt-5.2", "gpt-5.1"] {
+            assert!(
+                catalog.find_model("codex", id).is_none(),
+                "deprecated model remains: {id}"
+            );
+        }
+
+        let review = catalog
+            .find_model("codex", "gpt-6-astra-review")
+            .expect("Astra review alias should resolve");
+        assert_eq!(review.upstream_model_id.as_deref(), Some("gpt-6-astra"));
+        assert_eq!(review.context_window, Some(500_000));
+    }
 }

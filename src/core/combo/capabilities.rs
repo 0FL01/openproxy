@@ -764,12 +764,12 @@ mod tests {
 
     #[test]
     fn provider_override_beats_exact() {
-        // codex gpt-5.6-sol has 372k vs generic *gpt-5* 400k — proves the
-        // provider table was consulted (different window than the pattern).
+        // Codex models use the configured 500k experimental window instead of
+        // the generic GPT-5 fallback.
         let sol = get_capabilities_for_model("codex", "gpt-5.6-sol");
-        assert_eq!(sol.context_window, 372_000);
+        assert_eq!(sol.context_window, 500_000);
         let terra = get_capabilities_for_model("codex", "gpt-5.6-terra");
-        assert_eq!(terra.context_window, 272_000);
+        assert_eq!(terra.context_window, 500_000);
     }
 
     #[test]

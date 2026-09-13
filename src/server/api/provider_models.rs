@@ -8,10 +8,13 @@ use axum::{
     Json,
 };
 use chrono::{Duration as ChronoDuration, Utc};
-use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use crate::core::config::app_constants::{
+    CODEX_CLIENT_VERSION, CODEX_ORIGINATOR, CODEX_USER_AGENT,
+};
 use crate::server::api::oauth::{get_refresh_lock_key, REFRESH_LOCKS};
 use crate::server::state::AppState;
 use crate::types::{CustomModel, ProviderConnection};
@@ -958,22 +961,23 @@ async fn fetch_codex_models_with_token(
     token: &str,
 ) -> Result<ProviderModelsResponse, RouteError> {
     let client = http_client()?;
-    // The /codex/models endpoint gates each entry by minimal_client_version
-    // against this value; codex CLI's own manifest already requires 0.144.0
-    // for its newest models (ported from 9router v0.5.45 fix(codex): current
-    // client_version + refresh-aware model sync).
+    // The /codex/models endpoint gates entries by minimal_client_version.
     let request = client
-        .get("https://chatgpt.com/backend-api/codex/models?client_version=0.144.6")
+        .get(format!(
+            "https://chatgpt.com/backend-api/codex/models?client_version={CODEX_CLIENT_VERSION}"
+        ))
         .header(CONTENT_TYPE, "application/json")
         .header(ACCEPT, "application/json")
         .header(AUTHORIZATION, format!("Bearer {token}"))
-        .header("originator", "codex_cli_rs");
+        .header("originator", CODEX_ORIGINATOR)
+        .header("Version", CODEX_CLIENT_VERSION)
+        .header(USER_AGENT, CODEX_USER_AGENT);
     let payload = fetch_json(request)
         .await
         .map_err(map_upstream_route_error)?;
     Ok(response_with_models(
         connection,
-        append_codex_review_models(parse_openai_style_models(&payload)),
+        parse_available_codex_models(&payload),
         None,
     ))
 }
@@ -1644,6 +1648,17 @@ fn append_codex_review_models(models: Vec<ProviderModel>) -> Vec<ProviderModel> 
     expanded
 }
 
+fn parse_available_codex_models(payload: &Value) -> Vec<ProviderModel> {
+    let models = parse_openai_style_models(payload)
+        .into_iter()
+        .filter(|model| {
+            model.extra.get("visibility").and_then(Value::as_str) != Some("hide")
+                && model.extra.get("supported_in_api").and_then(Value::as_bool) != Some(false)
+        })
+        .collect();
+    append_codex_review_models(models)
+}
+
 fn expand_kiro_model_variants(models: Vec<ProviderModel>) -> Vec<ProviderModel> {
     let mut expanded = Vec::with_capacity(models.len() * 4);
     for model in models {
@@ -2253,6 +2268,34 @@ mod tests {
             models[1].extra.get("upstreamModelId"),
             Some(&Value::String("gpt-5.5".to_string()))
         );
+    }
+
+    #[test]
+    fn codex_parser_excludes_hidden_and_unsupported_models() {
+        let payload = json!({
+            "models": [
+                {
+                    "slug": "gpt-6-astra",
+                    "display_name": "GPT-6-Astra",
+                    "visibility": "list",
+                    "supported_in_api": true
+                },
+                {
+                    "slug": "gpt-reserve",
+                    "visibility": "hide",
+                    "supported_in_api": true
+                },
+                {
+                    "slug": "gpt-5.3-codex-spark",
+                    "visibility": "list",
+                    "supported_in_api": false
+                }
+            ]
+        });
+
+        let models = parse_available_codex_models(&payload);
+        let ids: Vec<_> = models.iter().map(|model| model.id.as_str()).collect();
+        assert_eq!(ids, vec!["gpt-6-astra", "gpt-6-astra-review"]);
     }
 
     #[test]

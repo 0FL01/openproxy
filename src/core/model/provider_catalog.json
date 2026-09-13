@@ -180,6 +180,62 @@
    "alias": "cx",
    "models": [
     {
+     "id": "gpt-6-astra",
+     "name": "GPT-6 Astra",
+     "kind": "llm",
+     "contextWindow": 500000
+    },
+    {
+     "id": "gpt-6-astra-review",
+     "name": "GPT-6 Astra Review",
+     "kind": "llm",
+     "quotaFamily": "review",
+     "upstreamModelId": "gpt-6-astra",
+     "contextWindow": 500000
+    },
+    {
+     "id": "gpt-5.6-sol",
+     "name": "GPT-5.6 Sol",
+     "kind": "llm",
+     "contextWindow": 500000
+    },
+    {
+     "id": "gpt-5.6-sol-review",
+     "name": "GPT-5.6 Sol Review",
+     "kind": "llm",
+     "quotaFamily": "review",
+     "upstreamModelId": "gpt-5.6-sol",
+     "contextWindow": 500000
+    },
+    {
+     "id": "gpt-5.6-terra",
+     "name": "GPT-5.6 Terra",
+     "kind": "llm",
+     "contextWindow": 500000
+    },
+    {
+     "id": "gpt-5.6-terra-review",
+     "name": "GPT-5.6 Terra Review",
+     "kind": "llm",
+     "quotaFamily": "review",
+     "upstreamModelId": "gpt-5.6-terra",
+     "contextWindow": 500000
+    },
+    {
+     "id": "gpt-5.6-luna",
+     "name": "GPT-5.6 Luna",
+     "kind": "llm",
+     "contextWindow": 500000
+    },
+    {
+     "id": "gpt-5.6-luna-review",
+     "name": "GPT-5.6 Luna Review",
+     "kind": "llm",
+     "quotaFamily": "review",
+     "upstreamModelId": "gpt-5.6-luna",
+     "contextWindow": 500000
+    },
+    {
      "id": "gpt-5.5",
      "name": "GPT 5.5",
      "kind": "llm"
@@ -187,186 +243,13 @@
     {
      "id": "gpt-5.5-review",
      "name": "GPT 5.5 Review",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.4",
-     "name": "GPT 5.4",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.4-review",
-     "name": "GPT 5.4 Review",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.3-codex",
-     "name": "GPT 5.3 Codex",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.3-codex-review",
-     "name": "GPT 5.3 Codex Review",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.3-codex-xhigh",
-     "name": "GPT 5.3 Codex (xHigh)",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.3-codex-xhigh-review",
-     "name": "GPT 5.3 Codex (xHigh) Review",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.3-codex-high",
-     "name": "GPT 5.3 Codex (High)",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.3-codex-high-review",
-     "name": "GPT 5.3 Codex (High) Review",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.3-codex-low",
-     "name": "GPT 5.3 Codex (Low)",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.3-codex-low-review",
-     "name": "GPT 5.3 Codex (Low) Review",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.3-codex-none",
-     "name": "GPT 5.3 Codex (None)",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.3-codex-none-review",
-     "name": "GPT 5.3 Codex (None) Review",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.3-codex-spark",
-     "name": "GPT 5.3 Codex Spark",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.3-codex-spark-review",
-     "name": "GPT 5.3 Codex Spark Review",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.1-codex-mini",
-     "name": "GPT 5.1 Codex Mini",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.1-codex-mini-review",
-     "name": "GPT 5.1 Codex Mini Review",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.1-codex-mini-high",
-     "name": "GPT 5.1 Codex Mini (High)",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.1-codex-mini-high-review",
-     "name": "GPT 5.1 Codex Mini (High) Review",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.2-codex",
-     "name": "GPT 5.2 Codex",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.2-codex-review",
-     "name": "GPT 5.2 Codex Review",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.2",
-     "name": "GPT 5.2",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.2-review",
-     "name": "GPT 5.2 Review",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.1-codex-max",
-     "name": "GPT 5.1 Codex Max",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.1-codex-max-review",
-     "name": "GPT 5.1 Codex Max Review",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.1-codex",
-     "name": "GPT 5.1 Codex",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.1-codex-review",
-     "name": "GPT 5.1 Codex Review",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.1",
-     "name": "GPT 5.1",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5.1-review",
-     "name": "GPT 5.1 Review",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5-codex",
-     "name": "GPT 5 Codex",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5-codex-review",
-     "name": "GPT 5 Codex Review",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5-codex-mini",
-     "name": "GPT 5 Codex Mini",
-     "kind": "llm"
-    },
-    {
-     "id": "gpt-5-codex-mini-review",
-     "name": "GPT 5 Codex Mini Review",
-     "kind": "llm"
+     "kind": "llm",
+     "quotaFamily": "review",
+     "upstreamModelId": "gpt-5.5"
     },
     {
      "id": "gpt-5.5-image",
      "name": "GPT 5.5 Image",
-     "kind": "image"
-    },
-    {
-     "id": "gpt-5.4-image",
-     "name": "GPT 5.4 Image",
-     "kind": "image"
-    },
-    {
-     "id": "gpt-5.3-image",
-     "name": "GPT 5.3 Image",
-     "kind": "image"
-    },
-    {
-     "id": "gpt-5.2-image",
-     "name": "GPT 5.2 Image",
      "kind": "image"
     }
    ]

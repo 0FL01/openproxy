@@ -5,10 +5,13 @@ use futures_util::stream;
 use futures_util::StreamExt;
 use hyper::http;
 use hyper::http::uri::InvalidUri;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
 use reqwest::Body as ReqwestBody;
 use serde_json::{json, Value};
 
+use crate::core::config::app_constants::{
+    CODEX_CLIENT_VERSION, CODEX_ORIGINATOR, CODEX_USER_AGENT,
+};
 use crate::core::proxy::ProxyTarget;
 use crate::types::{ProviderConnection, ProviderNode};
 
@@ -336,8 +339,10 @@ impl CodexExecutor {
             HeaderValue::from_str(session_id).map_err(CodexExecutorError::InvalidHeader)?,
         );
 
-        // 9router parity: identify client type to Codex backend.
-        headers.insert("originator", HeaderValue::from_static("codex_cli_rs"));
+        // Identify the current Codex client version to unlock version-gated models.
+        headers.insert("originator", HeaderValue::from_static(CODEX_ORIGINATOR));
+        headers.insert("Version", HeaderValue::from_static(CODEX_CLIENT_VERSION));
+        headers.insert(USER_AGENT, HeaderValue::from_static(CODEX_USER_AGENT));
 
         // 9router parity: workspace binding for account scope + cache affinity.
         {
@@ -967,6 +972,23 @@ mod tests {
     fn test_parse_codex_model_without_prefix() {
         assert_eq!(CodexExecutor::parse_codex_model("o4-mini"), "o4-mini");
         assert_eq!(CodexExecutor::parse_codex_model("gpt-4"), "gpt-4");
+    }
+
+    #[test]
+    fn test_codex_headers_advertise_current_client() {
+        let executor = CodexExecutor::new(Arc::new(ClientPool::new()), None).unwrap();
+        let headers = executor
+            .build_headers(
+                "token",
+                true,
+                Some("connection"),
+                &ProviderConnection::default(),
+            )
+            .unwrap();
+
+        assert_eq!(headers.get("Version").unwrap(), CODEX_CLIENT_VERSION);
+        assert_eq!(headers.get(USER_AGENT).unwrap(), CODEX_USER_AGENT);
+        assert_eq!(headers.get("originator").unwrap(), CODEX_ORIGINATOR);
     }
 
     #[test]

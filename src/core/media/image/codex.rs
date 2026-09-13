@@ -16,11 +16,11 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use super::base::{now_secs, ImageAdapter, ImageRequest, ImageResponse, ParseContext};
+use crate::core::config::app_constants::{
+    CODEX_CLIENT_VERSION, CODEX_ORIGINATOR, CODEX_USER_AGENT,
+};
 
 const CODEX_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
-const CODEX_USER_AGENT: &str = "codex_cli_rs/0.136.0";
-const CODEX_VERSION: &str = "0.136.0";
-const CODEX_ORIGINATOR: &str = "codex_cli_rs";
 const CODEX_MODEL_SUFFIX: &str = "-image";
 const CODEX_REF_DETAIL: &str = "high";
 
@@ -207,7 +207,7 @@ impl ImageAdapter for CodexAdapter {
                 .map_err(|e| format!("session_id header: {e}"))?,
         );
         h.insert("user-agent", HeaderValue::from_static(CODEX_USER_AGENT));
-        h.insert("version", HeaderValue::from_static(CODEX_VERSION));
+        h.insert("version", HeaderValue::from_static(CODEX_CLIENT_VERSION));
         h.insert(
             "x-client-request-id",
             HeaderValue::from_str(&Uuid::new_v4().to_string())
@@ -316,7 +316,7 @@ mod tests {
     /// must byte-match 9router `imageProviders/codex.js` (lines 7-9).
     #[test]
     fn codex_version_constants_match_js() {
-        assert_eq!(CODEX_VERSION, "0.136.0");
-        assert_eq!(CODEX_USER_AGENT, "codex_cli_rs/0.136.0");
+        assert_eq!(CODEX_CLIENT_VERSION, "0.154.0");
+        assert_eq!(CODEX_USER_AGENT, "codex_cli_rs/0.154.0");
     }
 }

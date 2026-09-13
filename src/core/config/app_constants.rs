@@ -8,6 +8,12 @@ use serde_json::json;
 use std::collections::BTreeSet;
 use std::time::Duration;
 
+// ─── Codex ────────────────────────────────────────────────────────────────
+
+pub const CODEX_CLIENT_VERSION: &str = "0.154.0";
+pub const CODEX_ORIGINATOR: &str = "codex_cli_rs";
+pub const CODEX_USER_AGENT: &str = "codex_cli_rs/0.154.0";
+
 // ─── Gemini CLI ────────────────────────────────────────────────────────────
 
 pub const GEMINI_CLI_VERSION: &str = "0.34.0";
