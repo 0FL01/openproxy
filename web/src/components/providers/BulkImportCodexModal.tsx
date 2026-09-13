@@ -3,14 +3,36 @@
 import { useState } from "react";
 import { Button, Modal } from "@/shared/components";
 
-const PLACEHOLDER = `[
-  {
-    "accessToken": "eyJhbGc...",
-    "refreshToken": "rt_...",
-    "idToken": "eyJhbGc...",
-    "email": "user@example.com"
+const PLACEHOLDER = `{
+  "auth_mode": "chatgpt",
+  "OPENAI_API_KEY": null,
+  "tokens": {
+    "id_token": "eyJhbGc...",
+    "access_token": "eyJhbGc...",
+    "refresh_token": "rt_...",
+    "account_id": "account-id"
+  },
+  "last_refresh": "2026-01-01T00:00:00Z"
+}`;
+
+function parsePastedJson(text: string): unknown {
+  const trimmed = text.trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch (originalError) {
+    // Terminal copy often includes the next shell prompt after the JSON.
+    // Parse the first complete JSON object/array and ignore only that suffix.
+    for (let end = 0; end < trimmed.length; end += 1) {
+      if (trimmed[end] !== "}" && trimmed[end] !== "]") continue;
+      try {
+        return JSON.parse(trimmed.slice(0, end + 1));
+      } catch {
+        // Keep looking for the closing delimiter of the outer JSON value.
+      }
+    }
+    throw originalError;
   }
-]`;
+}
 
 function normalizeToArray(parsed: unknown): Record<string, unknown>[] | null {
   if (Array.isArray(parsed)) return parsed as Record<string, unknown>[];
@@ -57,7 +79,7 @@ export default function BulkImportCodexModal({ isOpen, onClose, onSuccess }: Bul
 
     let parsed: unknown;
     try {
-      parsed = JSON.parse(trimmed);
+      parsed = parsePastedJson(trimmed);
     } catch (err) {
       setParseError(`Invalid JSON: ${(err as Error).message}`);
       return;
@@ -98,7 +120,7 @@ export default function BulkImportCodexModal({ isOpen, onClose, onSuccess }: Bul
     <Modal isOpen={isOpen} title="Bulk Add Codex Accounts" onClose={handleClose}>
       <div className="flex flex-col gap-4">
         <p className="text-xs text-text-muted">
-          Paste an array of codex account JSON objects. Each must include accessToken (and ideally refreshToken, idToken).
+          Paste a Codex auth.json object or an array of accounts. Terminal prompts after the JSON are ignored.
         </p>
 
         <textarea

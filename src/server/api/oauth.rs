@@ -5244,10 +5244,74 @@ pub async fn oauth_status(
 ///   - Single:   {...}
 ///   - Wrapped:  { accounts: [{...}, ...] }
 ///
-/// Each item must contain at least `accessToken`. Missing email / chatgpt
-/// account info is best-effort backfilled from the JWT (idToken or accessToken).
+/// Each item must contain at least `accessToken`, directly or as
+/// `tokens.access_token`. Missing email / chatgpt account info is best-effort
+/// backfilled from the JWT (idToken or accessToken).
 ///
 /// Tokens are NEVER echoed back in the response.
+fn normalize_codex_import_item(
+    mut item: serde_json::Map<String, Value>,
+) -> Result<Value, &'static str> {
+    if item
+        .get("auth_mode")
+        .is_some_and(|value| !value.is_null() && value.as_str() != Some("chatgpt"))
+    {
+        return Err("Unexpected auth_mode (expected chatgpt)");
+    }
+
+    let tokens = item
+        .get("tokens")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+
+    for (canonical, snake_case) in [
+        ("accessToken", "access_token"),
+        ("refreshToken", "refresh_token"),
+        ("idToken", "id_token"),
+    ] {
+        let value = tokens
+            .get(snake_case)
+            .or_else(|| item.get(snake_case))
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        if let Some(value) = value {
+            item.insert(canonical.to_string(), Value::String(value));
+        }
+    }
+
+    if !item.contains_key("lastRefreshAt") {
+        if let Some(value) = item
+            .get("last_refresh")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+        {
+            item.insert("lastRefreshAt".to_string(), Value::String(value));
+        }
+    }
+
+    let account_id = tokens
+        .get("account_id")
+        .or_else(|| item.get("account_id"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if let Some(account_id) = account_id {
+        let provider_data = item
+            .entry("providerSpecificData".to_string())
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+        if let Some(provider_data) = provider_data.as_object_mut() {
+            provider_data
+                .entry("chatgptAccountId".to_string())
+                .or_insert(Value::String(account_id));
+        }
+    }
+
+    Ok(Value::Object(item))
+}
+
 async fn codex_bulk_import(
     State(state): State<AppState>,
     request: axum::extract::Request,
@@ -5309,7 +5373,14 @@ async fn codex_bulk_import(
         for key in ["id", "provider", "authType", "createdAt", "updatedAt"] {
             item.remove(key);
         }
-        let normalized = Value::Object(item);
+        let normalized = match normalize_codex_import_item(item) {
+            Ok(value) => value,
+            Err(error) => {
+                failed += 1;
+                results.push(json!({ "index": idx, "ok": false, "error": error }));
+                continue;
+            }
+        };
         let access_token = normalized
             .get("accessToken")
             .and_then(Value::as_str)
@@ -5396,17 +5467,15 @@ async fn codex_bulk_import(
             ..Default::default()
         };
         // JS bulk-import sets item.lastRefreshAt = now when absent.
-        if !connection.extra.contains_key("lastRefreshAt")
-            && !normalized
-                .get("lastRefreshAt")
-                .and_then(Value::as_str)
-                .is_some_and(|s| !s.is_empty())
-        {
-            connection.extra.insert(
-                "lastRefreshAt".to_string(),
-                Value::String(chrono::Utc::now().to_rfc3339()),
-            );
-        }
+        let last_refresh_at = normalized
+            .get("lastRefreshAt")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+        connection
+            .extra
+            .insert("lastRefreshAt".to_string(), Value::String(last_refresh_at));
 
         match create_imported_oauth_connection(&state.db, connection).await {
             Ok(conn) => {
@@ -7102,6 +7171,34 @@ mod tests {
             psd.get("chatgptPlanType"),
             Some(&serde_json::Value::String("plus".to_string()))
         );
+    }
+
+    #[test]
+    fn test_normalize_codex_auth_json_import() {
+        let item = serde_json::json!({
+            "auth_mode": "chatgpt",
+            "OPENAI_API_KEY": null,
+            "tokens": {
+                "id_token": "id-token",
+                "access_token": "access-token",
+                "refresh_token": "refresh-token",
+                "account_id": "account-1"
+            },
+            "last_refresh": "2026-01-01T00:00:00Z"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let normalized = normalize_codex_import_item(item).unwrap();
+        assert_eq!(normalized["idToken"], "id-token");
+        assert_eq!(normalized["accessToken"], "access-token");
+        assert_eq!(normalized["refreshToken"], "refresh-token");
+        assert_eq!(
+            normalized["providerSpecificData"]["chatgptAccountId"],
+            "account-1"
+        );
+        assert_eq!(normalized["lastRefreshAt"], "2026-01-01T00:00:00Z");
     }
 
     #[test]
