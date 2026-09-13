@@ -232,7 +232,11 @@ fn codex_function_calls(message: &Value) -> Vec<Value> {
                 .filter(|name| !name.is_empty())?;
             Some(json!({
                 "type": "function_call",
-                "call_id": tool_call.get("id").and_then(Value::as_str).unwrap_or(""),
+                "call_id": tool_call
+                    .get("id")
+                    .or_else(|| tool_call.get("call_id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
                 "name": name,
                 "arguments": function.get("arguments").and_then(Value::as_str).unwrap_or("{}"),
                 "status": "completed",
