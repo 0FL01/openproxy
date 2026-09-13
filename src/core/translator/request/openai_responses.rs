@@ -398,6 +398,14 @@ pub fn openai_responses_to_chat_request(
                             msg["encrypted_content"] =
                                 Value::String(pending_reasoning_encrypted.clone());
                         }
+                    } else if role == "tool" {
+                        if let Some(call_id) = item
+                            .get("tool_call_id")
+                            .or_else(|| item.get("call_id"))
+                            .and_then(Value::as_str)
+                        {
+                            msg["tool_call_id"] = Value::String(call_id.to_string());
+                        }
                     } else {
                         // Non-assistant messages clear the pending buffers (JS 95-98).
                         pending_reasoning.clear();
@@ -1213,6 +1221,26 @@ mod tests {
         );
         let names = body.get("_customToolNames").unwrap().as_array().unwrap();
         assert!(names.iter().any(|n| n == "exec"));
+    }
+
+    #[test]
+    fn responses_tool_role_preserves_call_id() {
+        let mut body = serde_json::json!({
+            "input": [{
+                "type": "message",
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": [{"type": "input_text", "text": "done"}]
+            }]
+        });
+
+        assert!(openai_responses_to_chat_request(
+            "gpt-5.6-luna",
+            &mut body,
+            false,
+            None
+        ));
+        assert_eq!(body["messages"][0]["tool_call_id"], "call_1");
     }
 
     #[test]
