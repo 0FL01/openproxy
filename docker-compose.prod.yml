@@ -1,0 +1,29 @@
+name: openproxy-prod
+
+services:
+  openproxy:
+    build:
+      context: .
+    image: openproxy:prod
+    restart: unless-stopped
+    env_file:
+      - .env.prod
+    environment:
+      DATA_DIR: /app/data
+      HOSTNAME: 0.0.0.0
+      PORT: 4623
+      TRUST_PROXY: "true"
+    ports:
+      - "127.0.0.1:4623:4623"
+    volumes:
+      - openproxy-prod-data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4623/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  openproxy-prod-data:
+    name: openproxy-prod-data
