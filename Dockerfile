@@ -2,10 +2,12 @@
 #
 # OpenProxy — single-binary Docker image
 #
-# Three-stage build:
+# Five-stage build:
 #   1. web    — pnpm install + astro build → web/dist/
-#   2. rust   — cargo build --release with embedded web/dist via rust-embed
-#   3. runtime — debian:bookworm-slim + the binary + ca-certificates
+#   2. chef   — shared Rust build environment with cargo-chef
+#   3. planner — dependency recipe generated from Cargo metadata
+#   4. rust   — cached dependencies + binary with embedded web/dist
+#   5. runtime — debian:bookworm-slim + the binary + ca-certificates
 #
 # Final image is ~80 MB (debian-slim base + the openproxy binary, which
 # already contains the dashboard via rust-embed).
@@ -68,9 +70,9 @@ RUN pnpm run build
 # → /web/dist/
 
 # ──────────────────────────────────────────────────────────────────────────
-# Stage 2: build the binary with the embedded dashboard
+# Stage 2: shared Rust build environment
 # ──────────────────────────────────────────────────────────────────────────
-FROM rust:1-bookworm AS rust
+FROM rust:1-bookworm AS chef
 WORKDIR /src
 
 # Install build deps for crates that need them at compile time.
@@ -81,8 +83,27 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the workspace. Cargo.lock + manifests first for layer caching, then
-# the source tree, then the embedded dashboard from stage 1.
+RUN cargo install cargo-chef --version 0.1.78 --locked
+
+# ──────────────────────────────────────────────────────────────────────────
+# Stage 3: generate a dependency-only build recipe
+# ──────────────────────────────────────────────────────────────────────────
+FROM chef AS planner
+
+COPY Cargo.toml Cargo.lock build.rs ./
+COPY src/ ./src/
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ──────────────────────────────────────────────────────────────────────────
+# Stage 4: build cached dependencies, then the application
+# ──────────────────────────────────────────────────────────────────────────
+FROM chef AS rust
+
+COPY --from=planner /src/recipe.json recipe.json
+# embed-web has no dependency feature edges. Disabling it for the dependency
+# layer avoids requiring generated dashboard files during cargo-chef cook.
+RUN cargo chef cook --release --locked --no-default-features --recipe-path recipe.json
+
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY src/ ./src/
 # rust-embed reads web/dist/ at compile time; src/server/api/mod.rs also
@@ -96,7 +117,7 @@ RUN cargo build --release --locked --bin openproxy
 RUN strip /src/target/release/openproxy
 
 # ──────────────────────────────────────────────────────────────────────────
-# Stage 3: minimal runtime
+# Stage 5: minimal runtime
 # ──────────────────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
 
