@@ -106,6 +106,54 @@ fn strip_codex_tool_patterns(node: &mut Value) {
     }
 }
 
+fn normalize_codex_tool(tool: &Value) -> Option<Value> {
+    let mut normalized = tool.clone();
+    let object = normalized.as_object()?;
+    if object.get("type").and_then(Value::as_str) != Some("function") {
+        strip_codex_tool_patterns(&mut normalized);
+        return Some(normalized);
+    }
+
+    let function = object.get("function").and_then(Value::as_object);
+    let name = object
+        .get("name")
+        .or_else(|| function.and_then(|value| value.get("name")))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())?
+        .trim()
+        .to_string();
+    let description = object
+        .get("description")
+        .or_else(|| function.and_then(|value| value.get("description")))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let parameters = object
+        .get("parameters")
+        .or_else(|| function.and_then(|value| value.get("parameters")))
+        .filter(|value| value.is_object())
+        .cloned()
+        .unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
+    let strict = object
+        .get("strict")
+        .or_else(|| function.and_then(|value| value.get("strict")))
+        .and_then(Value::as_bool);
+
+    normalized = json!({
+        "type": "function",
+        "name": name,
+        "parameters": parameters,
+    });
+    if let Some(description) = description {
+        normalized["description"] = Value::String(description);
+    }
+    if let Some(strict) = strict {
+        normalized["strict"] = Value::Bool(strict);
+    }
+    strip_codex_tool_patterns(&mut normalized);
+    Some(normalized)
+}
+
 #[cfg(test)]
 mod codex_tool_pattern_tests {
     use super::strip_codex_tool_patterns;
@@ -454,14 +502,9 @@ impl CodexExecutor {
         // property escapes (\p{...}) with HTTP 400 — valid ECMA regex but not
         // supported by Codex's schema validator (#3922). Strip patterns before
         // dispatch; 9router applies the same strip in normalizeCodexTools.
-        if let Some(tools) = body.get("tools") {
-            let mut cleaned = tools.clone();
-            if let Some(arr) = cleaned.as_array_mut() {
-                for tool in arr.iter_mut() {
-                    strip_codex_tool_patterns(tool);
-                }
-            }
-            request_body["tools"] = cleaned;
+        if let Some(tools) = body.get("tools").and_then(Value::as_array) {
+            request_body["tools"] =
+                Value::Array(tools.iter().filter_map(normalize_codex_tool).collect());
         }
         if let Some(tool_choice) = body.get("tool_choice") {
             request_body["tool_choice"] = tool_choice.clone();
@@ -989,6 +1032,29 @@ mod tests {
         assert_eq!(headers.get("Version").unwrap(), CODEX_CLIENT_VERSION);
         assert_eq!(headers.get(USER_AGENT).unwrap(), CODEX_USER_AGENT);
         assert_eq!(headers.get("originator").unwrap(), CODEX_ORIGINATOR);
+    }
+
+    #[test]
+    fn test_codex_flattens_chat_function_tools() {
+        let executor = CodexExecutor::new(Arc::new(ClientPool::new()), None).unwrap();
+        let body = json!({
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "test_tool",
+                    "description": "Test tool",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            }]
+        });
+
+        let transformed = executor
+            .transform_request_body(&body, "gpt-5.6-luna", false)
+            .unwrap();
+        assert_eq!(transformed["tools"][0]["name"], "test_tool");
+        assert_eq!(transformed["tools"][0]["description"], "Test tool");
+        assert!(transformed["tools"][0].get("function").is_none());
     }
 
     #[test]
