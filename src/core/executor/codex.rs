@@ -154,6 +154,41 @@ fn normalize_codex_tool(tool: &Value) -> Option<Value> {
     Some(normalized)
 }
 
+fn normalize_codex_input_items(items: &mut [Value]) {
+    for item in items {
+        if item.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+
+        if let Some(text) = item
+            .get("content")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        {
+            item["content"] = json!([{ "type": "output_text", "text": text }]);
+            continue;
+        }
+
+        let Some(parts) = item.get_mut("content").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for part in parts {
+            let is_assistant_text = matches!(
+                part.get("type").and_then(Value::as_str),
+                Some("input_text" | "text")
+            );
+            if is_assistant_text {
+                part["type"] = Value::String("output_text".to_string());
+                if let Some(part) = part.as_object_mut() {
+                    part.remove("annotations");
+                    part.remove("logprobs");
+                    part.remove("obfuscation");
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod codex_tool_pattern_tests {
     use super::strip_codex_tool_patterns;
@@ -444,7 +479,7 @@ impl CodexExecutor {
         _stream: bool,
     ) -> Result<Value, CodexExecutorError> {
         // Handle both pre-translated (input[]) and untranslated (messages[]) bodies
-        let input_items = if let Some(input) = body.get("input").and_then(Value::as_array) {
+        let mut input_items = if let Some(input) = body.get("input").and_then(Value::as_array) {
             if input.is_empty() {
                 return Err(CodexExecutorError::UnsupportedFormat(
                     "Empty input array in request body".to_string(),
@@ -454,6 +489,7 @@ impl CodexExecutor {
         } else {
             Self::extract_input_items(body)?
         };
+        normalize_codex_input_items(&mut input_items);
 
         let instructions = body
             .get("instructions")
@@ -1055,6 +1091,25 @@ mod tests {
         assert_eq!(transformed["tools"][0]["name"], "test_tool");
         assert_eq!(transformed["tools"][0]["description"], "Test tool");
         assert!(transformed["tools"][0].get("function").is_none());
+    }
+
+    #[test]
+    fn test_codex_uses_output_text_for_assistant_history() {
+        let executor = CodexExecutor::new(Arc::new(ClientPool::new()), None).unwrap();
+        let body = json!({
+            "input": [
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+                {"type": "message", "role": "assistant", "content": [{"type": "input_text", "text": "hello", "annotations": []}]}
+            ]
+        });
+
+        let transformed = executor
+            .transform_request_body(&body, "gpt-5.6-luna", false)
+            .unwrap();
+        assert_eq!(transformed["input"][1]["content"][0]["type"], "output_text");
+        assert!(transformed["input"][1]["content"][0]
+            .get("annotations")
+            .is_none());
     }
 
     #[test]
