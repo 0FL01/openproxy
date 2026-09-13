@@ -437,10 +437,10 @@ mod tests {
             );
         }
 
-        let review = catalog
-            .find_model("codex", "gpt-6-astra-review")
-            .expect("Astra review alias should resolve");
-        assert_eq!(review.upstream_model_id.as_deref(), Some("gpt-6-astra"));
-        assert_eq!(review.context_window, Some(500_000));
+        let astra = catalog
+            .find_model("codex", "gpt-6-astra")
+            .expect("Astra should resolve");
+        assert_eq!(astra.context_window, Some(500_000));
+        assert!(catalog.find_model("codex", "gpt-6-astra-review").is_none());
     }
 }

@@ -186,25 +186,9 @@
      "contextWindow": 500000
     },
     {
-     "id": "gpt-6-astra-review",
-     "name": "GPT-6 Astra Review",
-     "kind": "llm",
-     "quotaFamily": "review",
-     "upstreamModelId": "gpt-6-astra",
-     "contextWindow": 500000
-    },
-    {
      "id": "gpt-5.6-sol",
      "name": "GPT-5.6 Sol",
      "kind": "llm",
-     "contextWindow": 500000
-    },
-    {
-     "id": "gpt-5.6-sol-review",
-     "name": "GPT-5.6 Sol Review",
-     "kind": "llm",
-     "quotaFamily": "review",
-     "upstreamModelId": "gpt-5.6-sol",
      "contextWindow": 500000
     },
     {
@@ -214,38 +198,15 @@
      "contextWindow": 500000
     },
     {
-     "id": "gpt-5.6-terra-review",
-     "name": "GPT-5.6 Terra Review",
-     "kind": "llm",
-     "quotaFamily": "review",
-     "upstreamModelId": "gpt-5.6-terra",
-     "contextWindow": 500000
-    },
-    {
      "id": "gpt-5.6-luna",
      "name": "GPT-5.6 Luna",
      "kind": "llm",
      "contextWindow": 500000
     },
     {
-     "id": "gpt-5.6-luna-review",
-     "name": "GPT-5.6 Luna Review",
-     "kind": "llm",
-     "quotaFamily": "review",
-     "upstreamModelId": "gpt-5.6-luna",
-     "contextWindow": 500000
-    },
-    {
      "id": "gpt-5.5",
      "name": "GPT 5.5",
      "kind": "llm"
-    },
-    {
-     "id": "gpt-5.5-review",
-     "name": "GPT 5.5 Review",
-     "kind": "llm",
-     "quotaFamily": "review",
-     "upstreamModelId": "gpt-5.5"
     },
     {
      "id": "gpt-5.5-image",

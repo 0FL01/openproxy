@@ -1613,50 +1613,14 @@ fn parse_gemini_cli_models(payload: &Value) -> Vec<ProviderModel> {
         .unwrap_or_default()
 }
 
-fn append_codex_review_models(models: Vec<ProviderModel>) -> Vec<ProviderModel> {
-    let mut expanded = Vec::with_capacity(models.len() * 2);
-
-    for model in models {
-        let is_chat_model = model
-            .extra
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("llm")
-            != "image"
-            && !model.id.to_lowercase().contains("embed");
-        let already_review = model.id.ends_with("-review");
-
-        if is_chat_model && !already_review {
-            let mut review = model.clone();
-            review.id = format!("{}-review", model.id);
-            review.name = format!("{} Review", model.name);
-            review.extra.insert(
-                "upstreamModelId".to_string(),
-                Value::String(model.id.clone()),
-            );
-            review.extra.insert(
-                "quotaFamily".to_string(),
-                Value::String("review".to_string()),
-            );
-            expanded.push(model);
-            expanded.push(review);
-        } else {
-            expanded.push(model);
-        }
-    }
-
-    expanded
-}
-
 fn parse_available_codex_models(payload: &Value) -> Vec<ProviderModel> {
-    let models = parse_openai_style_models(payload)
+    parse_openai_style_models(payload)
         .into_iter()
         .filter(|model| {
             model.extra.get("visibility").and_then(Value::as_str) != Some("hide")
                 && model.extra.get("supported_in_api").and_then(Value::as_bool) != Some(false)
         })
-        .collect();
-    append_codex_review_models(models)
+        .collect()
 }
 
 fn expand_kiro_model_variants(models: Vec<ProviderModel>) -> Vec<ProviderModel> {
@@ -2235,42 +2199,6 @@ mod tests {
     }
 
     #[test]
-    fn codex_parser_appends_review_variants_for_chat_models() {
-        let models = append_codex_review_models(vec![
-            ProviderModel {
-                id: "gpt-5.5".to_string(),
-                name: "GPT-5.5".to_string(),
-                extra: BTreeMap::new(),
-            },
-            ProviderModel {
-                id: "text-embedding-3-large".to_string(),
-                name: "Embedding".to_string(),
-                extra: BTreeMap::new(),
-            },
-            ProviderModel {
-                id: "gpt-image-1".to_string(),
-                name: "Image".to_string(),
-                extra: BTreeMap::from([("type".to_string(), Value::String("image".to_string()))]),
-            },
-        ]);
-
-        let ids: Vec<_> = models.iter().map(|model| model.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            vec![
-                "gpt-5.5",
-                "gpt-5.5-review",
-                "text-embedding-3-large",
-                "gpt-image-1"
-            ]
-        );
-        assert_eq!(
-            models[1].extra.get("upstreamModelId"),
-            Some(&Value::String("gpt-5.5".to_string()))
-        );
-    }
-
-    #[test]
     fn codex_parser_excludes_hidden_and_unsupported_models() {
         let payload = json!({
             "models": [
@@ -2295,7 +2223,7 @@ mod tests {
 
         let models = parse_available_codex_models(&payload);
         let ids: Vec<_> = models.iter().map(|model| model.id.as_str()).collect();
-        assert_eq!(ids, vec!["gpt-6-astra", "gpt-6-astra-review"]);
+        assert_eq!(ids, vec!["gpt-6-astra"]);
     }
 
     #[test]
