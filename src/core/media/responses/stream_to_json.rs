@@ -445,8 +445,9 @@ fn parse_responses_api_stream(sse: &str) -> Option<ResponsesStreamSummary> {
 fn convert_responses_api_stream(sse: &str, fallback_model: Option<&str>) -> Option<Value> {
     let summary = parse_responses_api_stream(sse)?;
 
-    // Extract text content from output items.
+    // Extract text and function calls from output items.
     let mut text_parts: Vec<String> = Vec::new();
+    let mut tool_calls: Vec<Value> = Vec::new();
     for item in &summary.output {
         if let Some(item_type) = item.get("type").and_then(|v| v.as_str()) {
             if item_type == "message" {
@@ -459,6 +460,15 @@ fn convert_responses_api_stream(sse: &str, fallback_model: Option<&str>) -> Opti
                         }
                     }
                 }
+            } else if item_type == "function_call" {
+                tool_calls.push(json!({
+                    "id": item.get("call_id").and_then(Value::as_str).unwrap_or(""),
+                    "type": "function",
+                    "function": {
+                        "name": item.get("name").and_then(Value::as_str).unwrap_or(""),
+                        "arguments": item.get("arguments").and_then(Value::as_str).unwrap_or("{}"),
+                    },
+                }));
             }
         }
     }
@@ -519,6 +529,25 @@ fn convert_responses_api_stream(sse: &str, fallback_model: Option<&str>) -> Opti
         .unwrap_or_default()
         .as_secs() as i64;
 
+    let mut message = json!({
+        "role": "assistant",
+        "content": if tool_calls.is_empty() || !content_text.is_empty() {
+            Value::String(content_text)
+        } else {
+            Value::Null
+        },
+    });
+    if !tool_calls.is_empty() {
+        message["tool_calls"] = Value::Array(tool_calls);
+    }
+    let finish_reason = if summary.status != "completed" {
+        "error"
+    } else if message.get("tool_calls").is_some() {
+        "tool_calls"
+    } else {
+        "stop"
+    };
+
     Some(json!({
         "id": format!("chatcmpl-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("0000")),
         "object": "chat.completion",
@@ -526,11 +555,8 @@ fn convert_responses_api_stream(sse: &str, fallback_model: Option<&str>) -> Opti
         "model": model,
         "choices": [{
             "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": content_text,
-            },
-            "finish_reason": if summary.status == "completed" { "stop" } else { "error" },
+            "message": message,
+            "finish_reason": finish_reason,
         }],
         "usage": usage_json,
     }))
@@ -659,6 +685,25 @@ mod tests {
         assert_eq!(result["usage"]["prompt_tokens"], 15);
         assert_eq!(result["usage"]["completion_tokens"], 25);
         assert_eq!(result["usage"]["total_tokens"], 40);
+    }
+
+    #[test]
+    fn test_responses_api_function_call_to_chat() {
+        let sse = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_tool\",\"created_at\":1712345678}}\n\n",
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"test_tool\",\"arguments\":\"{}\"}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":5,\"output_tokens\":2,\"total_tokens\":7}}}\n\n",
+        );
+
+        let result = sse_stream_to_json(sse.as_bytes(), Some("gpt-5.6-luna")).unwrap();
+        let message = &result["choices"][0]["message"];
+        assert!(message["content"].is_null());
+        assert_eq!(message["tool_calls"][0]["id"], "call_1");
+        assert_eq!(message["tool_calls"][0]["function"]["name"], "test_tool");
+        assert_eq!(result["choices"][0]["finish_reason"], "tool_calls");
     }
 
     #[test]
