@@ -174,6 +174,10 @@ async fn convert_to_responses_api(response: Response, stream_request: bool) -> R
             return (status, body_bytes).into_response();
         };
 
+        if body_value.get("object").and_then(Value::as_str) == Some("response") {
+            return Json(body_value).into_response();
+        }
+
         // Detect Claude-format body: {"type":"message","content":[...],"stop_reason":"end_turn"}
         let chat_completion = if body_value.get("type").and_then(Value::as_str) == Some("message") {
             claude_body_to_chat_completion(&body_value)
@@ -2540,6 +2544,28 @@ mod tests {
         assert_eq!(resp["output"][0]["content"][0]["type"], "output_text");
         assert_eq!(resp["output"][0]["content"][0]["text"], "Hello there!");
         assert_eq!(resp["usage"]["total_tokens"], 8);
+    }
+
+    #[tokio::test]
+    async fn native_responses_json_is_not_converted_as_chat_completion() {
+        let native = json!({
+            "id": "resp_native",
+            "object": "response",
+            "status": "completed",
+            "output": [{
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "MUSE_OK"}]
+            }],
+            "usage": {"input_tokens": 4, "output_tokens": 2, "total_tokens": 6}
+        });
+        let upstream = Json(native.clone()).into_response();
+
+        let response = convert_to_responses_api(upstream, false).await;
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let converted: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(converted, native);
     }
 
     #[test]
