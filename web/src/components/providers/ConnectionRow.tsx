@@ -96,7 +96,7 @@ export default function ConnectionRow({
 
   const autoPingTooltip =
     autoPing?.provider === "codex"
-      ? "Auto-starts the next 5h Codex window after reset by sending a tiny gpt-5.5 request. Consumes a small amount of quota."
+      ? "Auto-starts the next available Codex quota window after reset with a tiny gpt-5.6-luna request. Consumes a small amount of quota."
       : "When your 5h quota runs out, auto-sends a request the moment it resets so a new window starts right away.";
 
   // Prefer per-connection authType for dual-auth providers (xAI OAuth vs API key).

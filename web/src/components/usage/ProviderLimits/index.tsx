@@ -152,7 +152,7 @@ export default function ProviderLimits() {
   const [autoPingMaps, setAutoPingMaps] = useState<Record<string, Record<string, boolean>>>({ claude: {}, codex: {} });
   const autoPingTooltips: Record<string, string> = {
     claude: "When your 5h quota runs out, auto-sends a request the moment it resets so a new window starts right away.",
-    codex: "Auto-starts the next 5h Codex window after reset by sending a tiny gpt-5.5 request.",
+    codex: "Auto-starts the next available Codex quota window after reset with a tiny gpt-5.6-luna request. Consumes a small amount of quota.",
   };
 
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -871,8 +871,11 @@ export default function ProviderLimits() {
           // Use table layout for all providers
           const isInactive = conn.isActive === false;
           const isCodex = conn.provider === "codex";
-          const hasCodexSessionQuota =
-            isCodex && quota?.quotas?.some((entry) => entry.name === "session");
+          const hasCodexAutoPingQuota =
+            isCodex &&
+            quota?.quotas?.some(
+              (entry) => entry.name === "session" || entry.name === "weekly",
+            );
           const resetCreditCount = getCodexResetCreditCount(quota);
           const isResettingLimit = resettingLimitId === conn.id;
           const rowBusy =
@@ -932,7 +935,7 @@ export default function ProviderLimits() {
                   <div className="flex items-center gap-1 shrink-0">
                     {AUTO_PING_SETTINGS_KEYS[conn.provider as keyof typeof AUTO_PING_SETTINGS_KEYS] &&
                       conn.authType === "oauth" &&
-                      (!isCodex || hasCodexSessionQuota) && (
+                      (!isCodex || hasCodexAutoPingQuota) && (
                       <Tooltip text={autoPingTooltips[conn.provider] || "Auto-ping warmup"}>
                         <button
                           type="button"

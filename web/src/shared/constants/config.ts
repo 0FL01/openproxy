@@ -115,8 +115,8 @@ export const QUOTA_AUTOPING_CONFIG = {
     },
     codex: {
       settingsKey: "codexAutoPing",
-      quotaKey: "session",
-      pingModel: "gpt-5.5",
+      quotaKeys: ["session", "weekly"],
+      pingModel: "gpt-5.6-luna",
     },
   },
 } as const;

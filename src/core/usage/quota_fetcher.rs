@@ -717,20 +717,15 @@ pub async fn fetch_github_quota(access_token: &str, _provider: &str) -> Value {
     }
 }
 
-pub async fn fetch_codex_quota(access_token: &str, _provider: &str) -> Value {
+pub async fn fetch_codex_quota(access_token: &str, account_id: Option<&str>) -> Value {
     if access_token.is_empty() {
         return json!({ "message": "Codex access token not available." });
     }
 
     let client = http_client();
+    let request = build_codex_usage_request(&client, CODEX_USAGE_URL, access_token, account_id);
 
-    let response = match client
-        .get(CODEX_USAGE_URL)
-        .bearer_auth(access_token)
-        .header("Accept", "application/json")
-        .send()
-        .await
-    {
+    let response = match request.send().await {
         Ok(r) => r,
         Err(e) => return json!({ "message": format!("Codex error: {e}") }),
     };
@@ -810,11 +805,27 @@ pub async fn fetch_codex_quota(access_token: &str, _provider: &str) -> Value {
     })
 }
 
+fn build_codex_usage_request(
+    client: &reqwest::Client,
+    url: &str,
+    access_token: &str,
+    account_id: Option<&str>,
+) -> reqwest::RequestBuilder {
+    let mut request = client
+        .get(url)
+        .bearer_auth(access_token)
+        .header("Accept", "application/json");
+    if let Some(id) = account_id.map(str::trim).filter(|id| !id.is_empty()) {
+        request = request.header("ChatGPT-Account-ID", id);
+    }
+    request
+}
+
 /// Resolve ChatGPT account id for Codex reset-credit APIs.
 pub fn codex_account_id(
     provider_specific_data: &std::collections::BTreeMap<String, Value>,
 ) -> Option<String> {
-    for key in ["workspaceId", "accountId", "chatgptAccountId", "account_id"] {
+    for key in ["chatgptAccountId", "workspaceId", "accountId", "account_id"] {
         if let Some(s) = provider_specific_data
             .get(key)
             .and_then(|v| v.as_str())
@@ -1026,8 +1037,7 @@ fn format_codex_window(window: &Value) -> Option<(&'static str, Value)> {
     let used_percent = window
         .get("used_percent")
         .or_else(|| window.get("percent_used"))
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0)
+        .and_then(|v| v.as_f64())?
         .clamp(0.0, 100.0);
     let reset_at = window
         .get("reset_at")
@@ -3289,6 +3299,52 @@ mod tests {
 
         assert_eq!(quotas["session"]["used"], 20.0);
         assert_eq!(quotas["weekly"]["used"], 40.0);
+    }
+
+    #[test]
+    fn codex_window_without_usage_is_ignored() {
+        let snapshot = json!({
+            "primary_window": {
+                "limit_window_seconds": 604800,
+                "reset_at": 1789461188
+            }
+        });
+        let mut quotas = serde_json::Map::new();
+
+        append_codex_quota_windows(&mut quotas, "", &snapshot);
+
+        assert!(quotas.is_empty());
+    }
+
+    #[test]
+    fn codex_usage_request_is_account_scoped() {
+        let request = build_codex_usage_request(
+            &http_client(),
+            "http://127.0.0.1/usage",
+            "test-token",
+            Some(" account-1 "),
+        )
+        .build()
+        .unwrap();
+
+        assert_eq!(request.headers()["chatgpt-account-id"], "account-1");
+        assert_eq!(
+            request.headers()[reqwest::header::AUTHORIZATION],
+            format!("Bearer {}", "test-token")
+        );
+    }
+
+    #[test]
+    fn codex_account_id_prefers_canonical_field() {
+        let data = std::collections::BTreeMap::from([
+            ("workspaceId".to_string(), json!("legacy-workspace")),
+            ("chatgptAccountId".to_string(), json!("canonical-account")),
+        ]);
+
+        assert_eq!(
+            codex_account_id(&data).as_deref(),
+            Some("canonical-account")
+        );
     }
 
     #[test]
