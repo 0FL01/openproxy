@@ -13,6 +13,7 @@ use crate::core::config::app_constants::{
     CODEX_CLIENT_VERSION, CODEX_ORIGINATOR, CODEX_USER_AGENT,
 };
 use crate::core::proxy::ProxyTarget;
+use crate::core::translator::request::openai_responses::chat_to_openai_responses_request;
 use crate::types::{ProviderConnection, ProviderNode};
 
 use super::{ClientPool, TransportKind, UpstreamResponse};
@@ -216,33 +217,6 @@ fn codex_tool_output(content: Option<&Value>) -> String {
         Some(value) => value.to_string(),
         None => String::new(),
     }
-}
-
-fn codex_function_calls(message: &Value) -> Vec<Value> {
-    message
-        .get("tool_calls")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|tool_call| {
-            let function = tool_call.get("function").unwrap_or(tool_call);
-            let name = function
-                .get("name")
-                .and_then(Value::as_str)
-                .filter(|name| !name.is_empty())?;
-            Some(json!({
-                "type": "function_call",
-                "call_id": tool_call
-                    .get("id")
-                    .or_else(|| tool_call.get("call_id"))
-                    .and_then(Value::as_str)
-                    .unwrap_or(""),
-                "name": name,
-                "arguments": function.get("arguments").and_then(Value::as_str).unwrap_or("{}"),
-                "status": "completed",
-            }))
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -534,20 +508,23 @@ impl CodexExecutor {
         actual_model: &str,
         _stream: bool,
     ) -> Result<Value, CodexExecutorError> {
-        // Handle both pre-translated (input[]) and untranslated (messages[]) bodies
-        let mut input_items = if let Some(input) = body.get("input").and_then(Value::as_array) {
-            if input.is_empty() {
-                return Err(CodexExecutorError::UnsupportedFormat(
-                    "Empty input array in request body".to_string(),
-                ));
-            }
-            input.clone()
-        } else {
-            Self::extract_input_items(body)?
-        };
+        let mut normalized_body = body.clone();
+        if normalized_body.get("input").is_none() {
+            chat_to_openai_responses_request(actual_model, &mut normalized_body, true, None);
+        }
+        let mut input_items = normalized_body
+            .get("input")
+            .and_then(Value::as_array)
+            .filter(|input| !input.is_empty())
+            .cloned()
+            .ok_or_else(|| {
+                CodexExecutorError::UnsupportedFormat(
+                    "Missing or empty input array in request body".to_string(),
+                )
+            })?;
         normalize_codex_input_items(&mut input_items);
 
-        let instructions = body
+        let instructions = normalized_body
             .get("instructions")
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
@@ -574,7 +551,7 @@ impl CodexExecutor {
         }
 
         // Priority: body.reasoning.effort > reasoning_effort > model suffix > default low
-        let effort = body
+        let effort = normalized_body
             .pointer("/reasoning/effort")
             .and_then(Value::as_str)
             .or_else(|| body.get("reasoning_effort").and_then(Value::as_str))
@@ -594,7 +571,7 @@ impl CodexExecutor {
         // property escapes (\p{...}) with HTTP 400 — valid ECMA regex but not
         // supported by Codex's schema validator (#3922). Strip patterns before
         // dispatch; 9router applies the same strip in normalizeCodexTools.
-        if let Some(tools) = body.get("tools").and_then(Value::as_array) {
+        if let Some(tools) = normalized_body.get("tools").and_then(Value::as_array) {
             request_body["tools"] =
                 Value::Array(tools.iter().filter_map(normalize_codex_tool).collect());
         }
@@ -635,7 +612,7 @@ impl CodexExecutor {
 
         // service_tier mapping: "fast" → "priority", delete other non-priority
         // (JS codex.js:480-481).
-        if let Some(tier) = body.get("service_tier").and_then(Value::as_str) {
+        if let Some(tier) = normalized_body.get("service_tier").and_then(Value::as_str) {
             if tier == "fast" {
                 request_body["service_tier"] = Value::String("priority".to_string());
             } else if tier == "priority" {
@@ -645,132 +622,6 @@ impl CodexExecutor {
         }
 
         Ok(request_body)
-    }
-
-    /// Extract input items array from a Chat Completions style request body.
-    ///
-    /// Returns a Vec of Responses API input items, where each message becomes:
-    /// ```json
-    /// {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Hello"}]}
-    /// ```
-    ///
-    /// - "system" role is converted to "developer"
-    /// - Server-generated IDs (prefixes rs_, fc_, resp_, msg_) are stripped
-    /// - String content is wrapped in an input_text array
-    /// - Content arrays have text parts converted to input_text type
-    fn extract_input_items(body: &Value) -> Result<Vec<Value>, CodexExecutorError> {
-        let messages = body
-            .get("messages")
-            .and_then(Value::as_array)
-            .ok_or_else(|| {
-                CodexExecutorError::UnsupportedFormat("Missing messages array".to_string())
-            })?;
-
-        if messages.is_empty() {
-            return Err(CodexExecutorError::UnsupportedFormat(
-                "No messages found in request body".to_string(),
-            ));
-        }
-
-        let mut items: Vec<Value> = Vec::new();
-
-        for msg in messages {
-            let mut role = msg
-                .get("role")
-                .and_then(Value::as_str)
-                .unwrap_or("user")
-                .to_string();
-
-            if role == "tool" {
-                items.push(json!({
-                    "type": "function_call_output",
-                    "call_id": msg.get("tool_call_id").and_then(Value::as_str).unwrap_or(""),
-                    "output": codex_tool_output(msg.get("content")),
-                }));
-                continue;
-            }
-
-            let function_calls = if role == "assistant" {
-                codex_function_calls(msg)
-            } else {
-                Vec::new()
-            };
-
-            // Convert "system" role to "developer" (Responses API convention)
-            if role == "system" {
-                role = "developer".to_string();
-            }
-
-            // Extract and transform content into Responses API format
-            let content_arr: Value = match msg.get("content") {
-                Some(Value::String(s)) => {
-                    if s.is_empty() {
-                        items.extend(function_calls);
-                        continue;
-                    }
-                    json!([{"type": "input_text", "text": s}])
-                }
-                Some(Value::Array(arr)) => {
-                    if arr.is_empty() {
-                        items.extend(function_calls);
-                        continue;
-                    }
-                    let mut parts: Vec<Value> = Vec::new();
-                    for part in arr {
-                        let part_type = part.get("type").and_then(Value::as_str).unwrap_or("text");
-                        // Convert "text" type to "input_text" for Responses API
-                        if part_type == "text" {
-                            let text = part.get("text").and_then(Value::as_str).unwrap_or("");
-                            if !text.is_empty() {
-                                parts.push(json!({"type": "input_text", "text": text}));
-                            }
-                        } else {
-                            // Pass through other content types (image_url, etc.)
-                            parts.push(part.clone());
-                        }
-                    }
-                    json!(parts)
-                }
-                _ => continue,
-            };
-
-            // Build the input item
-            let mut item = json!({
-                "type": "message",
-                "role": role,
-                "content": content_arr,
-            });
-
-            // Strip server-generated IDs (prefixes rs_, fc_, resp_, msg_)
-            // Keep user-provided IDs that don't match these patterns
-            if let Some(id) = msg.get("id").and_then(Value::as_str) {
-                let is_server_id = id.starts_with("rs_")
-                    || id.starts_with("fc_")
-                    || id.starts_with("resp_")
-                    || id.starts_with("msg_");
-                if !is_server_id {
-                    item["id"] = json!(id);
-                }
-            }
-
-            // Preserve "name" field if present
-            if let Some(name) = msg.get("name").and_then(Value::as_str) {
-                if !name.is_empty() {
-                    item["name"] = json!(name);
-                }
-            }
-
-            items.push(item);
-            items.extend(function_calls);
-        }
-
-        if items.is_empty() {
-            return Err(CodexExecutorError::UnsupportedFormat(
-                "No valid content found in messages".to_string(),
-            ));
-        }
-
-        Ok(items)
     }
 
     /// Prefetch remote `image_url` content parts into `input_image` parts with
@@ -1191,7 +1042,7 @@ mod tests {
         let executor = CodexExecutor::new(Arc::new(ClientPool::new()), None).unwrap();
         let body = json!({
             "messages": [
-                {"role": "assistant", "content": "", "tool_calls": [{
+                {"role": "assistant", "content": null, "tool_calls": [{
                     "id": "call_1",
                     "type": "function",
                     "function": {"name": "test_tool", "arguments": "{}"}
@@ -1205,8 +1056,12 @@ mod tests {
             .transform_request_body(&body, "gpt-5.6-luna", false)
             .unwrap();
         assert_eq!(transformed["input"][0]["type"], "function_call");
+        assert_eq!(transformed["input"][0]["call_id"], "call_1");
+        assert_eq!(transformed["input"][0]["name"], "test_tool");
+        assert_eq!(transformed["input"][0]["arguments"], "{}");
         assert_eq!(transformed["input"][1]["type"], "function_call_output");
         assert_eq!(transformed["input"][1]["call_id"], "call_1");
+        assert_eq!(transformed["input"][2]["role"], "user");
         assert!(transformed["input"]
             .as_array()
             .unwrap()
@@ -1285,7 +1140,7 @@ mod tests {
     }
 
     #[test]
-    fn test_codex_request_body_converts_system_to_developer() {
+    fn test_codex_request_body_converts_system_to_instructions() {
         let executor = CodexExecutor::new(Arc::new(ClientPool::new()), None).unwrap();
 
         let chat_body = json!({
@@ -1301,15 +1156,10 @@ mod tests {
             .unwrap();
 
         let input = result["input"].as_array().unwrap();
-        // "system" should now be "developer"
-        assert_eq!(input[0]["role"], "developer");
-        assert_eq!(
-            input[0]["content"][0]["text"],
-            "You are a helpful assistant."
-        );
-        assert_eq!(input[1]["role"], "user");
-        assert_eq!(input[1]["content"][0]["text"], "Hello!");
-        assert_eq!(input.len(), 2);
+        assert_eq!(result["instructions"], "You are a helpful assistant.");
+        assert_eq!(input[0]["role"], "user");
+        assert_eq!(input[0]["content"][0]["text"], "Hello!");
+        assert_eq!(input.len(), 1);
     }
 
     #[test]
@@ -1336,71 +1186,6 @@ mod tests {
         let result = convert_openai_sse_to_standard(standard_sse);
         let result_str = String::from_utf8(result).unwrap();
         assert!(result_str.contains("data: {\"type\":\"content.delta\""));
-    }
-
-    #[test]
-    fn test_extract_input_items_missing_messages() {
-        let body = json!({
-            "model": "codex/o4-mini"
-        });
-
-        let result = CodexExecutor::extract_input_items(&body);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_extract_input_items_empty_messages() {
-        let body = json!({
-            "model": "codex/o4-mini",
-            "messages": []
-        });
-
-        let result = CodexExecutor::extract_input_items(&body);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_extract_input_items_server_ids_stripped() {
-        let body = json!({
-            "messages": [
-                {"role": "user", "content": "Hello", "id": "msg_abc123"},
-                {"role": "user", "content": "World", "id": "my-custom-id"}
-            ]
-        });
-
-        let items = CodexExecutor::extract_input_items(&body).unwrap();
-        assert_eq!(items.len(), 2);
-        // First item had "msg_" prefix -> stripped, no id field expected
-        assert!(
-            items[0].get("id").is_none(),
-            "server-generated msg_ id should be stripped"
-        );
-        // Second item had custom ID -> preserved
-        assert_eq!(items[1]["id"], "my-custom-id");
-    }
-
-    #[test]
-    fn test_extract_input_items_content_array_with_text_type() {
-        let body = json!({
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Hello "},
-                        {"type": "text", "text": "world"}
-                    ]
-                }
-            ]
-        });
-
-        let items = CodexExecutor::extract_input_items(&body).unwrap();
-        assert_eq!(items.len(), 1);
-        let content = items[0]["content"].as_array().unwrap();
-        assert_eq!(content.len(), 2);
-        assert_eq!(content[0]["type"], "input_text");
-        assert_eq!(content[0]["text"], "Hello ");
-        assert_eq!(content[1]["type"], "input_text");
-        assert_eq!(content[1]["text"], "world");
     }
 
     #[test]
