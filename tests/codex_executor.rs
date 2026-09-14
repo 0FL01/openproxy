@@ -167,6 +167,7 @@ async fn codex_executor_execute_missing_credentials_fails() {
             "messages": [{"role": "user", "content": "Hello"}]
         }),
         stream: false,
+        enable_web_search: false,
         credentials: ProviderConnection {
             id: "test".into(),
             provider: "codex".into(),
@@ -227,6 +228,7 @@ async fn codex_executor_execute_returns_correct_url() {
             "messages": [{"role": "user", "content": "Hello"}]
         }),
         stream: false,
+        enable_web_search: false,
         credentials: connection("codex"),
         proxy: None,
     };
@@ -249,6 +251,7 @@ async fn codex_executor_execute_returns_correct_headers() {
             "messages": [{"role": "user", "content": "Hello"}]
         }),
         stream: true,
+        enable_web_search: false,
         credentials: connection("codex"),
         proxy: None,
     };
@@ -289,6 +292,7 @@ async fn codex_executor_execute_access_token_preferred() {
             "messages": [{"role": "user", "content": "Hello"}]
         }),
         stream: false,
+        enable_web_search: false,
         credentials: connection_with_access_token("codex", "oauth-token-preferred"),
         proxy: None,
     };
@@ -316,6 +320,7 @@ async fn codex_executor_execute_non_streaming_no_accept_header() {
             "messages": [{"role": "user", "content": "Hello"}]
         }),
         stream: false,
+        enable_web_search: false,
         credentials: connection("codex"),
         proxy: None,
     };
@@ -344,6 +349,7 @@ async fn codex_executor_execute_multiple_messages_input() {
             ]
         }),
         stream: false,
+        enable_web_search: false,
         credentials: connection("codex"),
         proxy: None,
     };
@@ -371,6 +377,7 @@ async fn codex_executor_execute_transforms_model_name() {
             "messages": [{"role": "user", "content": "Hello"}]
         }),
         stream: false,
+        enable_web_search: false,
         credentials: connection("codex"),
         proxy: None,
     };
@@ -390,6 +397,7 @@ async fn codex_executor_execute_without_codex_prefix() {
             "messages": [{"role": "user", "content": "Hello"}]
         }),
         stream: false,
+        enable_web_search: false,
         credentials: connection("codex"),
         proxy: None,
     };
@@ -409,6 +417,7 @@ async fn codex_executor_execute_empty_messages_fails() {
             "messages": []
         }),
         stream: false,
+        enable_web_search: false,
         credentials: connection("codex"),
         proxy: None,
     };
@@ -437,6 +446,7 @@ async fn codex_executor_execute_all_params_copied() {
             "stop": ["END"]
         }),
         stream: false,
+        enable_web_search: false,
         credentials: connection("codex"),
         proxy: None,
     };
@@ -465,6 +475,7 @@ async fn codex_executor_execute_reasoning_param_stripped() {
             "reasoning": {"effort": "high"}
         }),
         stream: false,
+        enable_web_search: false,
         credentials: connection("codex"),
         proxy: None,
     };

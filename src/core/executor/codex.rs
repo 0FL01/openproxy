@@ -277,9 +277,18 @@ const CODEX_SSE_ACCOUNT_FALLBACK_PATTERNS: &[&str] =
 const CODEX_SSE_USER_OUTPUT_PATTERNS: &[&str] = &[
     "event: response.output_text.delta",
     "event: response.function_call_arguments.delta",
+    "event: response.web_search_call.",
     "\"type\":\"response.output_text.delta\"",
     "\"type\":\"response.function_call_arguments.delta\"",
+    "\"type\":\"web_search_call\"",
 ];
+
+fn codex_sse_has_user_output(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    CODEX_SSE_USER_OUTPUT_PATTERNS
+        .iter()
+        .any(|pattern| lower.contains(pattern))
+}
 
 const CODEX_MODEL_CAPACITY_MESSAGE: &str =
     "Selected model is at capacity. Please try a different model.";
@@ -352,6 +361,7 @@ pub struct CodexExecutionRequest {
     pub model: String,
     pub body: Value,
     pub stream: bool,
+    pub enable_web_search: bool,
     pub credentials: ProviderConnection,
     pub proxy: Option<ProxyTarget>,
 }
@@ -507,6 +517,7 @@ impl CodexExecutor {
         body: &Value,
         actual_model: &str,
         _stream: bool,
+        enable_web_search: bool,
     ) -> Result<Value, CodexExecutorError> {
         let mut normalized_body = body.clone();
         if normalized_body.get("input").is_none() {
@@ -577,9 +588,30 @@ impl CodexExecutor {
         // property escapes (\p{...}) with HTTP 400 — valid ECMA regex but not
         // supported by Codex's schema validator (#3922). Strip patterns before
         // dispatch; 9router applies the same strip in normalizeCodexTools.
-        if let Some(tools) = normalized_body.get("tools").and_then(Value::as_array) {
-            request_body["tools"] =
-                Value::Array(tools.iter().filter_map(normalize_codex_tool).collect());
+        let mut tools = normalized_body
+            .get("tools")
+            .and_then(Value::as_array)
+            .map(|tools| {
+                tools
+                    .iter()
+                    .filter_map(normalize_codex_tool)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let tool_choice_none = body.get("tool_choice").and_then(Value::as_str) == Some("none");
+        if enable_web_search
+            && !tool_choice_none
+            && !tools
+                .iter()
+                .any(|tool| tool.get("type").and_then(Value::as_str) == Some("web_search"))
+        {
+            tools.push(json!({
+                "type": "web_search",
+                "external_web_access": true,
+            }));
+        }
+        if !tools.is_empty() {
+            request_body["tools"] = Value::Array(tools);
         }
         if let Some(tool_choice) = body.get("tool_choice") {
             request_body["tool_choice"] = tool_choice.clone();
@@ -790,7 +822,12 @@ impl CodexExecutor {
             }
         }
 
-        let transformed_body = self.transform_request_body(&request.body, &actual_model, true)?;
+        let transformed_body = self.transform_request_body(
+            &request.body,
+            &actual_model,
+            true,
+            request.enable_web_search,
+        )?;
 
         let client = self.pool.get("openai", request.proxy.as_ref())?;
 
@@ -824,6 +861,9 @@ impl CodexExecutor {
                         total += chunk.len();
                         chunks.push(chunk.clone());
                         text.push_str(&String::from_utf8_lossy(&chunk));
+                        if codex_sse_has_user_output(&text) {
+                            break;
+                        }
                         let lower = text.to_lowercase();
                         let account_hit = CODEX_SSE_ACCOUNT_FALLBACK_PATTERNS
                             .iter()
@@ -838,12 +878,6 @@ impl CodexExecutor {
                             .find(|p| lower.contains(**p));
                         if let Some(hit) = retry_hit {
                             matched = Some(hit);
-                            break;
-                        }
-                        if CODEX_SSE_USER_OUTPUT_PATTERNS
-                            .iter()
-                            .any(|p| lower.contains(*p))
-                        {
                             break;
                         }
                     }
@@ -1017,11 +1051,65 @@ mod tests {
         });
 
         let transformed = executor
-            .transform_request_body(&body, "gpt-5.6-luna", false)
+            .transform_request_body(&body, "gpt-5.6-luna", false, false)
             .unwrap();
         assert_eq!(transformed["tools"][0]["name"], "test_tool");
         assert_eq!(transformed["tools"][0]["description"], "Test tool");
         assert!(transformed["tools"][0].get("function").is_none());
+    }
+
+    #[test]
+    fn test_codex_web_search_injection_is_additive_and_idempotent() {
+        let executor = CodexExecutor::new(Arc::new(ClientPool::new()), None).unwrap();
+        let body = json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "local_tool",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            }]
+        });
+
+        let transformed = executor
+            .transform_request_body(&body, "gpt-5.6-luna", true, true)
+            .unwrap();
+        let tools = transformed["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0]["name"], "local_tool");
+        assert_eq!(tools[1]["type"], "web_search");
+        assert_eq!(tools[1]["external_web_access"], true);
+
+        let existing = json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type": "web_search", "external_web_access": false}]
+        });
+        let transformed = executor
+            .transform_request_body(&existing, "gpt-5.6-luna", true, true)
+            .unwrap();
+        assert_eq!(transformed["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(transformed["tools"][0]["external_web_access"], false);
+
+        let disabled = executor
+            .transform_request_body(&body, "gpt-5.6-luna", true, false)
+            .unwrap();
+        assert_eq!(disabled["tools"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_codex_web_search_respects_tool_choice_none() {
+        let executor = CodexExecutor::new(Arc::new(ClientPool::new()), None).unwrap();
+        let body = json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "tool_choice": "none"
+        });
+
+        let transformed = executor
+            .transform_request_body(&body, "gpt-5.6-luna", true, true)
+            .unwrap();
+        assert!(transformed.get("tools").is_none());
+        assert_eq!(transformed["tool_choice"], "none");
     }
 
     #[test]
@@ -1035,7 +1123,7 @@ mod tests {
         });
 
         let transformed = executor
-            .transform_request_body(&body, "gpt-5.6-luna", false)
+            .transform_request_body(&body, "gpt-5.6-luna", false, false)
             .unwrap();
         assert_eq!(transformed["input"][1]["content"][0]["type"], "output_text");
         assert!(transformed["input"][1]["content"][0]
@@ -1059,7 +1147,7 @@ mod tests {
         });
 
         let transformed = executor
-            .transform_request_body(&body, "gpt-5.6-luna", false)
+            .transform_request_body(&body, "gpt-5.6-luna", false, false)
             .unwrap();
         assert_eq!(transformed["input"][0]["type"], "function_call");
         assert_eq!(transformed["input"][0]["call_id"], "call_1");
@@ -1081,7 +1169,7 @@ mod tests {
         let body = json!({"input": "Hello"});
 
         let transformed = executor
-            .transform_request_body(&body, "gpt-5.6-luna", false)
+            .transform_request_body(&body, "gpt-5.6-luna", false, false)
             .unwrap();
 
         assert_eq!(transformed["input"][0]["role"], "user");
@@ -1102,7 +1190,7 @@ mod tests {
         });
 
         let result = executor
-            .transform_request_body(&chat_body, "o4-mini-high", false)
+            .transform_request_body(&chat_body, "o4-mini-high", false, false)
             .unwrap();
 
         assert_eq!(result["model"], "o4-mini"); // suffix stripped
@@ -1145,7 +1233,7 @@ mod tests {
         });
 
         let result = executor
-            .transform_request_body(&chat_body, "o4-mini", true)
+            .transform_request_body(&chat_body, "o4-mini", true, false)
             .unwrap();
 
         let input = result["input"].as_array().unwrap();
@@ -1171,7 +1259,7 @@ mod tests {
         });
 
         let result = executor
-            .transform_request_body(&chat_body, "o4-mini", true)
+            .transform_request_body(&chat_body, "o4-mini", true, false)
             .unwrap();
 
         let input = result["input"].as_array().unwrap();
@@ -1197,6 +1285,17 @@ mod tests {
     fn test_codex_sse_conversion_empty() {
         let result = convert_openai_sse_to_standard(b"");
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_codex_web_search_event_counts_as_user_output() {
+        let event = r#"event: response.output_item.added
+data: {"type":"response.output_item.added","item":{"type":"web_search_call"}}"#;
+        assert!(codex_sse_has_user_output(event));
+        assert!(codex_sse_has_user_output(
+            "event: response.web_search_call.searching"
+        ));
+        assert!(!codex_sse_has_user_output("event: response.created"));
     }
 
     #[test]
@@ -1254,7 +1353,7 @@ mod tests {
             "model": "codex/o4-mini"
         });
         let out = executor
-            .transform_request_body(&body, "o4-mini", false)
+            .transform_request_body(&body, "o4-mini", false, false)
             .unwrap();
         assert_eq!(out["include"], json!(["reasoning.encrypted_content"]));
 
@@ -1265,7 +1364,7 @@ mod tests {
             "model": "codex/o4-mini"
         });
         let out = executor
-            .transform_request_body(&body, "o4-mini", false)
+            .transform_request_body(&body, "o4-mini", false, false)
             .unwrap();
         assert!(
             out.get("include").is_none(),
@@ -1284,7 +1383,7 @@ mod tests {
             "model": "codex/o4-mini"
         });
         let out = executor
-            .transform_request_body(&body, "o4-mini", false)
+            .transform_request_body(&body, "o4-mini", false, false)
             .unwrap();
         assert_eq!(out["service_tier"], "priority");
 
@@ -1295,7 +1394,7 @@ mod tests {
             "model": "codex/o4-mini"
         });
         let out = executor
-            .transform_request_body(&body, "o4-mini", false)
+            .transform_request_body(&body, "o4-mini", false, false)
             .unwrap();
         assert!(out.get("service_tier").is_none());
     }

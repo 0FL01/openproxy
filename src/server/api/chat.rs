@@ -115,6 +115,42 @@ const SSE_STALL_TIMEOUT: Duration = Duration::from_secs(180);
 /// [`forward_with_provider_fallback`] and as the round-robin capacity
 /// threshold when deciding whether a combo member is `Available` or `Busy`.
 const MAX_IN_FLIGHT_PER_ACCOUNT: usize = 10;
+pub(super) const CODEX_WEB_SEARCH_HEADER: &str = "x-openproxy-codex-web-search";
+
+fn requests_codex_web_search(headers: &HeaderMap, body: &Value) -> bool {
+    if body.get("tool_choice").and_then(Value::as_str) == Some("none") {
+        return false;
+    }
+
+    let header_enabled = headers
+        .get(CODEX_WEB_SEARCH_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("true"));
+    let native_tool = body
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| {
+            tools
+                .iter()
+                .any(|tool| tool.get("type").and_then(Value::as_str) == Some("web_search"))
+        });
+    header_enabled || native_tool
+}
+
+fn codex_models_support_search(
+    models: &[crate::server::codex_catalog::CodexModelMetadata],
+    model: &str,
+) -> bool {
+    let model = model.strip_prefix("codex/").unwrap_or(model);
+    models.iter().any(|candidate| {
+        candidate.capabilities.iter().any(|value| value == "search")
+            && (candidate.id == model
+                || candidate.reasoning_efforts.iter().any(|effort| {
+                    model == format!("{}-{effort}", candidate.id)
+                        || model == format!("{}({effort})", candidate.id)
+                }))
+    })
+}
 
 pub async fn cors_options() -> Response {
     cors_preflight_response("GET, POST, OPTIONS")
@@ -352,6 +388,7 @@ async fn chat_completions_impl(
     crate::core::utils::claude_header_cache::cache_claude_headers(&headers_map);
 
     let client_tool = detect_client_tool(&headers_map, &body);
+    let codex_web_search_requested = requests_codex_web_search(&headers, &body);
 
     // Accept/stream preference is applied via resolve_stream_flags on the plan
     // (does NOT mutate body.stream when client set stream:true — 9router parity).
@@ -397,7 +434,7 @@ async fn chat_completions_impl(
     // body, and a streaming client would misinterpret a cached non-SSE body.
     let is_streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
 
-    if !is_streaming {
+    if !is_streaming && !codex_web_search_requested {
         if let Some((cached, ttl_remaining)) = state.response_cache.get_with_ttl(&body) {
             let mut resp = Response::new(Body::from(cached));
             resp.headers_mut().insert(
@@ -712,6 +749,7 @@ async fn chat_completions_impl(
                                 &plan_for_combo,
                                 client_tool_for_combo,
                                 Some(&headers),
+                                false,
                             )
                             .await
                         }
@@ -767,6 +805,7 @@ async fn chat_completions_impl(
                 &plan,
                 client_tool,
                 Some(&headers_map),
+                codex_web_search_requested,
             )
             .await
             {
@@ -777,7 +816,7 @@ async fn chat_completions_impl(
     };
 
     // Feature4: populate the cache on a successful non-streaming miss.
-    if !is_streaming {
+    if !is_streaming && !codex_web_search_requested {
         return cache_miss_response(&state, &body, cache_provider, response).await;
     }
     response
@@ -1007,6 +1046,7 @@ async fn dispatch_fusion_leg(
         &plan,
         client_tool,
         Some(headers),
+        false,
     )
     .await
 }
@@ -1020,6 +1060,7 @@ async fn execute_single_model(
     base_plan: &RequestPlan,
     client_tool: Option<ClientTool>,
     client_headers: Option<&std::collections::HashMap<String, String>>,
+    codex_web_search_requested: bool,
 ) -> Result<Response, ComboAttemptError> {
     let snapshot = state.db.snapshot();
     let mut plan = base_plan.clone();
@@ -1311,6 +1352,7 @@ async fn execute_single_model(
         client_tool,
         compression_stats,
         client_headers,
+        codex_web_search_requested,
     )
     .await
 }
@@ -1326,6 +1368,7 @@ async fn forward_with_provider_fallback(
     client_tool: Option<ClientTool>,
     compression: Option<CompressionStats>,
     client_headers: Option<&std::collections::HashMap<String, String>>,
+    codex_web_search_requested: bool,
 ) -> Result<Response, ComboAttemptError> {
     let mut excluded = HashSet::new();
     let mut last_error: Option<ComboAttemptError> = None;
@@ -1416,6 +1459,53 @@ async fn forward_with_provider_fallback(
             });
         };
 
+        let enable_codex_web_search = if codex_web_search_requested && provider == "codex" {
+            match state
+                .codex_models
+                .models_for_connection(state, &connection)
+                .await
+            {
+                Ok(inventory) if codex_models_support_search(&inventory.models, model) => {
+                    // Model discovery may refresh an expiring OAuth token. Use
+                    // the persisted replacement for the actual request.
+                    if let Some(refreshed) = state
+                        .db
+                        .snapshot()
+                        .provider_connections
+                        .iter()
+                        .find(|candidate| candidate.id == connection.id)
+                        .cloned()
+                    {
+                        connection = refreshed;
+                    }
+                    true
+                }
+                Ok(_) => {
+                    last_error = Some(ComboAttemptError::new(
+                        400,
+                        format!(
+                            "Codex web search is not supported for model {model} on this account"
+                        ),
+                    ));
+                    excluded.insert(connection.id.clone());
+                    continue;
+                }
+                Err(error) => {
+                    last_error = Some(ComboAttemptError::new(
+                        error.status.as_u16(),
+                        format!(
+                            "Unable to verify Codex web search support: {}",
+                            error.message
+                        ),
+                    ));
+                    excluded.insert(connection.id.clone());
+                    continue;
+                }
+            }
+        } else {
+            false
+        };
+
         // 9router resolveTransport: pin multi-endpoint base URL for this request
         if let Some(ref base) = plan.transport_base_url {
             connection.runtime_transport = Some(crate::types::RuntimeTransport {
@@ -1484,7 +1574,7 @@ async fn forward_with_provider_fallback(
             VertexExecutionRequest, VertexExecutor, WindsurfExecutionRequest, WindsurfExecutor,
         };
 
-        let is_codex_model = model.starts_with("codex/") || provider == "codex";
+        let is_codex_model = provider == "codex";
         let is_cursor_model =
             model.starts_with("cursor/") || provider == "cu" || provider == "cursor";
         let executor_result: Result<KiroExecutorResponse, ComboAttemptError> =
@@ -1554,6 +1644,7 @@ async fn forward_with_provider_fallback(
                         model: model.to_string(),
                         body: request_body.clone(),
                         stream,
+                        enable_web_search: enable_codex_web_search,
                         credentials: connection.clone(),
                         proxy,
                     })
@@ -4598,16 +4689,18 @@ fn bypass_response(model: &str, text: &str, stream: bool) -> Response {
 mod tests {
     use std::collections::{BTreeMap, HashSet};
 
-    use axum::http::StatusCode;
+    use axum::http::{HeaderMap, HeaderValue, StatusCode};
     use bytes::Bytes;
     use chrono::{Duration as ChronoDuration, Utc};
     use http_body_util::BodyExt;
     use serde_json::{json, Value};
 
     use super::{
-        build_dashboard_sse_response, build_proxied_response, earliest_retry_after,
-        responses_stream_completed, select_connection, select_connection_with_supporters,
+        build_dashboard_sse_response, build_proxied_response, codex_models_support_search,
+        earliest_retry_after, requests_codex_web_search, responses_stream_completed,
+        select_connection, select_connection_with_supporters,
     };
+    use crate::server::codex_catalog::CodexModelMetadata;
     use crate::types::{AppDb, ProviderConnection};
 
     fn connection(id: &str, priority: u32) -> ProviderConnection {
@@ -4649,6 +4742,48 @@ mod tests {
             provider_specific_data: BTreeMap::new(),
             extra: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn codex_web_search_intent_is_client_independent_and_respects_none() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-openproxy-codex-web-search",
+            HeaderValue::from_static("true"),
+        );
+        assert!(requests_codex_web_search(
+            &headers,
+            &json!({"messages": []})
+        ));
+        assert!(requests_codex_web_search(
+            &HeaderMap::new(),
+            &json!({"tools": [{"type": "web_search"}]})
+        ));
+        assert!(!requests_codex_web_search(
+            &headers,
+            &json!({"tools": [{"type": "web_search"}], "tool_choice": "none"})
+        ));
+    }
+
+    #[test]
+    fn codex_web_search_capability_matches_exact_model_and_reasoning_variant() {
+        let models = vec![CodexModelMetadata {
+            id: "gpt-5.6-luna".into(),
+            name: "Luna".into(),
+            context_window: None,
+            capabilities: vec!["tools".into(), "search".into()],
+            reasoning_efforts: vec!["low".into(), "high".into()],
+        }];
+
+        assert!(codex_models_support_search(&models, "gpt-5.6-luna"));
+        assert!(codex_models_support_search(&models, "gpt-5.6-luna-high"));
+        assert!(!codex_models_support_search(&models, "gpt-other"));
+
+        let mut unsupported = models;
+        unsupported[0]
+            .capabilities
+            .retain(|value| value != "search");
+        assert!(!codex_models_support_search(&unsupported, "gpt-5.6-luna"));
     }
 
     #[test]

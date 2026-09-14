@@ -896,10 +896,15 @@ async fn opencode_settings_post_patch_and_delete_match_openproxy_file_behavior()
                     "options": {
                         "region": "keep",
                         "baseURL": "https://old.example.com/v1",
-                        "apiKey": "old-key"
+                        "apiKey": "old-key",
+                        "headers": {"X-Keep": "yes"}
                     },
                     "models": {
-                        "old/model": { "name": "old/model" }
+                        "old/model": { "name": "old/model" },
+                        "oa/gpt-4.1": {
+                            "name": "Custom label",
+                            "options": {"keep": true}
+                        }
                     }
                 }
             },
@@ -924,7 +929,7 @@ async fn opencode_settings_post_patch_and_delete_match_openproxy_file_behavior()
             Method::POST,
             "/api/cli-tools/opencode-settings",
             Body::from(
-                r#"{"baseUrl":"https://proxy.example.com","apiKey":"sk-openproxy","models":["oa/gpt-4.1","oa/gpt-4.1-mini"],"activeModel":"oa/gpt-4.1-mini","subagentModel":"oa/gpt-4.1-nano"}"#,
+                r#"{"baseUrl":"https://proxy.example.com","apiKey":"sk-openproxy","models":["oa/gpt-4.1","oa/gpt-4.1-mini"],"activeModel":"oa/gpt-4.1-mini","subagentModel":"oa/gpt-4.1-nano","codexWebSearch":true}"#,
             ),
         ))
         .await
@@ -957,12 +962,24 @@ async fn opencode_settings_post_patch_and_delete_match_openproxy_file_behavior()
         "sk-openproxy"
     );
     assert_eq!(
+        saved["provider"]["openproxy"]["options"]["headers"]["X-Keep"],
+        "yes"
+    );
+    assert_eq!(
+        saved["provider"]["openproxy"]["options"]["headers"]["x-openproxy-codex-web-search"],
+        "true"
+    );
+    assert_eq!(
         saved["provider"]["openproxy"]["models"]["old/model"]["name"],
         "old/model"
     );
     assert_eq!(
         saved["provider"]["openproxy"]["models"]["oa/gpt-4.1"]["name"],
-        "oa/gpt-4.1"
+        "Custom label"
+    );
+    assert_eq!(
+        saved["provider"]["openproxy"]["models"]["oa/gpt-4.1"]["options"]["keep"],
+        true
     );
     assert_eq!(
         saved["provider"]["openproxy"]["models"]["oa/gpt-4.1-mini"]["name"],
@@ -1000,6 +1017,31 @@ async fn opencode_settings_post_patch_and_delete_match_openproxy_file_behavior()
     assert!(models.contains(&json!("oa/gpt-4.1-mini")));
     assert_eq!(json["opencode"]["activeModel"], "oa/gpt-4.1-mini");
     assert_eq!(json["opencode"]["baseURL"], "https://proxy.example.com/v1");
+    assert_eq!(json["opencode"]["codexWebSearch"], true);
+
+    let disable_search = app
+        .clone()
+        .oneshot(authorized_request(
+            Method::POST,
+            "/api/cli-tools/opencode-settings",
+            Body::from(
+                r#"{"baseUrl":"https://proxy.example.com","apiKey":"sk-openproxy","models":["oa/gpt-4.1","oa/gpt-4.1-mini"],"activeModel":"oa/gpt-4.1-mini","subagentModel":"oa/gpt-4.1-nano","codexWebSearch":false}"#,
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(disable_search.status(), StatusCode::OK);
+    let search_disabled: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+    assert_eq!(
+        search_disabled["provider"]["openproxy"]["options"]["headers"]["X-Keep"],
+        "yes"
+    );
+    assert!(
+        search_disabled["provider"]["openproxy"]["options"]["headers"]
+            .get("x-openproxy-codex-web-search")
+            .is_none()
+    );
 
     let patch = app
         .clone()
