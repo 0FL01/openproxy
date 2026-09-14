@@ -1,6 +1,6 @@
 # Goal: Reliable Codex search over Responses
 
-Status: active
+Status: complete
 Source: User-reported OpenCode `invalid web_search` and buffered streaming,
 followed by approved implementation instruction (2026-09-14)
 Last updated: 2026-09-14
@@ -60,8 +60,10 @@ remain satisfied.
   - Acceptance: `main` equals `origin/main`, production runs the new healthy
     image, and no live model request is made during verification.
   - Primary evidence: Git refs, Docker build/deploy, and `/health`.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: Runtime commit `6b3a1272` is pushed and deployed as image
+    `sha256:07a5807aab4`; container and `/health` are healthy. Verification made
+    no model, Codex, OpenCode, or search request.
 
 ### Constraints
 - C1: Keep `@ai-sdk/openai`; do not switch OpenCode to Chat Completions.
@@ -88,22 +90,18 @@ remain satisfied.
   verification.
 
 ## Current Checkpoint
-- Closes: R4.
-- Smallest next action: Run the required Rust gates, inspect the final diff,
-  commit and push, build/deploy production, then verify health without any model
-  request.
-- Expected evidence: Focused and full offline tests pass, refs match, and the
-  new production image is healthy.
-- Stop or replan if: A changed-path gate fails or deployment requires a live
-  Codex/OpenCode request.
+- Closes: None; objective complete.
+- Smallest next action: Stop.
+- Expected evidence: All required outcomes are verified below.
+- Stop or replan if: Not applicable.
 
 ## Current State
-- Resolved: R1-R3.
-- Last relevant evidence: 1,940 library tests, fmt, and all-target/all-feature
-  clippy pass; clippy reports only six pre-existing unrelated warnings. The
-  streaming regression was observed failing before implementation.
+- Resolved: R1-R4.
+- Last relevant evidence: Runtime commit deployed healthy without a model
+  request; local offline evidence covers incremental delivery and scoped event
+  sanitization.
 - Blocker: None.
-- Next: Required gates, commit/push, deploy, health verification.
+- Next: None.
 
 ## Material Decisions
 - 2026-09-14: `invalid` is a client validation artifact after successful hosted
@@ -121,9 +119,16 @@ remain satisfied.
   existing `responses_compact_normalizes_input_and_sets_compact_flag`
   integration still returns a wiremock 404 before the changed response
   conversion path; the other three tests in that file pass.
+- 2026-09-14: Runtime commit `6b3a1272` pushed and deployed; production image
+  and `/health` verified without a live model request.
 
 ## Completion
-- Resolved outcomes:
-- Commands and artifacts:
-- Constraint and diff-scope check:
-- Final status:
+- Resolved outcomes: R1-R4.
+- Commands and artifacts: Deterministic red/green delayed-stream regression;
+  fragmented injected/native SSE fixtures; non-stream fixture; 16 compat tests;
+  1,940-test library suite; fmt; clippy; Docker production build/deploy; health
+  and git-ref checks.
+- Constraint and diff-scope check: Kept `@ai-sdk/openai`; no live canary,
+  dependency, migration, service, endpoint, persistent state, plugin, client
+  detection, credential/query/result logging, or non-Codex search expansion.
+- Final status: complete.
