@@ -512,16 +512,22 @@ impl CodexExecutor {
         if normalized_body.get("input").is_none() {
             chat_to_openai_responses_request(actual_model, &mut normalized_body, true, None);
         }
-        let mut input_items = normalized_body
-            .get("input")
-            .and_then(Value::as_array)
-            .filter(|input| !input.is_empty())
-            .cloned()
-            .ok_or_else(|| {
-                CodexExecutorError::UnsupportedFormat(
+        let mut input_items = match normalized_body.get("input") {
+            Some(Value::Array(input)) if !input.is_empty() => input.clone(),
+            Some(Value::String(text)) => vec![json!({
+                "type": "message",
+                "role": "user",
+                "content": [{
+                    "type": "input_text",
+                    "text": if text.is_empty() { "..." } else { text },
+                }],
+            })],
+            _ => {
+                return Err(CodexExecutorError::UnsupportedFormat(
                     "Missing or empty input array in request body".to_string(),
-                )
-            })?;
+                ));
+            }
+        };
         normalize_codex_input_items(&mut input_items);
 
         let instructions = normalized_body
@@ -1067,6 +1073,19 @@ mod tests {
             .unwrap()
             .iter()
             .all(|item| item.get("role").and_then(Value::as_str) != Some("tool")));
+    }
+
+    #[test]
+    fn test_codex_accepts_responses_string_input() {
+        let executor = CodexExecutor::new(Arc::new(ClientPool::new()), None).unwrap();
+        let body = json!({"input": "Hello"});
+
+        let transformed = executor
+            .transform_request_body(&body, "gpt-5.6-luna", false)
+            .unwrap();
+
+        assert_eq!(transformed["input"][0]["role"], "user");
+        assert_eq!(transformed["input"][0]["content"][0]["text"], "Hello");
     }
 
     #[test]
