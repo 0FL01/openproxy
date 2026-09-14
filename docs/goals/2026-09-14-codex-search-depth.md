@@ -1,6 +1,6 @@
 # Goal: Configurable Codex search depth
 
-Status: active
+Status: complete
 Source: User-approved provider-panel search-depth plan (2026-09-14)
 Last updated: 2026-09-14
 
@@ -56,8 +56,10 @@ remain satisfied.
   - Acceptance: Required Rust/web gates pass and `main == origin/main`; no
     production deployment or live model request is performed.
   - Primary evidence: Rust tests/gates, dashboard build, Git refs.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: Runtime commit `51cbc165` pushed; Docker image
+    `sha256:2b3d37f9a576…` built successfully without starting or replacing the
+    production container.
 
 ### Constraints
 - C1: The generic request header remains required; depth does not auto-enable
@@ -87,21 +89,18 @@ remain satisfied.
   no deployment and no live model call.
 
 ## Current Checkpoint
-- Closes: R4.
-- Smallest next action: Run required Rust/web build gates, inspect the final
-  diff, commit and push, then run the requested Docker build without deployment.
-- Expected evidence: Gates and build pass, `main == origin/main`, and production
-  remains untouched.
-- Stop or replan if: A changed-path gate fails or build requires deployment/live
-  model access.
+- Closes: None; objective complete.
+- Smallest next action: Stop.
+- Expected evidence: All required outcomes are verified below.
+- Stop or replan if: Not applicable.
 
 ## Current State
-- Resolved: R1-R3.
-- Last relevant evidence: 1,941 library tests, focused settings regression,
-  integration compilation, fmt, clippy, and dashboard build pass. Clippy reports
-  only six pre-existing unrelated warnings.
+- Resolved: R1-R4.
+- Last relevant evidence: Runtime commit pushed and Docker image built after
+  1,941 library tests, focused settings regression, integration compilation,
+  fmt, clippy, and dashboard build passed.
 - Blocker: None.
-- Next: Required gates, commit/push, requested build.
+- Next: None.
 
 ## Material Decisions
 - 2026-09-14: Missing setting means `medium` to preserve deployed behavior.
@@ -116,9 +115,16 @@ remain satisfied.
   Codex-only provider selector implemented; focused offline evidence passed.
 - 2026-09-14: Commit gates passed: 1,941 library tests, focused settings test,
   integration compilation, fmt, clippy, and dashboard build.
+- 2026-09-14: Runtime commit `51cbc165` pushed and Docker image
+  `sha256:2b3d37f9a576…` built; no deployment or live request performed.
 
 ## Completion
-- Resolved outcomes:
-- Commands and artifacts:
-- Constraint and diff-scope check:
-- Final status:
+- Resolved outcomes: R1-R4.
+- Commands and artifacts: Focused settings/policy/transform tests; 1,941-test
+  library suite; Codex integration-test compilation; fmt; clippy; dashboard and
+  Docker production image builds.
+- Constraint and diff-scope check: Existing header opt-in, Codex account/model
+  capability gate, native tools, combo/fusion behavior, cache, auto-ping, and
+  response handling preserved. No `max_tool_calls`, dependency, migration,
+  endpoint, deploy, or live model request.
+- Final status: complete.
