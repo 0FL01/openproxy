@@ -117,6 +117,19 @@ const SSE_STALL_TIMEOUT: Duration = Duration::from_secs(180);
 const MAX_IN_FLIGHT_PER_ACCOUNT: usize = 10;
 pub(super) const CODEX_WEB_SEARCH_HEADER: &str = "x-openproxy-codex-web-search";
 
+#[derive(Clone, Debug)]
+pub(super) struct CodexWebSearchInjected;
+
+fn has_native_codex_web_search(body: &Value) -> bool {
+    body.get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| {
+            tools
+                .iter()
+                .any(|tool| tool.get("type").and_then(Value::as_str) == Some("web_search"))
+        })
+}
+
 fn requests_codex_web_search(headers: &HeaderMap, body: &Value) -> bool {
     if body.get("tool_choice").and_then(Value::as_str) == Some("none") {
         return false;
@@ -126,15 +139,18 @@ fn requests_codex_web_search(headers: &HeaderMap, body: &Value) -> bool {
         .get(CODEX_WEB_SEARCH_HEADER)
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.trim().eq_ignore_ascii_case("true"));
-    let native_tool = body
-        .get("tools")
-        .and_then(Value::as_array)
-        .is_some_and(|tools| {
-            tools
-                .iter()
-                .any(|tool| tool.get("type").and_then(Value::as_str) == Some("web_search"))
-        });
-    header_enabled || native_tool
+    header_enabled || has_native_codex_web_search(body)
+}
+
+fn mark_codex_web_search_injected(mut response: Response, injected: bool) -> Response {
+    if injected {
+        response.extensions_mut().insert(CodexWebSearchInjected);
+    }
+    response
+}
+
+fn codex_web_search_is_injected(enabled: bool, body: &Value) -> bool {
+    enabled && !has_native_codex_web_search(body)
 }
 
 fn codex_models_support_search(
@@ -1505,6 +1521,8 @@ async fn forward_with_provider_fallback(
         } else {
             false
         };
+        let codex_web_search_injected =
+            codex_web_search_is_injected(enable_codex_web_search, &request_body);
 
         // 9router resolveTransport: pin multi-endpoint base URL for this request
         if let Some(ref base) = plan.transport_base_url {
@@ -2393,6 +2411,8 @@ async fn forward_with_provider_fallback(
                             compression.clone(),
                         )
                         .await;
+                        let response =
+                            mark_codex_web_search_injected(response, codex_web_search_injected);
                         return Ok(crate::server::api::budget_guard::with_budget_header(
                             response,
                             budget_remaining,
@@ -2415,6 +2435,8 @@ async fn forward_with_provider_fallback(
                         custom_tool_names.clone(),
                     )
                     .await;
+                    let response =
+                        mark_codex_web_search_injected(response, codex_web_search_injected);
                     return Ok(crate::server::api::budget_guard::with_budget_header(
                         response,
                         budget_remaining,
@@ -4689,7 +4711,11 @@ fn bypass_response(model: &str, text: &str, stream: bool) -> Response {
 mod tests {
     use std::collections::{BTreeMap, HashSet};
 
-    use axum::http::{HeaderMap, HeaderValue, StatusCode};
+    use axum::{
+        body::Body,
+        http::{HeaderMap, HeaderValue, StatusCode},
+        response::Response,
+    };
     use bytes::Bytes;
     use chrono::{Duration as ChronoDuration, Utc};
     use http_body_util::BodyExt;
@@ -4697,8 +4723,9 @@ mod tests {
 
     use super::{
         build_dashboard_sse_response, build_proxied_response, codex_models_support_search,
-        earliest_retry_after, requests_codex_web_search, responses_stream_completed,
-        select_connection, select_connection_with_supporters,
+        codex_web_search_is_injected, earliest_retry_after, mark_codex_web_search_injected,
+        requests_codex_web_search, responses_stream_completed, select_connection,
+        select_connection_with_supporters, CodexWebSearchInjected,
     };
     use crate::server::codex_catalog::CodexModelMetadata;
     use crate::types::{AppDb, ProviderConnection};
@@ -4763,6 +4790,23 @@ mod tests {
             &headers,
             &json!({"tools": [{"type": "web_search"}], "tool_choice": "none"})
         ));
+        assert!(codex_web_search_is_injected(true, &json!({})));
+        assert!(!codex_web_search_is_injected(
+            true,
+            &json!({"tools": [{"type": "web_search"}]})
+        ));
+        assert!(!codex_web_search_is_injected(false, &json!({})));
+
+        let injected = mark_codex_web_search_injected(Response::new(Body::empty()), true);
+        assert!(injected
+            .extensions()
+            .get::<CodexWebSearchInjected>()
+            .is_some());
+        let native = mark_codex_web_search_injected(Response::new(Body::empty()), false);
+        assert!(native
+            .extensions()
+            .get::<CodexWebSearchInjected>()
+            .is_none());
     }
 
     #[test]

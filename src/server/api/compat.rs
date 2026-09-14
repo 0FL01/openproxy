@@ -150,6 +150,10 @@ async fn forward_compat(
 /// Responses API SSE events for a non-streaming request, we collect them
 /// and reconstruct the final JSON.
 async fn convert_to_responses_api(response: Response, stream_request: bool) -> Response {
+    let sanitize_injected_search = response
+        .extensions()
+        .get::<chat::CodexWebSearchInjected>()
+        .is_some();
     let status = response.status();
     if !status.is_success() {
         return response;
@@ -170,11 +174,14 @@ async fn convert_to_responses_api(response: Response, stream_request: bool) -> R
             Ok(col) => col.to_bytes(),
             Err(_) => return Response::from_parts(parts, Body::empty()),
         };
-        let Ok(body_value) = serde_json::from_slice::<Value>(&body_bytes) else {
+        let Ok(mut body_value) = serde_json::from_slice::<Value>(&body_bytes) else {
             return (status, body_bytes).into_response();
         };
 
         if body_value.get("object").and_then(Value::as_str) == Some("response") {
+            if sanitize_injected_search {
+                remove_injected_web_search_items(&mut body_value);
+            }
             return Json(body_value).into_response();
         }
 
@@ -187,6 +194,10 @@ async fn convert_to_responses_api(response: Response, stream_request: bool) -> R
 
         let responses_json = chat_completion_to_responses_json(&chat_completion);
         return Json(responses_json).into_response();
+    }
+
+    if stream_request {
+        return stream_to_responses_api(response, sanitize_injected_search);
     }
 
     // Streaming or pseudo-streaming — wrap the body through the SSE converter.
@@ -247,145 +258,224 @@ async fn convert_to_responses_api(response: Response, stream_request: bool) -> R
         }
     }
 
-    // Non-streaming request but upstream returned multi-frame SSE:
-    // try to collect Responses API events and reconstruct the final JSON.
-    if !stream_request {
-        let body_str = String::from_utf8_lossy(&body_bytes);
-        // Check if this contains Responses API SSE events
-        if body_str.contains("\"type\":\"response.") {
-            // Collect all data: JSON payloads from SSE frames
-            // Look for the final response.completed which has the full response
-            if let Some(responses_json) = extract_responses_from_sse(&body_str) {
-                return Json(responses_json).into_response();
+    // A non-streaming client may still receive forced SSE from an upstream.
+    // Prefer the final native Responses object when present; otherwise reuse
+    // the incremental converter over the already-collected body.
+    let body_str = String::from_utf8_lossy(&body_bytes);
+    if body_str.contains("\"type\":\"response.") {
+        if let Some(mut responses_json) = extract_responses_from_sse(&body_str) {
+            if sanitize_injected_search {
+                remove_injected_web_search_items(&mut responses_json);
             }
+            return Json(responses_json).into_response();
         }
     }
+    stream_to_responses_api(
+        Response::from_parts(parts, Body::from(body_bytes)),
+        sanitize_injected_search,
+    )
+}
 
-    // Real SSE streaming — convert frame-by-frame through the SSE converter.
-    // The body bytes are already collected; pseudo-streaming was already
-    // caught above, so this path only handles real SSE (OpenAI or Claude).
-    let raw_body = String::from_utf8_lossy(&body_bytes).to_string();
+fn stream_to_responses_api(response: Response, sanitize_injected_search: bool) -> Response {
+    let status = response.status();
+    let (parts, body) = response.into_parts();
+    let mut upstream = body.into_data_stream();
     let converted = async_stream::stream! {
-        let mut raw_buf = raw_body;
+        let mut buffer = Vec::new();
         let mut conv_state = ResponsesSseState::new();
         let mut claude_xform = AnthropicToOpenAiTransformer::new();
         let mut native_responses_stream = false;
 
-        // Process complete SSE frames from the buffer.
-        // Each frame is `data: {...}\n\n` or `event: ...\ndata: {...}\n\n`.
-        while let Some(frame_end) = raw_buf.find("\n\n") {
-            let frame = raw_buf[..frame_end].to_string();
-            raw_buf.drain(..frame_end + 2);
-
-            let frame = frame.trim();
-            if frame.is_empty() || frame.starts_with(':') {
-                continue; // heartbeat or comment
-            }
-
-            // Extract JSON from the data: line (may have event: prefix lines)
-            let json_str = if let Some(d) = frame.lines()
-                .find(|l| l.trim().starts_with("data:"))
-                .and_then(|l| l.split_once(':').map(|x| x.1).map(|s| s.trim()))
-            {
-                d
-            } else {
-                continue;
+        while let Some(next) = upstream.next().await {
+            let chunk = match next {
+                Ok(chunk) => chunk,
+                Err(_) => return,
             };
-
-            if json_str == "[DONE]" {
-                break;
-            }
-
-            // Detect Claude format: has "type":"message_start" or other anthropic types
-            let is_claude_event = json_str.contains("\"type\":\"")
-                && (json_str.contains("\"message_start\"")
-                    || json_str.contains("\"content_block_")
-                    || json_str.contains("\"message_delta\"")
-                    || json_str.contains("\"message_stop\"")
-                    || json_str.contains("\"ping\""));
-
-            // Detect Responses API SSE: events with "type":"response." prefix
-            // These are already in Responses API format and should pass through.
-            let is_responses_api_event = json_str.contains("\"type\":\"response.");
-
-            if is_responses_api_event {
-                native_responses_stream = true;
-                // Already Responses API format — pass through directly.
-                // Reconstruct the full event with event: and data: lines.
-                // The frame lines contain the source format; yield unchanged.
-                let event_bytes = format!("{frame}\n\n");
-                yield Ok::<Bytes, std::io::Error>(Bytes::from(event_bytes));
-            } else if is_claude_event {
-                // Filter out ping events (no OpenAI equivalent)
-                if json_str.contains("\"ping\"") {
-                    continue;
-                }
-                // Convert Claude SSE → OpenAI SSE lines via transformer
-                let claude_bytes = Bytes::from(format!("data: {json_str}\n\n"));
-                let openai_lines = claude_xform.transform_chunk(&claude_bytes);
-                for line in openai_lines {
-                    if let Some(data) = line.strip_prefix("data: ") {
-                        if data == "[DONE]" {
-                            break;
-                        }
-                        if let Ok(chunk_value) = serde_json::from_str::<Value>(data) {
-                            let events = openai_chunk_to_responses(&mut conv_state, &chunk_value);
-                            for event_bytes in events {
-                                yield Ok::<Bytes, std::io::Error>(Bytes::from(event_bytes));
-                            }
-                        }
-                    }
-                }
-            } else {
-                // Already OpenAI format — pass through directly
-                if let Ok(chunk_value) = serde_json::from_str::<Value>(json_str) {
-                    let events = openai_chunk_to_responses(&mut conv_state, &chunk_value);
-                    for event_bytes in events {
-                        yield Ok::<Bytes, std::io::Error>(Bytes::from(event_bytes));
-                    }
+            buffer.extend_from_slice(&chunk);
+            while let Some(frame) = take_sse_frame(&mut buffer) {
+                for output in convert_responses_sse_frame(
+                    &frame,
+                    &mut conv_state,
+                    &mut claude_xform,
+                    &mut native_responses_stream,
+                    sanitize_injected_search,
+                ) {
+                    yield Ok::<Bytes, std::io::Error>(output);
                 }
             }
         }
 
-        // ── Flush remaining state + [DONE] ───────────────────────────
+        if !buffer.is_empty() {
+            for output in convert_responses_sse_frame(
+                &buffer,
+                &mut conv_state,
+                &mut claude_xform,
+                &mut native_responses_stream,
+                sanitize_injected_search,
+            ) {
+                yield Ok::<Bytes, std::io::Error>(output);
+            }
+        }
+
         if !native_responses_stream {
-            let flush_frames = conv_state.flush_frames();
-            for event_bytes in flush_frames {
+            for event_bytes in conv_state.flush_frames() {
                 yield Ok::<Bytes, std::io::Error>(Bytes::from(event_bytes));
             }
-            yield Ok::<Bytes, std::io::Error>(Bytes::from("data: [DONE]\n\n"));
+            yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n"));
         }
     };
 
-    let body = Body::from_stream(converted);
-    let mut resp = Response::new(body);
-    *resp.status_mut() = status;
-
-    // Copy original headers except content-type (we keep it as event-stream)
+    let mut response = Response::new(Body::from_stream(converted));
+    *response.status_mut() = status;
     for (name, value) in &parts.headers {
-        if name.as_str() != "content-length"
-            && name.as_str() != "content-type"
-            && name.as_str() != "transfer-encoding"
+        if name != header::CONTENT_LENGTH
+            && name != header::CONTENT_TYPE
+            && name != header::TRANSFER_ENCODING
         {
-            resp.headers_mut().insert(name, value.clone());
+            response.headers_mut().insert(name, value.clone());
         }
     }
-    resp.headers_mut().insert(
+    response.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/event-stream"),
     );
-    resp.headers_mut()
+    response
+        .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-    resp.headers_mut().insert(
+    response.headers_mut().insert(
         header::HeaderName::from_static("x-accel-buffering"),
         HeaderValue::from_static("no"),
     );
-    resp.headers_mut().insert(
+    response.headers_mut().insert(
         header::HeaderName::from_static("connection"),
         HeaderValue::from_static("keep-alive"),
     );
+    response
+}
 
-    resp
+fn take_sse_frame(buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
+    let lf = buffer.windows(2).position(|window| window == b"\n\n");
+    let crlf = buffer.windows(4).position(|window| window == b"\r\n\r\n");
+    let (end, delimiter_len) = match (lf, crlf) {
+        (Some(lf), Some(crlf)) if lf <= crlf => (lf, 2),
+        (Some(_), Some(crlf)) => (crlf, 4),
+        (Some(lf), None) => (lf, 2),
+        (None, Some(crlf)) => (crlf, 4),
+        (None, None) => return None,
+    };
+    let frame = buffer[..end].to_vec();
+    buffer.drain(..end + delimiter_len);
+    Some(frame)
+}
+
+fn convert_responses_sse_frame(
+    frame: &[u8],
+    conv_state: &mut ResponsesSseState,
+    claude_xform: &mut AnthropicToOpenAiTransformer,
+    native_responses_stream: &mut bool,
+    sanitize_injected_search: bool,
+) -> Vec<Bytes> {
+    let frame = String::from_utf8_lossy(frame);
+    let frame = frame.trim();
+    if frame.is_empty() || frame.starts_with(':') {
+        return Vec::new();
+    }
+    let Some(json_str) = frame
+        .lines()
+        .find(|line| line.trim().starts_with("data:"))
+        .and_then(|line| line.split_once(':').map(|(_, value)| value.trim()))
+        .or_else(|| frame.starts_with('{').then_some(frame))
+    else {
+        return Vec::new();
+    };
+    if json_str == "[DONE]" {
+        return Vec::new();
+    }
+    let Ok(mut value) = serde_json::from_str::<Value>(json_str) else {
+        return Vec::new();
+    };
+    let event_type = value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+
+    if event_type.starts_with("response.") {
+        *native_responses_stream = true;
+        if sanitize_injected_search && should_drop_injected_web_search_event(&value) {
+            return Vec::new();
+        }
+        if sanitize_injected_search && event_type == "response.completed" {
+            remove_injected_web_search_items(&mut value);
+            return vec![Bytes::from(format_sse_event(&event_type, &value))];
+        }
+        return vec![Bytes::from(format!("{frame}\n\n"))];
+    }
+
+    if value.get("object").and_then(Value::as_str) == Some("chat.completion") {
+        *native_responses_stream = true;
+        let response = chat_completion_to_responses_json(&value);
+        return vec![Bytes::from(format_sse_event(
+            "response.completed",
+            &json!({"type": "response.completed", "response": response}),
+        ))];
+    }
+
+    let is_claude_event = matches!(
+        event_type.as_str(),
+        "message_start"
+            | "message_delta"
+            | "message_stop"
+            | "ping"
+            | "content_block_start"
+            | "content_block_delta"
+            | "content_block_stop"
+    );
+    if is_claude_event {
+        if event_type == "ping" {
+            return Vec::new();
+        }
+        return claude_xform
+            .transform_chunk(&Bytes::from(format!("data: {json_str}\n\n")))
+            .into_iter()
+            .filter_map(|line| line.strip_prefix("data: ").map(str::to_string))
+            .filter(|data| data != "[DONE]")
+            .filter_map(|data| serde_json::from_str::<Value>(&data).ok())
+            .flat_map(|chunk| openai_chunk_to_responses(conv_state, &chunk))
+            .map(Bytes::from)
+            .collect();
+    }
+
+    openai_chunk_to_responses(conv_state, &value)
+        .into_iter()
+        .map(Bytes::from)
+        .collect()
+}
+
+fn should_drop_injected_web_search_event(value: &Value) -> bool {
+    let event_type = value.get("type").and_then(Value::as_str).unwrap_or("");
+    event_type.starts_with("response.web_search_call.")
+        || (matches!(
+            event_type,
+            "response.output_item.added" | "response.output_item.done"
+        ) && value
+            .get("item")
+            .and_then(|item| item.get("type"))
+            .and_then(Value::as_str)
+            == Some("web_search_call"))
+}
+
+fn remove_injected_web_search_items(response: &mut Value) {
+    let output = if response.get("response").is_some() {
+        response
+            .get_mut("response")
+            .and_then(|response| response.get_mut("output"))
+    } else {
+        response.get_mut("output")
+    };
+    if let Some(output) = output.and_then(Value::as_array_mut) {
+        output.retain(|item| item.get("type").and_then(Value::as_str) != Some("web_search_call"));
+    }
 }
 
 /// Extract the final Responses API JSON from a series of Responses API SSE events.
@@ -2573,6 +2663,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn proxy_injected_web_search_is_removed_from_non_streaming_response() {
+        let native = json!({
+            "id": "resp_native",
+            "object": "response",
+            "status": "completed",
+            "output": [
+                {"id": "ws_1", "type": "web_search_call"},
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{
+                        "type": "output_text",
+                        "text": "grounded",
+                        "annotations": [{"type": "url_citation", "url": "https://example.com"}]
+                    }]
+                }
+            ],
+            "usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+        });
+        let mut upstream = Json(native).into_response();
+        upstream
+            .extensions_mut()
+            .insert(chat::CodexWebSearchInjected);
+
+        let response = convert_to_responses_api(upstream, false).await;
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let converted: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(converted["output"].as_array().unwrap().len(), 1);
+        assert_eq!(converted["output"][0]["type"], "message");
+        assert_eq!(
+            converted["output"][0]["content"][0]["annotations"][0]["url"],
+            "https://example.com"
+        );
+        assert_eq!(converted["usage"]["total_tokens"], 3);
+    }
+
+    #[tokio::test]
     async fn native_responses_sse_does_not_get_a_second_completion() {
         let completed = json!({
             "type": "response.completed",
@@ -2600,6 +2728,113 @@ mod tests {
 
         assert_eq!(output.matches("event: response.completed").count(), 1);
         assert!(!output.contains("data: [DONE]"));
+    }
+
+    #[tokio::test]
+    async fn native_responses_sse_emits_before_upstream_completion() {
+        let release = std::sync::Arc::new(tokio::sync::Notify::new());
+        let stream_release = release.clone();
+        let upstream_body = Body::from_stream(async_stream::stream! {
+            yield Ok::<Bytes, std::io::Error>(Bytes::from_static(
+                b"event: response.created\ndata: {\"type\":\"response.created\"}\n\n",
+            ));
+            stream_release.notified().await;
+            yield Ok::<Bytes, std::io::Error>(Bytes::from_static(
+                b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n",
+            ));
+        });
+        let upstream =
+            ([(header::CONTENT_TYPE, "text/event-stream")], upstream_body).into_response();
+
+        let response = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            convert_to_responses_api(upstream, true),
+        )
+        .await
+        .expect("converter must return before the upstream stream completes");
+        let mut body = response.into_body().into_data_stream();
+        let first = tokio::time::timeout(std::time::Duration::from_millis(100), body.next())
+            .await
+            .expect("first frame must stream immediately")
+            .expect("first frame")
+            .expect("valid body frame");
+        assert!(String::from_utf8_lossy(&first).contains("response.created"));
+        release.notify_one();
+        while body.next().await.is_some() {}
+    }
+
+    #[tokio::test]
+    async fn proxy_injected_web_search_is_hidden_without_losing_response_events() {
+        let fixture = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\"}\n\n",
+            "event: response.reasoning_summary_text.delta\n",
+            "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"thinking\"}\n\n",
+            "event: response.output_item.added\n",
+            "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"ws_1\",\"type\":\"web_search_call\"}}\n\n",
+            "event: response.web_search_call.searching\n",
+            "data: {\"type\":\"response.web_search_call.searching\",\"item_id\":\"ws_1\"}\n\n",
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"ws_1\",\"type\":\"web_search_call\",\"action\":{\"type\":\"search\"}}}\n\n",
+            "event: response.output_text.annotation.added\n",
+            "data: {\"type\":\"response.output_text.annotation.added\",\"annotation\":{\"type\":\"url_citation\",\"url\":\"https://example.com\"}}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"grounded\"}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"object\":\"response\",\"output\":[{\"id\":\"ws_1\",\"type\":\"web_search_call\"},{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"grounded\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}\n\n",
+        );
+        let split = fixture.len() / 3;
+        let chunks = vec![
+            Ok::<Bytes, std::io::Error>(Bytes::copy_from_slice(&fixture.as_bytes()[..split])),
+            Ok(Bytes::copy_from_slice(
+                &fixture.as_bytes()[split..split * 2],
+            )),
+            Ok(Bytes::copy_from_slice(&fixture.as_bytes()[split * 2..])),
+        ];
+        let mut upstream = (
+            [(header::CONTENT_TYPE, "text/event-stream")],
+            Body::from_stream(futures_util::stream::iter(chunks)),
+        )
+            .into_response();
+        upstream
+            .extensions_mut()
+            .insert(chat::CodexWebSearchInjected);
+
+        let response = convert_to_responses_api(upstream, true).await;
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let output = String::from_utf8(body.to_vec()).unwrap();
+
+        assert!(!output.contains("web_search_call"));
+        assert!(output.contains("response.reasoning_summary_text.delta"));
+        assert!(output.contains("response.output_text.annotation.added"));
+        assert!(output.contains("https://example.com"));
+        assert!(output.contains("grounded"));
+        assert!(output.contains("\"total_tokens\":3"));
+        assert_eq!(output.matches("event: response.completed").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn client_native_web_search_events_pass_through() {
+        let fixture = concat!(
+            "event: response.output_item.added\n",
+            "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"ws_1\",\"type\":\"web_search_call\"}}\n\n",
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"ws_1\",\"type\":\"web_search_call\",\"action\":{\"type\":\"search\"}}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"id\":\"ws_1\",\"type\":\"web_search_call\"}]}}\n\n",
+        );
+        let upstream = (
+            [(header::CONTENT_TYPE, "text/event-stream")],
+            Body::from(fixture),
+        )
+            .into_response();
+
+        let response = convert_to_responses_api(upstream, true).await;
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let output = String::from_utf8(body.to_vec()).unwrap();
+
+        assert_eq!(output.matches("web_search_call").count(), 3);
+        assert_eq!(output.matches("event: response.completed").count(), 1);
     }
 
     #[test]
