@@ -444,6 +444,11 @@ fn chat_completion_to_responses_json(source: &Value) -> Value {
                     .get("content")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
+                let tool_calls = message
+                    .get("tool_calls")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
 
                 // Build content parts array
                 let mut content_parts = Vec::new();
@@ -467,21 +472,39 @@ fn chat_completion_to_responses_json(source: &Value) -> Value {
                     }
                 }
 
-                content_parts.push(json!({
-                    "id": format!("item_{}_text", idx),
-                    "type": "output_text",
-                    "text": content,
-                    "annotations": [],
-                }));
+                if !content.is_empty() || tool_calls.is_empty() {
+                    content_parts.push(json!({
+                        "id": format!("item_{}_text", idx),
+                        "type": "output_text",
+                        "text": content,
+                        "annotations": [],
+                    }));
 
-                let item = json!({
-                    "id": format!("item_{}", idx),
-                    "type": "message",
-                    "role": role,
-                    "status": if finish_reason.is_some() { "completed" } else { "in_progress" },
-                    "content": content_parts,
-                });
-                output.push(item);
+                    output.push(json!({
+                        "id": format!("item_{}", idx),
+                        "type": "message",
+                        "role": role,
+                        "status": if finish_reason.is_some() { "completed" } else { "in_progress" },
+                        "content": content_parts,
+                    }));
+                }
+
+                for (tool_idx, tool_call) in tool_calls.iter().enumerate() {
+                    let function = tool_call.get("function").unwrap_or(tool_call);
+                    let call_id = tool_call
+                        .get("id")
+                        .or_else(|| tool_call.get("call_id"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    output.push(json!({
+                        "id": format!("fc_{}_{}", idx, tool_idx),
+                        "type": "function_call",
+                        "status": "completed",
+                        "call_id": call_id,
+                        "name": function.get("name").and_then(Value::as_str).unwrap_or(""),
+                        "arguments": function.get("arguments").and_then(Value::as_str).unwrap_or("{}"),
+                    }));
+                }
             }
         }
     }
@@ -2517,6 +2540,34 @@ mod tests {
         assert_eq!(resp["output"][0]["content"][0]["type"], "output_text");
         assert_eq!(resp["output"][0]["content"][0]["text"], "Hello there!");
         assert_eq!(resp["usage"]["total_tokens"], 8);
+    }
+
+    #[test]
+    fn chat_completion_to_responses_json_preserves_tool_calls() {
+        let chat = json!({
+            "id": "chatcmpl-tool",
+            "model": "gpt-5.6-luna",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "test_tool", "arguments": "{}"}
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        });
+
+        let resp = chat_completion_to_responses_json(&chat);
+
+        assert_eq!(resp["output"].as_array().unwrap().len(), 1);
+        assert_eq!(resp["output"][0]["type"], "function_call");
+        assert_eq!(resp["output"][0]["call_id"], "call_1");
+        assert_eq!(resp["output"][0]["name"], "test_tool");
+        assert_eq!(resp["output"][0]["arguments"], "{}");
     }
 
     #[test]
