@@ -7,7 +7,9 @@ use serde_json::Value;
 use tokio::fs;
 use tokio::sync::RwLock;
 
-use crate::types::{AppDb, Combo, ModelAliasTarget, ProviderConnection, ProviderNode, UsageDb};
+use crate::types::{
+    AppDb, Combo, ModelAliasTarget, ProviderConnection, ProviderNode, Settings, UsageDb,
+};
 
 pub mod backups;
 pub mod crypto;
@@ -41,6 +43,17 @@ fn decrypt_snapshot_connections(app_db: &mut AppDb) {
     for conn in &mut app_db.provider_connections {
         crate::db::crypto::decrypt_connection(conn, &key);
     }
+}
+
+/// Serialize settings for the private SQLite row. `Settings::password` stays
+/// excluded from normal serialization so API/export payloads cannot expose the
+/// bcrypt hash, but the database must retain it across process restarts.
+pub(crate) fn serialize_settings_for_storage(settings: &Settings) -> serde_json::Result<String> {
+    let mut value = serde_json::to_value(settings)?;
+    if let (Some(fields), Some(password)) = (value.as_object_mut(), settings.password.as_ref()) {
+        fields.insert("password".into(), Value::String(password.clone()));
+    }
+    serde_json::to_string(&value)
 }
 
 impl Db {
@@ -314,7 +327,7 @@ impl Db {
         updater(&mut next.settings);
         next.normalize();
         // Persist only the settings row to SQLite.
-        let settings_str = serde_json::to_string(&next.settings)?;
+        let settings_str = serialize_settings_for_storage(&next.settings)?;
         let sq = self.sqlite.clone();
         tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
             sq.with_conn(|conn| {
@@ -545,5 +558,42 @@ mod tests {
             })
             .unwrap();
         assert!(usage_db.history.is_empty());
+    }
+
+    #[tokio::test]
+    async fn password_hash_survives_restart_and_unrelated_settings_updates() {
+        let dir = tempfile::tempdir().unwrap();
+        let hash = bcrypt::hash("correct horse battery staple", 4).unwrap();
+
+        let db = Db::load_from(dir.path()).await.unwrap();
+        db.update(|state| state.settings.password = Some(hash.clone()))
+            .await
+            .unwrap();
+        assert!(serde_json::to_value(&db.snapshot().settings)
+            .unwrap()
+            .get("password")
+            .is_none());
+        drop(db);
+
+        let db = Db::load_from(dir.path()).await.unwrap();
+        let stored = db.snapshot().settings.password.clone().unwrap();
+        assert!(bcrypt::verify("correct horse battery staple", &stored).unwrap());
+        db.update_settings(|settings| settings.rtk_enabled = !settings.rtk_enabled)
+            .await
+            .unwrap();
+        drop(db);
+
+        let db = Db::load_from(dir.path()).await.unwrap();
+        assert_eq!(
+            db.snapshot().settings.password.as_deref(),
+            Some(hash.as_str())
+        );
+        db.update(|state| state.settings.password = None)
+            .await
+            .unwrap();
+        drop(db);
+
+        let db = Db::load_from(dir.path()).await.unwrap();
+        assert!(db.snapshot().settings.password.is_none());
     }
 }

@@ -144,7 +144,8 @@ pub fn apply_app_db_diff(conn: &Connection, old: &AppDb, new: &AppDb) -> rusqlit
 
 /// Write a single-row `settings` upsert. Same SQL as `Db::update_settings`.
 fn settings_upsert(conn: &Connection, settings: &Settings) -> rusqlite::Result<()> {
-    let settings_str = serde_json::to_string(settings).unwrap_or_else(|_| "{}".into());
+    let settings_str =
+        crate::db::serialize_settings_for_storage(settings).unwrap_or_else(|_| "{}".into());
     conn.execute(
         "INSERT INTO settings(id, data) VALUES(1, ?1) ON CONFLICT(id) DO UPDATE SET data = excluded.data",
         params![settings_str],

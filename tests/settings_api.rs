@@ -30,10 +30,7 @@ async fn app_state() -> AppState {
     let db = Arc::new(Db::load_from(temp.path()).await.expect("db"));
     db.update(|state| {
         state.api_keys = vec![active_key()];
-        state
-            .settings
-            .extra
-            .insert("password".into(), Value::String("hashed-secret".into()));
+        state.settings.password = Some("hashed-secret".into());
         state
             .settings
             .extra
