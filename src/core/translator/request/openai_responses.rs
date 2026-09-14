@@ -566,6 +566,16 @@ pub fn openai_responses_to_chat_request(
             .collect();
         result["tools"] = Value::Array(converted);
     }
+    if let Some(choice) = body.get("tool_choice") {
+        if choice.get("type").and_then(Value::as_str) == Some("function") {
+            if let Some(name) = choice.get("name").and_then(Value::as_str) {
+                result["tool_choice"] = serde_json::json!({
+                    "type": "function",
+                    "function": {"name": name}
+                });
+            }
+        }
+    }
     if !custom_tool_names.is_empty() {
         result["_customToolNames"] =
             Value::Array(custom_tool_names.into_iter().map(Value::String).collect());
@@ -862,6 +872,25 @@ mod tests {
         openai_responses_to_chat_request("gpt-4", &mut body, false, None);
         assert_eq!(body.get("max_tokens").unwrap().as_i64().unwrap(), 4096);
         assert!(body.get("max_output_tokens").is_none());
+    }
+
+    #[test]
+    fn test_responses_to_chat_maps_named_tool_choice() {
+        let mut body: Value = serde_json::json!({
+            "input": "Call the tool",
+            "model": "deepseek-v4.1-flash",
+            "tools": [{
+                "type": "function",
+                "name": "acceptance_tool",
+                "parameters": {"type": "object", "properties": {}}
+            }],
+            "tool_choice": {"type": "function", "name": "acceptance_tool"}
+        });
+
+        openai_responses_to_chat_request("deepseek-v4.1-flash", &mut body, false, None);
+
+        assert_eq!(body["tool_choice"]["type"], "function");
+        assert_eq!(body["tool_choice"]["function"]["name"], "acceptance_tool");
     }
 
     #[test]
