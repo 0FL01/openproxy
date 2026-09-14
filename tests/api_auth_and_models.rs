@@ -161,6 +161,66 @@ async fn app_state() -> AppState {
 }
 
 #[tokio::test]
+async fn password_login_creates_dashboard_session() {
+    let state = app_state().await;
+    let password_hash = bcrypt::hash("correct-password", 4).expect("password hash");
+    state
+        .db
+        .update(|db| db.settings.password = Some(password_hash))
+        .await
+        .expect("store password");
+    let app = openproxy::build_app(state);
+
+    let login = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"password": "correct-password"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(login.status(), StatusCode::OK);
+    let cookie = login
+        .headers()
+        .get("set-cookie")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .expect("auth cookie")
+        .to_string();
+
+    let status = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/auth/status")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(status.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(status.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        body,
+        json!({
+            "authenticated": true,
+            "requireLogin": true,
+            "hasPassword": true
+        })
+    );
+}
+
+#[tokio::test]
 async fn valid_bearer_key_allows_models_request() {
     let app = openproxy::build_app(app_state().await);
     let response = app

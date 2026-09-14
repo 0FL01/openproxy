@@ -614,8 +614,6 @@ pub struct Settings {
     pub system_prompt: SystemPromptConfig,
     #[serde(default, skip_serializing)]
     pub password: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub oidc_enabled: bool,
     /// Account-level round-robin: "fill-first" or "round-robin".
     #[serde(
         default = "default_fallback_strategy",
@@ -628,30 +626,6 @@ pub struct Settings {
         deserialize_with = "deserialize_null_default"
     )]
     pub combo_sticky_round_robin_limit: u32,
-    /// Auth mode for dashboard login: "password", "oidc", or "both".
-    #[serde(
-        default = "default_auth_mode",
-        deserialize_with = "deserialize_null_default"
-    )]
-    pub auth_mode: String,
-    #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub oidc_issuer_url: String,
-    #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub oidc_client_id: String,
-    /// Write-only at the API layer (stripped in `safe_settings_payload`).
-    /// Stored in the DB so settings-driven OIDC survives restarts.
-    #[serde(default)]
-    pub oidc_client_secret: String,
-    #[serde(
-        default = "default_oidc_scopes",
-        deserialize_with = "deserialize_null_default"
-    )]
-    pub oidc_scopes: String,
-    #[serde(
-        default = "default_oidc_login_label",
-        deserialize_with = "deserialize_null_default"
-    )]
-    pub oidc_login_label: String,
     #[serde(default, deserialize_with = "deserialize_null_default")]
     pub client_ping_url: String,
     #[serde(default, deserialize_with = "deserialize_null_default")]
@@ -711,15 +685,8 @@ impl Default for Settings {
             payload_rules: PayloadRulesConfig::default(),
             system_prompt: SystemPromptConfig::default(),
             password: None,
-            oidc_enabled: false,
             fallback_strategy: default_fallback_strategy(),
             combo_sticky_round_robin_limit: default_combo_sticky_round_robin_limit(),
-            auth_mode: default_auth_mode(),
-            oidc_issuer_url: String::new(),
-            oidc_client_id: String::new(),
-            oidc_client_secret: String::new(),
-            oidc_scopes: default_oidc_scopes(),
-            oidc_login_label: default_oidc_login_label(),
             client_ping_url: String::new(),
             client_ping_any: false,
             capacity_adapter: json!({}),
@@ -738,27 +705,10 @@ impl Settings {
         if self.combo_sticky_round_robin_limit == 0 {
             self.combo_sticky_round_robin_limit = default_combo_sticky_round_robin_limit();
         }
-        self.auth_mode = normalize_auth_mode(&self.auth_mode);
-        // Keep oidc_enabled in sync with auth_mode for any legacy readers.
-        self.oidc_enabled = matches!(self.auth_mode.as_str(), "oidc" | "both");
-        if self.oidc_scopes.trim().is_empty() {
-            self.oidc_scopes = default_oidc_scopes();
-        }
-        if self.oidc_login_label.trim().is_empty() {
-            self.oidc_login_label = default_oidc_login_label();
-        }
-
         self.caveman_level = normalize_caveman_level_value(&self.caveman_level);
         self.ponytail_level = normalize_ponytail_level_value(&self.ponytail_level);
         self.payload_rules.normalize();
         self.system_prompt.normalize();
-    }
-
-    /// True when issuer + client id + client secret are all non-empty.
-    pub fn is_oidc_configured(&self) -> bool {
-        !self.oidc_issuer_url.trim().is_empty()
-            && !self.oidc_client_id.trim().is_empty()
-            && !self.oidc_client_secret.trim().is_empty()
     }
 }
 
@@ -989,30 +939,10 @@ fn default_combo_sticky_round_robin_limit() -> u32 {
     1
 }
 
-fn default_auth_mode() -> String {
-    "password".into()
-}
-
-fn default_oidc_scopes() -> String {
-    "openid profile email".into()
-}
-
-fn default_oidc_login_label() -> String {
-    "Sign in with OIDC".into()
-}
-
 fn normalize_fallback_strategy(value: &str) -> String {
     match value.trim().to_ascii_lowercase().as_str() {
         "round-robin" | "roundrobin" | "round_robin" => "round-robin".into(),
         _ => "fill-first".into(),
-    }
-}
-
-fn normalize_auth_mode(value: &str) -> String {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "oidc" => "oidc".into(),
-        "both" => "both".into(),
-        _ => "password".into(),
     }
 }
 

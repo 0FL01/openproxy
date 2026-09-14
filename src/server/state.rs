@@ -17,7 +17,6 @@ use crate::db::Db;
 use crate::oauth::pending::PendingFlowStore;
 use crate::server::api::oauth::{CodexProxyState, XaiProxyState, ZedProxyState};
 use crate::server::auth::login_limiter::LoginLimiter;
-use crate::server::auth::oidc::OidcClient;
 use crate::server::console_logs::{shared_console_log_buffer, ConsoleLogBuffer};
 use crate::server::usage_live::UsageLiveState;
 
@@ -48,15 +47,6 @@ pub struct AppState {
     /// attempts per client IP and escalates lockout duration on repeat
     /// offenders (see `login_limiter.rs` for the exact schedule).
     pub login_limiter: Arc<LoginLimiter>,
-
-    /// OIDC SSO client. Populated from env vars at boot and/or from
-    /// dashboard settings at runtime (via `reload_oidc_from_settings`).
-    /// `None` when neither source is fully configured — the
-    /// `/api/auth/oidc/*` routes return 400 in that case.
-    ///
-    /// Wrapped in `RwLock` so settings-driven reconfiguration can replace
-    /// the client without rebuilding `AppState`.
-    pub oidc_client: Arc<RwLock<Option<Arc<OidcClient>>>>,
 
     /// Optional reverse-proxy target for the dashboard.
     ///
@@ -127,7 +117,6 @@ impl AppState {
             xai_proxy: Arc::new(XaiProxyState::new()),
             zed_proxy: Arc::new(ZedProxyState::new()),
             login_limiter: Arc::new(LoginLimiter::new(&db.data_dir)),
-            oidc_client: Arc::new(RwLock::new(None)),
             dashboard_sidecar_url: None,
             dashboard_client: None,
             web_dir: None,
@@ -161,88 +150,6 @@ impl AppState {
     /// assets. Sidecar mode (if set) still wins.
     pub fn with_web_dir(mut self, path: Option<PathBuf>) -> Self {
         self.web_dir = path;
-        self
-    }
-
-    /// Initialize the OIDC SSO client.
-    ///
-    /// Preference order:
-    /// 1. Dashboard settings (`authMode` is `oidc`/`both` + issuer/client/secret)
-    /// 2. `OIDC_ISSUER` / `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` env vars
-    ///
-    /// Runs `OidcClient::discover` (HTTP round-trip to the IdP's
-    /// `/.well-known/openid-configuration`) — that's why this is async
-    /// and a separate call from `AppState::new`.
-    ///
-    /// Missing config, network errors, and malformed discovery documents
-    /// all leave `oidc_client = None` and log a warning. The OIDC routes
-    /// will then return 400.
-    pub async fn init_oidc_from_env(self) -> Self {
-        self.reload_oidc_from_settings().await;
-        self
-    }
-
-    /// Rebuild the in-memory OIDC client from the current settings
-    /// (falling back to env vars when settings are incomplete). Called
-    /// at boot and after a successful OIDC settings PATCH.
-    pub async fn reload_oidc_from_settings(&self) {
-        let snapshot = self.db.snapshot();
-        let settings = &snapshot.settings;
-
-        let (issuer, client_id, client_secret, scopes) = if settings.is_oidc_configured()
-            && matches!(settings.auth_mode.as_str(), "oidc" | "both")
-        {
-            (
-                settings.oidc_issuer_url.clone(),
-                settings.oidc_client_id.clone(),
-                settings.oidc_client_secret.clone(),
-                settings.oidc_scopes.clone(),
-            )
-        } else {
-            let issuer = std::env::var("OIDC_ISSUER").unwrap_or_default();
-            let client_id = std::env::var("OIDC_CLIENT_ID").unwrap_or_default();
-            let client_secret = std::env::var("OIDC_CLIENT_SECRET").unwrap_or_default();
-            let scopes =
-                std::env::var("OIDC_SCOPES").unwrap_or_else(|_| "openid profile email".to_string());
-            (issuer, client_id, client_secret, scopes)
-        };
-
-        let redirect_uri = std::env::var("OIDC_REDIRECT_URI")
-            .unwrap_or_else(|_| "http://127.0.0.1:4623/api/auth/oidc/callback".to_string());
-
-        let next = if !issuer.is_empty() && !client_id.is_empty() && !client_secret.is_empty() {
-            match OidcClient::discover(&issuer, &client_id, &client_secret, &redirect_uri).await {
-                Ok(mut client) => {
-                    let parsed_scopes: Vec<String> = scopes
-                        .split_whitespace()
-                        .filter(|s| !s.is_empty())
-                        .map(|s| s.to_string())
-                        .collect();
-                    if !parsed_scopes.is_empty() {
-                        client.scopes = parsed_scopes;
-                    }
-                    tracing::info!(issuer = %client.issuer, "OIDC SSO client initialized");
-                    Some(Arc::new(client))
-                }
-                Err(error) => {
-                    tracing::error!(?error, "failed to initialize OIDC SSO client");
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        *self.oidc_client.write().await = next;
-    }
-
-    /// Inject a pre-built [`OidcClient`]. Used by tests and by callers
-    /// that want to bypass the env-var contract.
-    pub fn with_oidc_client(self, client: Option<Arc<OidcClient>>) -> Self {
-        // Synchronous inject for tests: the lock is uncontended at construction.
-        if let Ok(mut guard) = self.oidc_client.try_write() {
-            *guard = client;
-        }
         self
     }
 

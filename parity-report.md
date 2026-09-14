@@ -64,7 +64,7 @@
 - **Translator (13 specs):** drop temperature for Claude, `preserveCacheControl` hardcoded false, Kiro `is_error`/`max_thinking_length`/`inferenceConfig`, `client_metadata` strip, `reasoning_effort→reasoning`, `reasoning_details` array, Antigravity envelope
 - **Features v0.5.35-50 (13 specs):** capacity adapter, codex-tui/desktop detection, `X-9Router-Token-Saver`, GitHub monthly reset, IntelliJ h2c, forceStream cached tokens, headroom byte-report, adaptive thinking, Grok Build subagent, xai video CLI, Default Key, Exa MCP, Ollama quota
 - **Combo/MITM/RTK (12 specs):** MITM handlers/DNS/CA, git-log filter, caveman directives, system injector shapes, headroom formats, find backslash, capacity pools, combo heuristics
-- **Web (3 specs):** PXPIPE, Donate, OIDC chip (+ 20 detailed findings)
+- **Web (2 specs):** PXPIPE, Donate (+ 20 detailed findings)
 
 ---
 

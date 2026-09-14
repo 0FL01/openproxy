@@ -689,8 +689,7 @@ pub(crate) fn safe_settings_payload_with_db_path(
     let mut value = serde_json::to_value(settings).unwrap_or_else(|_| json!({}));
     if let Some(fields) = value.as_object_mut() {
         fields.remove("password");
-        // Never leak the OIDC client secret (also skip_serializing, belt+suspenders).
-        fields.remove("oidcClientSecret");
+        fields.retain(|key, _| !key.to_ascii_lowercase().contains("secret"));
         fields.insert(
             "enableRequestLogs".to_string(),
             Value::Bool(std::env::var("ENABLE_REQUEST_LOGS").ok().as_deref() == Some("true")),
@@ -706,70 +705,6 @@ pub(crate) fn safe_settings_payload_with_db_path(
                 .and_then(|value| value.as_str())
                 .is_some_and(|value| !value.is_empty());
         fields.insert("hasPassword".to_string(), Value::Bool(has_password));
-
-        // Settings-driven OIDC first; fall back to env vars for boot-time config.
-        let oidc_configured = settings.is_oidc_configured()
-            || (std::env::var("OIDC_ISSUER")
-                .ok()
-                .is_some_and(|v| !v.is_empty())
-                && std::env::var("OIDC_CLIENT_ID")
-                    .ok()
-                    .is_some_and(|v| !v.is_empty())
-                && std::env::var("OIDC_CLIENT_SECRET")
-                    .ok()
-                    .is_some_and(|v| !v.is_empty()));
-        fields.insert("oidcConfigured".to_string(), Value::Bool(oidc_configured));
-
-        // Prefer the first-class auth_mode field; fall back to legacy extra.authMode /
-        // oidc_enabled for older DB payloads.
-        let auth_mode = {
-            let mode = settings.auth_mode.trim();
-            if matches!(mode, "password" | "oidc" | "both") {
-                mode.to_string()
-            } else {
-                settings
-                    .extra
-                    .get("authMode")
-                    .and_then(|value| value.as_str())
-                    .map(str::trim)
-                    .filter(|value| matches!(*value, "password" | "oidc" | "both"))
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|| {
-                        if settings.oidc_enabled {
-                            "both".to_string()
-                        } else {
-                            "password".to_string()
-                        }
-                    })
-            }
-        };
-        fields.insert("authMode".to_string(), Value::String(auth_mode));
-
-        let oidc_login_label = {
-            let label = settings.oidc_login_label.trim();
-            if !label.is_empty() {
-                label.to_string()
-            } else {
-                settings
-                    .extra
-                    .get("oidcLoginLabel")
-                    .and_then(|value| value.as_str())
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(|value| value.to_string())
-                    .or_else(|| {
-                        std::env::var("OIDC_LOGIN_LABEL")
-                            .ok()
-                            .map(|value| value.trim().to_string())
-                            .filter(|value| !value.is_empty())
-                    })
-                    .unwrap_or_else(|| "Sign in with OIDC".to_string())
-            }
-        };
-        fields.insert(
-            "oidcLoginLabel".to_string(),
-            Value::String(oidc_login_label),
-        );
 
         if let Some(path) = db_path {
             fields.insert("databasePath".to_string(), Value::String(path.to_string()));
@@ -2144,15 +2079,8 @@ struct UpdateSettingsRequest {
     outbound_no_proxy: Option<String>,
     new_password: Option<String>,
     current_password: Option<String>,
-    oidc_enabled: Option<bool>,
     fallback_strategy: Option<String>,
     combo_sticky_round_robin_limit: Option<u32>,
-    auth_mode: Option<String>,
-    oidc_issuer_url: Option<String>,
-    oidc_client_id: Option<String>,
-    oidc_client_secret: Option<String>,
-    oidc_scopes: Option<String>,
-    oidc_login_label: Option<String>,
     client_ping_url: Option<String>,
     client_ping_any: Option<bool>,
     headroom_enabled: Option<bool>,
@@ -2193,55 +2121,6 @@ async fn update_settings_api(
         )
             .into_response();
     }
-
-    // Validate OIDC enablement before writing: non-password auth modes need a
-    // fully configured IdP (issuer + client id + secret, either already stored
-    // or supplied in this request).
-    {
-        let snapshot = state.db.snapshot();
-        let next_mode = req
-            .auth_mode
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or(snapshot.settings.auth_mode.as_str());
-        if matches!(next_mode, "oidc" | "both") {
-            let issuer = req
-                .oidc_issuer_url
-                .as_deref()
-                .unwrap_or(snapshot.settings.oidc_issuer_url.as_str())
-                .trim();
-            let client_id = req
-                .oidc_client_id
-                .as_deref()
-                .unwrap_or(snapshot.settings.oidc_client_id.as_str())
-                .trim();
-            let secret = req
-                .oidc_client_secret
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .unwrap_or(snapshot.settings.oidc_client_secret.as_str());
-            if issuer.is_empty() || client_id.is_empty() || secret.is_empty() {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({
-                        "error": "Issuer URL, client ID, and client secret are required to enable OIDC."
-                    })),
-                )
-                    .into_response();
-            }
-        }
-    }
-
-    let oidc_touched = req.auth_mode.is_some()
-        || req.oidc_issuer_url.is_some()
-        || req.oidc_client_id.is_some()
-        || req.oidc_client_secret.is_some()
-        || req.oidc_scopes.is_some()
-        || req.oidc_enabled.is_some();
-    // Capture before move so the oidc_enabled legacy path can still decide.
-    let auth_mode_was_set = req.auth_mode.is_some();
 
     let result = state
         .db
@@ -2315,35 +2194,6 @@ async fn update_settings_api(
             if let Some(v) = req.combo_sticky_round_robin_limit {
                 db.settings.combo_sticky_round_robin_limit = v.max(1);
             }
-            if let Some(v) = req.auth_mode {
-                db.settings.auth_mode = v;
-            }
-            if let Some(v) = req.oidc_issuer_url {
-                db.settings.oidc_issuer_url = v;
-            }
-            if let Some(v) = req.oidc_client_id {
-                db.settings.oidc_client_id = v;
-            }
-            // Write-only: empty/blank secret means "keep existing".
-            if let Some(v) = req.oidc_client_secret {
-                let trimmed = v.trim().to_string();
-                if !trimmed.is_empty() {
-                    db.settings.oidc_client_secret = trimmed;
-                }
-            }
-            if let Some(v) = req.oidc_scopes {
-                db.settings.oidc_scopes = v;
-            }
-            if let Some(v) = req.oidc_login_label {
-                db.settings.oidc_login_label = v;
-            }
-            if let Some(v) = req.oidc_enabled {
-                // Legacy flag — map onto auth_mode when auth_mode itself was not set.
-                db.settings.oidc_enabled = v;
-                if !auth_mode_was_set {
-                    db.settings.auth_mode = if v { "both".into() } else { "password".into() };
-                }
-            }
             if let Some(v) = req.client_ping_url {
                 db.settings.client_ping_url = v;
             }
@@ -2400,10 +2250,6 @@ async fn update_settings_api(
 
     match result {
         Ok(snapshot) => {
-            if oidc_touched {
-                // Best-effort reload; discovery failure leaves the previous client.
-                state.reload_oidc_from_settings().await;
-            }
             let db_path = state.db.data_dir.join("openproxy.sqlite");
             let db_path_str = db_path.display().to_string();
             Json(safe_settings_payload_with_db_path(
@@ -2597,29 +2443,6 @@ fn merge_settings(target: &mut crate::types::Settings, source: &crate::types::Se
     }
     if source.combo_sticky_round_robin_limit != target.combo_sticky_round_robin_limit {
         target.combo_sticky_round_robin_limit = source.combo_sticky_round_robin_limit;
-    }
-    if source.auth_mode != target.auth_mode {
-        target.auth_mode = source.auth_mode.clone();
-    }
-    if source.oidc_issuer_url != target.oidc_issuer_url {
-        target.oidc_issuer_url = source.oidc_issuer_url.clone();
-    }
-    if source.oidc_client_id != target.oidc_client_id {
-        target.oidc_client_id = source.oidc_client_id.clone();
-    }
-    if !source.oidc_client_secret.is_empty()
-        && source.oidc_client_secret != target.oidc_client_secret
-    {
-        target.oidc_client_secret = source.oidc_client_secret.clone();
-    }
-    if source.oidc_scopes != target.oidc_scopes {
-        target.oidc_scopes = source.oidc_scopes.clone();
-    }
-    if source.oidc_login_label != target.oidc_login_label {
-        target.oidc_login_label = source.oidc_login_label.clone();
-    }
-    if source.oidc_enabled != target.oidc_enabled {
-        target.oidc_enabled = source.oidc_enabled;
     }
     if source.client_ping_url != target.client_ping_url {
         target.client_ping_url = source.client_ping_url.clone();

@@ -34,6 +34,10 @@ async fn app_state() -> AppState {
             .settings
             .extra
             .insert("password".into(), Value::String("hashed-secret".into()));
+        state
+            .settings
+            .extra
+            .insert("clientSecret".into(), Value::String("hidden-secret".into()));
         state.settings.require_login = true;
     })
     .await
@@ -78,6 +82,7 @@ async fn get_settings_requires_auth_and_redacts_password() {
     assert_eq!(json["enableRequestLogs"], false);
     assert_eq!(json["enableTranslator"], false);
     assert!(json.get("password").is_none());
+    assert!(json.get("clientSecret").is_none());
 }
 
 #[tokio::test]

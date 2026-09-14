@@ -398,8 +398,6 @@ async fn main() -> anyhow::Result<()> {
     let banner_uses_generated_password = openproxy::core::auth::dashboard_password_is_ephemeral()
         && !openproxy::core::auth::has_stored_password_hash(&db.snapshot().settings);
     let state = AppState::new(db)
-        .init_oidc_from_env()
-        .await
         .with_dashboard_sidecar_url(cli.dashboard_sidecar_url.clone())
         .with_web_dir(cli.web_dir.clone());
     // Periodic cleanup of stale HTTP client connections.

@@ -1,24 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Button, Card, Input } from "@/shared/components";
-
-const DEFAULT_OIDC_LABEL = "Sign in with OIDC";
-
-type AuthMode = "password" | "oidc" | "both";
 
 interface AuthStatus {
   requireLogin?: boolean;
   hasPassword?: boolean;
-  authMode?: string;
-  oidcConfigured?: boolean;
-  oidcLoginLabel?: string;
   authenticated?: boolean;
-}
-
-function normalizeAuthMode(value: unknown): AuthMode {
-  if (value === "oidc" || value === "both" || value === "password") return value;
-  return "password";
 }
 
 function extractRetryAfter(data: Record<string, unknown>, res: Response): number {
@@ -48,9 +36,6 @@ export default function LoginPageClient() {
   const [loading, setLoading] = useState(false);
   const [statusLoading, setStatusLoading] = useState(true);
   const [hasPassword, setHasPassword] = useState<boolean | null>(null);
-  const [authMode, setAuthMode] = useState<AuthMode>("password");
-  const [oidcConfigured, setOidcConfigured] = useState(false);
-  const [oidcLoginLabel, setOidcLoginLabel] = useState(DEFAULT_OIDC_LABEL);
   const [mustChange, setMustChange] = useState(false);
 
   // Countdown for rate-limit lockouts.
@@ -62,7 +47,7 @@ export default function LoginPageClient() {
     return () => window.clearInterval(id);
   }, [retryAfter]);
 
-  // Bootstrap auth mode / redirect if login is not required.
+  // Redirect if login is not required or a session already exists.
   useEffect(() => {
     let cancelled = false;
     const controller = new AbortController();
@@ -87,11 +72,6 @@ export default function LoginPageClient() {
         }
 
         setHasPassword(!!data.hasPassword);
-        setAuthMode(normalizeAuthMode(data.authMode));
-        setOidcConfigured(data.oidcConfigured === true);
-        setOidcLoginLabel(
-          (data.oidcLoginLabel && data.oidcLoginLabel.trim()) || DEFAULT_OIDC_LABEL,
-        );
       } catch {
         if (!cancelled) setHasPassword(true);
       } finally {
@@ -107,32 +87,9 @@ export default function LoginPageClient() {
     };
   }, []);
 
-  // Surface OIDC callback errors from the query string.
-  useEffect(() => {
-    try {
-      const params = new URLSearchParams(window.location.search);
-      const oidcError = params.get("error");
-      if (oidcError) {
-        setError(`OIDC sign-in failed: ${oidcError}`);
-      }
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
-  const oidcAvailable = oidcConfigured && (authMode === "oidc" || authMode === "both");
-  const passwordAvailable = authMode !== "oidc" || !oidcConfigured;
-
-  const subtitle = useMemo(() => {
-    if (mustChange) return "Choose a new password before continuing";
-    if (authMode === "oidc" && oidcConfigured) {
-      return "Sign in with your OIDC provider to access the dashboard";
-    }
-    if (authMode === "both" && oidcConfigured) {
-      return "Sign in with password or OIDC";
-    }
-    return "Enter your password to access the dashboard";
-  }, [authMode, mustChange, oidcConfigured]);
+  const subtitle = mustChange
+    ? "Choose a new password before continuing"
+    : "Enter your password to access the dashboard";
 
   const handleLogin = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -251,10 +208,6 @@ export default function LoginPageClient() {
     }
   };
 
-  const handleOidcLogin = () => {
-    window.location.href = "/api/auth/oidc/login";
-  };
-
   if (statusLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-canvas px-4 py-12 relative overflow-hidden">
@@ -337,35 +290,7 @@ export default function LoginPageClient() {
             </form>
           ) : (
             <div className="flex flex-col gap-5">
-              {oidcAvailable && (
-                <Button type="button" variant="primary" fullWidth onClick={handleOidcLogin}>
-                  {oidcLoginLabel}
-                </Button>
-              )}
-
-              {oidcAvailable && passwordAvailable && (
-                <div className="flex items-center gap-3">
-                  <div className="h-px flex-1 bg-hairline" />
-                  <span className="text-[12px] text-muted">or</span>
-                  <div className="h-px flex-1 bg-hairline" />
-                </div>
-              )}
-
-              {passwordAvailable ? (
                 <form onSubmit={handleLogin} className="flex flex-col gap-5">
-                  {authMode !== "password" && !oidcConfigured && (
-                    <p className="text-[12px] text-center text-amber-700 dark:text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-mini-md px-3 py-2">
-                      OIDC login is enabled, but the issuer/client fields are not configured
-                      yet. Password login is still available for recovery.
-                    </p>
-                  )}
-
-                  {authMode === "both" && oidcConfigured && (
-                    <p className="text-[12px] text-center text-muted">
-                      Password and OIDC login are both enabled.
-                    </p>
-                  )}
-
                   <Input
                     type="password"
                     label="Password"
@@ -373,7 +298,7 @@ export default function LoginPageClient() {
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     required
-                    autoFocus={!oidcAvailable}
+                    autoFocus
                     autoComplete="current-password"
                     disabled={retryAfter > 0}
                   />
@@ -418,13 +343,6 @@ export default function LoginPageClient() {
                     </p>
                   )}
                 </form>
-              ) : (
-                error && (
-                  <p className="text-sm text-[color:var(--color-danger)] bg-[color:var(--color-danger)]/10 border border-[color:var(--color-danger)]/20 rounded-mini-md px-3 py-2">
-                    {error}
-                  </p>
-                )
-              )}
             </div>
           )}
         </Card>

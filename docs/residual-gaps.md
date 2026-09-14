@@ -60,7 +60,6 @@ Adversarially re-verified on current tree — outdated doc claims that already l
 | `headroom-extras-via-process-not-compress` | `code_aware`/`kompress` affect managed process args only (same as 9r) | `src/server/api/headroom.rs` extras; 9r `lib/headroom/process.js` |
 | `initializeApp-rust-owned-supervision` | Client resume + quota tick only; process watchdog in Rust | `web/src/shared/services/initializeApp.ts` design comment |
 | `op-only-payload-rules-db-backups` | OP product surface beyond 9r | `PayloadRulesPageClient`, `DbBackupsPageClient` |
-| `oidc-start-path-rename` | 9r `/api/auth/oidc/start` → OP `/api/auth/oidc/login` (same PKCE); UI retargeted | `src/server/api/auth.rs`, `LoginPageClient.tsx` |
 | `shutdown-path-hardening` | 9r unauth `/api/version/shutdown` → OP `/api/shutdown` + `SHUTDOWN_SECRET` + non-prod guard | `shutdown.rs`, Profile/Sidebar |
 
 Also intentional contract differences (not drop-in 9r API clones): password rotate vs reset-to-default; OAuth explicit routes vs catch-all; LLM under `/v1/*` not `/api/v1/*`. `basic-chat-orphan-route`: Intentional orphan (same as 9r). Page kept at `/dashboard/basic-chat` for direct URL / layout special-case; **not** linked in sidebar nav. Do not add to nav.
@@ -85,7 +84,7 @@ Logic / chat / executors:
 
 Web (previously listed P0/P1 in `web-gaps-9router.md`, verified present):
 
-profile-password-post-auth, provider-custom-models-api, provider-thinking-picker-ui (coarse), oauth-xai-proxy-manual-code, kiro-api-key-cliproxy, kiro-dual-auth-list, combos-fusion-judge-ui, cli-amp-qwen, capacity-badges-use-model-caps, cowork-mcp-marketplace, headroom-extras-codeaware-kompress, oidc-profile-card, oidc-login-must-change-password, account-fallback-strategy-rr, combo-sticky-round-robin-limit, initializeApp-dashboard-layout, quota-auto-ping-ui-hooks-and-tick-foundation, providers-hidden-filter-and-add-deeplink, provider-one-by-one-test, qoder-fetch-models, antigravity-risk-confirm-modal, endpoint-tunnel-miss-threshold, i18n-fa-locale-present, providers-new-full-form.
+profile-password-post-auth, provider-custom-models-api, provider-thinking-picker-ui (coarse), oauth-xai-proxy-manual-code, kiro-api-key-cliproxy, kiro-dual-auth-list, combos-fusion-judge-ui, cli-amp-qwen, capacity-badges-use-model-caps, cowork-mcp-marketplace, headroom-extras-codeaware-kompress, account-fallback-strategy-rr, combo-sticky-round-robin-limit, initializeApp-dashboard-layout, quota-auto-ping-ui-hooks-and-tick-foundation, providers-hidden-filter-and-add-deeplink, provider-one-by-one-test, qoder-fetch-models, antigravity-risk-confirm-modal, endpoint-tunnel-miss-threshold, i18n-fa-locale-present, providers-new-full-form.
 
 ---
 

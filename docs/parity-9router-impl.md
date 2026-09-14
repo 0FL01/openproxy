@@ -1613,14 +1613,6 @@ Note the header must be read from the REQUEST headers (client), NOT the upstream
 - **⚠️ Risks:** The JS check is `!== "off"` — i.e. ANY value except the exact string "off" (case-insensitive) keeps savers ON, including empty string, "yes", "true". Do not invert to `== "on"`. The header key must be lowercased when read from client_headers (already lowercase in headers_map).
 - **Verified:** ✅ CONFIRMED
 
-### `P0-B3` — Header missing OIDC identity chip
-- **JS:** Header.js:192-216 loads auth status on mount: `fetch("/api/auth/status", { cache: "no-store" })`, then `setDisplayName(data?.displayName || data?.oidcName || data?.oidcEmail || ""); setLoginMethod(data?.loginMethod || "")`. Header.js:306-314 renders when `displayName && loginMethod === "OIDC"`: `hidden sm:flex items-center max-w-[220px] px-3 py-1.5 rounded-full border border-border bg-surface/70 text-xs text-text-muted truncate` containing `person` icon (text-primary), the displayName truncated, and a badge `ml-2 shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary` with text OIDC. JS /api/auth/status route returns fields: `{ displayName, loginMethod: session?.oidc ? "OIDC" : "Password", oidcName, oidcEmail, ... }` (auth status route.js:25-29).
-- **Rust now:** Rust auth.rs:191-210 /api/auth/status returns `{ authenticated, requireLogin, hasPassword, authMode, oidcConfigured, oidcLoginLabel, oidcEnabled }` - it does NOT return displayName/oidcName/oidcEmail/loginMethod, and it returns metadata even when logged out. Header.tsx has no displayName state and no OIDC chip.
-- **Fix:** 1) Rust auth_status handler (src/server/api/auth.rs): when logged in, resolve the session identity and add `displayName`, `loginMethod` ('OIDC' when session is oidc else 'Password'), `oidcName`, `oidcEmail` to the JSON response (mirror JS order). 2) Header.tsx: add useEffect that fetches /api/auth/status with cache no-store on mount, stores displayName + loginMethod, and renders the OIDC chip (person icon + truncate name + OIDC badge) between HeaderSearchInput and ThemeToggle exactly as JS, gated on displayName && loginMethod === 'OIDC'.
-- **Test:** `cargo test oidc_chip_fields_in_auth_status: call auth_status handler with a mocked OIDC session and assert response JSON contains displayName, loginMethod == "OIDC", oidcName, oidcEmail (currently only oidcEnabled exists).`
-- **⚠️ Risks:** JS prefers displayName then oidcName then oidcEmail - order matters (use first non-empty). Rust currently returns authMode (login page) but not the session identity; must look up the session subject name from the session cookie claims, not just re-echo settings. Keep the chip hidden on <sm (hidden sm:flex).
-- **Verified:** ✅ CONFIRMED
-
 ## PART H — DB / USAGE / CLI (10 specs)
 
 ### `P0-H1a` — Usage history endpoint drops fields JS returns (connectionId, apiKeyMasked, endpoint, status, tokens)

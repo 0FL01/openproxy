@@ -64,7 +64,7 @@ Cross-checked `openproxy --help` command tree against every `web/src/pages/dashb
 | compression, payload-rules, token-saver, settings/pricing | ✅ generic `settings set/get --key <camelCase>` covers these (no dedicated subcommand, but fully scriptable) |
 | **pxpipe** | ❌ **Gap.** `/dashboard/pxpipe` page + `/api/pxpipe/*` routes exist server-side (`src/server/api/pxpipe.rs`), but there is **no `openproxy pxpipe` CLI subcommand at all** — not reachable from the CLI in any form. This is the one concrete "CLI can't do what the web can" gap found this session. |
 | skills | Not a real gap — no backing `/api/skills` route exists either; it's a static/content page, not a CRUD feature, so nothing for the CLI to expose. |
-| profile | Dashboard-session-only (password/OIDC identity chip) — not meaningfully CLI-shaped; `auth`/`settings` already cover the equivalent server-side knobs. |
+| profile | Dashboard-session-only (password session) — not meaningfully CLI-shaped; `auth`/`settings` already cover the equivalent server-side knobs. |
 
 ## 4. 9router 1:1 status
 

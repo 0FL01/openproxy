@@ -25,7 +25,6 @@ pub fn spawn_jti_cleanup() {
 }
 
 pub mod login_limiter;
-pub mod oidc;
 
 pub const API_KEY_HEADER: &str = "x-api-key";
 pub const AUTHORIZATION_HEADER: &str = "authorization";
@@ -145,6 +144,7 @@ impl DashboardAuthError {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DashboardClaims {
     pub authenticated: bool,
     pub exp: usize,
@@ -152,12 +152,6 @@ pub struct DashboardClaims {
     /// [`REVOKED_JTIS`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jti: Option<String>,
-    /// OIDC identity claims (embedded by the OIDC callback) — used by
-    /// `/api/auth/status` to render the header identity chip.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub email: Option<String>,
 }
 
 impl AuthError {
@@ -198,8 +192,6 @@ pub fn require_dashboard_session(
             authenticated: true,
             exp: usize::MAX,
             jti: None,
-            name: None,
-            email: None,
         });
     }
 
