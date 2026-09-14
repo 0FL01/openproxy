@@ -269,6 +269,7 @@ async fn convert_to_responses_api(response: Response, stream_request: bool) -> R
         let mut raw_buf = raw_body;
         let mut conv_state = ResponsesSseState::new();
         let mut claude_xform = AnthropicToOpenAiTransformer::new();
+        let mut native_responses_stream = false;
 
         // Process complete SSE frames from the buffer.
         // Each frame is `data: {...}\n\n` or `event: ...\ndata: {...}\n\n`.
@@ -308,6 +309,7 @@ async fn convert_to_responses_api(response: Response, stream_request: bool) -> R
             let is_responses_api_event = json_str.contains("\"type\":\"response.");
 
             if is_responses_api_event {
+                native_responses_stream = true;
                 // Already Responses API format — pass through directly.
                 // Reconstruct the full event with event: and data: lines.
                 // The frame lines contain the source format; yield unchanged.
@@ -346,11 +348,13 @@ async fn convert_to_responses_api(response: Response, stream_request: bool) -> R
         }
 
         // ── Flush remaining state + [DONE] ───────────────────────────
-        let flush_frames = conv_state.flush_frames();
-        for event_bytes in flush_frames {
-            yield Ok::<Bytes, std::io::Error>(Bytes::from(event_bytes));
+        if !native_responses_stream {
+            let flush_frames = conv_state.flush_frames();
+            for event_bytes in flush_frames {
+                yield Ok::<Bytes, std::io::Error>(Bytes::from(event_bytes));
+            }
+            yield Ok::<Bytes, std::io::Error>(Bytes::from("data: [DONE]\n\n"));
         }
-        yield Ok::<Bytes, std::io::Error>(Bytes::from("data: [DONE]\n\n"));
     };
 
     let body = Body::from_stream(converted);
@@ -2566,6 +2570,36 @@ mod tests {
         let converted: Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(converted, native);
+    }
+
+    #[tokio::test]
+    async fn native_responses_sse_does_not_get_a_second_completion() {
+        let completed = json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp_native",
+                "object": "response",
+                "status": "completed",
+                "output": [],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+            }
+        });
+        let body = format!(
+            "event: response.completed\ndata: {}\n\n",
+            serde_json::to_string(&completed).unwrap()
+        );
+        let upstream = (
+            [(header::CONTENT_TYPE, "text/event-stream")],
+            Body::from(body),
+        )
+            .into_response();
+
+        let response = convert_to_responses_api(upstream, true).await;
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let output = String::from_utf8(body.to_vec()).unwrap();
+
+        assert_eq!(output.matches("event: response.completed").count(), 1);
+        assert!(!output.contains("data: [DONE]"));
     }
 
     #[test]
