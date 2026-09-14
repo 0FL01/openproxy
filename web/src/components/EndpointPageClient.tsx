@@ -126,7 +126,7 @@ export default function APIPageClient({ machineId }: APIPageClientProps) {
   const [newKeyBudget, setNewKeyBudget] = useState<string>("");
   const [createdKey, setCreatedKey] = useState<string | null>(null);
 
-  const [requireApiKey, setRequireApiKey] = useState<boolean>(false);
+  const [requireApiKey, setRequireApiKey] = useState<boolean>(true);
   const [requireLogin, setRequireLogin] = useState<boolean>(true);
   const [hasPassword, setHasPassword] = useState<boolean>(true);
   // True when the dashboard is opened via a non-loopback host (LAN / tunnel).
@@ -361,7 +361,7 @@ export default function APIPageClient({ machineId }: APIPageClientProps) {
       ]);
       if (settingsRes.ok) {
         const data = await settingsRes.json();
-        setRequireApiKey(data.requireApiKey || false);
+        setRequireApiKey(data.requireApiKey !== false);
         setRequireLogin(data.requireLogin !== false);
         setHasPassword(data.hasPassword || false);
         setTunnelDashboardAccess(data.tunnelDashboardAccess || false);
@@ -411,9 +411,11 @@ export default function APIPageClient({ machineId }: APIPageClientProps) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ requireApiKey: value }),
       });
-      if (res.ok) setRequireApiKey(value);
+      if (!res.ok) throw new Error("Failed to save API key requirement");
+      setRequireApiKey(value);
     } catch (error) {
       console.log("Error updating requireApiKey:", error);
+      notify.error(error instanceof Error ? error.message : "Failed to save API key requirement");
     }
   };
 

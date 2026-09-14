@@ -296,6 +296,76 @@ async fn missing_invalid_and_inactive_keys_return_unauthorized() {
 }
 
 #[tokio::test]
+async fn require_api_key_is_independent_from_dashboard_login() {
+    let state = app_state().await;
+    state
+        .db
+        .update(|db| {
+            db.settings.require_login = false;
+            db.settings.require_api_key = true;
+        })
+        .await
+        .unwrap();
+    let app = openproxy::build_app(state);
+
+    for (path, body) in [
+        ("/v1/chat/completions", json!({"model": "", "messages": []})),
+        ("/v1/responses", json!({"model": "", "input": ""})),
+        ("/v1/messages", json!({"model": "", "messages": []})),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+    }
+
+    let authenticated = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("authorization", "Bearer valid-bearer")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"model": "", "messages": []}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(authenticated.status(), StatusCode::BAD_REQUEST);
+
+    let state = app_state().await;
+    state
+        .db
+        .update(|db| {
+            db.settings.require_login = false;
+            db.settings.require_api_key = false;
+        })
+        .await
+        .unwrap();
+    let disabled = openproxy::build_app(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"model": "", "messages": []}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(disabled.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn bearer_takes_precedence_over_x_api_key() {
     let app = openproxy::build_app(app_state().await);
     let response = app

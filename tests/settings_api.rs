@@ -79,6 +79,7 @@ async fn get_settings_requires_auth_and_redacts_password() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(json["hasPassword"], true);
+    assert_eq!(json["requireApiKey"], true);
     assert_eq!(json["enableRequestLogs"], false);
     assert_eq!(json["enableTranslator"], false);
     assert!(json.get("password").is_none());
@@ -112,6 +113,7 @@ async fn patch_settings_updates_values_and_rejects_password_fields() {
                         "tunnelDashboardAccess": false,
                         "tunnelUrl": "https://demo.example",
                         "tailscaleUrl": "https://tail.example",
+                        "requireApiKey": false,
                         "codexWebSearchContextSize": "low",
                     })
                     .to_string(),
@@ -135,6 +137,7 @@ async fn patch_settings_updates_values_and_rejects_password_fields() {
     assert_eq!(json["tunnelDashboardAccess"], false);
     assert_eq!(json["tunnelUrl"], "https://demo.example");
     assert_eq!(json["tailscaleUrl"], "https://tail.example");
+    assert_eq!(json["requireApiKey"], false);
     assert_eq!(json["codexWebSearchContextSize"], "low");
     assert_eq!(json["hasPassword"], true);
 

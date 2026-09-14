@@ -500,6 +500,11 @@ pub struct Settings {
         default = "default_true",
         deserialize_with = "deserialize_null_default"
     )]
+    pub require_api_key: bool,
+    #[serde(
+        default = "default_true",
+        deserialize_with = "deserialize_null_default"
+    )]
     pub require_login: bool,
     #[serde(
         default = "default_true",
@@ -653,8 +658,9 @@ impl Default for Settings {
             provider_strategies: BTreeMap::new(),
             combo_strategy: default_combo_strategy(),
             combo_strategies: BTreeMap::new(),
-            // 9router settingsRepo.js:26 requireLogin defaults TRUE — a fresh
-            // install must not expose /v1/* or admin routes unauthenticated.
+            // A fresh install must never expose inference routes without a key.
+            require_api_key: true,
+            // Dashboard login is independent from inference API-key auth.
             require_login: true,
             tunnel_dashboard_access: true,
             observability_enabled: true,

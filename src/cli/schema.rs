@@ -205,6 +205,7 @@ fn schema_for(resource: &str) -> Option<Value> {
                 "cavemanEnabled": {"type": "boolean"},
                 "cavemanLevel": {"type": "string", "enum": ["light", "medium", "heavy"]},
                 "comboStrategy": {"type": "string"},
+                "requireApiKey": {"type": "boolean", "default": true},
                 "requireLogin": {"type": "boolean"},
                 "observabilityEnabled": {"type": "boolean"},
                 "outboundProxyEnabled": {"type": "boolean"},
@@ -336,6 +337,7 @@ fn example_for(resource: &str) -> Option<Value> {
             "rtkEnabled": true,
             "cavemanEnabled": false,
             "cavemanLevel": "medium",
+            "requireApiKey": true,
             "requireLogin": true
         }),
         "custom-model" => json!({

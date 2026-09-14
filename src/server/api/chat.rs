@@ -329,7 +329,7 @@ async fn chat_completions_impl(
     strip_forwarding_headers(&mut headers);
 
     let presented_api_key = extract_api_key(&headers);
-    if require_api_key_auth && state.db.snapshot().settings.require_login {
+    if require_api_key_auth && state.db.snapshot().settings.require_api_key {
         if let Err(error) = require_api_key_with_reload(&headers, &state.db).await {
             return auth_error_response(error);
         }

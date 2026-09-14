@@ -2104,6 +2104,7 @@ struct UpdateSettingsRequest {
     combo_strategy: Option<String>,
     combo_strategies: Option<BTreeMap<String, crate::types::ComboStrategyEntry>>,
     mitm_router_base_url: Option<String>,
+    require_api_key: Option<bool>,
     require_login: Option<bool>,
     rtk_enabled: Option<bool>,
     caveman_enabled: Option<bool>,
@@ -2199,6 +2200,9 @@ async fn update_settings_api(
             }
             if let Some(v) = req.mitm_router_base_url {
                 db.settings.mitm_router_base_url = v;
+            }
+            if let Some(v) = req.require_api_key {
+                db.settings.require_api_key = v;
             }
             if let Some(v) = req.require_login {
                 db.settings.require_login = v;
