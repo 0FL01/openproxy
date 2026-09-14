@@ -871,6 +871,8 @@ export default function ProviderLimits() {
           // Use table layout for all providers
           const isInactive = conn.isActive === false;
           const isCodex = conn.provider === "codex";
+          const hasCodexSessionQuota =
+            isCodex && quota?.quotas?.some((entry) => entry.name === "session");
           const resetCreditCount = getCodexResetCreditCount(quota);
           const isResettingLimit = resettingLimitId === conn.id;
           const rowBusy =
@@ -899,9 +901,16 @@ export default function ProviderLimits() {
                       />
                     </div>
                     <div className="min-w-0">
-                      <h3 className="text-sm font-semibold text-text-primary capitalize truncate">
-                        {conn.provider}
-                      </h3>
+                      <div className="flex items-center gap-1.5">
+                        <h3 className="text-sm font-semibold text-text-primary capitalize truncate">
+                          {conn.provider}
+                        </h3>
+                        {quota?.plan && quota.plan !== "unknown" && (
+                          <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[9px] font-medium capitalize text-primary">
+                            {quota.plan}
+                          </span>
+                        )}
+                      </div>
                       {(() => {
                         const label = getConnectionLabel(conn);
                         const secondary = getConnectionSecondaryLabel(conn);
@@ -921,7 +930,9 @@ export default function ProviderLimits() {
                   </div>
 
                   <div className="flex items-center gap-1 shrink-0">
-                    {AUTO_PING_SETTINGS_KEYS[conn.provider as keyof typeof AUTO_PING_SETTINGS_KEYS] && conn.authType === "oauth" && (
+                    {AUTO_PING_SETTINGS_KEYS[conn.provider as keyof typeof AUTO_PING_SETTINGS_KEYS] &&
+                      conn.authType === "oauth" &&
+                      (!isCodex || hasCodexSessionQuota) && (
                       <Tooltip text={autoPingTooltips[conn.provider] || "Auto-ping warmup"}>
                         <button
                           type="button"

@@ -759,21 +759,6 @@ pub async fn fetch_codex_quota(access_token: &str, _provider: &str) -> Value {
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
 
-    if let Some(plan_label) = plan.as_deref() {
-        quotas.insert(
-            "plan".to_string(),
-            json!({
-                "used": 0.0,
-                "total": 0.0,
-                "remaining": 0.0,
-                "remainingPercentage": 0.0,
-                "resetAt": Value::Null,
-                "unlimited": false,
-                "label": plan_label,
-            }),
-        );
-    }
-
     let normal_rl = body
         .get("rate_limit")
         .or_else(|| body.get("rate_limits"))
@@ -1024,7 +1009,20 @@ fn codex_rate_limit_body(snapshot: &Value) -> &Value {
     snapshot
 }
 
-fn format_codex_window(window: &Value) -> Option<Value> {
+fn format_codex_window(window: &Value) -> Option<(&'static str, Value)> {
+    if !window.is_object() {
+        return None;
+    }
+    let window_minutes = window
+        .get("limit_window_seconds")
+        .and_then(|v| v.as_i64())
+        .filter(|seconds| *seconds > 0)
+        .map(|seconds| seconds / 60)?;
+    let name = match window_minutes {
+        300 => "session",
+        10_080 => "weekly",
+        _ => return None,
+    };
     let used_percent = window
         .get("used_percent")
         .or_else(|| window.get("percent_used"))
@@ -1035,20 +1033,19 @@ fn format_codex_window(window: &Value) -> Option<Value> {
         .get("reset_at")
         .or_else(|| window.get("resetAt"))
         .and_then(parse_reset_time);
-    let window_minutes = window
-        .get("window_minutes")
-        .or_else(|| window.get("windowMinutes"))
-        .and_then(|v| v.as_i64());
     let unlimited = window
         .get("unlimited")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    Some(build_quota_entry_with_meta(
-        used_percent,
-        100.0,
-        reset_at,
-        unlimited,
-        window_minutes,
+    Some((
+        name,
+        build_quota_entry_with_meta(
+            used_percent,
+            100.0,
+            reset_at,
+            unlimited,
+            Some(window_minutes),
+        ),
     ))
 }
 
@@ -1090,11 +1087,11 @@ fn append_codex_quota_windows(
         .or_else(|| snapshot.get("primary_window"))
         .or_else(|| snapshot.get("primary"));
     if let Some(p) = primary {
-        if let Some(entry) = format_codex_window(p) {
+        if let Some((name, entry)) = format_codex_window(p) {
             let key = if prefix.is_empty() {
-                "session".to_string()
+                name.to_string()
             } else {
-                format!("{prefix}_session")
+                format!("{prefix}_{name}")
             };
             quotas.insert(key, entry);
         }
@@ -1105,11 +1102,11 @@ fn append_codex_quota_windows(
         .or_else(|| snapshot.get("secondary_window"))
         .or_else(|| snapshot.get("secondary"));
     if let Some(s) = secondary {
-        if let Some(entry) = format_codex_window(s) {
+        if let Some((name, entry)) = format_codex_window(s) {
             let key = if prefix.is_empty() {
-                "weekly".to_string()
+                name.to_string()
             } else {
-                format!("{prefix}_weekly")
+                format!("{prefix}_{name}")
             };
             quotas.insert(key, entry);
         }
@@ -3253,6 +3250,46 @@ pub async fn fetch_ollama_quota(api_key: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_weekly_only_window_is_not_labeled_as_session() {
+        let snapshot = json!({
+            "primary_window": {
+                "used_percent": 31,
+                "limit_window_seconds": 604800,
+                "reset_at": 1789461188
+            },
+            "secondary_window": null
+        });
+        let mut quotas = serde_json::Map::new();
+
+        append_codex_quota_windows(&mut quotas, "", &snapshot);
+
+        assert_eq!(quotas.len(), 1);
+        assert!(!quotas.contains_key("session"));
+        assert_eq!(quotas["weekly"]["used"], 31.0);
+        assert_eq!(quotas["weekly"]["windowMinutes"], 10_080);
+    }
+
+    #[test]
+    fn codex_windows_are_classified_by_duration_not_position() {
+        let snapshot = json!({
+            "primary_window": {
+                "used_percent": 40,
+                "limit_window_seconds": 604800
+            },
+            "secondary_window": {
+                "used_percent": 20,
+                "limit_window_seconds": 18000
+            }
+        });
+        let mut quotas = serde_json::Map::new();
+
+        append_codex_quota_windows(&mut quotas, "", &snapshot);
+
+        assert_eq!(quotas["session"]["used"], 20.0);
+        assert_eq!(quotas["weekly"]["used"], 40.0);
+    }
 
     #[test]
     fn test_is_text_quota_model() {
