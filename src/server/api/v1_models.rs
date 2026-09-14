@@ -112,6 +112,17 @@ async fn build_models_list(
         .iter()
         .filter(|connection| connection.is_active())
         .collect();
+    let codex_inventory = if kind_filter.contains(&LLM_KIND) {
+        Some(
+            state
+                .codex_models
+                .union_active(state, &snapshot.provider_connections)
+                .await,
+        )
+    } else {
+        None
+    };
+    let disabled_map = super::models_disabled::disabled_models_from_db(snapshot);
 
     let mut seen_providers = HashSet::new();
     let mut active_connection_by_provider = Vec::new();
@@ -209,7 +220,16 @@ async fn build_models_list(
                 .collect();
 
             let (mut raw_model_ids, had_enabled_models) = enabled_model_ids(connection);
-            if !had_enabled_models {
+            if provider_id == "codex" {
+                raw_model_ids = provider_models
+                    .iter()
+                    .filter(|model| model.kind != LLM_KIND)
+                    .map(|model| model.id.clone())
+                    .collect();
+                if let Some(inventory) = &codex_inventory {
+                    raw_model_ids.extend(inventory.models.iter().map(|model| model.id.clone()));
+                }
+            } else if !had_enabled_models {
                 raw_model_ids = provider_models
                     .iter()
                     .map(|model| model.id.clone())
@@ -272,6 +292,12 @@ async fn build_models_list(
             );
 
             for model_id in merged_model_ids {
+                if disabled_map
+                    .get(static_alias)
+                    .is_some_and(|ids| ids.iter().any(|id| id == &model_id))
+                {
+                    continue;
+                }
                 let kind = static_model_kind_by_id
                     .get(model_id.as_str())
                     .copied()
@@ -281,9 +307,27 @@ async fn build_models_list(
                 }
 
                 // Look up context_window from catalog for this model.
-                let ctx_len = catalog
-                    .find_model(provider_id, &model_id)
-                    .and_then(|m| m.context_window);
+                let ctx_len = if provider_id == "codex" {
+                    codex_inventory
+                        .as_ref()
+                        .and_then(|inventory| {
+                            inventory.models.iter().find(|model| model.id == model_id)
+                        })
+                        .and_then(|model| {
+                            model
+                                .context_window
+                                .and_then(|value| u32::try_from(value).ok())
+                        })
+                        .or_else(|| {
+                            catalog
+                                .find_model(provider_id, &model_id)
+                                .and_then(|model| model.context_window)
+                        })
+                } else {
+                    catalog
+                        .find_model(provider_id, &model_id)
+                        .and_then(|model| model.context_window)
+                };
                 models.push(model_card(
                     format!("{output_alias}/{model_id}"),
                     output_alias.clone(),
@@ -882,6 +926,43 @@ mod tests {
                 .any(|m| m.id == "opencode-zen/muse-spark-1.3-contributor-free"),
             "models.dev opencode model should appear in /v1/models"
         );
+    }
+
+    #[tokio::test]
+    async fn codex_dynamic_llm_and_static_image_are_kind_aware() {
+        let connection = ProviderConnection {
+            id: "conn-codex".into(),
+            provider: "codex".into(),
+            auth_type: "oauth".into(),
+            access_token: Some("token".into()),
+            ..Default::default()
+        };
+        let snapshot = AppDb {
+            provider_connections: vec![connection.clone()],
+            ..Default::default()
+        };
+        let state = test_state().await;
+        state
+            .codex_models
+            .seed(
+                &connection,
+                vec![crate::server::codex_catalog::CodexModelMetadata {
+                    id: "gpt-dynamic".into(),
+                    name: "GPT Dynamic".into(),
+                    context_window: Some(872_000),
+                    capabilities: vec!["reasoning".into()],
+                    reasoning_efforts: vec!["high".into()],
+                }],
+            )
+            .await;
+
+        let llm = build_models_list(&state, &snapshot, &[LLM_KIND]).await;
+        assert!(llm.iter().any(|model| model.id == "cx/gpt-dynamic"));
+        assert!(!llm.iter().any(|model| model.id == "cx/gpt-5.5-image"));
+
+        let image = build_models_list(&state, &snapshot, &["image"]).await;
+        assert!(image.iter().any(|model| model.id == "cx/gpt-5.5-image"));
+        assert!(!image.iter().any(|model| model.id == "cx/gpt-dynamic"));
     }
 
     #[tokio::test]

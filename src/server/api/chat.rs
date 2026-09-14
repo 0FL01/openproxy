@@ -1331,6 +1331,15 @@ async fn forward_with_provider_fallback(
     let mut last_error: Option<ComboAttemptError> = None;
     let mut reloaded = false;
     let registry = &state.account_registry;
+    let codex_supporters = if provider == "codex" {
+        let snapshot = state.db.snapshot();
+        state
+            .codex_models
+            .cached_supporters(model, &snapshot.provider_connections)
+            .await
+    } else {
+        None
+    };
 
     // Per-key monthly budget kill-switch (free-tier Feature 3): block the
     // request with 429 before any provider dispatch when the cap is reached.
@@ -1369,9 +1378,14 @@ async fn forward_with_provider_fallback(
 
     loop {
         let snapshot = state.db.snapshot();
-        let Some(mut connection) =
-            select_connection(&snapshot, provider, model, &excluded, Some(registry))
-        else {
+        let Some(mut connection) = select_connection_with_supporters(
+            &snapshot,
+            provider,
+            model,
+            &excluded,
+            Some(registry),
+            codex_supporters.as_ref(),
+        ) else {
             let retry_after = earliest_retry_after(&snapshot, provider, model, &excluded);
             if let Some(mut error) = last_error {
                 if retry_after.is_some() {
@@ -2577,6 +2591,17 @@ fn select_connection(
     excluded: &HashSet<String>,
     registry: Option<&crate::core::account_fallback::AccountRegistry>,
 ) -> Option<ProviderConnection> {
+    select_connection_with_supporters(snapshot, provider, model, excluded, registry, None)
+}
+
+fn select_connection_with_supporters(
+    snapshot: &AppDb,
+    provider: &str,
+    model: &str,
+    excluded: &HashSet<String>,
+    registry: Option<&crate::core::account_fallback::AccountRegistry>,
+    discovered_supporters: Option<&HashSet<String>>,
+) -> Option<ProviderConnection> {
     let now = Utc::now();
 
     // First: use filter_available_accounts to get accounts not in cooldown / not locked.
@@ -2594,6 +2619,8 @@ fn select_connection(
             connection_has_credentials(connection)
                 && !excluded.contains(&connection.id)
                 && connection_supports_model(connection, model)
+                && discovered_supporters
+                    .is_none_or(|supporters| supporters.contains(&connection.id))
         })
         .cloned()
         .collect();
@@ -4579,7 +4606,7 @@ mod tests {
 
     use super::{
         build_dashboard_sse_response, build_proxied_response, earliest_retry_after,
-        responses_stream_completed, select_connection,
+        responses_stream_completed, select_connection, select_connection_with_supporters,
     };
     use crate::types::{AppDb, ProviderConnection};
 
@@ -4651,6 +4678,33 @@ mod tests {
             .expect("third account should remain selectable");
 
         assert_eq!(selected.id, chosen_connection.id);
+    }
+
+    #[test]
+    fn codex_discovered_model_uses_only_supporting_accounts() {
+        let mut first = connection("first", 1);
+        first.provider = "codex".into();
+        first.default_model = None;
+        let mut supporting = connection("supporting", 2);
+        supporting.provider = "codex".into();
+        supporting.default_model = None;
+        let snapshot = AppDb {
+            provider_connections: vec![first, supporting.clone()],
+            ..AppDb::default()
+        };
+        let supporters = HashSet::from([supporting.id.clone()]);
+
+        let selected = select_connection_with_supporters(
+            &snapshot,
+            "codex",
+            "gpt-discovered",
+            &HashSet::new(),
+            None,
+            Some(&supporters),
+        )
+        .expect("supporting account should be selected");
+
+        assert_eq!(selected.id, supporting.id);
     }
 
     #[test]

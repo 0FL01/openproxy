@@ -18,6 +18,7 @@ use crate::db::Db;
 use crate::oauth::pending::PendingFlowStore;
 use crate::server::api::oauth::{CodexProxyState, XaiProxyState, ZedProxyState};
 use crate::server::auth::login_limiter::LoginLimiter;
+use crate::server::codex_catalog::CodexModelCatalog;
 use crate::server::console_logs::{shared_console_log_buffer, ConsoleLogBuffer};
 use crate::server::usage_live::UsageLiveState;
 
@@ -99,6 +100,7 @@ pub struct AppState {
     /// request tasks via interior mutability.
     pub response_cache: Arc<ResponseCache>,
     pub models_dev: Arc<ModelsDevCatalog>,
+    pub codex_models: Arc<CodexModelCatalog>,
 }
 
 impl AppState {
@@ -129,6 +131,7 @@ impl AppState {
             health: health_registry(),
             response_cache: Arc::new(ResponseCache::default()),
             models_dev: Arc::new(ModelsDevCatalog::default()),
+            codex_models: Arc::new(CodexModelCatalog::default()),
         }
     }
 

@@ -10,6 +10,7 @@ import { getModelsByProviderId, useEnsureCatalog } from "@/shared/constants/mode
 import { useAvailableModels } from "@/shared/models/availableModels";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
+import { useCatalogStore } from "@/store/catalogStore";
 import { fetchSuggestedModels } from "@/shared/utils/providerModelsFetcher";
 import { type CustomModelEntry } from "@/shared/utils/providerCustomModels";
 import {
@@ -42,6 +43,7 @@ export default function ProviderDetailPageClient() {
   const [params, setParams] = useState<{ id: string }>({ id: "" });
   const [mounted, setMounted] = useState<boolean>(false);
   useEnsureCatalog();
+  const reloadCatalog = useCatalogStore((state) => state.reload);
   const { getCaps } = useModelCaps();
   useEffect(() => {
     setMounted(true);
@@ -686,6 +688,7 @@ export default function ProviderDetailPageClient() {
       const res = await fetch(`/api/providers/${target.id}`, { method: "DELETE" });
       if (res.ok) {
         setConnections((prev) => prev.filter((c) => c.id !== target.id));
+        if (providerId === "codex") await reloadCatalog();
         notify.success("Connection deleted");
       } else {
         notify.error("Failed to delete connection");
@@ -699,8 +702,9 @@ export default function ProviderDetailPageClient() {
     }
   };
 
-  const handleOAuthSuccess = () => {
-    fetchConnections();
+  const handleOAuthSuccess = async () => {
+    await fetchConnections();
+    if (providerId === "codex") await reloadCatalog();
     setShowOAuthModal(false);
   };
 
@@ -727,6 +731,7 @@ export default function ProviderDetailPageClient() {
 
       if (res.ok) {
         await fetchConnections();
+        if (providerId === "codex") await reloadCatalog();
         setShowAddApiKeyModal(false);
         return;
       }
@@ -747,6 +752,7 @@ export default function ProviderDetailPageClient() {
       });
       if (res.ok) {
         await fetchConnections();
+        if (providerId === "codex") await reloadCatalog();
         setShowEditModal(false);
       }
     } catch (error) {
@@ -763,6 +769,7 @@ export default function ProviderDetailPageClient() {
       });
       if (res.ok) {
         setConnections(prev => prev.map(c => c.id === id ? { ...c, isActive } : c));
+        if (providerId === "codex") await reloadCatalog();
       }
     } catch (error) {
       console.log("Error updating connection status:", error);
@@ -1795,6 +1802,7 @@ export default function ProviderDetailPageClient() {
           onSuccess={async () => {
             setShowBulkImportCodex(false);
             await fetchConnections();
+            await reloadCatalog();
           }}
         />
       )}

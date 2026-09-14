@@ -55,7 +55,6 @@ const CLAUDE_PING_MAX_TOKENS: u32 = 1;
 const CLAUDE_ANTHROPIC_VERSION: &str = "2023-06-01";
 const CLAUDE_ANTHROPIC_BETA: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28";
 
-const CODEX_PING_MODEL: &str = "gpt-5.5";
 const CODEX_PING_TEXT: &str = "hi";
 const CODEX_PING_INSTRUCTIONS: &str = "Reply with OK.";
 const CODEX_PING_REASONING_EFFORT: &str = "none";
@@ -440,9 +439,35 @@ async fn process_connection(
         };
     }
 
+    let codex_model = if provider == "codex" {
+        match state
+            .codex_models
+            .models_for_connection(state, &connection)
+            .await
+        {
+            Ok(inventory) => inventory.models.first().cloned(),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    if provider == "codex" && codex_model.is_none() {
+        return TickOutcome::Skip {
+            reason: "model_discovery_failed".into(),
+            reset_at: Some(reset_at),
+        };
+    }
+
     let ping_result = match provider {
         "claude" => send_claude_ping(state, &connection).await,
-        "codex" => send_codex_ping(state, &connection).await,
+        "codex" => {
+            send_codex_ping(
+                state,
+                &connection,
+                codex_model.as_ref().expect("checked above"),
+            )
+            .await
+        }
         _ => Err("unsupported provider".into()),
     };
 
@@ -543,15 +568,32 @@ async fn send_claude_ping(state: &AppState, connection: &ProviderConnection) -> 
     }
 }
 
-async fn send_codex_ping(state: &AppState, connection: &ProviderConnection) -> Result<(), String> {
+async fn send_codex_ping(
+    state: &AppState,
+    connection: &ProviderConnection,
+    model: &crate::server::codex_catalog::CodexModelMetadata,
+) -> Result<(), String> {
     let snapshot = state.db.snapshot();
     let proxy = resolve_proxy_target(&snapshot, connection, &snapshot.settings);
 
     let executor = CodexExecutor::new(state.client_pool.clone(), None)
         .map_err(|e| format!("codex executor init: {e:?}"))?;
 
+    let effort = if model
+        .reasoning_efforts
+        .iter()
+        .any(|effort| effort == CODEX_PING_REASONING_EFFORT)
+    {
+        CODEX_PING_REASONING_EFFORT
+    } else {
+        model
+            .reasoning_efforts
+            .first()
+            .map(String::as_str)
+            .unwrap_or(CODEX_PING_REASONING_EFFORT)
+    };
     let body = json!({
-        "model": CODEX_PING_MODEL,
+        "model": model.id,
         "input": [{
             "type": "message",
             "role": "user",
@@ -559,7 +601,7 @@ async fn send_codex_ping(state: &AppState, connection: &ProviderConnection) -> R
         }],
         "instructions": CODEX_PING_INSTRUCTIONS,
         "reasoning": {
-            "effort": CODEX_PING_REASONING_EFFORT,
+            "effort": effort,
             "summary": "auto",
         },
         "store": false,
@@ -567,7 +609,7 @@ async fn send_codex_ping(state: &AppState, connection: &ProviderConnection) -> R
     });
 
     let request = CodexExecutionRequest {
-        model: CODEX_PING_MODEL.to_string(),
+        model: model.id.clone(),
         body,
         stream: true,
         credentials: connection.clone(),

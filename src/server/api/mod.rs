@@ -76,7 +76,6 @@ pub fn routes(state: AppState) -> Router<AppState> {
     let public = Router::new()
         .route("/health", get(health))
         .route("/api/health", get(api_health))
-        .route("/api/catalog", get(api_catalog))
         .route("/v1", get(v1_root))
         .route("/v1/health", get(health))
         .route("/v1/v1/health", get(health));
@@ -323,6 +322,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .route_layer(middleware::from_fn(guard::require_local_only));
 
     let admin = Router::new()
+        .route("/api/catalog", get(api_catalog))
         // Credential management (admin-tier — dashboard or API key)
         .route("/api/keys", get(list_keys_api))
         .route("/api/keys", post(create_key_api))
@@ -479,6 +479,29 @@ async fn api_catalog(State(state): State<AppState>) -> Response {
                         Value::Array(models.iter().map(|model| model.catalog_json()).collect());
                 }
             }
+        }
+    }
+
+    let db = state.db.snapshot();
+    let codex = state
+        .codex_models
+        .union_active(&state, &db.provider_connections)
+        .await;
+    if let Some(entries) = catalog
+        .get_mut("providerModels")
+        .and_then(Value::as_array_mut)
+    {
+        if let Some(entry) = entries
+            .iter_mut()
+            .find(|entry| entry.get("alias").and_then(Value::as_str) == Some("cx"))
+        {
+            let mut models = entry
+                .get("models")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            models.extend(codex.models.iter().map(|model| model.catalog_json()));
+            entry["models"] = Value::Array(models);
         }
     }
 

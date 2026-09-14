@@ -166,12 +166,6 @@ static PROVIDER_CAPABILITIES: LazyLock<HashMap<&'static str, HashMap<&'static st
             ("deepseek-ai/deepseek-v4-pro", serde_json::json!({ "reasoning": true, "thinkingFormat": "openai", "contextWindow": 1000000, "maxOutput": 65536 })),
             ("deepseek-ai/deepseek-v4-flash", serde_json::json!({ "reasoning": true, "thinkingFormat": "openai", "contextWindow": 1000000, "maxOutput": 65536 })),
         ]));
-        table.insert("codex", HashMap::from([
-            ("gpt-6-astra", serde_json::json!({ "vision": true, "reasoning": true, "search": true, "thinkingFormat": "openai", "contextWindow": 500000, "maxOutput": 128000 })),
-            ("gpt-5.6-sol", serde_json::json!({ "vision": true, "reasoning": true, "search": true, "thinkingFormat": "openai", "contextWindow": 500000, "maxOutput": 128000 })),
-            ("gpt-5.6-terra", serde_json::json!({ "vision": true, "reasoning": true, "search": true, "thinkingFormat": "openai", "contextWindow": 500000, "maxOutput": 128000 })),
-            ("gpt-5.6-luna", serde_json::json!({ "vision": true, "reasoning": true, "search": true, "thinkingFormat": "openai", "contextWindow": 500000, "maxOutput": 128000 })),
-        ]));
         table.insert("kiro", HashMap::from([
             ("gpt-5.6-sol", serde_json::json!({ "vision": true, "reasoning": true, "search": true, "thinkingFormat": "openai", "contextWindow": 272000, "maxOutput": 128000 })),
             ("gpt-5.6-sol-thinking", serde_json::json!({ "vision": true, "reasoning": true, "search": true, "thinkingFormat": "openai", "contextWindow": 272000, "maxOutput": 128000 })),
@@ -758,16 +752,6 @@ mod tests {
         // Vendor prefix stripped for canonical lookup.
         let prefixed = get_capabilities_for_model("", "anthropic/claude-opus-4.7");
         assert_eq!(prefixed.context_window, 1_000_000);
-    }
-
-    #[test]
-    fn provider_override_beats_exact() {
-        // Codex models use the configured 500k experimental window instead of
-        // the generic GPT-5 fallback.
-        let sol = get_capabilities_for_model("codex", "gpt-5.6-sol");
-        assert_eq!(sol.context_window, 500_000);
-        let terra = get_capabilities_for_model("codex", "gpt-5.6-terra");
-        assert_eq!(terra.context_window, 500_000);
     }
 
     #[test]

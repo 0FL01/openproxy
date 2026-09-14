@@ -1,5 +1,6 @@
 pub mod api;
 pub mod auth;
+pub mod codex_catalog;
 pub mod console_logs;
 pub mod dashboard;
 pub mod request_logger;

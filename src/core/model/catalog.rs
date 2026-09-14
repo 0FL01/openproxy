@@ -411,29 +411,13 @@ mod tests {
     }
 
     #[test]
-    fn codex_catalog_contains_only_current_model_generations() {
+    fn codex_static_catalog_contains_only_virtual_media_models() {
         let catalog = provider_catalog();
-        for id in [
-            "gpt-6-astra",
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-            "gpt-5.6-luna",
-            "gpt-5.5",
-        ] {
-            assert!(catalog.find_model("codex", id).is_some(), "missing {id}");
-        }
-
-        for id in ["gpt-5.4", "gpt-5.3-codex", "gpt-5.2", "gpt-5.1"] {
-            assert!(
-                catalog.find_model("codex", id).is_none(),
-                "deprecated model remains: {id}"
-            );
-        }
-
-        let astra = catalog
-            .find_model("codex", "gpt-6-astra")
-            .expect("Astra should resolve");
-        assert_eq!(astra.context_window, Some(500_000));
-        assert!(catalog.find_model("codex", "gpt-6-astra-review").is_none());
+        assert!(catalog.find_model("codex", "gpt-5.5-image").is_some());
+        assert!(catalog
+            .models_for_alias("cx")
+            .unwrap_or(&[])
+            .iter()
+            .all(|model| model.kind != "llm"));
     }
 }

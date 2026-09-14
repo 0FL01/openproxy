@@ -203,6 +203,22 @@ async fn test_oauth_connection(
     connection: &ProviderConnection,
     effective_proxy: &EffectiveProxy,
 ) -> ConnectionTestResult {
+    if connection.provider == "codex" {
+        return match state
+            .codex_models
+            .models_for_connection(state, connection)
+            .await
+        {
+            Ok(_) => ConnectionTestResult {
+                valid: true,
+                error: None,
+                refreshed: false,
+                new_tokens: None,
+            },
+            Err(error) => invalid(&error.message),
+        };
+    }
+
     if connection
         .access_token
         .as_deref()
@@ -1508,29 +1524,6 @@ async fn probe_cline_access_token(
 
 fn oauth_probe_request(provider: &str, access_token: &str) -> Option<PreparedRequest> {
     match provider {
-        "codex" => Some(PreparedRequest {
-            method: Method::POST,
-            url: "https://chatgpt.com/backend-api/codex/responses".to_string(),
-            headers: vec![
-                (
-                    "Authorization".to_string(),
-                    format!("Bearer {access_token}"),
-                ),
-                ("Content-Type".to_string(), "application/json".to_string()),
-                ("originator".to_string(), "codex_cli_rs".to_string()),
-                ("session_id".to_string(), "default".to_string()),
-                (
-                    "User-Agent".to_string(),
-                    "codex-cli/1.0.18 (macOS; arm64)".to_string(),
-                ),
-            ],
-            body: Some(PreparedBody::Json(json!({
-                "model": "gpt-5.3-codex",
-                "input": [],
-                "stream": false,
-                "store": false
-            }))),
-        }),
         "gemini-cli" | "antigravity" => Some(PreparedRequest {
             method: Method::GET,
             url: "https://www.googleapis.com/oauth2/v1/userinfo?alt=json".to_string(),

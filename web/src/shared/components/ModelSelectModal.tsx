@@ -10,6 +10,7 @@ import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS,
 import { getProviderCustomModelRows } from "@/shared/utils/providerCustomModels";
 import { buildAvailableModels, fetchLiveModels, useFavorites, type LiveModel } from "@/shared/models/availableModels";
 import React from "react";
+import { useCatalogStore } from "@/store/catalogStore";
 
 interface Model {
   id: string;
@@ -95,6 +96,7 @@ export default function ModelSelectModal({
   onSelectIds,
 }: ModelSelectModalProps) {
   useEnsureCatalog();
+  const reloadCatalog = useCatalogStore((state) => state.reload);
   const { getCaps } = useModelCaps();
   // Filter activeProviders by serviceKinds when kindFilter set (e.g. "webSearch", "webFetch")
   const filteredActiveProviders = useMemo(() => {
@@ -125,8 +127,11 @@ export default function ModelSelectModal({
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
     );
   useEffect(() => {
-    if (isOpen) setSelectedIds([]);
-  }, [isOpen]);
+    if (isOpen) {
+      setSelectedIds([]);
+      void reloadCatalog();
+    }
+  }, [isOpen, reloadCatalog]);
 
   const fetchCombos = async () => {
     try {
@@ -387,7 +392,7 @@ export default function ModelSelectModal({
 
           if (allModels.length > 0) {
             groups[providerId] = { name: providerInfo.name, alias, color: providerInfo.color, models: allModels };
-          } else if (allModels.length === 0 && kindFilter === null && (providerInfo.serviceKinds || ["llm"]).includes("llm")) {
+          } else if (providerId !== "codex" && allModels.length === 0 && kindFilter === null && (providerInfo.serviceKinds || ["llm"]).includes("llm")) {
             groups[providerId] = { name: providerInfo.name, alias, color: providerInfo.color, models: [{ id: providerId, name: providerInfo.name, value: alias }] };
           }
         } else {
@@ -410,13 +415,13 @@ export default function ModelSelectModal({
             isCustom: r.source === "custom" || r.source === "legacyAlias",
           }));
 
-          if (allModels.length === 0 && kindFilter === null && (providerInfo.serviceKinds || ["llm"]).includes("llm")) {
+          if (providerId !== "codex" && allModels.length === 0 && kindFilter === null && (providerInfo.serviceKinds || ["llm"]).includes("llm")) {
             allModels = [{ id: providerId, name: providerInfo.name, value: alias }];
           }
 
           if (allModels.length > 0) {
             groups[providerId] = { name: providerInfo.name, alias, color: providerInfo.color, models: allModels };
-          } else if (allModels.length === 0 && kindFilter === null && (providerInfo.serviceKinds || ["llm"]).includes("llm")) {
+          } else if (providerId !== "codex" && allModels.length === 0 && kindFilter === null && (providerInfo.serviceKinds || ["llm"]).includes("llm")) {
             groups[providerId] = { name: providerInfo.name, alias, color: providerInfo.color, models: [{ id: providerId, name: providerInfo.name, value: alias }] };
           }
         }

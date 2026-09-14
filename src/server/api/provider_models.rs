@@ -1,6 +1,3 @@
-use std::collections::BTreeMap;
-use std::sync::Arc;
-
 use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
@@ -11,11 +8,8 @@ use chrono::{Duration as ChronoDuration, Utc};
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
-use crate::core::config::app_constants::{
-    CODEX_CLIENT_VERSION, CODEX_ORIGINATOR, CODEX_USER_AGENT,
-};
-use crate::server::api::oauth::{get_refresh_lock_key, REFRESH_LOCKS};
 use crate::server::state::AppState;
 use crate::types::{CustomModel, ProviderConnection};
 
@@ -45,9 +39,6 @@ const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const KIRO_AUTH_SERVICE: &str = "https://prod.us-east-1.auth.desktop.kiro.dev";
 const KIRO_MODELS_URL: &str = "https://codewhisperer.us-east-1.amazonaws.com";
 const KIRO_MODELS_TARGET: &str = "AmazonCodeWhispererService.ListAvailableModels";
-
-const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
-const CODEX_STALE_DAYS: i64 = 8;
 
 const OPENROUTER_REFERER: &str = "https://endpoint-proxy.local";
 const OPENROUTER_TITLE: &str = "Endpoint Proxy";
@@ -449,9 +440,16 @@ async fn fetch_provider_models_response(
             .await
         }
         "codex" => {
-            let token = primary_token(connection)
-                .ok_or_else(|| RouteError::unauthorized("No valid token found"))?;
-            fetch_codex_models(state, connection, &token).await
+            let inventory = state
+                .codex_models
+                .models_for_connection(state, connection)
+                .await
+                .map_err(|error| RouteError::new(error.status, error.message))?;
+            Ok(response_with_models(
+                connection,
+                inventory.models.iter().map(codex_provider_model).collect(),
+                inventory.warning,
+            ))
         }
         "antigravity" => {
             let token = primary_token(connection)
@@ -968,59 +966,6 @@ fn gemini_error_detail(body: &str) -> String {
         .unwrap_or_else(|| body.chars().take(200).collect())
 }
 
-async fn fetch_codex_models_with_token(
-    connection: &ProviderConnection,
-    token: &str,
-) -> Result<ProviderModelsResponse, RouteError> {
-    let client = http_client()?;
-    // The /codex/models endpoint gates entries by minimal_client_version.
-    let request = client
-        .get(format!(
-            "https://chatgpt.com/backend-api/codex/models?client_version={CODEX_CLIENT_VERSION}"
-        ))
-        .header(CONTENT_TYPE, "application/json")
-        .header(ACCEPT, "application/json")
-        .header(AUTHORIZATION, format!("Bearer {token}"))
-        .header("originator", CODEX_ORIGINATOR)
-        .header("Version", CODEX_CLIENT_VERSION)
-        .header(USER_AGENT, CODEX_USER_AGENT);
-    let payload = fetch_json(request)
-        .await
-        .map_err(map_upstream_route_error)?;
-    Ok(response_with_models(
-        connection,
-        parse_available_codex_models(&payload),
-        None,
-    ))
-}
-
-fn is_codex_token_stale(timestamp_str: Option<&str>) -> bool {
-    let Some(raw) = timestamp_str else {
-        return false;
-    };
-    let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(raw) else {
-        return false;
-    };
-    let age = Utc::now() - parsed.with_timezone(&Utc);
-    age >= ChronoDuration::days(CODEX_STALE_DAYS)
-}
-
-async fn fetch_codex_models(
-    state: &AppState,
-    connection: &ProviderConnection,
-    token: &str,
-) -> Result<ProviderModelsResponse, RouteError> {
-    if is_codex_token_stale(connection.updated_at.as_deref()) {
-        if let Some(refresh_token) = connection.refresh_token.as_deref() {
-            if let Ok(refreshed) = refresh_codex_token(refresh_token).await {
-                persist_refreshed_credentials(state, connection, &refreshed).await;
-                return fetch_codex_models_with_token(connection, &refreshed.access_token).await;
-            }
-        }
-    }
-    fetch_codex_models_with_token(connection, token).await
-}
-
 async fn fetch_antigravity_models(
     connection: &ProviderConnection,
     token: &str,
@@ -1397,56 +1342,6 @@ async fn refresh_google_token(
     })
 }
 
-fn codex_token_url() -> String {
-    std::env::var("OPENPROXY_CODEX_TOKEN_URL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "https://auth.openai.com/oauth/token".to_string())
-}
-
-async fn refresh_codex_token(refresh_token: &str) -> Result<RefreshResult, String> {
-    // Per-token lock prevents Auth0 `refresh_token_reused` errors from concurrent refreshes
-    let lock_key = get_refresh_lock_key("codex", refresh_token);
-    let lock_arc = {
-        let mut locks = REFRESH_LOCKS.lock();
-        locks
-            .entry(lock_key)
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .clone()
-    };
-    let _permit = lock_arc.lock().await;
-
-    let client = http_client().map_err(|error| error.message)?;
-    let request = client
-        .post(codex_token_url())
-        .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
-        .header(ACCEPT, "application/json")
-        .form(&[
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token),
-            ("client_id", CODEX_CLIENT_ID),
-        ]);
-
-    let payload = fetch_json(request)
-        .await
-        .map_err(fetch_json_error_message)?;
-    let access_token = payload
-        .get("access_token")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-        .ok_or_else(|| "Codex refresh response did not include access_token".to_string())?;
-
-    Ok(RefreshResult {
-        access_token: access_token.to_string(),
-        refresh_token: payload
-            .get("refresh_token")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        expires_in: payload.get("expires_in").and_then(Value::as_i64),
-    })
-}
-
 async fn refresh_kiro_token(
     refresh_token: &str,
     provider_specific_data: &BTreeMap<String, Value>,
@@ -1625,14 +1520,26 @@ fn parse_gemini_cli_models(payload: &Value) -> Vec<ProviderModel> {
         .unwrap_or_default()
 }
 
-fn parse_available_codex_models(payload: &Value) -> Vec<ProviderModel> {
-    parse_openai_style_models(payload)
-        .into_iter()
-        .filter(|model| {
-            model.extra.get("visibility").and_then(Value::as_str) != Some("hide")
-                && model.extra.get("supported_in_api").and_then(Value::as_bool) != Some(false)
-        })
-        .collect()
+fn codex_provider_model(model: &crate::server::codex_catalog::CodexModelMetadata) -> ProviderModel {
+    let mut extra = BTreeMap::new();
+    extra.insert("kind".to_string(), Value::String("llm".to_string()));
+    extra.insert(
+        "targetFormat".to_string(),
+        Value::String("openai-responses".to_string()),
+    );
+    if let Some(context) = model.context_window {
+        extra.insert("contextWindow".to_string(), Value::from(context));
+    }
+    extra.insert("capabilities".to_string(), json!(model.capabilities));
+    extra.insert(
+        "reasoningEfforts".to_string(),
+        json!(model.reasoning_efforts),
+    );
+    ProviderModel {
+        id: model.id.clone(),
+        name: model.name.clone(),
+        extra,
+    }
 }
 
 fn expand_kiro_model_variants(models: Vec<ProviderModel>) -> Vec<ProviderModel> {
@@ -2208,34 +2115,6 @@ mod tests {
         let expanded = expand_kiro_model_variants(vec![default_auto]);
         let ids: Vec<&str> = expanded.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, vec!["default-auto", "default-auto-thinking"]);
-    }
-
-    #[test]
-    fn codex_parser_excludes_hidden_and_unsupported_models() {
-        let payload = json!({
-            "models": [
-                {
-                    "slug": "gpt-6-astra",
-                    "display_name": "GPT-6-Astra",
-                    "visibility": "list",
-                    "supported_in_api": true
-                },
-                {
-                    "slug": "gpt-reserve",
-                    "visibility": "hide",
-                    "supported_in_api": true
-                },
-                {
-                    "slug": "gpt-5.3-codex-spark",
-                    "visibility": "list",
-                    "supported_in_api": false
-                }
-            ]
-        });
-
-        let models = parse_available_codex_models(&payload);
-        let ids: Vec<_> = models.iter().map(|model| model.id.as_str()).collect();
-        assert_eq!(ids, vec!["gpt-6-astra"]);
     }
 
     #[test]

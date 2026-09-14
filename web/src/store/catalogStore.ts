@@ -23,6 +23,7 @@ interface CatalogState {
   modelsByAlias: Record<string, CatalogModel[]>;
   providerIdToAlias: Record<string, string>;
   load: () => Promise<void>;
+  reload: () => Promise<void>;
 }
 
 export const useCatalogStore = create<CatalogState>((set, get) => ({
@@ -33,6 +34,11 @@ export const useCatalogStore = create<CatalogState>((set, get) => ({
   load: async () => {
     const state = get();
     if (state.loaded || state.loading) return;
+    await get().reload();
+  },
+  reload: async () => {
+    const state = get();
+    if (state.loading) return;
     set({ loading: true });
     try {
       const res = await fetch("/api/catalog", { cache: "no-store" });
