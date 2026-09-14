@@ -189,21 +189,6 @@ fn default_executor_builds_static_and_compatible_urls() {
         "https://api.cline.bot/api/v1/chat/completions"
     );
 
-    let opencode_go =
-        DefaultExecutor::new("opencode-go", pool.clone(), None).expect("opencode-go executor");
-    assert_eq!(
-        opencode_go
-            .build_url("kimi-k2.6", false, &connection("opencode-go"))
-            .expect("opencode-go url"),
-        "https://opencode.ai/zen/go/v1/chat/completions"
-    );
-    assert_eq!(
-        opencode_go
-            .build_url("minimax-m2.5", false, &connection("opencode-go"))
-            .expect("opencode-go claude-format url"),
-        "https://opencode.ai/zen/go/v1/messages"
-    );
-
     let cloudflare =
         DefaultExecutor::new("cloudflare-ai", pool, None).expect("cloudflare executor");
     let mut cloudflare_connection = connection("cloudflare-ai");
@@ -265,10 +250,6 @@ fn default_executor_supports_current_passthrough_provider_matrix() {
         (
             "kilocode",
             "https://api.kilo.ai/api/openrouter/chat/completions",
-        ),
-        (
-            "opencode-go",
-            "https://opencode.ai/zen/go/v1/chat/completions",
         ),
         (
             "glm-cn",
@@ -751,21 +732,6 @@ fn default_executor_builds_expected_headers() {
         .expect("kilocode headers");
     assert_eq!(headers["authorization"], "Bearer sk-test");
     assert_eq!(headers["x-kilocode-organizationid"], "org-42");
-
-    let opencode_go = DefaultExecutor::new("opencode-go", Arc::new(ClientPool::new()), None)
-        .expect("opencode-go");
-    let headers = opencode_go
-        .build_headers("kimi-k2.6", &connection("opencode-go"), false)
-        .expect("opencode-go openai headers");
-    assert_eq!(headers["authorization"], "Bearer sk-test");
-    assert!(headers.get("x-api-key").is_none());
-
-    let claude_headers = opencode_go
-        .build_headers("minimax-m2.5", &connection("opencode-go"), false)
-        .expect("opencode-go claude headers");
-    assert_eq!(claude_headers["x-api-key"], "sk-test");
-    assert_eq!(claude_headers["anthropic-version"], "2023-06-01");
-    assert!(claude_headers.get("authorization").is_none());
 }
 
 #[test]
@@ -837,7 +803,6 @@ fn default_executor_builds_bearer_headers_for_openai_passthrough_matrix() {
         "hyperbolic",
         "codebuddy",
         "kilocode",
-        "opencode-go",
         "glm-cn",
         "alicode",
         "alicode-intl",

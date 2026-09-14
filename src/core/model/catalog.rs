@@ -152,9 +152,8 @@ pub fn provider_catalog() -> &'static ProviderCatalog {
 mod tests {
     use super::*;
 
-    // Guards against catalog regeneration silently dropping the opencode-zen
-    // registration (this happened once: merged in 0895cac, then lost when the
-    // catalog was regenerated, which broke the /dashboard/combos model picker).
+    // OpenCode models are populated from models.dev at runtime. The static
+    // catalog keeps only the provider registration and an empty insertion point.
     #[test]
     fn opencode_zen_registered_in_static_catalog() {
         let catalog = provider_catalog();
@@ -166,14 +165,8 @@ mod tests {
 
         let models = catalog
             .models_for_alias("opencode-zen")
-            .expect("opencode-zen should have models in provider_catalog.json");
-        assert!(
-            models.len() >= 40,
-            "expected the zen model list, got {}",
-            models.len()
-        );
-        assert!(models.iter().any(|m| m.id == "gpt-5.4"));
-        assert!(models.iter().any(|m| m.id == "kimi-k2.6"));
+            .expect("opencode-zen should have a providerModels entry");
+        assert!(models.is_empty());
     }
 
     // Bead .46: all 17 parity providers must be registered in the static

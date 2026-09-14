@@ -19,7 +19,6 @@ mod kiro;
 mod mimo_free;
 mod ollama;
 mod opencode;
-mod opencode_go;
 mod project_id_cache;
 mod provider;
 pub mod qoder;
@@ -92,10 +91,7 @@ pub use ollama::{
 };
 pub use opencode::{
     OpenCodeExecutionRequest, OpenCodeExecutor, OpenCodeExecutorError, OpenCodeExecutorResponse,
-};
-pub use opencode_go::{
-    OpenCodeGoExecutionRequest, OpenCodeGoExecutor, OpenCodeGoExecutorError,
-    OpenCodeGoExecutorResponse,
+    OpenCodeTier,
 };
 pub use provider::{
     LogEntry, LogLevel, ProviderExecutionRequest, ProviderExecutionResponse, ProviderExecutor,

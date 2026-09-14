@@ -143,16 +143,6 @@ static PROVIDER_CONFIGS: Lazy<BTreeMap<&'static str, ProviderConfig>> = Lazy::ne
                 .with_header("X-Title", "Cline"),
         ),
         (
-            "opencode-go",
-            ProviderConfig::openai("https://opencode.ai/zen/go/v1"),
-        ),
-        // Zen answers 200 for unauthenticated POSTs, so auth is optional
-        // (`PROVIDER_OPTIONAL_AUTH`) and model ids pass through verbatim.
-        (
-            "opencode-zen",
-            ProviderConfig::openai("https://opencode.ai/zen/v1/chat/completions"),
-        ),
-        (
             "glm-cn",
             ProviderConfig::openai("https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"),
         ),
@@ -719,12 +709,12 @@ impl From<tokio::sync::AcquireError> for ExecutorError {
     }
 }
 
-/// Resolve a provider's upstream base URL from the live map
-/// (`PROVIDER_CONFIGS`). This is the single source of truth for chat and
-/// media; it replaces the deleted `provider.rs` PROVIDER_REGISTRY, which
-/// had silently drifted (e.g. wrong blackbox URL, wrong `featherless-ai`
-/// key). Returns `None` for unknown providers.
+/// Resolve a provider's upstream base URL from its executor configuration.
+/// Returns `None` for unknown providers.
 pub fn provider_config_base_url(provider: &str) -> Option<String> {
+    if let Some(tier) = super::opencode::OpenCodeTier::from_provider(provider) {
+        return Some(tier.base_url().to_string());
+    }
     PROVIDER_CONFIGS
         .get(provider)
         .map(|config| config.base_url.clone())
@@ -910,19 +900,6 @@ impl DefaultExecutor {
             return Ok(format!("{}/{model}:{action}", self.config.base_url));
         }
 
-        if self.provider == "opencode-go" {
-            let path = if opencode_go_uses_claude_format(model) {
-                "messages"
-            } else {
-                "chat/completions"
-            };
-            return Ok(format!(
-                "{}/{}",
-                self.config.base_url.trim_end_matches('/'),
-                path
-            ));
-        }
-
         if self.config.base_url.contains("{accountId}")
             || self.config.base_url.contains("{project}")
             || self.config.base_url.contains("{location}")
@@ -1011,14 +988,6 @@ impl DefaultExecutor {
             } else {
                 return Err(ExecutorError::MissingCredentials(self.provider.clone()));
             }
-        } else if self.provider == "opencode-go" && opencode_go_uses_claude_format(model) {
-            let token = credentials
-                .api_key
-                .as_deref()
-                .or(credentials.access_token.as_deref())
-                .ok_or_else(|| ExecutorError::MissingCredentials(self.provider.clone()))?;
-            headers.insert("x-api-key", HeaderValue::from_str(token)?);
-            headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
         } else if matches!(
             self.provider.as_str(),
             "xiaomi-tokenplan" | "xmtp" | "xiaomi-mimo" | "mimo"
@@ -1067,10 +1036,6 @@ impl DefaultExecutor {
             ] {
                 headers.remove(h);
             }
-        } else if provider_allows_missing_credentials(&self.provider)
-            && bearer_token(credentials).is_none()
-        {
-            // Intentionally no Authorization header: noAuth provider, no credential.
         } else {
             // Prefer access_token over api_key for Bearer (9router BaseExecutor)
             let token = credentials
@@ -1187,11 +1152,6 @@ impl DefaultExecutor {
             "minimax" | "minimax-cn" | "glm" | "kimi" | "kimi-coding" | "agentrouter"
         ) {
             convert_openai_tools_to_claude(&mut body);
-        }
-
-        // Strip unsupported tool types for Fireworks/OCg upstream
-        if self.provider == "opencode-go" {
-            strip_fireworks_unsupported_tools(&mut body);
         }
 
         // Inject reasoning_content placeholder for DeepSeek/Kimi providers
@@ -1637,27 +1597,6 @@ fn bearer_token(credentials: &ProviderConnection) -> Option<&str> {
         .or_else(|| non_empty_option(credentials.api_key.as_deref()))
 }
 
-/// Providers whose upstream accepts unauthenticated requests (dashboard
-/// `noAuth: true`). They must reach the upstream without an Authorization
-/// header instead of failing with `MissingCredentials`.
-fn provider_allows_missing_credentials(provider: &str) -> bool {
-    matches!(provider, "opencode-zen")
-}
-
-/// 9router open-sse/executors/opencode-go.js MESSAGES_FORMAT_MODELS — these
-/// route to `${BASE}/messages` with `x-api-key` + `anthropic-version` headers.
-fn opencode_go_uses_claude_format(model: &str) -> bool {
-    matches!(
-        model,
-        "minimax-m3"
-            | "minimax-m2.7"
-            | "minimax-m2.5"
-            | "qwen3.7-max"
-            | "qwen3.7-plus"
-            | "qwen3.6-plus"
-    )
-}
-
 /// Convert OpenAI-format tools to Claude format.
 ///
 /// OpenAI: `{"type":"function", "function": {"name":"x", "description":"d", "parameters":{...}}}`
@@ -1758,57 +1697,9 @@ fn convert_openai_tools_to_claude(body: &mut Value) {
     }
 }
 
-/// Strip tools that Fireworks AI / OCg upstream doesn't support.
-/// - Only keeps tools with type "function"
-/// - Strips "strict" field from function definitions
-fn strip_fireworks_unsupported_tools(body: &mut Value) {
-    let Some(obj) = body.as_object_mut() else {
-        return;
-    };
-    if let Some(tools) = obj.get_mut("tools").and_then(Value::as_array_mut) {
-        // Keep only function-type tools that also have a `function` object
-        // (type "function" without function:{} breaks DeepSeek upstream)
-        tools.retain(|tool| {
-            let t = tool.get("type").and_then(Value::as_str).unwrap_or("");
-            t == "function" && tool.get("function").and_then(Value::as_object).is_some()
-                || t == "custom"
-                || t.is_empty()
-        });
-        for tool in tools.iter_mut() {
-            if let Some(tool_obj) = tool.as_object_mut() {
-                tool_obj.remove("strict");
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_opencode_go_claude_format_models() {
-        // 9router opencode-go.js MESSAGES_FORMAT_MODELS — all six must use
-        // the claude (/messages) format, not /chat/completions.
-        for model in [
-            "minimax-m3",
-            "minimax-m2.7",
-            "minimax-m2.5",
-            "qwen3.7-max",
-            "qwen3.7-plus",
-            "qwen3.6-plus",
-        ] {
-            assert!(
-                opencode_go_uses_claude_format(model),
-                "{model} should use claude format"
-            );
-        }
-
-        // Non-members keep the openai format.
-        assert!(!opencode_go_uses_claude_format("qwen3.6"));
-        assert!(!opencode_go_uses_claude_format("minimax-m1"));
-        assert!(!opencode_go_uses_claude_format("gpt-4o"));
-    }
 
     #[test]
     fn drops_client_metadata_for_cerebras() {
@@ -1862,63 +1753,6 @@ mod tests {
             serde_json::json!({ "ideType": 9 }),
             "openai must keep client_metadata"
         );
-    }
-
-    #[test]
-    fn test_default_opencode_go_base_url() {
-        // 9router parity: opencode-go base URL must include the /go segment
-        // (JS open-sse/executors/opencode-go.js BASE = "https://opencode.ai/zen/go/v1").
-        let executor =
-            DefaultExecutor::new("opencode-go", Arc::new(ClientPool::new()), None).unwrap();
-        let creds = ProviderConnection::default();
-        // Non-claude model → /chat/completions under the /go base.
-        let url = executor.build_url("qwen3.6", false, &creds).unwrap();
-        assert_eq!(
-            url, "https://opencode.ai/zen/go/v1/chat/completions",
-            "opencode-go default URL must include the /go segment"
-        );
-        // Claude-format model → /messages under the /go base.
-        let url = executor.build_url("minimax-m3", false, &creds).unwrap();
-        assert_eq!(
-            url, "https://opencode.ai/zen/go/v1/messages",
-            "claude-format opencode-go URL must include /go"
-        );
-    }
-
-    fn zen_executor() -> DefaultExecutor {
-        DefaultExecutor::new("opencode-zen", Arc::new(ClientPool::new()), None)
-            .expect("opencode-zen must be a supported provider")
-    }
-
-    #[test]
-    fn opencode_zen_posts_to_live_zen_chat_endpoint() {
-        // Live-verified: POST https://opencode.ai/zen/v1/chat/completions → 200.
-        let url = zen_executor()
-            .build_url("gpt-5.6-sol", false, &ProviderConnection::default())
-            .unwrap();
-        assert_eq!(url, "https://opencode.ai/zen/v1/chat/completions");
-    }
-
-    #[test]
-    fn opencode_zen_omits_authorization_without_credentials() {
-        // noAuth provider: an unauthenticated POST is accepted upstream, so a
-        // credential-less connection must not fail with MissingCredentials.
-        let headers = zen_executor()
-            .build_headers("hy3-free", &ProviderConnection::default(), false)
-            .expect("noAuth provider must build headers without credentials");
-        assert!(!headers.contains_key(AUTHORIZATION));
-    }
-
-    #[test]
-    fn opencode_zen_sends_bearer_when_credential_present() {
-        let credentials = ProviderConnection {
-            api_key: Some("zen-key".to_string()),
-            ..ProviderConnection::default()
-        };
-        let headers = zen_executor()
-            .build_headers("hy3-free", &credentials, false)
-            .unwrap();
-        assert_eq!(headers[AUTHORIZATION], "Bearer zen-key");
     }
 
     #[test]

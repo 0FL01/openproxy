@@ -1017,11 +1017,37 @@ async fn execute_single_model(
     model_str: &str,
     api_key: Option<&str>,
     endpoint: Option<&'static str>,
-    plan: &RequestPlan,
+    base_plan: &RequestPlan,
     client_tool: Option<ClientTool>,
     client_headers: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<Response, ComboAttemptError> {
     let snapshot = state.db.snapshot();
+    let mut plan = base_plan.clone();
+    if crate::core::model::models_dev::is_opencode_provider(&plan.provider) {
+        let models = state
+            .models_dev
+            .snapshot()
+            .await
+            .map_err(|message| ComboAttemptError {
+                status: 503,
+                message,
+                retry_after: None,
+                upstream_body: None,
+            })?;
+        let metadata = models
+            .find(&plan.provider, plan.dispatch_model())
+            .ok_or_else(|| ComboAttemptError {
+                status: 400,
+                message: format!(
+                    "Model {} is not published for {} by models.dev",
+                    plan.dispatch_model(),
+                    plan.provider
+                ),
+                retry_after: None,
+                upstream_body: None,
+            })?;
+        plan.apply_opencode_metadata(metadata);
+    }
 
     // 9router chatCore.js:229 — the `x-9router-token-saver` request header
     // opts a single request out of RTK/headroom/caveman/ponytail when its
@@ -1281,9 +1307,10 @@ async fn execute_single_model(
         body,
         api_key,
         endpoint,
-        plan,
+        &plan,
         client_tool,
         compression_stats,
+        client_headers,
     )
     .await
 }
@@ -1298,6 +1325,7 @@ async fn forward_with_provider_fallback(
     plan: &RequestPlan,
     client_tool: Option<ClientTool>,
     compression: Option<CompressionStats>,
+    client_headers: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<Response, ComboAttemptError> {
     let mut excluded = HashSet::new();
     let mut last_error: Option<ComboAttemptError> = None;
@@ -1436,11 +1464,10 @@ async fn forward_with_provider_fallback(
             GithubExecutionRequest, GithubExecutor, GrokWebExecutionRequest, GrokWebExecutor,
             IFlowExecutionRequest, IFlowExecutor, KimchiExecutor, KiroExecutionRequest,
             KiroExecutor, KiroExecutorResponse, OpenCodeExecutionRequest, OpenCodeExecutor,
-            OpenCodeGoExecutionRequest, OpenCodeGoExecutor, PerplexityWebExecutionRequest,
-            PerplexityWebExecutor, ProviderExecutionRequest, ProviderExecutor,
-            QoderExecutionRequest, QoderExecutor, QwenExecutionRequest, QwenExecutor,
-            TraeExecutionRequest, TraeExecutor, VertexExecutionRequest, VertexExecutor,
-            WindsurfExecutionRequest, WindsurfExecutor,
+            OpenCodeTier, PerplexityWebExecutionRequest, PerplexityWebExecutor,
+            ProviderExecutionRequest, ProviderExecutor, QoderExecutionRequest, QoderExecutor,
+            QwenExecutionRequest, QwenExecutor, TraeExecutionRequest, TraeExecutor,
+            VertexExecutionRequest, VertexExecutor, WindsurfExecutionRequest, WindsurfExecutor,
         };
 
         let is_codex_model = model.starts_with("codex/") || provider == "codex";
@@ -1710,7 +1737,7 @@ async fn forward_with_provider_fallback(
                     transformed_body: result.transformed_body,
                     transport: result.transport,
                 })
-            } else if provider == "opencode" {
+            } else if let Some(tier) = OpenCodeTier::from_provider(provider) {
                 let executor = OpenCodeExecutor::new(state.client_pool.clone(), provider_node)
                     .map_err(|e| ComboAttemptError {
                         status: 500,
@@ -1725,43 +1752,19 @@ async fn forward_with_provider_fallback(
                         stream,
                         credentials: connection.clone(),
                         proxy,
-                        raw_headers: std::collections::BTreeMap::new(),
+                        raw_headers: client_headers
+                            .into_iter()
+                            .flatten()
+                            .map(|(key, value)| (key.clone(), value.clone()))
+                            .collect(),
+                        tier,
+                        format: plan.target_format,
+                        family: plan.model_family.clone(),
                     })
                     .await
                     .map_err(|e| ComboAttemptError {
                         status: 500,
                         message: format!("OpenCode execution failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                Ok(KiroExecutorResponse {
-                    response: result.response,
-                    url: result.url,
-                    headers: result.headers,
-                    transformed_body: result.transformed_body,
-                    transport: result.transport,
-                })
-            } else if provider == "opencode-go" {
-                let executor = OpenCodeGoExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ComboAttemptError {
-                        status: 500,
-                        message: format!("OpenCodeGo executor creation failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                let result = executor
-                    .execute_request(OpenCodeGoExecutionRequest {
-                        model: model.to_string(),
-                        body: request_body.clone(),
-                        stream,
-                        credentials: connection.clone(),
-                        proxy,
-                        raw_headers: std::collections::BTreeMap::new(),
-                    })
-                    .await
-                    .map_err(|e| ComboAttemptError {
-                        status: 500,
-                        message: format!("OpenCodeGo execution failed: {:?}", e),
                         retry_after: None,
                         upstream_body: None,
                     })?;
@@ -2685,7 +2688,7 @@ fn is_no_auth_provider(provider: &str) -> bool {
     matches!(
         provider,
         "opencode"
-            | "opencode-go"
+            | "opencode-zen"
             | "edge-tts"
             | "google-tts"
             | "local-device"
@@ -3254,6 +3257,9 @@ async fn proxy_response_with_pending_tracking(
     let needs_stream_translation = plan.needs_translation();
     let stream_source_format = plan.source_format;
     let stream_target_format = plan.target_format;
+    let stop_on_response_completed =
+        crate::core::model::models_dev::is_opencode_provider(&provider)
+            && stream_target_format == Format::OpenAiResponses;
     let status = response.status();
     let headers = response.headers().clone();
 
@@ -3358,6 +3364,7 @@ async fn proxy_response_with_pending_tracking(
                 // at stream end. Streaming SSE responses usually lack a usage field,
                 // so most requests record with tokens=None (request count only).
                 let mut last_data: Option<Bytes> = None;
+                let mut completion_frames = String::new();
                 loop {
                     let next = tokio::time::timeout(SSE_STALL_TIMEOUT, upstream.try_next()).await;
                     match next {
@@ -3384,6 +3391,8 @@ async fn proxy_response_with_pending_tracking(
                         }
                         Ok(Ok(Some(chunk))) => {
                             last_data = Some(chunk.clone());
+                            let response_completed = stop_on_response_completed
+                                && responses_stream_completed(&mut completion_frames, &chunk);
                             if qoder_sse_unwrap {
                                 for line in qoder_unwrap_sse_chunk(
                                     &chunk,
@@ -3433,6 +3442,26 @@ async fn proxy_response_with_pending_tracking(
                                 }
                             } else {
                                 yield Ok::<Bytes, std::io::Error>(chunk);
+                            }
+                            if response_completed {
+                                if let Some(ref mut t_state) = t_state {
+                                    for line in registry::global_registry().finish_stream(
+                                        stream_source_format,
+                                        stream_target_format,
+                                        t_state,
+                                    ) {
+                                        if let Some(frame) = sse_frame_for_dashboard(&line) {
+                                            yield Ok::<Bytes, std::io::Error>(frame);
+                                        }
+                                    }
+                                }
+                                record_streaming_usage(&state, &provider, &model,
+                                    connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data, compression.clone()).await;
+                                state
+                                    .usage_live
+                                    .finish_request(&model, &provider, connection_id.as_deref(), false)
+                                    .await;
+                                return;
                             }
                         }
                         Ok(Ok(None)) => break,
@@ -3670,6 +3699,41 @@ async fn record_streaming_usage(
             compression,
         )
         .await;
+}
+
+fn responses_stream_completed(buffer: &mut String, chunk: &[u8]) -> bool {
+    buffer.push_str(&String::from_utf8_lossy(chunk));
+    if buffer.contains("\r\n") {
+        *buffer = buffer.replace("\r\n", "\n");
+    }
+
+    while let Some(end) = buffer.find("\n\n") {
+        let frame: String = buffer.drain(..end + 2).collect();
+        let mut completed = false;
+        for line in frame.lines() {
+            if line
+                .strip_prefix("event:")
+                .is_some_and(|event| event.trim() == "response.completed")
+            {
+                completed = true;
+                break;
+            }
+            if let Some(data) = line.strip_prefix("data:") {
+                completed = serde_json::from_str::<Value>(data.trim())
+                    .ok()
+                    .and_then(|value| value.get("type").and_then(Value::as_str).map(str::to_owned))
+                    .as_deref()
+                    == Some("response.completed");
+                if completed {
+                    break;
+                }
+            }
+        }
+        if completed {
+            return true;
+        }
+    }
+    false
 }
 
 fn sse_frame_for_dashboard(line: &str) -> Option<Bytes> {
@@ -4515,7 +4579,7 @@ mod tests {
 
     use super::{
         build_dashboard_sse_response, build_proxied_response, earliest_retry_after,
-        select_connection,
+        responses_stream_completed, select_connection,
     };
     use crate::types::{AppDb, ProviderConnection};
 
@@ -4980,5 +5044,18 @@ mod tests {
         assert!(token_saver_gate(&empty));
         let yes = HashMap::from([("x-9router-token-saver".to_string(), "yes".to_string())]);
         assert!(token_saver_gate(&yes));
+    }
+
+    #[test]
+    fn detects_fragmented_responses_completion_frame() {
+        let mut buffer = String::new();
+        assert!(!responses_stream_completed(
+            &mut buffer,
+            b"event: response.compl"
+        ));
+        assert!(responses_stream_completed(
+            &mut buffer,
+            b"eted\r\ndata: {\"type\":\"response.completed\"}\r\n\r\n: ping\r\n\r\n"
+        ));
     }
 }

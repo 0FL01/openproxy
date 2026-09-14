@@ -846,10 +846,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn opencode_zen_models_appear_in_models_list() {
-        // Regression: opencode-zen was registered in the executor/CLI/alias
-        // maps but its provider entry + models were missing from the static
-        // catalog, so /v1/models exposed nothing for it.
+    async fn models_dev_opencode_models_appear_in_models_list() {
         let snapshot = AppDb {
             provider_connections: vec![ProviderConnection {
                 id: "conn-zen".into(),
@@ -859,15 +856,31 @@ mod tests {
             }],
             ..Default::default()
         };
-
-        let models = build_models_list(&test_state().await, &snapshot, &[LLM_KIND]).await;
-        assert!(
-            models.iter().any(|m| m.id == "opencode-zen/gpt-5.4"),
-            "catalog-registered opencode-zen model should appear in /v1/models"
+        let mut state = test_state().await;
+        state.models_dev = Arc::new(
+            crate::core::model::models_dev::ModelsDevCatalog::from_json(json!({
+                "opencode": {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "models": {
+                        "muse-spark-1.3-contributor-free": {
+                            "id": "muse-spark-1.3-contributor-free",
+                            "name": "Muse Spark 1.3 Free",
+                            "provider": {"npm": "@ai-sdk/openai"},
+                            "cost": {"input": 0, "output": 0}
+                        }
+                    }
+                },
+                "opencode-go": {"npm": "@ai-sdk/openai-compatible", "models": {}}
+            }))
+            .unwrap(),
         );
+
+        let models = build_models_list(&state, &snapshot, &[LLM_KIND]).await;
         assert!(
-            models.iter().any(|m| m.id == "opencode-zen/kimi-k2.6"),
-            "catalog-registered opencode-zen model should appear in /v1/models"
+            models
+                .iter()
+                .any(|m| m.id == "opencode-zen/muse-spark-1.3-contributor-free"),
+            "models.dev opencode model should appear in /v1/models"
         );
     }
 

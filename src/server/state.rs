@@ -11,6 +11,7 @@ use crate::core::circuit_breaker::CircuitBreakerRegistry;
 use crate::core::executor::ClientPool;
 use crate::core::health::{health_registry, HealthRegistry};
 use crate::core::mitm::server::MitmProxyHandle;
+use crate::core::model::models_dev::ModelsDevCatalog;
 use crate::core::tunnel::TunnelManager;
 use crate::core::usage::UsageTracker;
 use crate::db::Db;
@@ -97,6 +98,7 @@ pub struct AppState {
     /// successful miss (MISS). `Arc` because `ResponseCache` is shared across
     /// request tasks via interior mutability.
     pub response_cache: Arc<ResponseCache>,
+    pub models_dev: Arc<ModelsDevCatalog>,
 }
 
 impl AppState {
@@ -126,6 +128,7 @@ impl AppState {
             a2a_task_store: TaskStore::new(),
             health: health_registry(),
             response_cache: Arc::new(ResponseCache::default()),
+            models_dev: Arc::new(ModelsDevCatalog::default()),
         }
     }
 

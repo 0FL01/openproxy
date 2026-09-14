@@ -18,7 +18,7 @@ export const FREE_PROVIDERS: Record<string, Provider> = {
   // codebuddy: { id: "codebuddy", alias: "cb", name: "CodeBuddy", icon: "smart_toy", color: "#006EFF" },
   qoder: { id: "qoder", alias: "qd", name: "Qoder AI", icon: "water_drop", color: "#EC4899", website: "https://qoder.com", notice: { apiKeyUrl: "https://qoder.com/account/integrations", signupUrl: "https://qoder.com" }, authModes: ["oauth", "apikey"], hasOAuth: true, authHint: "Personal Access Token (pt-...) from https://qoder.com/account/integrations", serviceKinds: ["llm"] },
   iflow: { id: "iflow", alias: "if", name: "iFlow AI", icon: "water_drop", color: "#6366F1", website: "https://iflow.cn", notice: { signupUrl: "https://iflow.cn" } },
-  "opencode-zen": { id: "opencode-zen", alias: "opencode-zen", name: "OpenCode Zen", icon: "terminal", color: "#E87040", textIcon: "OC", noAuth: true, passthroughModels: true, modelsFetcher: { url: "https://opencode.ai/zen/v1/models", type: "opencode-free" } },
+  "opencode-zen": { id: "opencode-zen", alias: "opencode-zen", name: "OpenCode Zen", icon: "terminal", color: "#E87040", textIcon: "OC", noAuth: true, passthroughModels: true },
 };
 
 // Free Tier Providers (has free access but may require account/API key)
@@ -36,7 +36,7 @@ export const FREE_TIER_PROVIDERS: Record<string, Provider> = {
   // the dashboard can categorize them as free tier without touching their
   // auth behavior. AI_PROVIDERS spreads OAUTH_PROVIDERS after this, so
   // kilocode's oauth+apikey authModes are preserved.
-  "opencode-zen": { id: "opencode-zen", alias: "opencode-zen", name: "OpenCode Zen", icon: "terminal", color: "#E87040", textIcon: "OC", noAuth: true, passthroughModels: true, modelsFetcher: { url: "https://opencode.ai/zen/v1/models", type: "opencode-free" } },
+  "opencode-zen": { id: "opencode-zen", alias: "opencode-zen", name: "OpenCode Zen", icon: "terminal", color: "#E87040", textIcon: "OC", noAuth: true, passthroughModels: true },
   kilocode: { id: "kilocode", alias: "kc", name: "Kilo Code", icon: "code", color: "#FF6B35", textIcon: "KC", website: "https://kilocode.ai", notice: { signupUrl: "https://kilocode.ai", apiKeyUrl: "https://kilocode.ai" }, authModes: ["oauth", "apikey"], hasOAuth: true, priority: 40 },
 };
 

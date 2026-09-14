@@ -1,27 +1,49 @@
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::Value;
 use uuid::Uuid;
 
 use crate::core::proxy::ProxyTarget;
 use crate::core::translator::helpers::openai_helper::normalize_developer_role;
+use crate::core::translator::registry::Format;
 use crate::core::utils::session_manager::resolve_session_identity;
 use crate::types::{ProviderConnection, ProviderNode};
 
 use super::{ClientPool, TransportKind, UpstreamResponse};
 
-const OPENCODE_BASE: &str = "https://opencode.ai";
-const OPENCODE_PICKLE_PATH: &str = "/zen/v1/messages";
-const OPENCODE_DEFAULT_PATH: &str = "/zen/v1/chat/completions";
-const OPENCODE_RESPONSES_PATH: &str = "/zen/v1/responses";
+const ZEN_BASE_URL: &str = "https://opencode.ai/zen/v1";
+const GO_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
 
-/// Check if a model should be routed through the Responses API instead of chat.
-/// Muse Spark models use `/zen/v1/responses`.
-/// Mirrors `isResponsesModel` in `open-sse/executors/opencode.js:29-32`.
-fn is_responses_model(model: &str) -> bool {
-    let base = model.split([':', '@']).next().unwrap_or(model);
-    base.contains("muse") && base.contains("spark")
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenCodeTier {
+    Zen,
+    Go,
+}
+
+impl OpenCodeTier {
+    pub fn from_provider(provider: &str) -> Option<Self> {
+        match provider {
+            "opencode" | "opencode-zen" => Some(Self::Zen),
+            "opencode-go" => Some(Self::Go),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn base_url(self) -> &'static str {
+        match self {
+            Self::Zen => ZEN_BASE_URL,
+            Self::Go => GO_BASE_URL,
+        }
+    }
+
+    fn pool_key(self) -> &'static str {
+        match self {
+            Self::Zen => "opencode-zen",
+            Self::Go => "opencode-go",
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -76,8 +98,10 @@ pub struct OpenCodeExecutionRequest {
     pub stream: bool,
     pub credentials: ProviderConnection,
     pub proxy: Option<ProxyTarget>,
-    /// Downstream request headers for passthrough (9router rawHeaders).
-    pub raw_headers: std::collections::BTreeMap<String, String>,
+    pub raw_headers: BTreeMap<String, String>,
+    pub tier: OpenCodeTier,
+    pub format: Format,
+    pub family: Option<String>,
 }
 
 pub struct OpenCodeExecutorResponse {
@@ -103,139 +127,193 @@ impl OpenCodeExecutor {
         &self.pool
     }
 
-    fn build_url(&self, model: &str) -> String {
-        let path = if is_responses_model(model) {
-            OPENCODE_RESPONSES_PATH
-        } else if model == "big-pickle" {
-            OPENCODE_PICKLE_PATH
-        } else {
-            OPENCODE_DEFAULT_PATH
-        };
-        format!("{}{}", OPENCODE_BASE, path)
+    fn build_url(
+        tier: OpenCodeTier,
+        format: Format,
+        model: &str,
+        stream: bool,
+    ) -> Result<String, OpenCodeExecutorError> {
+        let base = tier.base_url();
+        match format {
+            Format::OpenAi => Ok(format!("{base}/chat/completions")),
+            Format::OpenAiResponses => Ok(format!("{base}/responses")),
+            Format::Claude => Ok(format!("{base}/messages")),
+            Format::Gemini => {
+                let action = if stream {
+                    "streamGenerateContent?alt=sse"
+                } else {
+                    "generateContent"
+                };
+                Ok(format!("{base}/models/{model}:{action}"))
+            }
+            other => Err(OpenCodeExecutorError::RequestFailed(format!(
+                "Unsupported OpenCode format: {}",
+                other.as_str()
+            ))),
+        }
     }
 
-    /// Build headers for the OpenCode request.
-    ///
-    /// Session management (9router v0.5.55): resolve a stable per-conversation
-    /// session ID and pass through downstream OpenCode-specific headers when
-    /// present. Forward the downstream User-Agent if it contains "opencode".
     fn build_headers(
-        &self,
-        credentials: &ProviderConnection,
-        stream: bool,
-        body: &Value,
-        raw_headers: &std::collections::BTreeMap<String, String>,
-    ) -> HeaderMap {
+        request: &OpenCodeExecutionRequest,
+    ) -> Result<HeaderMap, OpenCodeExecutorError> {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer public"));
 
-        // Session ID resolution (9router resolveOpencodeSession).
-        let session_id = resolve_session_identity(
-            Some(&std::collections::HashMap::from_iter(
-                raw_headers.iter().map(|(k, v)| (k.clone(), v.clone())),
-            )),
-            Some(body),
-            Some(&credentials.id),
+        let key = if request.credentials.auth_type == "none" {
+            None
+        } else {
+            request
+                .credentials
+                .api_key
+                .as_deref()
+                .or(request.credentials.access_token.as_deref())
+        };
+        if request.tier == OpenCodeTier::Go && key.is_none() {
+            return Err(OpenCodeExecutorError::RequestFailed(
+                "OpenCode Go requires an API key".to_string(),
+            ));
+        }
+        if let Some(key) = key {
+            let value = HeaderValue::from_str(key)?;
+            if request.format == Format::Claude
+                || (request.tier == OpenCodeTier::Zen && request.format == Format::OpenAiResponses)
+            {
+                headers.insert("x-api-key", value);
+            } else {
+                headers.insert(
+                    AUTHORIZATION,
+                    HeaderValue::from_str(&format!("Bearer {key}"))?,
+                );
+            }
+        }
+        if request.format == Format::Claude {
+            headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+        }
+
+        let raw: HashMap<String, String> = request
+            .raw_headers
+            .iter()
+            .map(|(key, value)| (key.to_ascii_lowercase(), value.clone()))
+            .collect();
+        let resolved_session = resolve_session_identity(
+            Some(&raw),
+            Some(&request.body),
+            Some(&request.credentials.id),
             "opencode",
         )
         .session_id;
-
-        // Pass through downstream OpenCode-specific headers when present,
-        // falling back to generated/default values.
-        let downstream_ua = raw_headers
-            .get("user-agent")
-            .or_else(|| raw_headers.get("User-Agent"))
-            .map(String::as_str)
-            .unwrap_or("");
-        let is_opencode_downstream = downstream_ua.to_lowercase().contains("opencode");
-
-        let client = raw_headers
-            .get("x-opencode-client")
-            .map(String::as_str)
-            .unwrap_or("desktop");
-        let session = raw_headers
+        let supplied_session = raw
             .get("x-opencode-session")
-            .map(String::as_str)
-            .unwrap_or(&session_id);
-        let request_id = raw_headers
-            .get("x-opencode-request")
-            .map(String::as_str)
-            .unwrap_or("global");
+            .cloned()
+            .unwrap_or(resolved_session);
+        let session = if request
+            .family
+            .as_deref()
+            .is_some_and(|family| family.starts_with("muse"))
+            && Uuid::parse_str(&supplied_session).is_err()
+        {
+            Uuid::new_v5(&Uuid::NAMESPACE_URL, supplied_session.as_bytes()).to_string()
+        } else {
+            supplied_session
+        };
 
-        // User-Agent: forward downstream if it's an OpenCode client, else use default.
-        let ua = if is_opencode_downstream {
+        let downstream_ua = raw.get("user-agent").map(String::as_str).unwrap_or("");
+        let ua = if downstream_ua.to_ascii_lowercase().starts_with("opencode") {
             downstream_ua
         } else {
             "opencode"
         };
-        headers.insert(
-            "User-Agent",
-            HeaderValue::from_str(ua).unwrap_or_else(|_| HeaderValue::from_static("opencode")),
-        );
-        headers.insert(
+        insert_header(&mut headers, "user-agent", ua)?;
+        insert_header(
+            &mut headers,
             "x-opencode-client",
-            HeaderValue::from_str(client).unwrap_or_else(|_| HeaderValue::from_static("desktop")),
-        );
-        headers.insert(
-            "x-opencode-session",
-            HeaderValue::from_str(session)
-                .unwrap_or_else(|_| HeaderValue::from_static("ses_unknown")),
-        );
-        headers.insert(
-            "x-opencode-request",
-            HeaderValue::from_str(request_id)
-                .unwrap_or_else(|_| HeaderValue::from_static("global")),
-        );
-        headers.insert(
+            raw.get("x-opencode-client")
+                .map(String::as_str)
+                .unwrap_or("desktop"),
+        )?;
+        insert_header(
+            &mut headers,
             "x-opencode-project",
-            HeaderValue::from_str(
-                raw_headers
-                    .get("x-opencode-project")
-                    .map(String::as_str)
-                    .unwrap_or("global"),
-            )
-            .unwrap_or_else(|_| HeaderValue::from_static("global")),
-        );
-
-        if stream {
-            headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
+            raw.get("x-opencode-project")
+                .map(String::as_str)
+                .unwrap_or("global"),
+        )?;
+        insert_header(&mut headers, "x-opencode-session", &session)?;
+        insert_header(
+            &mut headers,
+            "x-opencode-request",
+            raw.get("x-opencode-request")
+                .map(String::as_str)
+                .unwrap_or_else(|| ""),
+        )?;
+        if headers
+            .get("x-opencode-request")
+            .is_some_and(|value| value.is_empty())
+        {
+            headers.insert(
+                "x-opencode-request",
+                HeaderValue::from_str(&Uuid::new_v4().to_string())?,
+            );
+        }
+        for name in ["x-session-id", "x-session-affinity", "x-title"] {
+            if let Some(value) = raw.get(name) {
+                insert_header(&mut headers, name, value)?;
+            }
         }
 
-        headers
+        if request.stream {
+            headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
+        }
+        Ok(headers)
+    }
+
+    fn normalize_body(request: &mut OpenCodeExecutionRequest) {
+        if request.format == Format::OpenAi {
+            normalize_developer_role(&mut request.body);
+        }
+        let Some(body) = request.body.as_object_mut() else {
+            return;
+        };
+        body.remove("client_metadata");
+        body.remove("client_meta_data");
+
+        if request.format == Format::OpenAiResponses {
+            let max = body
+                .remove("max_tokens")
+                .or_else(|| body.remove("max_completion_tokens"));
+            if let Some(max) = max {
+                body.insert("max_output_tokens".to_string(), max);
+            }
+            if request
+                .family
+                .as_deref()
+                .is_some_and(|family| family.starts_with("muse"))
+            {
+                if let Some(value) = body.get_mut("max_output_tokens") {
+                    if value.as_u64().is_some_and(|limit| limit < 512) {
+                        *value = Value::from(512);
+                    }
+                }
+            }
+        }
+
+        if request.tier == OpenCodeTier::Go && body.get("reasoning").is_some_and(Value::is_boolean)
+        {
+            body.remove("reasoning");
+        }
     }
 
     pub async fn execute_request(
         &self,
         mut request: OpenCodeExecutionRequest,
     ) -> Result<OpenCodeExecutorResponse, OpenCodeExecutorError> {
-        // Normalize developer→system role (many providers reject role:developer)
-        normalize_developer_role(&mut request.body);
-
-        // Responses API models need max_tokens → max_output_tokens normalization.
-        // Mirrors opencode.js:76-86 (transformRequest for isResponsesModel).
-        let is_responses = is_responses_model(&request.model);
-        if is_responses {
-            if let Some(body_obj) = request.body.as_object_mut() {
-                // Read the value first to avoid borrow conflicts
-                let max_val = body_obj
-                    .remove("max_tokens")
-                    .or_else(|| body_obj.remove("max_completion_tokens"));
-                if let Some(val) = max_val {
-                    body_obj.insert("max_output_tokens".to_string(), val);
-                }
-            }
-        }
-
-        let url = self.build_url(&request.model);
-        let headers = self.build_headers(
-            &request.credentials,
-            request.stream,
-            &request.body,
-            &request.raw_headers,
-        );
-
-        let client = self.pool.get("opencode", request.proxy.as_ref())?;
+        let _ = &self.provider_node;
+        Self::normalize_body(&mut request);
+        let url = Self::build_url(request.tier, request.format, &request.model, request.stream)?;
+        let headers = Self::build_headers(&request)?;
+        let client = self
+            .pool
+            .get(request.tier.pool_key(), request.proxy.as_ref())?;
         let response = client
             .post(&url)
             .headers(headers.clone())
@@ -250,5 +328,137 @@ impl OpenCodeExecutor {
             transformed_body: request.body,
             transport: TransportKind::Reqwest,
         })
+    }
+}
+
+fn insert_header(
+    headers: &mut HeaderMap,
+    name: &'static str,
+    value: &str,
+) -> Result<(), OpenCodeExecutorError> {
+    headers.insert(HeaderName::from_static(name), HeaderValue::from_str(value)?);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(tier: OpenCodeTier, format: Format) -> OpenCodeExecutionRequest {
+        OpenCodeExecutionRequest {
+            model: "model".to_string(),
+            body: serde_json::json!({"model":"model","stream":true}),
+            stream: true,
+            credentials: ProviderConnection {
+                id: "connection".to_string(),
+                api_key: Some("key".to_string()),
+                ..Default::default()
+            },
+            proxy: None,
+            raw_headers: BTreeMap::new(),
+            tier,
+            format,
+            family: None,
+        }
+    }
+
+    #[test]
+    fn routes_by_tier_and_format() {
+        assert_eq!(
+            crate::core::executor::provider_config_base_url("opencode-go").as_deref(),
+            Some(GO_BASE_URL)
+        );
+        assert_eq!(
+            crate::core::executor::provider_config_base_url("opencode-zen").as_deref(),
+            Some(ZEN_BASE_URL)
+        );
+        assert_eq!(
+            OpenCodeExecutor::build_url(OpenCodeTier::Go, Format::OpenAiResponses, "muse", true)
+                .unwrap(),
+            "https://opencode.ai/zen/go/v1/responses"
+        );
+        assert_eq!(
+            OpenCodeExecutor::build_url(OpenCodeTier::Go, Format::OpenAi, "deepseek", true)
+                .unwrap(),
+            "https://opencode.ai/zen/go/v1/chat/completions"
+        );
+        assert_eq!(
+            OpenCodeExecutor::build_url(OpenCodeTier::Zen, Format::Claude, "claude", true).unwrap(),
+            "https://opencode.ai/zen/v1/messages"
+        );
+        assert_eq!(
+            OpenCodeExecutor::build_url(OpenCodeTier::Zen, Format::Gemini, "gemini", true).unwrap(),
+            "https://opencode.ai/zen/v1/models/gemini:streamGenerateContent?alt=sse"
+        );
+    }
+
+    #[test]
+    fn applies_auth_matrix_and_identity_defaults() {
+        let zen = request(OpenCodeTier::Zen, Format::OpenAiResponses);
+        let headers = OpenCodeExecutor::build_headers(&zen).unwrap();
+        assert_eq!(headers.get("x-api-key").unwrap(), "key");
+        assert!(!headers.contains_key(AUTHORIZATION));
+        assert!(
+            Uuid::parse_str(headers.get("x-opencode-request").unwrap().to_str().unwrap()).is_ok()
+        );
+
+        let go = request(OpenCodeTier::Go, Format::OpenAiResponses);
+        let headers = OpenCodeExecutor::build_headers(&go).unwrap();
+        assert_eq!(headers.get(AUTHORIZATION).unwrap(), "Bearer key");
+        assert!(!headers.contains_key("x-api-key"));
+
+        let claude = request(OpenCodeTier::Go, Format::Claude);
+        let headers = OpenCodeExecutor::build_headers(&claude).unwrap();
+        assert_eq!(headers.get("x-api-key").unwrap(), "key");
+        assert_eq!(headers.get("anthropic-version").unwrap(), "2023-06-01");
+    }
+
+    #[test]
+    fn anonymous_zen_sends_no_synthetic_credential() {
+        let mut zen = request(OpenCodeTier::Zen, Format::OpenAiResponses);
+        zen.credentials.auth_type = "none".to_string();
+        zen.credentials.api_key = None;
+        zen.credentials.access_token = Some("public".to_string());
+        let headers = OpenCodeExecutor::build_headers(&zen).unwrap();
+        assert!(!headers.contains_key(AUTHORIZATION));
+        assert!(!headers.contains_key("x-api-key"));
+    }
+
+    #[test]
+    fn muse_floor_preserves_responses_tools_and_reasoning() {
+        let mut req = request(OpenCodeTier::Go, Format::OpenAiResponses);
+        req.family = Some("muse".to_string());
+        req.body = serde_json::json!({
+            "max_output_tokens": 16,
+            "reasoning": {"effort":"high"},
+            "tools": [{"type":"function","name":"tool","parameters":{"type":"object"}}],
+            "client_metadata": {"x": true}
+        });
+        OpenCodeExecutor::normalize_body(&mut req);
+        assert_eq!(req.body["max_output_tokens"], 512);
+        assert_eq!(req.body["reasoning"]["effort"], "high");
+        assert_eq!(req.body["tools"][0]["name"], "tool");
+        assert!(req.body.get("client_metadata").is_none());
+
+        let mut without_limit = request(OpenCodeTier::Go, Format::OpenAiResponses);
+        without_limit.family = Some("muse".to_string());
+        OpenCodeExecutor::normalize_body(&mut without_limit);
+        assert!(without_limit.body.get("max_output_tokens").is_none());
+    }
+
+    #[test]
+    fn muse_session_is_stable_uuid() {
+        let mut request = request(OpenCodeTier::Go, Format::OpenAiResponses);
+        request.family = Some("muse".to_string());
+        request.raw_headers.insert(
+            "x-opencode-session".to_string(),
+            "conversation-1".to_string(),
+        );
+        let first = OpenCodeExecutor::build_headers(&request).unwrap();
+        let second = OpenCodeExecutor::build_headers(&request).unwrap();
+        let first = first.get("x-opencode-session").unwrap().to_str().unwrap();
+        let second = second.get("x-opencode-session").unwrap().to_str().unwrap();
+        assert_eq!(first, second);
+        assert!(Uuid::parse_str(first).is_ok());
     }
 }

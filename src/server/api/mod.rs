@@ -457,13 +457,32 @@ async fn api_health(State(state): State<AppState>) -> Response {
     Json(json!({ "ok": true, "providers": summary })).into_response()
 }
 
-async fn api_catalog() -> Response {
+async fn api_catalog(State(state): State<AppState>) -> Response {
     static CATALOG_JSON: &str = include_str!("../../core/model/provider_catalog.json");
-    (
-        [(axum::http::header::CONTENT_TYPE, "application/json")],
-        CATALOG_JSON,
-    )
-        .into_response()
+    let mut catalog: Value =
+        serde_json::from_str(CATALOG_JSON).expect("embedded provider_catalog.json should be valid");
+
+    if let Ok(snapshot) = state.models_dev.snapshot().await {
+        if let Some(entries) = catalog
+            .get_mut("providerModels")
+            .and_then(Value::as_array_mut)
+        {
+            for provider in ["opencode-zen", "opencode-go"] {
+                let Some(models) = snapshot.models(provider) else {
+                    continue;
+                };
+                if let Some(entry) = entries
+                    .iter_mut()
+                    .find(|entry| entry.get("alias").and_then(Value::as_str) == Some(provider))
+                {
+                    entry["models"] =
+                        Value::Array(models.iter().map(|model| model.catalog_json()).collect());
+                }
+            }
+        }
+    }
+
+    Json(catalog).into_response()
 }
 
 async fn get_version_api() -> Response {

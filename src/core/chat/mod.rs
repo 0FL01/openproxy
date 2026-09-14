@@ -19,6 +19,7 @@ use serde_json::Value;
 
 use crate::core::guardrails::global_guardrail_registry;
 use crate::core::model::catalog::provider_catalog;
+use crate::core::model::models_dev::OpenCodeModelMetadata;
 use crate::core::rtk::system_inject::inject_system_prompt;
 use crate::core::translator::caveman::inject_caveman;
 use crate::core::translator::ponytail::{inject_ponytail_prompt, PonytailLevel};
@@ -62,6 +63,8 @@ pub struct RequestPlan {
     pub bypass: bool,
     /// Provider forceStream + client non-stream → aggregate SSE to JSON
     pub sse_to_json: bool,
+    /// Dynamic provider family metadata (for provider-scoped wire quirks).
+    pub model_family: Option<String>,
 }
 
 impl RequestPlan {
@@ -118,6 +121,7 @@ impl RequestPlan {
             passthrough: false,
             bypass: false,
             sse_to_json: false,
+            model_family: None,
         }
     }
 
@@ -129,6 +133,11 @@ impl RequestPlan {
     /// Returns true if request needs translation (source != target).
     pub fn needs_translation(&self) -> bool {
         self.source_format != self.target_format && !self.passthrough
+    }
+
+    pub fn apply_opencode_metadata(&mut self, metadata: &OpenCodeModelMetadata) {
+        self.target_format = metadata.format;
+        self.model_family.clone_from(&metadata.family);
     }
 }
 

@@ -1,4 +1,5 @@
 pub mod catalog;
+pub mod models_dev;
 
 use std::collections::{BTreeMap, HashMap};
 

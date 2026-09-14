@@ -1,5 +1,6 @@
 //! Targeted loop for the 9 providers requested in ultrawork.
-//! Covers: opencode zen (opencode-go), nvidia, openrouter, kilo code, kiro, ollama cloud, gemini, llm7.io, ollama (local) and openai as control.
+//! Covers: nvidia, openrouter, kilo code, kiro, ollama cloud, gemini, llm7.io,
+//! ollama (local) and openai as control.
 //! Verifies: URL building, header building (Bearer/x-api-key/x-goog-api-key), and that OmniRoute parity base URLs match.
 //! No live network calls; uses wiremock-style unit checks via DefaultExecutor + ClientPool.
 
@@ -53,7 +54,6 @@ fn conn(provider: &str) -> ProviderConnection {
 #[test]
 fn targeted_providers_have_configs_and_urls() {
     let expectations: &[(&str, &str)] = &[
-        ("opencode-go", "https://opencode.ai/zen/go/v1"),
         ("openai", "https://api.openai.com/v1/chat/completions"),
         (
             "nvidia",
@@ -98,13 +98,6 @@ fn targeted_providers_have_configs_and_urls() {
             assert!(
                 url.contains("test-model:generateContent"),
                 "gemini url missing model action: {url}"
-            );
-        } else if *provider == "opencode-go" {
-            // opencode-go base is .../v1, URL appends /chat/completions
-            assert_eq!(
-                url,
-                format!("{expected_base}/chat/completions"),
-                "opencode-go url mismatch: {url}"
             );
         } else {
             assert_eq!(&url, expected_base, "url mismatch for {provider}");
@@ -158,13 +151,6 @@ fn targeted_providers_headers_are_correct() {
     assert_eq!(headers["x-goog-api-key"], "sk-test-loop");
     assert!(headers.get("authorization").is_none());
 
-    // opencode-go (opencode zen) Bearer
-    let exec = DefaultExecutor::new("opencode-go", pool.clone(), None).unwrap();
-    let headers = exec
-        .build_headers("kimi-k2.6", &conn("opencode-go"), false)
-        .unwrap();
-    assert_eq!(headers["authorization"], "Bearer sk-test-loop");
-
     // kilocode Bearer + optional org header
     let exec = DefaultExecutor::new("kilocode", pool.clone(), None).unwrap();
     let mut c = conn("kilocode");
@@ -173,23 +159,6 @@ fn targeted_providers_headers_are_correct() {
     let headers = exec.build_headers("openai/gpt-4o", &c, false).unwrap();
     assert_eq!(headers["authorization"], "Bearer sk-test-loop");
     assert_eq!(headers["x-kilocode-organizationid"], "org-123");
-}
-
-#[test]
-fn zen_alias_opencode_go_message_routing() {
-    // opencode-go has dual routing: kimi/minimax models go to /messages
-    let pool = Arc::new(ClientPool::new());
-    let exec = DefaultExecutor::new("opencode-go", pool, None).unwrap();
-    assert_eq!(
-        exec.build_url("minimax-m2.5", false, &conn("opencode-go"))
-            .unwrap(),
-        "https://opencode.ai/zen/go/v1/messages"
-    );
-    assert_eq!(
-        exec.build_url("gpt-4o", false, &conn("opencode-go"))
-            .unwrap(),
-        "https://opencode.ai/zen/go/v1/chat/completions"
-    );
 }
 
 #[test]

@@ -315,6 +315,7 @@ pub(super) fn supports_models_discovery(provider: &str) -> bool {
                 | "openai"
                 | "openrouter"
                 | "opencode-zen"
+                | "opencode-go"
                 | "alicode"
                 | "alicode-intl"
                 | "volcengine-ark"
@@ -476,9 +477,7 @@ async fn fetch_provider_models_response(
         "openrouter" => {
             fetch_openrouter_models(connection, "https://openrouter.ai/api/v1/models").await
         }
-        "opencode-zen" => {
-            fetch_public_openai_style_models(connection, "https://opencode.ai/zen/v1/models").await
-        }
+        "opencode-zen" | "opencode-go" => fetch_opencode_models(state, connection).await,
         "alicode" => {
             fetch_first_party_openai_style_models(
                 connection,
@@ -703,25 +702,38 @@ async fn fetch_first_party_openai_style_models(
     fetch_openai_style_models_with_bearer(connection, url, &token).await
 }
 
-/// Models listing for a `noAuth: true` provider (OpenCode Zen): the catalog is
-/// public, so a credential-less connection must still discover models.
-async fn fetch_public_openai_style_models(
+async fn fetch_opencode_models(
+    state: &AppState,
     connection: &ProviderConnection,
-    url: &str,
 ) -> Result<ProviderModelsResponse, RouteError> {
-    let client = http_client()?;
-    let mut request = client.get(url).header(CONTENT_TYPE, "application/json");
-    if let Some(token) = primary_token(connection) {
-        request = request.header(AUTHORIZATION, format!("Bearer {token}"));
-    }
-    let payload = fetch_json(request)
+    let snapshot = state
+        .models_dev
+        .snapshot()
         .await
-        .map_err(map_upstream_route_error)?;
-    Ok(response_with_models(
-        connection,
-        parse_openai_style_models(&payload),
-        None,
-    ))
+        .map_err(|error| RouteError::new(StatusCode::SERVICE_UNAVAILABLE, error))?;
+    let models = snapshot
+        .models(&connection.provider)
+        .ok_or_else(|| RouteError::bad_request("Unsupported OpenCode provider"))?
+        .iter()
+        .map(|metadata| {
+            let mut value = metadata.catalog_json();
+            let object = value
+                .as_object_mut()
+                .expect("catalog model must be an object");
+            object.remove("id");
+            object.remove("name");
+            object.remove("kind");
+            ProviderModel {
+                id: metadata.id.clone(),
+                name: metadata.name.clone(),
+                extra: object
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            }
+        })
+        .collect();
+    Ok(response_with_models(connection, models, None))
 }
 
 /// OpenRouter listing carries the same `HTTP-Referer` + `X-Title` attribution

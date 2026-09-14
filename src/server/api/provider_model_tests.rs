@@ -73,7 +73,10 @@ pub(super) async fn test_provider_models(
     let alias = provider_alias(&provider).to_string();
     let mut models = static_models_for_provider(&provider);
 
-    if models.is_empty() && is_compatible_provider(&provider) {
+    if models.is_empty()
+        && (is_compatible_provider(&provider)
+            || provider_models::supports_models_discovery(&provider))
+    {
         models = provider_models::fetch_models_for_connection(&state, &connection)
             .await
             .unwrap_or_default()
