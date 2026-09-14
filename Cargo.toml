@@ -24,8 +24,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "coo
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 
-# JSON - simd-json for parsing, serde_json for serialization
-simd-json = "0.14"
+# JSON
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yml = "0.0.13"
@@ -83,10 +82,6 @@ dotenvy = "0.15"
 thiserror = "2"
 anyhow = "1"
 
-# AWS Signature for Kiro
-aws-credential-types = "1"
-aws-sigv4 = "1.4"
-
 # Compression
 flate2 = "1"
 
@@ -125,8 +120,6 @@ time = "0.3"
 # Client identity
 whoami = "2"
 
-# CLI: file system watcher for hot-reload of db.json from CLI writes
-notify = "8"
 # CLI: cross-platform user config directory resolution
 directories = "5"
 
@@ -143,7 +136,6 @@ wiremock = "0.6"
 assert_cmd = "2"
 predicates = "3"
 insta = { version = "1", features = ["json", "yaml"] }
-mockito = "1"
 
 [[bin]]
 name = "openproxy"
@@ -155,7 +147,7 @@ default = ["embed-web"]
 embed-web = []
 
 [profile.release]
-lto = "fat"
+lto = "thin"
 codegen-units = 1
 strip = "symbols"
 panic = "abort"

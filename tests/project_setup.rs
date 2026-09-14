@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use aws_sigv4::{http_request::SigningSettings, SignatureVersion};
 use axum::{body::Body, routing::get, Router};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
@@ -79,8 +78,8 @@ fn dependency_stack_smoke_test() {
     let _hyper_tls_client: Client<_, Full<Bytes>> =
         Client::builder(TokioExecutor::new()).build(https);
 
-    let mut payload = br#"{"message":"hello"}"#.to_vec();
-    let parsed = simd_json::to_owned_value(payload.as_mut_slice()).expect("simd-json parses");
+    let parsed: serde_json::Value =
+        serde_json::from_slice(br#"{"message":"hello"}"#).expect("JSON parses");
     assert_eq!(parsed["message"], "hello");
 
     let claims = Claims {
@@ -133,9 +132,6 @@ fn dependency_stack_smoke_test() {
 
     let uuid = Uuid::new_v4();
     assert_ne!(uuid, Uuid::nil());
-
-    let _signing_settings = SigningSettings::default();
-    assert_eq!(SignatureVersion::V4.to_string(), "SigV4");
 
     let _subscriber = tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::new("info"))
