@@ -1,6 +1,6 @@
 # Goal: Provider-scoped Codex web search
 
-Status: active
+Status: complete
 Source: User-approved audited implementation plan (2026-09-14)
 Last updated: 2026-09-14
 
@@ -82,8 +82,11 @@ remain satisfied.
     confirms the feature without an extra negative-route quota call.
   - Primary evidence: Git refs, container health, and sanitized production
     observation.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: Runtime commit `c892eabb` is pushed and deployed as image
+    `sha256:a59de0740ebb`; container and `/health` are healthy. Production Luna
+    remains search-capable, the OpenCode setting remains disabled by default,
+    and the deployed dashboard bundle contains the toggle and generic header.
 
 ### Constraints
 - C1: Existing client tools and `tool_choice` remain unchanged; injection is
@@ -114,23 +117,18 @@ remain satisfied.
   minimal implementation and verification before commit/push/deploy.
 
 ## Current Checkpoint
-- Closes: R6.
-- Smallest next action: Run the required Rust/web commit gates, inspect the
-  final diff, commit and push, deploy, then verify health and safe configuration
-  visibility without another search request.
-- Expected evidence: Required gates pass, refs match, production is healthy on
-  the new runtime image, and the settings endpoint exposes the disabled-by-
-  default toggle.
-- Stop or replan if: A changed-path gate fails or deployment cannot preserve the
-  disabled default without mutating the user's OpenCode configuration.
+- Closes: None; objective complete.
+- Smallest next action: Stop.
+- Expected evidence: All required outcomes are verified below.
+- Stop or replan if: Not applicable.
 
 ## Current State
-- Resolved: R1-R5.
-- Last relevant evidence: 1,936 library tests, focused OpenCode and non-Codex
-  integration tests, fmt, clippy, dashboard build, and the single live canary
-  passed. Clippy reports only six pre-existing unrelated warnings.
+- Resolved: R1-R6.
+- Last relevant evidence: Runtime commit deployed healthy; production catalog,
+  default-off setting, and bundled UI/header contract verified without another
+  search call.
 - Blocker: None.
-- Next: Required commit gates, commit/push, deploy, safe production observation.
+- Next: None.
 
 ## Material Decisions
 - 2026-09-14: Request intent, not client identity, owns feature opt-in.
@@ -152,9 +150,17 @@ remain satisfied.
 - 2026-09-14: Commit gates passed: 1,936 library tests, focused integrations,
   fmt, clippy, and dashboard build. Astro check remains unavailable because the
   repository does not install `@astrojs/check`.
+- 2026-09-14: Runtime commit `c892eabb` pushed and deployed; healthy image,
+  catalog capability, disabled default, and dashboard bundle verified.
 
 ## Completion
-- Resolved outcomes:
-- Commands and artifacts:
-- Constraint and diff-scope check:
-- Final status:
+- Resolved outcomes: R1-R6.
+- Commands and artifacts: One sanitized live canary; five focused library
+  tests; focused OpenCode and non-Codex integrations; 1,936-test library suite;
+  fmt; clippy; dashboard and Docker builds; authenticated production catalog
+  and settings observations.
+- Constraint and diff-scope check: No dependency, migration, service,
+  persistent search policy, standalone endpoint, combo/fusion search behavior,
+  extra live negative request, or credential/query/result logging. Existing
+  tools, tool choice, auto-ping, and unrelated OpenCode config are preserved.
+- Final status: complete.
