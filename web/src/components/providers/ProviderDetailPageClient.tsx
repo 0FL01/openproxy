@@ -1664,7 +1664,7 @@ export default function ProviderDetailPageClient() {
             const activeIds = am.enabledRows.map((r) => r.id);
             return (
               <div className="flex flex-wrap items-center gap-2">
-                {hasFreeModels && (
+                {hasFreeModels && providerId !== "opencode-zen" && (
                   <button
                     type="button"
                     onClick={() => am.setFreeOnly(!am.freeOnly)}
