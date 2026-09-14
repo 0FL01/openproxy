@@ -1,6 +1,6 @@
 # Goal: Plan-aware Codex auto-ping
 
-Status: active
+Status: complete
 Source: User-approved Codex auto-ping plan (2026-09-14)
 Last updated: 2026-09-14
 
@@ -55,11 +55,15 @@ remain satisfied.
 - R5: The verified change is committed, pushed, and deployed.
   - Source: User instruction to commit, push, and deploy.
   - Acceptance: `main` equals `origin/main`, production is healthy on the new
-    image, and a safe production observation reports the Pro weekly target
-    without an unsolicited initial ping.
-  - Primary evidence: Git refs, container health, and authenticated tick output.
-  - Status: pending
-  - Evidence:
+    image, and safe production observations confirm the Pro weekly shape and
+    Luna availability without an unsolicited ping.
+  - Primary evidence: Git refs, container health, and authenticated usage,
+    model, and tick output.
+  - Status: verified
+  - Evidence: Runtime commit `e2d85622` deployed as image
+    `sha256:9729cfa7224e`; container and `/health` are healthy. Production reports
+    Pro with only `weekly` (10,080 minutes), Luna with `low`, no pending or prior
+    ping marker, and the tick made zero attempts because auto-ping is disabled.
 
 ### Constraints
 - C1: Preserve existing tick response fields; diagnostics are additive.
@@ -86,25 +90,24 @@ remain satisfied.
 - User or harness budget: Minimal diff; use Rust toolchain `+1.98.1` locally.
 
 ## Current Checkpoint
-- Closes: R5
-- Smallest next action: Run the required commit gates, commit and push the
-  verified diff, deploy the production image, then observe the first Pro tick.
-- Expected evidence: Matching git refs, healthy container, and weekly observe
-  result with zero unsolicited ping attempts.
-- Stop or replan if: A required gate fails because of this diff or production
-  does not expose the verified weekly-only quota shape.
+- Closes: None; objective complete.
+- Smallest next action: Stop.
+- Expected evidence: All required outcomes are verified below.
+- Stop or replan if: Not applicable.
 
 ## Current State
-- Resolved: R1-R4 implemented and verified.
-- Last relevant evidence: 1,931 library tests, all-target check, required clippy
-  gate (existing unrelated warnings only), and dashboard build passed.
+- Resolved: R1-R5 implemented and verified.
+- Last relevant evidence: Runtime commit deployed healthy; production Pro
+  weekly quota and Luna metadata verified without sending a ping.
 - Blocker: None.
-- Next: Required commit gates, commit/push, deploy, production observation.
+- Next: None.
 
 ## Material Decisions
 - 2026-09-14: Select windows by normalized duration-derived key, never plan name.
 - 2026-09-14: Persist only pending events; keep ordinary observations in memory.
 - 2026-09-14: Do not add `max_output_tokens`; the current Codex transform drops it.
+- 2026-09-14: Production auto-ping is currently disabled; verification did not
+  alter user settings merely to manufacture a tick target.
 
 ## Checkpoint History
 - 2026-09-14: Contract frozen; implementation not started.
@@ -112,9 +115,14 @@ remain satisfied.
   build passed; next checkpoint is R5 deployment.
 - 2026-09-14: Commit gates passed: 1,931 library tests, fmt, clippy, and web
   build; no warning was introduced by the changed paths.
+- 2026-09-14: Runtime commit `e2d85622` pushed and deployed; production health,
+  weekly-only Pro quota, Luna availability, and zero ping attempts verified.
 
 ## Completion
-- Resolved outcomes:
-- Commands and artifacts:
-- Constraint and diff-scope check:
-- Final status:
+- Resolved outcomes: R1-R5.
+- Commands and artifacts: Focused tests; 1,931-test library suite; fmt; clippy;
+  all-target check; dashboard and Docker production builds; authenticated
+  production health, usage, model, and tick observations.
+- Constraint and diff-scope check: No migration, dependency, service, reset
+  credit consumption, credential output, or unrelated provider refactor.
+- Final status: complete.
