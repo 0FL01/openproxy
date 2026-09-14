@@ -307,3 +307,81 @@ async fn responses_compact_normalizes_input_and_sets_compact_flag() {
         "*"
     );
 }
+
+#[tokio::test]
+async fn responses_tool_history_uses_shared_translation() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_partial_json(json!({
+            "model": "gpt-4o-mini",
+            "stream": false,
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "test_tool", "arguments": "{}"}
+                    }]
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "done"},
+                {"role": "user", "content": [{"type": "text", "text": "Continue"}]}
+            ]
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "chatcmpl-tool",
+            "model": "gpt-4o-mini",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "Complete"},
+                "finish_reason": "stop"
+            }]
+        })))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let state = seeded_state(
+        vec![provider_node(
+            "node-openai",
+            "compat",
+            &format!("{}/v1", upstream.uri()),
+        )],
+        vec![connection("conn-1", "node-openai", "upstream-key")],
+    )
+    .await;
+
+    let response = openproxy::build_app(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("authorization", "Bearer valid-bearer")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "compat/gpt-4o-mini",
+                        "input": [
+                            {"type": "function_call", "call_id": "call_1", "name": "test_tool", "arguments": "{}"},
+                            {"type": "function_call_output", "call_id": "call_1", "output": "done"},
+                            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Continue"}]}
+                        ],
+                        "stream": false
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["status"], "completed");
+    assert_eq!(body["output"][0]["content"][0]["text"], "Complete");
+}

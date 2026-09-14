@@ -587,6 +587,9 @@ pub fn openai_responses_to_chat_request(
     }
     obj.remove("reasoning");
     obj.remove("client_metadata");
+    obj.remove("background");
+    obj.remove("previous_response_id");
+    obj.remove("text");
 
     // responses→chat: max_output_tokens → max_tokens when absent.
     if obj.get("max_tokens").is_none() {
