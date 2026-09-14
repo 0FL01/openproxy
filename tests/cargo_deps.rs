@@ -25,7 +25,7 @@ fn key_dependencies_present_with_correct_versions() {
         ("thiserror", "2"),
         ("anyhow", "1"),
         ("url", "2"),
-        ("tower-http", "0.6"),
+        ("tower-http", "0.7"),
         ("tracing-subscriber", "0.3"),
         ("sha2", "0.11"),
         ("rsa", "0.9"),
