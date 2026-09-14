@@ -361,7 +361,7 @@ pub struct CodexExecutionRequest {
     pub model: String,
     pub body: Value,
     pub stream: bool,
-    pub enable_web_search: bool,
+    pub web_search_context_size: Option<String>,
     pub credentials: ProviderConnection,
     pub proxy: Option<ProxyTarget>,
 }
@@ -517,7 +517,7 @@ impl CodexExecutor {
         body: &Value,
         actual_model: &str,
         _stream: bool,
-        enable_web_search: bool,
+        web_search_context_size: Option<&str>,
     ) -> Result<Value, CodexExecutorError> {
         let mut normalized_body = body.clone();
         if normalized_body.get("input").is_none() {
@@ -599,16 +599,19 @@ impl CodexExecutor {
             })
             .unwrap_or_default();
         let tool_choice_none = body.get("tool_choice").and_then(Value::as_str) == Some("none");
-        if enable_web_search
-            && !tool_choice_none
-            && !tools
-                .iter()
-                .any(|tool| tool.get("type").and_then(Value::as_str) == Some("web_search"))
-        {
-            tools.push(json!({
-                "type": "web_search",
-                "external_web_access": true,
-            }));
+        if !tool_choice_none {
+            if let Some(context_size) = web_search_context_size {
+                if !tools
+                    .iter()
+                    .any(|tool| tool.get("type").and_then(Value::as_str) == Some("web_search"))
+                {
+                    tools.push(json!({
+                        "type": "web_search",
+                        "external_web_access": true,
+                        "search_context_size": context_size,
+                    }));
+                }
+            }
         }
         if !tools.is_empty() {
             request_body["tools"] = Value::Array(tools);
@@ -826,7 +829,7 @@ impl CodexExecutor {
             &request.body,
             &actual_model,
             true,
-            request.enable_web_search,
+            request.web_search_context_size.as_deref(),
         )?;
 
         let client = self.pool.get("openai", request.proxy.as_ref())?;
@@ -1051,7 +1054,7 @@ mod tests {
         });
 
         let transformed = executor
-            .transform_request_body(&body, "gpt-5.6-luna", false, false)
+            .transform_request_body(&body, "gpt-5.6-luna", false, None)
             .unwrap();
         assert_eq!(transformed["tools"][0]["name"], "test_tool");
         assert_eq!(transformed["tools"][0]["description"], "Test tool");
@@ -1073,26 +1076,28 @@ mod tests {
         });
 
         let transformed = executor
-            .transform_request_body(&body, "gpt-5.6-luna", true, true)
+            .transform_request_body(&body, "gpt-5.6-luna", true, Some("low"))
             .unwrap();
         let tools = transformed["tools"].as_array().unwrap();
         assert_eq!(tools.len(), 2);
         assert_eq!(tools[0]["name"], "local_tool");
         assert_eq!(tools[1]["type"], "web_search");
         assert_eq!(tools[1]["external_web_access"], true);
+        assert_eq!(tools[1]["search_context_size"], "low");
 
         let existing = json!({
             "messages": [{"role": "user", "content": "hi"}],
             "tools": [{"type": "web_search", "external_web_access": false}]
         });
         let transformed = executor
-            .transform_request_body(&existing, "gpt-5.6-luna", true, true)
+            .transform_request_body(&existing, "gpt-5.6-luna", true, Some("high"))
             .unwrap();
         assert_eq!(transformed["tools"].as_array().unwrap().len(), 1);
         assert_eq!(transformed["tools"][0]["external_web_access"], false);
+        assert!(transformed["tools"][0].get("search_context_size").is_none());
 
         let disabled = executor
-            .transform_request_body(&body, "gpt-5.6-luna", true, false)
+            .transform_request_body(&body, "gpt-5.6-luna", true, None)
             .unwrap();
         assert_eq!(disabled["tools"].as_array().unwrap().len(), 1);
     }
@@ -1106,7 +1111,7 @@ mod tests {
         });
 
         let transformed = executor
-            .transform_request_body(&body, "gpt-5.6-luna", true, true)
+            .transform_request_body(&body, "gpt-5.6-luna", true, Some("medium"))
             .unwrap();
         assert!(transformed.get("tools").is_none());
         assert_eq!(transformed["tool_choice"], "none");
@@ -1123,7 +1128,7 @@ mod tests {
         });
 
         let transformed = executor
-            .transform_request_body(&body, "gpt-5.6-luna", false, false)
+            .transform_request_body(&body, "gpt-5.6-luna", false, None)
             .unwrap();
         assert_eq!(transformed["input"][1]["content"][0]["type"], "output_text");
         assert!(transformed["input"][1]["content"][0]
@@ -1147,7 +1152,7 @@ mod tests {
         });
 
         let transformed = executor
-            .transform_request_body(&body, "gpt-5.6-luna", false, false)
+            .transform_request_body(&body, "gpt-5.6-luna", false, None)
             .unwrap();
         assert_eq!(transformed["input"][0]["type"], "function_call");
         assert_eq!(transformed["input"][0]["call_id"], "call_1");
@@ -1169,7 +1174,7 @@ mod tests {
         let body = json!({"input": "Hello"});
 
         let transformed = executor
-            .transform_request_body(&body, "gpt-5.6-luna", false, false)
+            .transform_request_body(&body, "gpt-5.6-luna", false, None)
             .unwrap();
 
         assert_eq!(transformed["input"][0]["role"], "user");
@@ -1190,7 +1195,7 @@ mod tests {
         });
 
         let result = executor
-            .transform_request_body(&chat_body, "o4-mini-high", false, false)
+            .transform_request_body(&chat_body, "o4-mini-high", false, None)
             .unwrap();
 
         assert_eq!(result["model"], "o4-mini"); // suffix stripped
@@ -1233,7 +1238,7 @@ mod tests {
         });
 
         let result = executor
-            .transform_request_body(&chat_body, "o4-mini", true, false)
+            .transform_request_body(&chat_body, "o4-mini", true, None)
             .unwrap();
 
         let input = result["input"].as_array().unwrap();
@@ -1259,7 +1264,7 @@ mod tests {
         });
 
         let result = executor
-            .transform_request_body(&chat_body, "o4-mini", true, false)
+            .transform_request_body(&chat_body, "o4-mini", true, None)
             .unwrap();
 
         let input = result["input"].as_array().unwrap();
@@ -1353,7 +1358,7 @@ data: {"type":"response.output_item.added","item":{"type":"web_search_call"}}"#;
             "model": "codex/o4-mini"
         });
         let out = executor
-            .transform_request_body(&body, "o4-mini", false, false)
+            .transform_request_body(&body, "o4-mini", false, None)
             .unwrap();
         assert_eq!(out["include"], json!(["reasoning.encrypted_content"]));
 
@@ -1364,7 +1369,7 @@ data: {"type":"response.output_item.added","item":{"type":"web_search_call"}}"#;
             "model": "codex/o4-mini"
         });
         let out = executor
-            .transform_request_body(&body, "o4-mini", false, false)
+            .transform_request_body(&body, "o4-mini", false, None)
             .unwrap();
         assert!(
             out.get("include").is_none(),
@@ -1383,7 +1388,7 @@ data: {"type":"response.output_item.added","item":{"type":"web_search_call"}}"#;
             "model": "codex/o4-mini"
         });
         let out = executor
-            .transform_request_body(&body, "o4-mini", false, false)
+            .transform_request_body(&body, "o4-mini", false, None)
             .unwrap();
         assert_eq!(out["service_tier"], "priority");
 
@@ -1394,7 +1399,7 @@ data: {"type":"response.output_item.added","item":{"type":"web_search_call"}}"#;
             "model": "codex/o4-mini"
         });
         let out = executor
-            .transform_request_body(&body, "o4-mini", false, false)
+            .transform_request_body(&body, "o4-mini", false, None)
             .unwrap();
         assert!(out.get("service_tier").is_none());
     }

@@ -2141,6 +2141,8 @@ struct UpdateSettingsRequest {
     codex_auto_ping: Option<Value>,
     /// Per-provider thinking mode map stored in settings.extra.
     provider_thinking: Option<Value>,
+    /// Depth for header-driven Codex hosted search, stored in settings.extra.
+    codex_web_search_context_size: Option<String>,
     /// Per-capability model pools for the capacity adapter.
     capacity_adapter: Option<Value>,
 }
@@ -2159,6 +2161,19 @@ async fn update_settings_api(
             StatusCode::NOT_IMPLEMENTED,
             Json(json!({
                 "error": "Password changes must use a dedicated endpoint, not PATCH /api/settings"
+            })),
+        )
+            .into_response();
+    }
+    if req
+        .codex_web_search_context_size
+        .as_deref()
+        .is_some_and(|value| !matches!(value, "off" | "low" | "medium" | "high"))
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "codexWebSearchContextSize must be one of: off, low, medium, high"
             })),
         )
             .into_response();
@@ -2282,6 +2297,11 @@ async fn update_settings_api(
             }
             if let Some(v) = req.provider_thinking {
                 db.settings.extra.insert("providerThinking".into(), v);
+            }
+            if let Some(v) = req.codex_web_search_context_size {
+                db.settings
+                    .extra
+                    .insert("codexWebSearchContextSize".into(), Value::String(v));
             }
             if let Some(v) = req.capacity_adapter {
                 db.settings.capacity_adapter = v;

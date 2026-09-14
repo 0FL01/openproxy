@@ -85,6 +85,8 @@ export default function ProviderDetailPageClient() {
   const [providerStrategy, setProviderStrategy] = useState(null); // null = use global, "round-robin" = override
   const [providerStickyLimit, setProviderStickyLimit] = useState("");
   const [thinkingMode, setThinkingMode] = useState("auto");
+  const [webSearchContextSize, setWebSearchContextSize] = useState("medium");
+  const [webSearchDepthSaving, setWebSearchDepthSaving] = useState(false);
   const [suggestedModels, setSuggestedModels] = useState([]);
   const [autoPing, setAutoPing] = useState<{ enabled: boolean; connections: Record<string, boolean> }>({ enabled: false, connections: {} });
   const [showAgRiskModal, setShowAgRiskModal] = useState(false);
@@ -261,6 +263,8 @@ export default function ProviderDetailPageClient() {
       // Load per-provider thinking config
       const thinkingCfg = (settingsData.providerThinking || {})[providerId] || {};
       setThinkingMode(thinkingCfg.mode || "auto");
+      const searchDepth = settingsData.codexWebSearchContextSize;
+      setWebSearchContextSize(["off", "low", "medium", "high"].includes(searchDepth) ? searchDepth : "medium");
       // Load Claude/Codex auto-ping maps (settings.extra keys)
       const autoPingSettingsKey = AUTO_PING_SETTINGS_KEYS[providerId];
       const apCfg = autoPingSettingsKey ? (settingsData[autoPingSettingsKey] || {}) : {};
@@ -375,6 +379,25 @@ export default function ProviderDetailPageClient() {
   const handleThinkingModeChange = (mode) => {
     setThinkingMode(mode);
     saveThinkingConfig(mode);
+  };
+
+  const handleWebSearchContextSizeChange = async (value) => {
+    const previous = webSearchContextSize;
+    setWebSearchContextSize(value);
+    setWebSearchDepthSaving(true);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ codexWebSearchContextSize: value }),
+      });
+      if (!res.ok) throw new Error("Failed to save Codex web search depth");
+    } catch (error) {
+      setWebSearchContextSize(previous);
+      notify.error(error instanceof Error ? error.message : "Failed to save Codex web search depth");
+    } finally {
+      setWebSearchDepthSaving(false);
+    }
   };
 
   const saveAutoPing = async (next: { enabled: boolean; connections: Record<string, boolean> }) => {
@@ -1470,6 +1493,23 @@ export default function ProviderDetailPageClient() {
                         {opt === "auto" ? "Auto" : opt.charAt(0).toUpperCase() + opt.slice(1)}
                       </option>
                     ))}
+                  </select>
+                </div>
+              )}
+              {providerId === "codex" && (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-text-muted font-medium">Web Search</span>
+                  <select
+                    value={webSearchContextSize}
+                    onChange={(e) => handleWebSearchContextSizeChange(e.target.value)}
+                    disabled={webSearchDepthSaving}
+                    title="Controls context depth for header-enabled Codex web search"
+                    className="text-xs px-2 py-1 border border-border rounded-md bg-background focus:outline-none focus:border-primary disabled:opacity-60"
+                  >
+                    <option value="off">Off</option>
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
                   </select>
                 </div>
               )}

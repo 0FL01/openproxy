@@ -112,6 +112,7 @@ async fn patch_settings_updates_values_and_rejects_password_fields() {
                         "tunnelDashboardAccess": false,
                         "tunnelUrl": "https://demo.example",
                         "tailscaleUrl": "https://tail.example",
+                        "codexWebSearchContextSize": "low",
                     })
                     .to_string(),
                 ))
@@ -134,7 +135,42 @@ async fn patch_settings_updates_values_and_rejects_password_fields() {
     assert_eq!(json["tunnelDashboardAccess"], false);
     assert_eq!(json["tunnelUrl"], "https://demo.example");
     assert_eq!(json["tailscaleUrl"], "https://tail.example");
+    assert_eq!(json["codexWebSearchContextSize"], "low");
     assert_eq!(json["hasPassword"], true);
+
+    let rejected_depth = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/settings")
+                .header("authorization", format!("Bearer {TEST_KEY}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"codexWebSearchContextSize": "ultra"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rejected_depth.status(), StatusCode::BAD_REQUEST);
+
+    let unchanged = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/settings")
+                .header("authorization", format!("Bearer {TEST_KEY}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(unchanged.into_body(), 4096)
+        .await
+        .unwrap();
+    let unchanged: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(unchanged["codexWebSearchContextSize"], "low");
 
     let rejected = app
         .oneshot(

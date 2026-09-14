@@ -116,6 +116,7 @@ const SSE_STALL_TIMEOUT: Duration = Duration::from_secs(180);
 /// threshold when deciding whether a combo member is `Available` or `Busy`.
 const MAX_IN_FLIGHT_PER_ACCOUNT: usize = 10;
 pub(super) const CODEX_WEB_SEARCH_HEADER: &str = "x-openproxy-codex-web-search";
+const CODEX_WEB_SEARCH_CONTEXT_SIZE_KEY: &str = "codexWebSearchContextSize";
 
 #[derive(Clone, Debug)]
 pub(super) struct CodexWebSearchInjected;
@@ -128,6 +129,20 @@ fn has_native_codex_web_search(body: &Value) -> bool {
                 .iter()
                 .any(|tool| tool.get("type").and_then(Value::as_str) == Some("web_search"))
         })
+}
+
+fn codex_web_search_context_size(settings: &crate::types::Settings) -> Option<&'static str> {
+    match settings
+        .extra
+        .get(CODEX_WEB_SEARCH_CONTEXT_SIZE_KEY)
+        .and_then(Value::as_str)
+    {
+        Some("off") => None,
+        Some("low") => Some("low"),
+        Some("high") => Some("high"),
+        Some("medium") | None => Some("medium"),
+        Some(_) => Some("medium"),
+    }
 }
 
 fn requests_codex_web_search(headers: &HeaderMap, body: &Value) -> bool {
@@ -149,8 +164,8 @@ fn mark_codex_web_search_injected(mut response: Response, injected: bool) -> Res
     response
 }
 
-fn codex_web_search_is_injected(enabled: bool, body: &Value) -> bool {
-    enabled && !has_native_codex_web_search(body)
+fn codex_web_search_is_injected(context_size: Option<&str>, body: &Value) -> bool {
+    context_size.is_some() && !has_native_codex_web_search(body)
 }
 
 fn codex_models_support_search(
@@ -1475,7 +1490,19 @@ async fn forward_with_provider_fallback(
             });
         };
 
-        let enable_codex_web_search = if codex_web_search_requested && provider == "codex" {
+        let native_codex_web_search_requested =
+            codex_web_search_requested && has_native_codex_web_search(&request_body);
+        let injected_codex_web_search_context =
+            if codex_web_search_requested && !native_codex_web_search_requested {
+                codex_web_search_context_size(&snapshot.settings)
+            } else {
+                None
+            };
+        let effective_codex_web_search_requested =
+            native_codex_web_search_requested || injected_codex_web_search_context.is_some();
+
+        let enable_codex_web_search = if effective_codex_web_search_requested && provider == "codex"
+        {
             match state
                 .codex_models
                 .models_for_connection(state, &connection)
@@ -1521,8 +1548,13 @@ async fn forward_with_provider_fallback(
         } else {
             false
         };
+        let web_search_context_size = if enable_codex_web_search {
+            injected_codex_web_search_context.map(str::to_string)
+        } else {
+            None
+        };
         let codex_web_search_injected =
-            codex_web_search_is_injected(enable_codex_web_search, &request_body);
+            codex_web_search_is_injected(web_search_context_size.as_deref(), &request_body);
 
         // 9router resolveTransport: pin multi-endpoint base URL for this request
         if let Some(ref base) = plan.transport_base_url {
@@ -1662,7 +1694,7 @@ async fn forward_with_provider_fallback(
                         model: model.to_string(),
                         body: request_body.clone(),
                         stream,
-                        enable_web_search: enable_codex_web_search,
+                        web_search_context_size: web_search_context_size.clone(),
                         credentials: connection.clone(),
                         proxy,
                     })
@@ -4723,12 +4755,12 @@ mod tests {
 
     use super::{
         build_dashboard_sse_response, build_proxied_response, codex_models_support_search,
-        codex_web_search_is_injected, earliest_retry_after, mark_codex_web_search_injected,
-        requests_codex_web_search, responses_stream_completed, select_connection,
-        select_connection_with_supporters, CodexWebSearchInjected,
+        codex_web_search_context_size, codex_web_search_is_injected, earliest_retry_after,
+        mark_codex_web_search_injected, requests_codex_web_search, responses_stream_completed,
+        select_connection, select_connection_with_supporters, CodexWebSearchInjected,
     };
     use crate::server::codex_catalog::CodexModelMetadata;
-    use crate::types::{AppDb, ProviderConnection};
+    use crate::types::{AppDb, ProviderConnection, Settings};
 
     fn connection(id: &str, priority: u32) -> ProviderConnection {
         ProviderConnection {
@@ -4790,12 +4822,12 @@ mod tests {
             &headers,
             &json!({"tools": [{"type": "web_search"}], "tool_choice": "none"})
         ));
-        assert!(codex_web_search_is_injected(true, &json!({})));
+        assert!(codex_web_search_is_injected(Some("low"), &json!({})));
         assert!(!codex_web_search_is_injected(
-            true,
+            Some("high"),
             &json!({"tools": [{"type": "web_search"}]})
         ));
-        assert!(!codex_web_search_is_injected(false, &json!({})));
+        assert!(!codex_web_search_is_injected(None, &json!({})));
 
         let injected = mark_codex_web_search_injected(Response::new(Body::empty()), true);
         assert!(injected
@@ -4807,6 +4839,30 @@ mod tests {
             .extensions()
             .get::<CodexWebSearchInjected>()
             .is_none());
+    }
+
+    #[test]
+    fn codex_web_search_context_defaults_to_medium_and_supports_off() {
+        let mut settings = Settings::default();
+        assert_eq!(codex_web_search_context_size(&settings), Some("medium"));
+
+        for value in ["low", "medium", "high"] {
+            settings.extra.insert(
+                "codexWebSearchContextSize".into(),
+                Value::String(value.into()),
+            );
+            let context_size = codex_web_search_context_size(&settings);
+            assert_eq!(context_size, Some(value));
+            assert!(codex_web_search_is_injected(context_size, &json!({})));
+        }
+
+        settings.extra.insert(
+            "codexWebSearchContextSize".into(),
+            Value::String("off".into()),
+        );
+        let context_size = codex_web_search_context_size(&settings);
+        assert_eq!(context_size, None);
+        assert!(!codex_web_search_is_injected(context_size, &json!({})));
     }
 
     #[test]
