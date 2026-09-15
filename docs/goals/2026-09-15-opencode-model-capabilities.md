@@ -1,6 +1,6 @@
 # Goal: OpenCode discovered model capabilities
 
-Status: active
+Status: complete
 Source: user instructions in the current task
 Last updated: 2026-09-15
 
@@ -41,8 +41,8 @@ remain satisfied.
   - Source: “потом коммит пуш деплой”.
   - Acceptance: one atomic commit is on `origin/main`; production is rebuilt/restarted and passes health plus authenticated model-metadata observation when credentials are available locally.
   - Primary evidence: git remote state, Compose health, and runtime `/v1/models` response.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: feature commit `b4f08404` is on `origin/main`; `docker compose up -d --build` rebuilt and restarted production; Compose reports healthy; authenticated local `/v1/models` and root OpenCode 1.18.31 verbose output show exact Codex and `ocg` metadata.
 
 ### Constraints
 - C1: GLM provider behavior is outside this scope.
@@ -63,16 +63,16 @@ remain satisfied.
 - User or harness budget: minimal diff, no subagents; commit, push, and production deploy after verification.
 
 ## Current Checkpoint
-- Closes: R4
-- Smallest next action: run repository gates, install the verified root plugin copy, commit/push, then rebuild and restart production.
-- Expected evidence: clean gates, matching local/remote commit, healthy Compose service, and runtime model metadata.
-- Stop or replan if: a gate fails because of this diff or production credentials/state cannot provide the authenticated runtime observation.
+- Closes: none; closure check passed.
+- Smallest next action: stop.
+- Expected evidence: complete.
+- Stop or replan if: not applicable.
 
 ## Current State
-- Resolved: R1-R3.
-- Last relevant evidence: targeted Rust, Node, and real OpenCode 1.18.31 checks pass.
+- Resolved: R1-R4.
+- Last relevant evidence: production OpenProxy and root OpenCode 1.18.31 expose the deployed source metadata correctly.
 - Blocker: none.
-- Next: verify, publish, and deploy R4.
+- Next: none.
 
 ## Material Decisions
 - 2026-09-15: GLM is explicitly excluded; Codex and OpenCode Go/Zen are the only provider sources in scope.
@@ -81,9 +81,10 @@ remain satisfied.
 ## Checkpoint History
 - 2026-09-15: contract frozen after RECON; implementation started with R1/R2.
 - 2026-09-15: R1/R2 verified through source-to-API tests; R3 verified through plugin and real OpenCode 1.18.31 resolution.
+- 2026-09-15: `b4f08404` pushed and deployed; health, authenticated API metadata, and real OpenCode resolution verified R4.
 
 ## Completion
-- Resolved outcomes:
-- Commands and artifacts:
-- Constraint and diff-scope check:
-- Final status:
+- Resolved outcomes: R1-R4 verified.
+- Commands and artifacts: targeted Rust tests; Node tests; OpenCode 1.18.31 CLI smoke; `cargo fmt --all -- --check`; Clippy all targets/features; 1728 lib tests; 7 custom-model API tests; root plugin byte match; Compose build/health; authenticated runtime `/v1/models`; live `opencode models ludka2 --refresh --verbose`.
+- Constraint and diff-scope check: only Codex/OpenCode Go/Zen discovery paths, shared known capability lookup, plugin, tests, and this goal changed; no dependency, persistence, secret, user config, or GLM-specific logic added.
+- Final status: complete.
