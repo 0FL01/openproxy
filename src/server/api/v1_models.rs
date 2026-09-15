@@ -542,6 +542,24 @@ async fn build_models_list(
             // identity so aggregate clients can distinguish equivalent models.
             metadata.source = Some(provider_id.to_string());
             if kind_filter.contains(&LLM_KIND) {
+                if let Some(configured) = crate::core::context_limit::configured_limit(
+                    &snapshot.settings.provider_context_limits,
+                    provider_id,
+                ) {
+                    let native = metadata
+                        .limit
+                        .as_ref()
+                        .and_then(|limit| limit.context)
+                        .map(std::num::NonZeroU32::get)
+                        .or(model.context_length);
+                    let effective = crate::core::context_limit::effective_limit(configured, native);
+                    model.context_length = Some(effective);
+                    let limit = metadata.limit.get_or_insert_with(Default::default);
+                    limit.context = std::num::NonZeroU32::new(effective);
+                    if limit.input.is_some_and(|input| input.get() > effective) {
+                        limit.input = std::num::NonZeroU32::new(effective);
+                    }
+                }
                 model.opencode = Some(metadata);
             }
         }
@@ -1087,19 +1105,24 @@ mod tests {
         let state = test_state().await;
 
         let models = build_models_list(&state, &snapshot, &[LLM_KIND]).await;
-        let metadata = json!(
-            models
-                .iter()
-                .find(|model| model.id == "glm/glm-5.3-flash")
-                .unwrap()
-                .opencode
-        );
+        let flash = models
+            .iter()
+            .find(|model| model.id == "glm/glm-5.3-flash")
+            .unwrap();
+        let metadata = json!(flash.opencode);
 
+        assert_eq!(flash.context_length, Some(500_000));
+        assert_eq!(metadata["limit"]["context"], 500_000);
         assert_eq!(metadata["attachment"], true);
         assert_eq!(
             metadata["modalities"]["input"],
             json!(["text", "image", "pdf", "video"])
         );
+        let native_lower = models
+            .iter()
+            .find(|model| model.id == "glm/glm-5.1")
+            .unwrap();
+        assert_eq!(native_lower.context_length, Some(204_800));
         assert_eq!(metadata["reasoning"], true);
         assert_eq!(metadata["tool_call"], true);
         assert_eq!(
@@ -1152,13 +1175,13 @@ mod tests {
 
         let llm = build_models_list(&state, &snapshot, &[LLM_KIND]).await;
         assert!(llm.iter().any(|model| model.id == "custom-cx/gpt-5.6-luna"));
-        let metadata = json!(
-            llm.iter()
-                .find(|model| model.id == "custom-cx/gpt-5.6-luna")
-                .unwrap()
-                .opencode
-        );
-        assert_eq!(metadata["limit"]["context"], 872000);
+        let luna = llm
+            .iter()
+            .find(|model| model.id == "custom-cx/gpt-5.6-luna")
+            .unwrap();
+        let metadata = json!(luna.opencode);
+        assert_eq!(luna.context_length, Some(500_000));
+        assert_eq!(metadata["limit"]["context"], 500000);
         assert_eq!(metadata["source"], "codex");
         assert_eq!(metadata["limit"]["output"], 128000);
         assert_eq!(metadata["attachment"], true);
@@ -1175,7 +1198,7 @@ mod tests {
                 .unwrap()
                 .opencode
         );
-        assert_eq!(unknown["limit"]["context"], 999000);
+        assert_eq!(unknown["limit"]["context"], 500000);
         assert!(unknown["limit"].get("output").is_none());
         assert_eq!(unknown["variants"], json!({}));
         assert!(!llm

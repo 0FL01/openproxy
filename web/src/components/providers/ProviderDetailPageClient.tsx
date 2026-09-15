@@ -34,6 +34,10 @@ const AUTO_PING_SETTINGS_KEYS: Record<string, string> = {
   codex: "codexAutoPing",
 };
 
+const CONTEXT_LIMIT_PROVIDERS = new Set(["opencode-zen", "opencode-go", "glm", "codex"]);
+const DEFAULT_CONTEXT_LIMIT = 500000;
+const MAX_CONTEXT_LIMIT = 1000000;
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -87,6 +91,9 @@ export default function ProviderDetailPageClient() {
   const [thinkingMode, setThinkingMode] = useState("auto");
   const [webSearchContextSize, setWebSearchContextSize] = useState("medium");
   const [webSearchDepthSaving, setWebSearchDepthSaving] = useState(false);
+  const [contextLimit, setContextLimit] = useState(String(DEFAULT_CONTEXT_LIMIT));
+  const [savedContextLimit, setSavedContextLimit] = useState(String(DEFAULT_CONTEXT_LIMIT));
+  const [contextLimitSaving, setContextLimitSaving] = useState(false);
   const [suggestedModels, setSuggestedModels] = useState([]);
   const [autoPing, setAutoPing] = useState<{ enabled: boolean; connections: Record<string, boolean> }>({ enabled: false, connections: {} });
   const [showAgRiskModal, setShowAgRiskModal] = useState(false);
@@ -265,6 +272,11 @@ export default function ProviderDetailPageClient() {
       setThinkingMode(thinkingCfg.mode || "auto");
       const searchDepth = settingsData.codexWebSearchContextSize;
       setWebSearchContextSize(["off", "low", "medium", "high"].includes(searchDepth) ? searchDepth : "medium");
+      const loadedContextLimit = String(
+        (settingsData.providerContextLimits || {})[providerId] || DEFAULT_CONTEXT_LIMIT,
+      );
+      setContextLimit(loadedContextLimit);
+      setSavedContextLimit(loadedContextLimit);
       // Load Claude/Codex auto-ping maps (settings.extra keys)
       const autoPingSettingsKey = AUTO_PING_SETTINGS_KEYS[providerId];
       const apCfg = autoPingSettingsKey ? (settingsData[autoPingSettingsKey] || {}) : {};
@@ -397,6 +409,41 @@ export default function ProviderDetailPageClient() {
       notify.error(error instanceof Error ? error.message : "Failed to save Codex web search depth");
     } finally {
       setWebSearchDepthSaving(false);
+    }
+  };
+
+  const saveContextLimit = async () => {
+    if (!CONTEXT_LIMIT_PROVIDERS.has(providerId) || contextLimit === savedContextLimit) return;
+    const value = Number(contextLimit);
+    if (!Number.isInteger(value) || value < 1 || value > MAX_CONTEXT_LIMIT) {
+      setContextLimit(savedContextLimit);
+      notify.error("Context limit must be a whole number from 1 to 1,000,000");
+      return;
+    }
+
+    setContextLimitSaving(true);
+    try {
+      const settingsRes = await fetch("/api/settings", { cache: "no-store" });
+      if (!settingsRes.ok) throw new Error("Failed to load context limits");
+      const settingsData = await settingsRes.json();
+      const updated = {
+        ...(settingsData.providerContextLimits || {}),
+        [providerId]: value,
+      };
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ providerContextLimits: updated }),
+      });
+      if (!res.ok) throw new Error("Failed to save context limit");
+      setSavedContextLimit(String(value));
+      setContextLimit(String(value));
+      await reloadCatalog();
+    } catch (error) {
+      setContextLimit(savedContextLimit);
+      notify.error(error instanceof Error ? error.message : "Failed to save context limit");
+    } finally {
+      setContextLimitSaving(false);
     }
   };
 
@@ -1512,6 +1559,25 @@ export default function ProviderDetailPageClient() {
                     <option value="high">High</option>
                   </select>
                 </div>
+              )}
+              {CONTEXT_LIMIT_PROVIDERS.has(providerId) && (
+                <label className="flex items-center gap-2" title="Local input cap; a model's smaller native context window still applies">
+                  <span className="text-xs text-text-muted font-medium">Context Limit</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={MAX_CONTEXT_LIMIT}
+                    step={1}
+                    value={contextLimit}
+                    disabled={contextLimitSaving}
+                    onChange={(event) => setContextLimit(event.target.value)}
+                    onBlur={saveContextLimit}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") event.currentTarget.blur();
+                    }}
+                    className="w-24 px-2 py-1 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary disabled:opacity-60"
+                  />
+                </label>
               )}
               {/* Round Robin toggle */}
               <div className="flex flex-wrap items-center gap-2">

@@ -68,7 +68,7 @@ use crate::types::{AppDb, HealthResponse, ProviderConnection};
 const DB_PASSWORD_HEADERS: &[&str] = &["x-op-password", "x-9r-password"];
 
 pub fn routes(state: AppState) -> Router<AppState> {
-    use axum::middleware;
+    use axum::{extract::DefaultBodyLimit, middleware};
 
     // ── PUBLIC: no auth required ──
     let public = Router::new()
@@ -78,29 +78,11 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .route("/v1/health", get(health))
         .route("/v1/v1/health", get(health));
 
-    // ── PROTECTED: valid API key required ──
-    let protected = Router::new()
+    // LLM JSON payloads need room for the configured 500k-token context while
+    // retaining a fixed byte ceiling against unbounded allocations.
+    let llm = Router::new()
         .merge(v1_api_chat::routes())
-        .merge(v1_models::routes())
-        .nest(
-            "/v1/v1/models",
-            Router::new()
-                .route(
-                    "/",
-                    get(v1_models::list_default_models).options(v1_models::cors_options),
-                )
-                .route(
-                    "/info",
-                    get(v1_models::models_info).options(v1_models::cors_options),
-                )
-                .route(
-                    "/{kind}",
-                    get(v1_models::list_models_by_kind).options(v1_models::cors_options),
-                ),
-        )
         .merge(v1beta::routes())
-        .merge(chat_search::routes())
-        .merge(web_fetch::routes())
         .route(
             "/v1/chat/completions",
             post(chat::chat_completions).options(chat::cors_options),
@@ -166,6 +148,30 @@ pub fn routes(state: AppState) -> Router<AppState> {
             "/v1/v1/responses/compact",
             post(compat::responses_compact).options(compat::cors_options),
         )
+        .layer(DefaultBodyLimit::max(8 * 1024 * 1024));
+
+    // ── PROTECTED: valid API key required ──
+    let protected = Router::new()
+        .merge(llm)
+        .merge(v1_models::routes())
+        .nest(
+            "/v1/v1/models",
+            Router::new()
+                .route(
+                    "/",
+                    get(v1_models::list_default_models).options(v1_models::cors_options),
+                )
+                .route(
+                    "/info",
+                    get(v1_models::models_info).options(v1_models::cors_options),
+                )
+                .route(
+                    "/{kind}",
+                    get(v1_models::list_models_by_kind).options(v1_models::cors_options),
+                ),
+        )
+        .merge(chat_search::routes())
+        .merge(web_fetch::routes())
         .route(
             "/v1/audio/transcriptions",
             post(stt::audio_transcriptions).options(stt::cors_options),
@@ -321,7 +327,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .merge(oauth::routes())
         .route(
             "/api/dashboard/chat/completions",
-            post(chat::dashboard_chat_completions),
+            post(chat::dashboard_chat_completions).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
         )
         .route("/api/providers", get(list_providers_api))
         .route("/api/providers", post(create_provider_api))
@@ -473,6 +479,48 @@ async fn api_catalog(State(state): State<AppState>) -> Response {
                 .unwrap_or_default();
             models.extend(codex.models.iter().map(|model| model.catalog_json()));
             entry["models"] = Value::Array(models);
+        }
+    }
+
+    if let Some(entries) = catalog
+        .get_mut("providerModels")
+        .and_then(Value::as_array_mut)
+    {
+        for entry in entries {
+            let Some(alias) = entry.get("alias").and_then(Value::as_str) else {
+                continue;
+            };
+            let provider = match alias {
+                "opencode" | "opencode-zen" => "opencode-zen",
+                "opencode-go" => "opencode-go",
+                "glm" => "glm",
+                "cx" | "codex" => "codex",
+                _ => continue,
+            };
+            let Some(configured) = crate::core::context_limit::configured_limit(
+                &db.settings.provider_context_limits,
+                provider,
+            ) else {
+                continue;
+            };
+            let Some(models) = entry.get_mut("models").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for model in models {
+                let native = model
+                    .get("contextWindow")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok());
+                let effective = crate::core::context_limit::effective_limit(configured, native);
+                model["contextWindow"] = json!(effective);
+                if model
+                    .get("maxInput")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|input| input > u64::from(effective))
+                {
+                    model["maxInput"] = json!(effective);
+                }
+            }
         }
     }
 
@@ -2071,6 +2119,7 @@ async fn get_settings_api(State(state): State<AppState>, headers: HeaderMap) -> 
 struct UpdateSettingsRequest {
     sticky_round_robin_limit: Option<u32>,
     provider_strategies: Option<BTreeMap<String, crate::types::ProviderStrategyEntry>>,
+    provider_context_limits: Option<BTreeMap<String, u32>>,
     combo_strategy: Option<String>,
     combo_strategies: Option<BTreeMap<String, crate::types::ComboStrategyEntry>>,
     mitm_router_base_url: Option<String>,
@@ -2131,6 +2180,24 @@ async fn update_settings_api(
         )
             .into_response();
     }
+    if let Some(limits) = &req.provider_context_limits {
+        let invalid = limits.iter().find(|(provider, limit)| {
+            crate::core::context_limit::canonical_provider(provider).is_none()
+                || **limit == 0
+                || **limit > crate::core::context_limit::MAX_CONTEXT_LIMIT
+        });
+        if let Some((provider, _)) = invalid {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!(
+                        "Invalid context limit for {provider}; supported providers are opencode-zen, opencode-go, glm, codex and values must be 1..=1000000"
+                    )
+                })),
+            )
+                .into_response();
+        }
+    }
 
     let result = state
         .db
@@ -2140,6 +2207,9 @@ async fn update_settings_api(
             }
             if let Some(v) = req.provider_strategies {
                 db.settings.provider_strategies = v;
+            }
+            if let Some(v) = req.provider_context_limits {
+                db.settings.provider_context_limits = v;
             }
             if let Some(v) = req.combo_strategy {
                 db.settings.combo_strategy = v;
@@ -2350,6 +2420,9 @@ fn merge_settings(target: &mut crate::types::Settings, source: &crate::types::Se
     }
     if source.provider_strategies != target.provider_strategies {
         target.provider_strategies = source.provider_strategies.clone();
+    }
+    if source.provider_context_limits != target.provider_context_limits {
+        target.provider_context_limits = source.provider_context_limits.clone();
     }
     if source.combo_strategy != target.combo_strategy {
         target.combo_strategy = source.combo_strategy.clone();

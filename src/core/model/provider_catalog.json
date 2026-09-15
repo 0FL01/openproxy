@@ -1454,6 +1454,7 @@
     {
      "id": "glm-5.1",
      "name": "GLM 5.1",
+     "contextLength": 204800,
      "kind": "llm"
     },
     {

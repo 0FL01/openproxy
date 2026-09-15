@@ -457,44 +457,7 @@ async fn chat_completions_impl(
         BypassDecision::Pass => {}
     }
 
-    // Feature4: ResponseCache — consult before provider dispatch.
-    // Only non-streaming requests are cached: the cache stores a single JSON
-    // body, and a streaming client would misinterpret a cached non-SSE body.
     let is_streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
-
-    if !is_streaming && !codex_web_search_requested {
-        if let Some((cached, ttl_remaining)) = state.response_cache.get_with_ttl(&body) {
-            let mut resp = Response::new(Body::from(cached));
-            resp.headers_mut().insert(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            );
-            resp.headers_mut()
-                .insert("x-cache", HeaderValue::from_static("HIT"));
-
-            // Robot envelope: lets agents detect a cache hit and its remaining
-            // TTL without parsing the body. Carried as a header so the OpenAI-
-            // compatible JSON body stays untouched.
-            let envelope = json!({
-                "schema": "openproxy.v1.cache.hit",
-                "ok": true,
-                "data": {
-                    "cache_hit": true,
-                    "model": body.get("model").and_then(Value::as_str).unwrap_or(""),
-                    "provider": resolved.provider.as_deref().unwrap_or("unknown"),
-                    "ttl_remaining": ttl_remaining,
-                },
-                "meta": {},
-            });
-            if let Ok(value) = serde_json::to_string(&envelope) {
-                if let Ok(hv) = HeaderValue::from_str(&value) {
-                    resp.headers_mut().insert("x-cache-envelope", hv);
-                }
-            }
-            return resp;
-        }
-    }
-
     let cache_provider = resolved.provider.as_deref().unwrap_or("unknown");
 
     let response = match resolved.route_kind {
@@ -520,6 +483,41 @@ async fn chat_completions_impl(
                 &required_caps,
                 &snapshot.settings.capacity_adapter,
             );
+            let estimated_tokens = crate::core::context_limit::estimate_input_tokens(&body);
+            let mut context_allowed_models = Vec::with_capacity(augmented_models.len());
+            let mut first_context_error = None;
+            for combo_model in &augmented_models {
+                let combo_resolved = get_model_info(combo_model, &snapshot);
+                let provider = combo_resolved.provider.as_deref().unwrap_or("unknown");
+                match context_limit_error(
+                    &state,
+                    &snapshot.settings,
+                    provider,
+                    &combo_resolved.model,
+                    estimated_tokens,
+                )
+                .await
+                {
+                    Some(error) => {
+                        first_context_error.get_or_insert(error);
+                    }
+                    None => context_allowed_models.push(combo_model.clone()),
+                }
+            }
+            if !augmented_models.is_empty() && context_allowed_models.is_empty() {
+                return attempt_error_response(
+                    first_context_error.expect("a filtered combo member has a context error"),
+                );
+            }
+            if let Some(response) = response_cache_hit(
+                &state,
+                &body,
+                cache_provider,
+                is_streaming,
+                codex_web_search_requested,
+            ) {
+                return response;
+            }
             let adapter_added: HashSet<String> = augmented_models
                 .iter()
                 .filter(|m| !combo_models.contains(m))
@@ -563,7 +561,7 @@ async fn chat_completions_impl(
                 let f_client_tool = client_tool;
                 let f_headers = headers_map.clone();
 
-                let panel_count = combo_models.len();
+                let panel_count = context_allowed_models.len();
                 let fusion_cfg = fusion_config_for(&snapshot, &combo_name, panel_count);
                 // 9router combo.js: the judge (and single-survivor) leg runs
                 // with the ORIGINAL client stream flag — a streaming client
@@ -576,7 +574,7 @@ async fn chat_completions_impl(
                 let fusion_result = if client_wants_stream {
                     handle_fusion_chat_deferred(
                         &mut body.clone(),
-                        &combo_models,
+                        &context_allowed_models,
                         &fusion_cfg,
                         None,
                         move |model: String, panel_body: Value| {
@@ -616,7 +614,7 @@ async fn chat_completions_impl(
                 } else {
                     handle_fusion_chat(
                         &mut body.clone(),
-                        &combo_models,
+                        &context_allowed_models,
                         &fusion_cfg,
                         None,
                         move |model: String, panel_body: Value| {
@@ -710,7 +708,7 @@ async fn chat_completions_impl(
                 let attempted_members = attempted_members.clone();
                 let combo_headers = headers_map.clone();
                 execute_combo_strategy_full(
-                    &augmented_models,
+                    &context_allowed_models,
                     Some(&combo_name),
                     strategy,
                     &disabled_members,
@@ -810,6 +808,27 @@ async fn chat_completions_impl(
             }
         }
         ModelRouteKind::Direct => {
+            let estimated_tokens = crate::core::context_limit::estimate_input_tokens(&body);
+            if let Some(error) = context_limit_error(
+                &state,
+                &snapshot.settings,
+                resolved.provider.as_deref().unwrap_or(model_str),
+                &resolved.model,
+                estimated_tokens,
+            )
+            .await
+            {
+                return attempt_error_response(error);
+            }
+            if let Some(response) = response_cache_hit(
+                &state,
+                &body,
+                cache_provider,
+                is_streaming,
+                codex_web_search_requested,
+            ) {
+                return response;
+            }
             let mut plan = RequestPlan::new(
                 endpoint,
                 &body,
@@ -848,6 +867,45 @@ async fn chat_completions_impl(
         return cache_miss_response(&state, &body, cache_provider, response).await;
     }
     response
+}
+
+fn response_cache_hit(
+    state: &AppState,
+    body: &Value,
+    provider: &str,
+    is_streaming: bool,
+    codex_web_search_requested: bool,
+) -> Option<Response> {
+    if is_streaming || codex_web_search_requested {
+        return None;
+    }
+    let (cached, ttl_remaining) = state.response_cache.get_with_ttl(body)?;
+    let mut response = Response::new(Body::from(cached));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    response
+        .headers_mut()
+        .insert("x-cache", HeaderValue::from_static("HIT"));
+
+    let envelope = json!({
+        "schema": "openproxy.v1.cache.hit",
+        "ok": true,
+        "data": {
+            "cache_hit": true,
+            "model": body.get("model").and_then(Value::as_str).unwrap_or(""),
+            "provider": provider,
+            "ttl_remaining": ttl_remaining,
+        },
+        "meta": {},
+    });
+    if let Ok(value) = serde_json::to_string(&envelope) {
+        if let Ok(value) = HeaderValue::from_str(&value) {
+            response.headers_mut().insert("x-cache-envelope", value);
+        }
+    }
+    Some(response)
 }
 
 /// Inject provider-level thinking override onto the **source** body
@@ -1079,6 +1137,65 @@ async fn dispatch_fusion_leg(
     .await
 }
 
+async fn native_context_window(state: &AppState, provider: &str, model: &str) -> Option<u32> {
+    let provider = crate::core::context_limit::canonical_provider(provider)?;
+    if crate::core::model::models_dev::is_opencode_provider(provider) {
+        return state
+            .models_dev
+            .snapshot()
+            .await
+            .ok()?
+            .find(provider, model)
+            .and_then(|metadata| metadata.context_window);
+    }
+    if provider == "codex" {
+        let snapshot = state.db.snapshot();
+        return state
+            .codex_models
+            .union_active(state, &snapshot.provider_connections)
+            .await
+            .models
+            .iter()
+            .find(|metadata| metadata.id == model)
+            .and_then(|metadata| metadata.context_window)
+            .and_then(|value| u32::try_from(value).ok());
+    }
+    crate::core::model::catalog::provider_catalog()
+        .find_model(provider, model)
+        .and_then(|metadata| metadata.context_window)
+}
+
+fn context_limit_attempt_error(
+    provider: &str,
+    estimated_tokens: u64,
+    effective_limit: u32,
+    configured_limit: u32,
+) -> ComboAttemptError {
+    ComboAttemptError {
+        status: 413,
+        message: format!(
+            "Context limit exceeded for provider {provider}: estimated {estimated_tokens} input tokens, effective limit {effective_limit}, configured limit {configured_limit}"
+        ),
+        retry_after: None,
+        upstream_body: None,
+    }
+}
+
+async fn context_limit_error(
+    state: &AppState,
+    settings: &crate::types::Settings,
+    provider: &str,
+    model: &str,
+    estimated_tokens: u64,
+) -> Option<ComboAttemptError> {
+    let configured =
+        crate::core::context_limit::configured_limit(&settings.provider_context_limits, provider)?;
+    let native = native_context_window(state, provider, model).await;
+    let effective = crate::core::context_limit::effective_limit(configured, native);
+    (estimated_tokens > u64::from(effective))
+        .then(|| context_limit_attempt_error(provider, estimated_tokens, effective, configured))
+}
+
 async fn execute_single_model(
     state: &AppState,
     request_body: &Value,
@@ -1116,6 +1233,19 @@ async fn execute_single_model(
                 upstream_body: None,
             })?;
         plan.apply_opencode_metadata(metadata);
+    }
+
+    let estimated_tokens = crate::core::context_limit::estimate_input_tokens(request_body);
+    if let Some(error) = context_limit_error(
+        state,
+        &snapshot.settings,
+        &plan.provider,
+        plan.dispatch_model(),
+        estimated_tokens,
+    )
+    .await
+    {
+        return Err(error);
     }
 
     let mut body = request_body.clone();

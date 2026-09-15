@@ -184,6 +184,43 @@ async fn chat_completions_streams_openai_compatible_response() {
 }
 
 #[tokio::test]
+async fn context_limit_rejects_before_provider_dispatch() {
+    let settings = Settings::default();
+    let state = seeded_state_with_settings(Vec::new(), Vec::new(), Vec::new(), settings).await;
+    let app = openproxy::build_app(state);
+    // Exceeds Axum's default 2 MiB JSON limit, but remains below OpenProxy's
+    // fixed 8 MiB LLM-route ceiling so the semantic context guard handles it.
+    let oversized_prompt = "x".repeat(2 * 1024 * 1024 + 100);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("authorization", "Bearer valid-bearer")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "glm/glm-5.1",
+                        "messages": [{"role": "user", "content": oversized_prompt}]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
+    let body = String::from_utf8(body.to_vec()).unwrap();
+    assert!(body.contains("provider glm"));
+    assert!(body.contains("configured limit 500000"));
+}
+
+#[tokio::test]
 async fn chat_completions_forwards_short_requests_unmutated() {
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -424,6 +461,73 @@ async fn chat_completions_uses_combo_fallback_across_models() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["id"], "chatcmpl-combo");
+}
+
+#[tokio::test]
+async fn combo_skips_over_limit_member_without_dispatching_it() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_partial_json(json!({ "model": "gpt-pass" })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "chatcmpl-context-fallback",
+            "object": "chat.completion",
+            "choices": []
+        })))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let combo = Combo {
+        id: "combo-context-limit".into(),
+        name: "context-limit-fallback".into(),
+        models: vec!["glm/glm-5.1".into(), "custom/gpt-pass".into()],
+        disabled_models: Vec::new(),
+        kind: None,
+        created_at: None,
+        updated_at: None,
+        extra: BTreeMap::new(),
+    };
+    let mut custom = connection("conn-custom", "node-openai", 1, "upstream-key");
+    custom.default_model = None;
+    custom
+        .provider_specific_data
+        .insert("enabledModels".into(), json!(["gpt-pass"]));
+    let mut settings = Settings::default();
+    settings.provider_context_limits.insert("glm".into(), 10);
+    let state = seeded_state_with_settings(
+        vec![provider_node(
+            "node-openai",
+            "custom",
+            &format!("{}/v1", upstream.uri()),
+        )],
+        vec![custom],
+        vec![combo],
+        settings,
+    )
+    .await;
+
+    let response = openproxy::build_app(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("authorization", "Bearer valid-bearer")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "context-limit-fallback",
+                        "messages": [{"role": "user", "content": "This prompt is deliberately longer than forty bytes."}],
+                        "stream": false
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]

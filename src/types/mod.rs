@@ -474,6 +474,12 @@ pub struct Settings {
     /// (`{ fallbackStrategy, stickyRoundRobinLimit, rotateStrategy, proxyPoolId }`).
     #[serde(default, deserialize_with = "deserialize_null_default")]
     pub provider_strategies: BTreeMap<String, ProviderStrategyEntry>,
+    /// Local input-context caps for providers exposed in the provider UI.
+    #[serde(
+        default = "crate::core::context_limit::default_provider_context_limits",
+        deserialize_with = "deserialize_null_default"
+    )]
+    pub provider_context_limits: BTreeMap<String, u32>,
     #[serde(
         default = "default_combo_strategy",
         deserialize_with = "deserialize_null_default"
@@ -572,6 +578,7 @@ impl Default for Settings {
             cloud_url: String::new(),
             sticky_round_robin_limit: default_sticky_round_robin_limit(),
             provider_strategies: BTreeMap::new(),
+            provider_context_limits: crate::core::context_limit::default_provider_context_limits(),
             combo_strategy: default_combo_strategy(),
             combo_strategies: BTreeMap::new(),
             // A fresh install must never expose inference routes without a key.
@@ -603,6 +610,16 @@ impl Default for Settings {
 
 impl Settings {
     pub fn normalize(&mut self) {
+        if let Some(limit) = self.provider_context_limits.remove("opencode") {
+            self.provider_context_limits
+                .entry("opencode-zen".into())
+                .or_insert(limit);
+        }
+        for (provider, limit) in crate::core::context_limit::default_provider_context_limits() {
+            self.provider_context_limits
+                .entry(provider)
+                .or_insert(limit);
+        }
         // Drop stale tunnel/tailscale keys from pre-removal databases so they
         // don't round-trip forever via the flattened `extra` map.
         for key in [

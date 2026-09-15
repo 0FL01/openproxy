@@ -79,6 +79,10 @@ async fn get_settings_requires_auth_and_redacts_password() {
     assert_eq!(json["requireApiKey"], true);
     assert_eq!(json["enableRequestLogs"], false);
     assert_eq!(json["enableTranslator"], false);
+    assert_eq!(json["providerContextLimits"]["opencode-zen"], 500000);
+    assert_eq!(json["providerContextLimits"]["opencode-go"], 500000);
+    assert_eq!(json["providerContextLimits"]["glm"], 500000);
+    assert_eq!(json["providerContextLimits"]["codex"], 500000);
     assert!(json.get("password").is_none());
     assert!(json.get("clientSecret").is_none());
 }
@@ -109,6 +113,12 @@ async fn patch_settings_updates_values_and_rejects_password_fields() {
                         "cavemanLevel": "ultra",
                         "requireApiKey": false,
                         "codexWebSearchContextSize": "low",
+                        "providerContextLimits": {
+                            "opencode-zen": 450000,
+                            "opencode-go": 500000,
+                            "glm": 200000,
+                            "codex": 500000
+                        },
                     })
                     .to_string(),
                 ))
@@ -127,6 +137,8 @@ async fn patch_settings_updates_values_and_rejects_password_fields() {
     assert_eq!(json["comboStrategies"]["writer"], "cost");
     assert_eq!(json["requireApiKey"], false);
     assert_eq!(json["codexWebSearchContextSize"], "low");
+    assert_eq!(json["providerContextLimits"]["opencode-zen"], 450000);
+    assert_eq!(json["providerContextLimits"]["glm"], 200000);
     assert_eq!(json["hasPassword"], true);
 
     let rejected_depth = app
@@ -145,6 +157,23 @@ async fn patch_settings_updates_values_and_rejects_password_fields() {
         .await
         .unwrap();
     assert_eq!(rejected_depth.status(), StatusCode::BAD_REQUEST);
+
+    let rejected_context_limit = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/settings")
+                .header("authorization", format!("Bearer {TEST_KEY}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"providerContextLimits": {"glm": 1000001}}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rejected_context_limit.status(), StatusCode::BAD_REQUEST);
 
     let unchanged = app
         .clone()
