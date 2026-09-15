@@ -14,7 +14,6 @@ use hyper_util::client::legacy::{connect::HttpConnector, Client};
 use hyper_util::rt::TokioExecutor;
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use openproxy::cli::Cli;
-use openproxy::core::rtk::CompressionLevel;
 use openproxy::db::Db;
 use openproxy::server::state::AppState;
 use serde::{Deserialize, Serialize};
@@ -138,7 +137,6 @@ fn dependency_stack_smoke_test() {
         .finish();
 
     let _ = connector;
-    let _ = CompressionLevel::Lite;
 }
 
 #[test]

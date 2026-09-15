@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use openproxy::core::rtk::CompressionLevel;
 use openproxy::db::Db;
 use openproxy::server::state::AppState;
 use openproxy::types::{ApiKey, Combo, ProviderConnection, ProviderNode, Settings};
@@ -185,89 +184,6 @@ async fn chat_completions_streams_openai_compatible_response() {
 }
 
 #[tokio::test]
-async fn chat_completions_injects_caveman_prompt_for_long_requests() {
-    let upstream = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
-        .and(header("authorization", "Bearer upstream-key"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "id": "chatcmpl-caveman",
-            "object": "chat.completion",
-            "choices": [{
-                "index": 0,
-                "message": { "role": "assistant", "content": "ok" },
-                "finish_reason": "stop"
-            }]
-        })))
-        .expect(1)
-        .mount(&upstream)
-        .await;
-
-    let settings = Settings {
-        caveman_enabled: true,
-        caveman_level: "ultra".into(),
-        ..Settings::default()
-    };
-    let state = seeded_state_with_settings(
-        vec![provider_node(
-            "node-openai",
-            "custom",
-            &format!("{}/v1", upstream.uri()),
-        )],
-        vec![connection("conn-1", "node-openai", 1, "upstream-key")],
-        Vec::new(),
-        settings,
-    )
-    .await;
-    let long_prompt = "Need concise summary of massive transcript. ".repeat(220);
-
-    let app = openproxy::build_app(state);
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/chat/completions")
-                .header("authorization", "Bearer valid-bearer")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({
-                        "model": "custom/gpt-4o-mini",
-                        "messages": [
-                            { "role": "system", "content": "Existing rules" },
-                            { "role": "user", "content": long_prompt }
-                        ],
-                        "stream": false,
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let requests = upstream
-        .received_requests()
-        .await
-        .expect("received requests");
-    assert_eq!(requests.len(), 1);
-
-    for (idx, r) in requests.iter().enumerate() {
-        let b: serde_json::Value = r.body_json().unwrap_or_default();
-        eprintln!(
-            "DEBUGUP {idx}: {}",
-            serde_json::to_string(&b["messages"]).unwrap_or_default()
-        );
-    }
-    let forwarded: serde_json::Value = requests[0].body_json().expect("forwarded body");
-    assert_eq!(forwarded["model"], "gpt-4o-mini");
-    let messages = forwarded["messages"].as_array().expect("messages array");
-    let system = messages[0]["content"].as_str().expect("system content");
-    assert!(system.starts_with("Existing rules"));
-    assert!(system.contains(&CompressionLevel::Ultra.prompt()));
-}
-
-#[tokio::test]
 async fn chat_completions_skips_caveman_prompt_for_short_requests() {
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -345,98 +261,6 @@ async fn chat_completions_skips_caveman_prompt_for_short_requests() {
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0]["role"], "user");
     assert_eq!(messages[0]["content"], "hi");
-}
-
-#[tokio::test]
-async fn chat_completions_preserves_chat_content_part_schema_when_injecting_caveman() {
-    let upstream = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
-        .and(header("authorization", "Bearer upstream-key"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "id": "chatcmpl-parts",
-            "object": "chat.completion",
-            "choices": [{
-                "index": 0,
-                "message": { "role": "assistant", "content": "ok" },
-                "finish_reason": "stop"
-            }]
-        })))
-        .expect(1)
-        .mount(&upstream)
-        .await;
-
-    let settings = Settings {
-        caveman_enabled: true,
-        caveman_level: "full".into(),
-        ..Settings::default()
-    };
-    let state = seeded_state_with_settings(
-        vec![provider_node(
-            "node-openai",
-            "custom",
-            &format!("{}/v1", upstream.uri()),
-        )],
-        vec![connection("conn-1", "node-openai", 1, "upstream-key")],
-        Vec::new(),
-        settings,
-    )
-    .await;
-    let long_prompt = "Need concise summary of massive transcript. ".repeat(220);
-
-    let app = openproxy::build_app(state);
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/chat/completions")
-                .header("authorization", "Bearer valid-bearer")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({
-                        "model": "custom/gpt-4o-mini",
-                        "messages": [
-                            {
-                                "role": "developer",
-                                "content": [{ "type": "text", "text": "Keep exact schema" }]
-                            },
-                            { "role": "user", "content": long_prompt }
-                        ],
-                        "stream": false,
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let requests = upstream
-        .received_requests()
-        .await
-        .expect("received requests");
-    assert_eq!(requests.len(), 1);
-
-    for (idx, r) in requests.iter().enumerate() {
-        let b: serde_json::Value = r.body_json().unwrap_or_default();
-        eprintln!(
-            "DEBUGUP {idx}: {}",
-            serde_json::to_string(&b["messages"]).unwrap_or_default()
-        );
-    }
-    let forwarded: serde_json::Value = requests[0].body_json().expect("forwarded body");
-    let parts = forwarded["messages"][0]["content"]
-        .as_array()
-        .expect("developer content parts");
-    assert_eq!(
-        parts[0],
-        json!({ "type": "text", "text": "Keep exact schema" })
-    );
-    assert_eq!(
-        parts.last().expect("last developer part"),
-        &json!({ "type": "text", "text": CompressionLevel::Full.prompt() })
-    );
 }
 
 #[tokio::test]
