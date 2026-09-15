@@ -70,11 +70,7 @@ where
         match refresh_fn().await {
             Ok(result) => return Ok(result),
             Err(err) => {
-                let is_transient = !err.contains("40") // heuristic: 4xx usually permanent
-                    || err.contains("429")
-                    || err.contains("502")
-                    || err.contains("503")
-                    || err.contains("504");
+                let is_transient = refresh_error_is_transient(&err);
                 if !is_transient {
                     return Err(err);
                 }
@@ -86,6 +82,21 @@ where
     Err(format!(
         "token refresh failed after {MAX_RETRIES} attempts: {last_err}"
     ))
+}
+
+fn refresh_error_is_transient(error: &str) -> bool {
+    let status = error
+        .split_once("HTTP ")
+        .and_then(|(_, suffix)| suffix.get(..3))
+        .and_then(|value| value.parse::<u16>().ok());
+
+    match status {
+        Some(429) => true,
+        Some(400..=499) => false,
+        Some(500..=599) => true,
+        Some(_) => false,
+        None => true,
+    }
 }
 
 /// Jittered exponential backoff: `BASE * 2^(attempt-1) + random(0, BASE/2)`.
@@ -253,6 +264,12 @@ impl RefreshDedup {
         {
             let mut cache = self.cache.lock();
 
+            if cache.get(&key).is_some_and(|entry| {
+                entry.cached_result.is_some() && entry.expires_at <= Instant::now()
+            }) {
+                cache.remove(&key);
+            }
+
             // Fast path: cached result is still warm.
             if let Some(entry) = cache.get(&key) {
                 if entry.expires_at > Instant::now() {
@@ -278,18 +295,22 @@ impl RefreshDedup {
             .await
             .clone();
 
-        // 9router bug fix: only cache SUCCESS results, not errors/null.
-        // The original JS dedup cached null results for 10 seconds,
-        // defeating the caller's refreshWithRetry(3) which then only made
-        // one real attempt. We cache the in-flight OnceCell (so concurrent
-        // callers share one attempt) but only warm the result cache on
-        // success, allowing retries to actually retry.
+        let mut cache = self.cache.lock();
         if result.is_ok() {
-            let mut cache = self.cache.lock();
-            if let Some(entry) = cache.get_mut(&key) {
+            if let Some(entry) = cache
+                .get_mut(&key)
+                .filter(|entry| Arc::ptr_eq(&entry.in_flight, &cell))
+            {
                 entry.cached_result = Some(result.clone());
                 entry.expires_at = Instant::now() + Duration::from_millis(REFRESH_RESULT_TTL_MS);
             }
+        } else if cache
+            .get(&key)
+            .is_some_and(|entry| Arc::ptr_eq(&entry.in_flight, &cell))
+        {
+            // Current waiters share this completed error, while a later call
+            // gets a fresh cell and can retry the upstream request.
+            cache.remove(&key);
         }
 
         result
@@ -1245,10 +1266,31 @@ async fn refresh_form_token(url: &str, fields: Vec<(&str, &str)>) -> Result<Refr
 /// Handles both camelCase and snake_case field names for cross-provider
 /// compatibility.
 async fn parse_json_refresh_response(resp: reqwest::Response) -> Result<RefreshResult, String> {
-    let payload: Value = resp
-        .json()
+    let status = resp.status();
+    let body = resp
+        .text()
         .await
-        .map_err(|e| format!("Failed to parse refresh response: {e}"))?;
+        .map_err(|e| format!("Failed to read refresh response: {e}"))?;
+    let payload: Value = serde_json::from_str(&body).map_err(|e| {
+        if status.is_success() {
+            format!("Failed to parse refresh response: {e}")
+        } else {
+            format!("Refresh request returned HTTP {}", status.as_u16())
+        }
+    })?;
+
+    if !status.is_success() {
+        let error = payload
+            .get("error")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let detail = error.map(|error| format!(": {error}")).unwrap_or_default();
+        return Err(format!(
+            "Refresh request returned HTTP {}{detail}",
+            status.as_u16()
+        ));
+    }
 
     let access_token = payload
         .get("access_token")

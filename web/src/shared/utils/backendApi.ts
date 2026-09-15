@@ -158,15 +158,3 @@ export async function isCloudEnabled(): Promise<boolean> {
   const settings = await getSettings();
   return settings.cloudEnabled === true;
 }
-
-/**
- * Trigger one quota auto-ping scheduler tick on the Rust backend.
- * Foundation endpoint — full warm-ping may still be partial.
- */
-export async function runQuotaAutoPingTick(): Promise<Record<string, unknown>> {
-  const response = await apiFetch("/api/quota/auto-ping/tick", { method: "POST" });
-  if (!response.ok) {
-    throw new Error(`Failed to run auto-ping tick: ${response.statusText}`);
-  }
-  return await response.json();
-}

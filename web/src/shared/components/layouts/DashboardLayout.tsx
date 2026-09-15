@@ -53,7 +53,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
     setMounted(true);
     setPathname(window.location.pathname);
     document.body.classList.add("dashboard-ready");
-    // Resume MITM + client auto-ping tick (once per tab).
+    // Resume MITM once per tab; background schedulers live in the Rust server.
     initializeApp().catch((e) =>
       console.error("[DashboardLayout] initializeApp failed:", (e as Error).message),
     );

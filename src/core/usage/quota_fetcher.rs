@@ -35,9 +35,8 @@
 //! These fetchers are called from **two concurrent paths**:
 //!
 //! 1. **Auto-ping background loop** (`quota_auto_ping::process_connection`):
-//!    refreshes the OAuth credentials via `dispatch_oauth_refresh` *before*
-//!    calling `fetch_oauth_quota`. The fresh token is used in the same
-//!    tick iteration.
+//!    refreshes due OAuth credentials via `dispatch_oauth_refresh` before
+//!    calling `fetch_oauth_quota`. A fresh token is used in the same tick.
 //!
 //! 2. **HTTP handler** (`usage::get_connection_usage`): reads a DB snapshot
 //!    and calls `fetch_oauth_quota` without an intervening credential

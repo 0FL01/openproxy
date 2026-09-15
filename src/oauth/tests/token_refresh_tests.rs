@@ -9,6 +9,45 @@ use crate::oauth::device_code;
 use crate::oauth::providers;
 use crate::oauth::{pkce, RefreshRequest, TokenResponse};
 
+#[tokio::test]
+async fn failed_refresh_is_not_cached_for_later_calls() {
+    let dedup = crate::oauth::token_refresh::RefreshDedup::new();
+    let calls = Arc::new(AtomicUsize::new(0));
+
+    for _ in 0..2 {
+        let calls = calls.clone();
+        let result = dedup
+            .dedup("codex", "old-token", move || async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Err("temporary failure".to_string())
+            })
+            .await;
+        assert!(result.is_err());
+    }
+
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn refresh_does_not_retry_permanent_http_error() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let attempt = {
+        let calls = calls.clone();
+        move || {
+            let calls = calls.clone();
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Err("Refresh request returned HTTP 400: invalid_grant".to_string())
+            }
+        }
+    };
+
+    let result = crate::oauth::token_refresh::refresh_with_retry(attempt).await;
+
+    assert!(result.is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
 // ─── DedupRefresh: 5 concurrent calls = 1 upstream HTTP call ───────────────
 //
 // Rather than testing the real HTTP endpoint (which would require mocking), we

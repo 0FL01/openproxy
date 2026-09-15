@@ -37,7 +37,9 @@ use tracing::{info, warn};
 
 use crate::core::executor::{CodexExecutionRequest, CodexExecutor, UpstreamResponse};
 use crate::core::proxy::resolve_proxy_target;
-use crate::oauth::token_refresh::dispatch_oauth_refresh;
+use crate::oauth::token_refresh::{
+    dispatch_oauth_refresh, should_refresh_credentials, REFRESH_LEAD_CODEX_MS,
+};
 use crate::server::api::usage::fetch_oauth_quota;
 use crate::server::state::AppState;
 use crate::types::{ProviderConnection, Settings};
@@ -332,7 +334,8 @@ async fn process_connection(
         }
     }
 
-    // Refresh credentials (best-effort; 9r always attempts)
+    // Claude retains the upstream always-refresh behavior. Codex refreshes only
+    // when due so quota observation does not rotate a healthy credential.
     let mut connection = conn.clone();
     if let Some(rt) = connection
         .refresh_token
@@ -340,63 +343,71 @@ async fn process_connection(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        match dispatch_oauth_refresh(provider, rt, &connection.provider_specific_data).await {
-            Ok(result) => {
-                let conn_id = connection.id.clone();
-                let new_access = result.access_token.clone();
-                let new_refresh = result.refresh_token.clone();
-                let expires_at = result.expires_in.map(|secs| {
-                    (chrono::Utc::now() + chrono::Duration::seconds(secs)).to_rfc3339()
-                });
-                let last_refresh_at = chrono::Utc::now().to_rfc3339();
-                let _ = state
-                    .db
-                    .update({
-                        let conn_id = conn_id.clone();
-                        let new_access = new_access.clone();
-                        let new_refresh = new_refresh.clone();
-                        let expires_at = expires_at.clone();
-                        let last_refresh_at = last_refresh_at.clone();
-                        move |db| {
-                            if let Some(c) =
-                                db.provider_connections.iter_mut().find(|c| c.id == conn_id)
-                            {
-                                c.access_token = Some(new_access);
-                                if let Some(rt) = new_refresh {
-                                    c.refresh_token = Some(rt);
+        let refresh_due = should_refresh_for_auto_ping(&connection, provider);
+        let refresh_cooling_down = is_codex && failure_cooldown_active(&key);
+        if refresh_due && !refresh_cooling_down {
+            match dispatch_oauth_refresh(provider, rt, &connection.provider_specific_data).await {
+                Ok(result) => {
+                    let conn_id = connection.id.clone();
+                    let new_access = result.access_token.clone();
+                    let new_refresh = result.refresh_token.clone();
+                    let expires_at = result.expires_in.map(|secs| {
+                        (chrono::Utc::now() + chrono::Duration::seconds(secs)).to_rfc3339()
+                    });
+                    let last_refresh_at = chrono::Utc::now().to_rfc3339();
+                    let _ = state
+                        .db
+                        .update({
+                            let conn_id = conn_id.clone();
+                            let new_access = new_access.clone();
+                            let new_refresh = new_refresh.clone();
+                            let expires_at = expires_at.clone();
+                            let last_refresh_at = last_refresh_at.clone();
+                            move |db| {
+                                if let Some(c) =
+                                    db.provider_connections.iter_mut().find(|c| c.id == conn_id)
+                                {
+                                    c.access_token = Some(new_access);
+                                    if let Some(rt) = new_refresh {
+                                        c.refresh_token = Some(rt);
+                                    }
+                                    if let Some(exp) = expires_at {
+                                        c.expires_at = Some(exp);
+                                    }
+                                    c.provider_specific_data.insert(
+                                        "lastRefreshAt".into(),
+                                        Value::String(last_refresh_at),
+                                    );
                                 }
-                                if let Some(exp) = expires_at {
-                                    c.expires_at = Some(exp);
-                                }
-                                c.provider_specific_data
-                                    .insert("lastRefreshAt".into(), Value::String(last_refresh_at));
                             }
-                        }
-                    })
-                    .await;
-                connection.access_token = Some(result.access_token);
-                if let Some(rt) = result.refresh_token {
-                    connection.refresh_token = Some(rt);
+                        })
+                        .await;
+                    connection.access_token = Some(result.access_token);
+                    if let Some(rt) = result.refresh_token {
+                        connection.refresh_token = Some(rt);
+                    }
+                    if let Some(exp) = expires_at {
+                        connection.expires_at = Some(exp);
+                    }
                 }
-                if let Some(exp) = expires_at {
-                    connection.expires_at = Some(exp);
+                Err(e) => {
+                    mark_failure(&key);
+                    warn!(
+                        target: "openproxy::auto_ping",
+                        provider = provider,
+                        connection_id = %conn.id,
+                        error = %e,
+                        "quota auto-ping: credential refresh failed"
+                    );
+                    if !is_codex || !has_access_token(&connection) {
+                        return TickOutcome::Skip {
+                            reason: format!("refresh_failed: {e}"),
+                            reset_at: None,
+                            quota_key: cfg.quota_key.into(),
+                            trigger_reason: None,
+                        };
+                    }
                 }
-            }
-            Err(e) => {
-                mark_failure(&key);
-                warn!(
-                    target: "openproxy::auto_ping",
-                    provider = provider,
-                    connection_id = %conn.id,
-                    error = %e,
-                    "quota auto-ping: credential refresh failed"
-                );
-                return TickOutcome::Skip {
-                    reason: format!("refresh_failed: {e}"),
-                    reset_at: None,
-                    quota_key: cfg.quota_key.into(),
-                    trigger_reason: None,
-                };
             }
         }
     }
@@ -1118,6 +1129,42 @@ fn cache_key(provider: &str, connection_id: &str) -> String {
     format!("{provider}:{connection_id}")
 }
 
+fn should_refresh_for_auto_ping(connection: &ProviderConnection, provider: &str) -> bool {
+    if provider != "codex" {
+        return true;
+    }
+
+    let last_refresh_at = connection
+        .provider_specific_data
+        .get("lastRefreshAt")
+        .and_then(Value::as_str);
+    should_refresh_credentials(
+        provider,
+        &connection.expires_at,
+        last_refresh_at,
+        connection
+            .refresh_token
+            .as_deref()
+            .is_some_and(|token| !token.trim().is_empty()),
+        REFRESH_LEAD_CODEX_MS,
+    )
+}
+
+fn has_access_token(connection: &ProviderConnection) -> bool {
+    connection
+        .access_token
+        .as_deref()
+        .is_some_and(|token| !token.trim().is_empty())
+}
+
+fn failure_cooldown_active(key: &str) -> bool {
+    AUTO_PING_STATE
+        .lock()
+        .failure_cache
+        .get(key)
+        .is_some_and(|failed_at| failed_at.elapsed() < Duration::from_millis(FAILURE_COOLDOWN_MS))
+}
+
 fn mark_failure(key: &str) {
     AUTO_PING_STATE
         .lock()
@@ -1146,6 +1193,23 @@ fn auto_ping_connections(settings: &Settings, key: &str) -> BTreeMap<String, boo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_auto_ping_does_not_refresh_fresh_credentials() {
+        let now = chrono::Utc::now();
+        let mut connection = ProviderConnection {
+            provider: "codex".into(),
+            refresh_token: Some("refresh-token".into()),
+            expires_at: Some((now + chrono::Duration::days(9)).to_rfc3339()),
+            ..Default::default()
+        };
+        connection.provider_specific_data.insert(
+            "lastRefreshAt".into(),
+            Value::String((now - chrono::Duration::days(1)).to_rfc3339()),
+        );
+
+        assert!(!should_refresh_for_auto_ping(&connection, "codex"));
+    }
 
     #[test]
     fn normalize_reset_key_floors_to_minute() {
