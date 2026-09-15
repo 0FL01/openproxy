@@ -415,6 +415,15 @@ fn close_tool_call(
 fn send_completed(state: &mut serde_json::Map<String, Value>, events: &mut Vec<Value>) {
     if state.get("completedSent").and_then(|v| v.as_bool()) != Some(true) {
         state.insert("completedSent".to_string(), Value::Bool(true));
+        let usage = state.get("usage").cloned().unwrap_or_else(|| {
+            serde_json::json!({
+                "input_tokens": 0,
+                "input_tokens_details": {"cached_tokens": 0},
+                "output_tokens": 0,
+                "output_tokens_details": {"reasoning_tokens": 0},
+                "total_tokens": 0
+            })
+        });
         emit(
             events,
             state,
@@ -427,7 +436,10 @@ fn send_completed(state: &mut serde_json::Map<String, Value>, events: &mut Vec<V
                     "created_at": state.get("created").and_then(|v| v.as_i64()).unwrap_or(0),
                     "status": "completed",
                     "background": false,
-                    "error": null
+                    "error": null,
+                    "incomplete_details": null,
+                    "service_tier": null,
+                    "usage": usage
                 }
             }),
         );
@@ -642,6 +654,23 @@ pub fn chat_to_responses_response(
 
     let mut events: Vec<Value> = Vec::new();
 
+    if let Some(usage) = chunk.get("usage") {
+        state.insert(
+            "usage".to_string(),
+            serde_json::json!({
+                "input_tokens": usage.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0),
+                "input_tokens_details": {
+                    "cached_tokens": usage.pointer("/prompt_tokens_details/cached_tokens").and_then(Value::as_u64).unwrap_or(0)
+                },
+                "output_tokens": usage.get("completion_tokens").and_then(Value::as_u64).unwrap_or(0),
+                "output_tokens_details": {
+                    "reasoning_tokens": usage.pointer("/completion_tokens_details/reasoning_tokens").and_then(Value::as_u64).unwrap_or(0)
+                },
+                "total_tokens": usage.get("total_tokens").and_then(Value::as_u64).unwrap_or(0)
+            }),
+        );
+    }
+
     if !state.contains_key("started") {
         state.insert("started".to_string(), Value::Bool(true));
         let resp_id = chunk
@@ -670,6 +699,16 @@ pub fn chat_to_responses_response(
         state.insert("reasoningPartAdded".to_string(), Value::Bool(false));
         state.insert("inThinking".to_string(), Value::Bool(false));
         state.insert("completedSent".to_string(), Value::Bool(false));
+        state.insert(
+            "model".to_string(),
+            Value::String(
+                chunk
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+            ),
+        );
 
         let seq1 = next_seq(state);
         let seq2 = next_seq(state);
@@ -683,9 +722,11 @@ pub fn chat_to_responses_response(
                     "id": resp_id.clone(),
                     "object": "response",
                     "created_at": chrono::Utc::now().timestamp(),
+                    "model": state.get("model").and_then(Value::as_str).unwrap_or(""),
                     "status": "in_progress",
                     "background": false,
                     "error": null,
+                    "service_tier": null,
                     "output": []
                 }
             }
@@ -1452,7 +1493,7 @@ mod tests {
         let mut state = ResponseTransformState::default();
         let stream = concat!(
             "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"READY\"},\"finish_reason\":null}]}\n\n",
-            "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: {\"id\":\"chatcmpl-1\",\"model\":\"glm-5.3-flash\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":16,\"completion_tokens\":25,\"total_tokens\":41,\"prompt_tokens_details\":{\"cached_tokens\":3},\"completion_tokens_details\":{\"reasoning_tokens\":21}}}\n\n",
             "data: [DONE]\n\n"
         );
         let split = stream.find("READY").unwrap() + 2;
@@ -1464,6 +1505,9 @@ mod tests {
         let completed = output.find("response.completed").unwrap();
         assert!(text < completed);
         assert!(output.contains("\"delta\":\"READY\""));
+        assert!(output.contains("\"input_tokens\":16"));
+        assert!(output.contains("\"reasoning_tokens\":21"));
+        assert!(output.contains("\"incomplete_details\":null"));
         assert!(output.contains("data: [DONE]"));
     }
 
