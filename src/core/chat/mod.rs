@@ -52,8 +52,6 @@ pub struct RequestPlan {
     pub stream: bool,
     /// Whether this is a passthrough (client tool matches provider ecosystem)
     pub passthrough: bool,
-    /// Whether bypass applies (warmup, skip, cc naming)
-    pub bypass: bool,
     /// Provider forceStream + client non-stream → aggregate SSE to JSON
     pub sse_to_json: bool,
     /// Dynamic provider family metadata (for provider-scoped wire quirks).
@@ -112,7 +110,6 @@ impl RequestPlan {
             transport_base_url: transport.map(|t| t.base_url),
             stream,
             passthrough: false,
-            bypass: false,
             sse_to_json: false,
             model_family: None,
         }

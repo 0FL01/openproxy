@@ -623,6 +623,7 @@ impl Settings {
             "tunnelDashboardAccess",
             "payloadRules",
             "systemPrompt",
+            "ccFilterNaming",
         ] {
             self.extra.remove(key);
         }

@@ -95,7 +95,6 @@ export default function ClaudeToolCard({
   const [modelAliases, setModelAliases] = useState<Record<string, string>>({});
   const [showManualConfigModal, setShowManualConfigModal] = useState<boolean>(false);
   const [customBaseUrl, setCustomBaseUrl] = useState<string>("");
-  const [ccFilterNaming, setCcFilterNaming] = useState<boolean>(false);
   const hasInitializedModels = useRef<boolean>(false);
 
   // Sync context-window selector with the saved env value (v0.5.45 parity).
@@ -134,22 +133,6 @@ export default function ClaudeToolCard({
     }
     if (isExpanded) fetchModelAliases();
   }, [isExpanded]);
-
-  useEffect(() => {
-    fetch("/api/settings").then(r => r.json()).then(data => {
-      setCcFilterNaming(!!data.ccFilterNaming);
-    }).catch(() => {});
-  }, []);
-
-  const handleCcFilterNamingToggle = async (e: ChangeEvent<HTMLInputElement>): Promise<void> => {
-    const value = e.target.checked;
-    setCcFilterNaming(value);
-    await fetch("/api/settings", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ccFilterNaming: value }),
-    }).catch(() => {});
-  };
 
   const fetchModelAliases = async (): Promise<void> => {
     try {
@@ -444,18 +427,6 @@ export default function ClaudeToolCard({
                   </Tooltip>
                 </div>
 
-                {/* CC Filter Naming */}
-                <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[8rem_auto_1fr_auto] sm:items-center sm:gap-2">
-                  <span className="text-xs font-semibold text-text-main sm:text-right sm:text-sm">Filter naming</span>
-                  <span className="material-symbols-outlined hidden text-text-muted text-[14px] sm:inline">arrow_forward</span>
-                  <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                    <input type="checkbox" checked={ccFilterNaming} onChange={handleCcFilterNamingToggle} className="w-3.5 h-3.5 accent-primary cursor-pointer" />
-                    <span className="text-xs text-text-muted">Filter naming requests</span>
-                  </label>
-                  <Tooltip text="Intercepts Claude Code's topic-naming requests and returns a fake response locally, saving API tokens.">
-                    <span className="material-symbols-outlined text-text-muted text-[14px] cursor-help">info</span>
-                  </Tooltip>
-                </div>
               </div>
 
               {message && (

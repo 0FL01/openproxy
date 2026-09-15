@@ -37,7 +37,6 @@ use crate::core::translator::helpers::modality_helper::{
 };
 use crate::core::translator::registry::{self, Format};
 use crate::core::translator::response_transform::{transform_sse_stream, transformer_for_provider};
-use crate::core::utils::bypass_handler::{detect_bypass, BypassDecision, DEFAULT_BYPASS_TEXT};
 use crate::core::utils::claude_cloaking::{cloak_claude_tools, CloakedRequest};
 use crate::core::utils::client_detector::{detect_client_tool, is_native_passthrough, ClientTool};
 use crate::core::utils::stream_flags::resolve_stream_flags;
@@ -430,38 +429,6 @@ async fn chat_completions_impl(
         .get("accept")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
-
-    let user_agent = headers
-        .get("user-agent")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_lowercase();
-    // 9router parity: ccFilterNaming setting — used by bypass handler to
-    // intercept Claude Code's isNewTopic / topic-extraction requests before
-    // they reach a provider (matches handleChat in 9router).
-    let cc_filter_naming = snapshot
-        .settings
-        .extra
-        .get("ccFilterNaming")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    match detect_bypass(&body, &user_agent, cc_filter_naming) {
-        BypassDecision::Bypass => {
-            let stream = body.get("stream").and_then(Value::as_bool).unwrap_or(true);
-            return bypass_response(model_str, DEFAULT_BYPASS_TEXT, stream);
-        }
-        BypassDecision::Naming { title } => {
-            let naming_text = serde_json::to_string(&json!({
-                "isNewTopic": true,
-                "title": title,
-            }))
-            .unwrap_or_else(|_| String::new());
-            let stream = body.get("stream").and_then(Value::as_bool).unwrap_or(true);
-            return bypass_response(model_str, &naming_text, stream);
-        }
-        BypassDecision::Pass => {}
-    }
 
     let response = match resolved.route_kind {
         ModelRouteKind::Combo => {
@@ -4741,95 +4708,6 @@ fn write_streaming_error(error_msg: &str, error_type: &str) -> String {
         "data: {}\n\n",
         serde_json::to_string(&msg).unwrap_or_default()
     )
-}
-
-/// Build a bypass response — either streaming SSE (when `stream` is true) or
-/// non-streaming JSON. 9router parity: the streaming path emits proper OpenAI
-/// SSE chunks so client-side SSE parsers (Claude Code, Gemini CLI, etc.)
-/// receive a valid event stream instead of unexpected JSON.
-fn bypass_response(model: &str, text: &str, stream: bool) -> Response {
-    let id = format!("chatcmpl-{}", chrono::Utc::now().timestamp_millis());
-    let created = chrono::Utc::now().timestamp();
-
-    if stream {
-        let content_frame = json!({
-            "id": id,
-            "object": "chat.completion.chunk",
-            "created": created,
-            "model": model,
-            "choices": [{
-                "index": 0,
-                "delta": {
-                    "role": "assistant",
-                    "content": text
-                },
-                "finish_reason": null
-            }]
-        });
-        let finish_frame = json!({
-            "id": id,
-            "object": "chat.completion.chunk",
-            "created": created,
-            "model": model,
-            "choices": [{
-                "index": 0,
-                "delta": {},
-                "finish_reason": "stop"
-            }],
-            "usage": {
-                "prompt_tokens": 1,
-                "completion_tokens": 1,
-                "total_tokens": 2
-            }
-        });
-
-        let body = format!(
-            "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
-            serde_json::to_string(&content_frame).unwrap_or_default(),
-            serde_json::to_string(&finish_frame).unwrap_or_default(),
-        );
-
-        let mut response = Response::new(Body::from(body));
-        *response.status_mut() = StatusCode::OK;
-        response.headers_mut().insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("text/event-stream; charset=utf-8"),
-        );
-        response
-            .headers_mut()
-            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-        response
-            .headers_mut()
-            .insert(header::CONNECTION, HeaderValue::from_static("keep-alive"));
-        response.headers_mut().insert(
-            header::ACCESS_CONTROL_ALLOW_ORIGIN,
-            HeaderValue::from_static("*"),
-        );
-        response
-    } else {
-        json_success_response(
-            StatusCode::OK,
-            json!({
-                "id": id,
-                "object": "chat.completion",
-                "created": created,
-                "model": model,
-                "choices": [{
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": text
-                    },
-                    "finish_reason": "stop"
-                }],
-                "usage": {
-                    "prompt_tokens": 1,
-                    "completion_tokens": 1,
-                    "total_tokens": 2
-                }
-            }),
-        )
-    }
 }
 
 #[cfg(test)]
