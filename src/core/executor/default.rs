@@ -1182,6 +1182,15 @@ impl DefaultExecutor {
         // Strip unsupported request params for providers that don't support them
         strip_unsupported_params(&self.provider, model, &mut body);
 
+        // Z.ai quirk: `stream: true` alone does not stream tool-call arguments —
+        // GLM emits them in one silent batch at the end of the stream, which
+        // degrades tool calling (zeroclaw-labs/zeroclaw#2901) and trips
+        // api.z.ai's 30s idle timeout (vercel/ai#12949). The documented fix is
+        // `tool_stream: true` (docs.z.ai/guides/capabilities/stream-tool).
+        if matches!(self.provider.as_str(), "glm" | "glm-cn") {
+            inject_glm_tool_stream(&mut body);
+        }
+
         body
     }
 
@@ -1611,6 +1620,41 @@ fn bearer_token(credentials: &ProviderConnection) -> Option<&str> {
         .or_else(|| non_empty_option(credentials.api_key.as_deref()))
 }
 
+/// Z.ai coding/PaaS endpoints require `tool_stream: true` in addition to
+/// `stream: true` for tool-call arguments to arrive as `delta.tool_calls`
+/// fragments (docs.z.ai/guides/capabilities/stream-tool). Without it GLM
+/// batches arguments at the end of the stream, causing degenerate tool
+/// calling (zeroclaw-labs/zeroclaw#2901) and 30s idle-timeout connection
+/// resets on api.z.ai (vercel/ai#12949).
+///
+/// No-op for non-streaming, tool-less or Claude-shaped bodies (the anthropic
+/// transport of glm carries Claude-style tools without a `function` key),
+/// and when the client already set the flag itself.
+fn inject_glm_tool_stream(body: &mut Value) {
+    let Some(obj) = body.as_object_mut() else {
+        return;
+    };
+    if obj.contains_key("tool_stream") {
+        return;
+    }
+    if obj.get("stream").and_then(Value::as_bool) != Some(true) {
+        return;
+    }
+    let has_openai_tools = obj
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| {
+            !tools.is_empty()
+                && tools.first().is_some_and(|tool| {
+                    tool.get("type").and_then(Value::as_str) == Some("function")
+                        || tool.get("function").is_some()
+                })
+        });
+    if has_openai_tools {
+        obj.insert("tool_stream".to_string(), Value::Bool(true));
+    }
+}
+
 /// Convert OpenAI-format tools to Claude format.
 ///
 /// OpenAI: `{"type":"function", "function": {"name":"x", "description":"d", "parameters":{...}}}`
@@ -1767,6 +1811,113 @@ mod tests {
             serde_json::json!({ "ideType": 9 }),
             "openai must keep client_metadata"
         );
+    }
+
+    #[test]
+    fn glm_injects_tool_stream_for_streaming_tool_requests() {
+        // Z.ai requires tool_stream=true alongside stream=true for streamed
+        // tool-call arguments (docs.z.ai/guides/capabilities/stream-tool).
+        let executor = DefaultExecutor::new("glm", Arc::new(ClientPool::new()), None).unwrap();
+        let body = serde_json::json!({
+            "model": "glm-5.3-flash",
+            "stream": true,
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            }]
+        });
+        let transformed = executor.transform_request(&body, "glm-5.3-flash");
+        assert_eq!(transformed["tool_stream"], serde_json::json!(true));
+
+        // glm-cn (open.bigmodel.cn) is the same Zhipu API surface.
+        let executor = DefaultExecutor::new("glm-cn", Arc::new(ClientPool::new()), None).unwrap();
+        let transformed = executor.transform_request(&body, "glm-5.3-flash");
+        assert_eq!(transformed["tool_stream"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn glm_skips_tool_stream_without_tools_or_stream() {
+        let executor = DefaultExecutor::new("glm", Arc::new(ClientPool::new()), None).unwrap();
+        let tools = serde_json::json!([{
+            "type": "function",
+            "function": {"name": "get_weather", "parameters": {"type": "object"}}
+        }]);
+
+        // Non-streaming request: tool_stream requires stream=true.
+        let body = serde_json::json!({
+            "model": "glm-5.3-flash",
+            "stream": false,
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": tools
+        });
+        let transformed = executor.transform_request(&body, "glm-5.3-flash");
+        assert!(transformed.get("tool_stream").is_none());
+
+        // No tools: nothing to stream.
+        let body = serde_json::json!({
+            "model": "glm-5.3-flash",
+            "stream": true,
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        let transformed = executor.transform_request(&body, "glm-5.3-flash");
+        assert!(transformed.get("tool_stream").is_none());
+    }
+
+    #[test]
+    fn glm_skips_tool_stream_for_claude_shaped_tools() {
+        // glm via the anthropic transport carries Claude-style tools
+        // (no `function` key); tool_stream must not be sent there.
+        let executor = DefaultExecutor::new("glm", Arc::new(ClientPool::new()), None).unwrap();
+        let body = serde_json::json!({
+            "model": "glm-5.3-flash",
+            "stream": true,
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{
+                "name": "get_weather",
+                "description": "Get weather",
+                "input_schema": {"type": "object", "properties": {}}
+            }]
+        });
+        let transformed = executor.transform_request(&body, "glm-5.3-flash");
+        assert!(transformed.get("tool_stream").is_none());
+    }
+
+    #[test]
+    fn glm_preserves_client_tool_stream_choice() {
+        let executor = DefaultExecutor::new("glm", Arc::new(ClientPool::new()), None).unwrap();
+        let body = serde_json::json!({
+            "model": "glm-5.3-flash",
+            "stream": true,
+            "tool_stream": false,
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{
+                "type": "function",
+                "function": {"name": "get_weather", "parameters": {"type": "object"}}
+            }]
+        });
+        let transformed = executor.transform_request(&body, "glm-5.3-flash");
+        assert_eq!(transformed["tool_stream"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn other_providers_do_not_get_tool_stream() {
+        let executor = DefaultExecutor::new("openai", Arc::new(ClientPool::new()), None).unwrap();
+        let body = serde_json::json!({
+            "model": "gpt-4o",
+            "stream": true,
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{
+                "type": "function",
+                "function": {"name": "get_weather", "parameters": {"type": "object"}}
+            }]
+        });
+        let transformed = executor.transform_request(&body, "gpt-4o");
+        assert!(transformed.get("tool_stream").is_none());
     }
 
     #[test]

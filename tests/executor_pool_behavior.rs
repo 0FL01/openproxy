@@ -326,7 +326,10 @@ fn default_executor_supports_current_passthrough_provider_matrix() {
         );
     }
 
-    for provider in ["glm", "kimi", "minimax", "minimax-cn"] {
+    // glm switched to the OpenAI coding endpoint (see the glm block in
+    // default_executor_builds_expected_provider_urls), so only the Claude
+    //-compatible passthrough providers keep the ?beta=true suffix.
+    for provider in ["kimi", "minimax", "minimax-cn"] {
         let executor = DefaultExecutor::new(provider, pool.clone(), None)
             .unwrap_or_else(|_| panic!("missing beta provider config for {provider}"));
         let url = executor
@@ -845,7 +848,11 @@ fn default_executor_builds_bearer_headers_for_openai_passthrough_matrix() {
 #[test]
 fn default_executor_builds_claude_headers_for_compatible_passthrough_matrix() {
     let pool = Arc::new(ClientPool::new());
-    let providers = ["glm", "kimi", "minimax", "minimax-cn"];
+    // glm defaults to the OpenAI coding endpoint (anthropic headers only via
+    // an anthropic runtime_transport — covered in
+    // default_executor_builds_expected_provider_urls), so the Claude header
+    // matrix covers the remaining Claude-compatible passthrough providers.
+    let providers = ["kimi", "minimax", "minimax-cn"];
 
     for provider in providers {
         let executor =
@@ -853,10 +860,10 @@ fn default_executor_builds_claude_headers_for_compatible_passthrough_matrix() {
         let headers = executor
             .build_headers("claude-sonnet", &connection(provider), false)
             .expect("claude-compatible headers");
-        // Each claude-compatible passthrough provider uses either x-api-key (glm, kimi) or
+        // Each claude-compatible passthrough provider uses either x-api-key (kimi) or
         // Bearer auth (minimax, minimax-cn) as their credential header.
         match provider {
-            "glm" | "kimi" => {
+            "kimi" => {
                 assert_eq!(
                     headers["x-api-key"], "sk-test",
                     "{provider} x-api-key header"
