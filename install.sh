@@ -342,12 +342,25 @@ install_agent_skill() {
 install_completions() {
     [ "$WITH_COMPLETIONS" -ne 1 ] && return 0
 
+    # Fresh completions come from the just-installed binary. The raw-URL
+    # fallback only exists for old releases; shell-completions/ is no
+    # longer stored in git (it rotted — 788 lines vs 16k generated).
     local completions_url
     if [ -n "$VERSION" ]; then
         completions_url="https://raw.githubusercontent.com/${OWNER}/${REPO}/${VERSION}/shell-completions"
     else
         completions_url="https://raw.githubusercontent.com/${OWNER}/${REPO}/main/shell-completions"
     fi
+    local local_bin="$DEST/$BINARY_NAME"
+    [ -x "$local_bin" ] || local_bin=""
+
+    gen_completion() {
+        local shell="$1" dest="$2" url="$3"
+        if [ -n "$local_bin" ] && "$local_bin" completion "$shell" > "$dest" 2>/dev/null; then
+            return 0
+        fi
+        curl -fsSL --connect-timeout 10 --max-time 15 -o "$dest" "$url" 2>/dev/null
+    }
 
     # bash
     if [ -n "${BASH_COMPLETION_DIR:-}" ]; then
@@ -360,7 +373,7 @@ install_completions() {
         local bash_dir="$HOME/.local/share/bash-completion/completions"
     fi
     mkdir -p "$bash_dir" 2>/dev/null || true
-    if curl -fsSL --connect-timeout 10 --max-time 15 -o "$bash_dir/openproxy" "$completions_url/openproxy.bash" 2>/dev/null; then
+    if gen_completion bash "$bash_dir/openproxy" "$completions_url/openproxy.bash"; then
         log_success "bash completions → $bash_dir/openproxy"
     else
         log_warn "could not install bash completions (continuing)"
@@ -376,7 +389,7 @@ install_completions() {
         zsh_dir="/usr/local/share/zsh/site-functions"
     fi
     mkdir -p "$zsh_dir" 2>/dev/null || true
-    if curl -fsSL --connect-timeout 10 --max-time 15 -o "$zsh_dir/_openproxy" "$completions_url/openproxy.zsh" 2>/dev/null; then
+    if gen_completion zsh "$zsh_dir/_openproxy" "$completions_url/openproxy.zsh"; then
         log_success "zsh completions → $zsh_dir/_openproxy"
     else
         log_warn "could not install zsh completions (continuing)"
@@ -385,7 +398,7 @@ install_completions() {
     # fish
     local fish_dir="$HOME/.config/fish/completions"
     mkdir -p "$fish_dir" 2>/dev/null || true
-    if curl -fsSL --connect-timeout 10 --max-time 15 -o "$fish_dir/openproxy.fish" "$completions_url/openproxy.fish" 2>/dev/null; then
+    if gen_completion fish "$fish_dir/openproxy.fish" "$completions_url/openproxy.fish"; then
         log_success "fish completions → $fish_dir/openproxy.fish"
     else
         log_warn "could not install fish completions (continuing)"

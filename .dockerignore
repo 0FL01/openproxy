@@ -20,7 +20,6 @@ web/node_modules/
 # Distribution-only artifacts (not needed in image)
 scripts/
 install.sh
-shell-completions/
 
 # Docs & internal planning (binary embeds nothing from these)
 *.md
