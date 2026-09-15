@@ -159,10 +159,6 @@ export default async function OpenProxyModels() {
         // Replace only after the entire response validates. Removed/disabled IDs
         // must not survive as local overrides after a successful discovery.
         provider.models = Object.fromEntries(entries)
-        const missingLimits = entries.filter(([, model]) => !model.limit?.context || !model.limit?.output).length
-        if (missingLimits) {
-          console.warn(`[openproxy-models] ${missingLimits} models lack context/output limits; set proxy metadata or local overrides before using them.`)
-        }
       } catch {
         // Never log the request, response body, URL or raw exception (may contain secrets).
         console.warn(`[openproxy-models] ${failure}; keeping configured models.`)
