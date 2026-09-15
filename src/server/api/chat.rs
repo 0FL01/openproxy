@@ -650,7 +650,6 @@ async fn chat_completions_impl(
                     &disabled_members,
                     sticky_limit,
                     Some(&required_caps),
-                    &snapshot.pricing,
                     capacity_check,
                     move |combo_model| {
                         let state = combo_state.clone();

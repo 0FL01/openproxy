@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use rusqlite::{params, Connection};
 use serde_json::Value;
 
-use crate::types::{AppDb, ModelAliasTarget, PricingTable, Settings};
+use crate::types::{AppDb, ModelAliasTarget, Settings};
 
 use super::repo::{api_key_repo, combo_repo, connection_repo, kv_repo, node_repo, pool_repo};
 
@@ -95,12 +95,6 @@ pub fn apply_app_db_diff(conn: &Connection, old: &AppDb, new: &AppDb) -> rusqlit
         "mitmAlias",
         kv_map_nested(&old.mitm_alias),
         kv_map_nested(&new.mitm_alias),
-    )?;
-    diff_kv_scope(
-        conn,
-        "pricing",
-        kv_map_pricing(&old.pricing),
-        kv_map_pricing(&new.pricing),
     )?;
     diff_kv_scope(
         conn,
@@ -230,13 +224,6 @@ fn kv_map(map: &BTreeMap<String, ModelAliasTarget>) -> HashMap<String, Value> {
 /// Serialize `mitm_alias` (`BTreeMap<String, BTreeMap<String, String>>`) into a
 /// `String → Value` map.
 fn kv_map_nested(map: &BTreeMap<String, BTreeMap<String, String>>) -> HashMap<String, Value> {
-    map.iter()
-        .map(|(k, v)| (k.clone(), serde_json::to_value(v).unwrap_or(Value::Null)))
-        .collect()
-}
-
-/// Serialize `PricingTable` into a `String → Value` map.
-fn kv_map_pricing(map: &PricingTable) -> HashMap<String, Value> {
     map.iter()
         .map(|(k, v)| (k.clone(), serde_json::to_value(v).unwrap_or(Value::Null)))
         .collect()

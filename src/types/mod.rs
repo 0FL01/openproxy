@@ -38,8 +38,6 @@ pub struct AppDb {
     pub api_key_map: HashMap<String, ApiKey>,
     #[serde(default, deserialize_with = "deserialize_null_default")]
     pub settings: Settings,
-    #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub pricing: PricingTable,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -47,6 +45,7 @@ pub struct AppDb {
 impl AppDb {
     pub fn normalize(&mut self) {
         self.settings.normalize();
+        self.extra.remove("pricing");
 
         for api_key in &mut self.api_keys {
             if api_key.is_active.is_none() {
@@ -100,7 +99,6 @@ impl AppDb {
             api_keys: extract_named_field(&mut fields, "apiKeys"),
             api_key_map: HashMap::new(),
             settings: extract_named_field(&mut fields, "settings"),
-            pricing: extract_named_field(&mut fields, "pricing"),
             extra: fields.into_iter().collect(),
         };
         db.normalize();
@@ -631,8 +629,6 @@ pub struct ProviderModelRef {
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
-
-pub type PricingTable = BTreeMap<String, BTreeMap<String, Value>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]

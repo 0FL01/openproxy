@@ -7,10 +7,7 @@ use clap_complete::Shell;
 use serde_json::Value;
 
 use crate::core::account_fallback::AccountRegistry;
-use crate::core::combo::{
-    get_combo_models_from_data, sort_models_by_cost, sort_models_by_latency, strategy_for_combo,
-    ComboStrategy,
-};
+use crate::core::combo::get_combo_models_from_data;
 use crate::core::executor::{ClientPool, DefaultExecutor, ExecutionRequest};
 use crate::core::model::get_model_info;
 use crate::core::proxy::resolve_proxy_target;
@@ -1541,16 +1538,7 @@ async fn run_combo_route(
         std::process::exit(1);
     };
 
-    let combo_strategy = strategy_for_combo(&snapshot, combo_name);
-    // Cost/latency-aware strategies change which member leads the chain, and
-    // this one-shot CLI route only dispatches the leading member.
-    let ordered_models = match combo_strategy {
-        ComboStrategy::Cheapest => sort_models_by_cost(&combo_models, &snapshot.pricing),
-        ComboStrategy::Fastest => sort_models_by_latency(&combo_models, &snapshot.pricing),
-        _ => combo_models.clone(),
-    };
-
-    let model_str = ordered_models
+    let model_str = combo_models
         .first()
         .map(|m| m.as_str())
         .unwrap_or("gpt-4o-mini");

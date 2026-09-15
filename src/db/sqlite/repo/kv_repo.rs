@@ -1,5 +1,5 @@
-//! Generic key-value store repository for modelAliases, customModels,
-//! mitmAlias, and pricing — everything stored in the `kv` table.
+//! Generic key-value store repository for modelAliases, customModels, and
+//! mitmAlias — everything stored in the `kv` table.
 
 use std::collections::HashMap;
 
@@ -70,22 +70,12 @@ mod tests {
     fn get_all_scope() {
         let db = SqliteDb::open_in_memory().unwrap();
         db.with_transaction(|tx| {
-            set(
-                tx,
-                "pricing",
-                "openai",
-                &serde_json::json!({"gpt-4o": 0.01}),
-            )?;
-            set(
-                tx,
-                "pricing",
-                "anthropic",
-                &serde_json::json!({"claude": 0.015}),
-            )?;
+            set(tx, "test", "one", &serde_json::json!({"value": 1}))?;
+            set(tx, "test", "two", &serde_json::json!({"value": 2}))?;
             Ok(())
         })
         .unwrap();
-        let all = db.with_conn(|c| get_all(c, "pricing")).unwrap();
+        let all = db.with_conn(|c| get_all(c, "test")).unwrap();
         assert_eq!(all.len(), 2);
     }
 

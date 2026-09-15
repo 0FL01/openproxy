@@ -85,7 +85,6 @@ async fn e2e_auto_import_legacy_json() {
         "combos": [],
         "apiKeys": [],
         "settings": {},
-        "pricing": {},
     });
     let legacy_path = tmp.path().join("db.json");
     tokio::fs::write(
@@ -231,7 +230,6 @@ async fn e2e_export_import_roundtrip() {
         "modelAliases": {},
         "customModels": [],
         "mitmAlias": {},
-        "pricing": {},
     });
     db.import_db(&serde_json::to_vec(&empty).unwrap())
         .await

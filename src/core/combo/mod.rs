@@ -11,16 +11,13 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
 use crate::core::account_fallback::{BACKOFF_BASE_MS, BACKOFF_MAX_MS, MAX_BACKOFF_LEVEL};
-use crate::types::{AppDb, Combo, PricingTable};
+use crate::types::{AppDb, Combo};
 
 pub mod auto_combo;
 pub mod capabilities;
 pub mod fusion;
 pub mod hedging;
-pub mod ordering;
 pub mod shadow;
-
-pub use ordering::{sort_models_by_cost, sort_models_by_latency};
 
 const LONG_COOLDOWN: Duration = Duration::from_secs(120);
 const SHORT_COOLDOWN: Duration = Duration::from_secs(5);
@@ -125,10 +122,6 @@ pub enum ComboStrategy {
     AutoCombo,
     Hedging,
     Shadow,
-    /// Cheapest-first: sort members by pricing-table cost ascending (free $0 first).
-    Cheapest,
-    /// Fastest-first: sort members by latency hint ascending (missing → original order).
-    Fastest,
     /// Quality-first: keep capability-tier ordering (vision/pdf/audio/video aware).
     Quality,
 }
@@ -148,10 +141,6 @@ pub fn parse_combo_strategy(value: &str) -> ComboStrategy {
         ComboStrategy::Hedging
     } else if value.eq_ignore_ascii_case("shadow") {
         ComboStrategy::Shadow
-    } else if value.eq_ignore_ascii_case("cheapest") {
-        ComboStrategy::Cheapest
-    } else if value.eq_ignore_ascii_case("fastest") {
-        ComboStrategy::Fastest
     } else if value.eq_ignore_ascii_case("quality") {
         ComboStrategy::Quality
     } else {
@@ -812,7 +801,6 @@ where
         disabled_members,
         1, // sticky default
         None,
-        &PricingTable::new(),
         capacity_check,
         handle_single_model,
     )
@@ -822,9 +810,6 @@ where
 /// Full combo strategy with sticky limit and capability reorder after RR
 /// (9router combo.js order: rotate first, then reorderByCapabilities).
 ///
-/// `pricing` drives the cost/latency-aware orderings for the `Cheapest` and
-/// `Fastest` strategies. Pass `&PricingTable::new()` when no pricing data is
-/// available — both strategies then fall back to the configured priority order.
 pub async fn execute_combo_strategy_full<T, F, Fut, C>(
     models: &[String],
     combo_name: Option<&str>,
@@ -832,7 +817,6 @@ pub async fn execute_combo_strategy_full<T, F, Fut, C>(
     disabled_members: &[String],
     sticky_limit: u32,
     required_caps: Option<&HashSet<String>>,
-    pricing: &PricingTable,
     capacity_check: C,
     mut handle_single_model: F,
 ) -> Result<T, ComboExecutionError>
@@ -887,18 +871,11 @@ where
     // 9router: getRotatedModels first, then capability autoswitch
     let mut order = get_rotated_models(&active, combo_name, strategy, sticky_limit.max(1));
 
-    // Strategy-specific ordering. For Cheapest/Fastest the cost/latency sort is
-    // the dominant ordering; for Quality we keep the capability-tier ordering;
+    // Strategy-specific ordering. For Quality we keep the capability-tier ordering;
     // for every other strategy we preserve the existing capability autoswitch
     // (only when required caps are present) so fallback/round-robin semantics
     // are unchanged.
     match strategy {
-        ComboStrategy::Cheapest => {
-            order = sort_models_by_cost(&order, pricing);
-        }
-        ComboStrategy::Fastest => {
-            order = sort_models_by_latency(&order, pricing);
-        }
         ComboStrategy::Quality => {
             if let Some(caps) = required_caps {
                 if !caps.is_empty() {
@@ -1141,7 +1118,6 @@ mod tests {
         models: &[String],
         combo_name: &str,
         strategy: ComboStrategy,
-        pricing: &PricingTable,
     ) -> Vec<String> {
         let attempted = Arc::new(Mutex::new(Vec::new()));
         let recorder = attempted.clone();
@@ -1152,7 +1128,6 @@ mod tests {
             &[],
             1,
             None,
-            pricing,
             |_| ModelCapacity::Available,
             move |model: &str| {
                 let recorder = recorder.clone();
@@ -1169,29 +1144,6 @@ mod tests {
         order
     }
 
-    fn pricing_fixture() -> PricingTable {
-        let mut pricing = PricingTable::new();
-        for (provider, model, entry) in [
-            (
-                "openai",
-                "gpt-4o",
-                json!({ "input": 2.5, "output": 10.0, "latency": 800 }),
-            ),
-            (
-                "anthropic",
-                "claude-3-haiku",
-                json!({ "input": 0.25, "output": 1.25, "latency": 400 }),
-            ),
-            ("nvidia", "llama-3.1", json!({ "latencyMs": 200 })),
-        ] {
-            pricing
-                .entry(provider.to_string())
-                .or_default()
-                .insert(model.to_string(), entry);
-        }
-        pricing
-    }
-
     fn combo_fixture() -> Vec<String> {
         vec![
             "openai/gpt-4o".to_string(),
@@ -1201,63 +1153,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn combo_strategy_cheapest_dispatches_free_then_cheap() {
-        let order = attempt_order(
-            &combo_fixture(),
-            "cheapest-combo",
-            ComboStrategy::Cheapest,
-            &pricing_fixture(),
-        )
-        .await;
-        assert_eq!(
-            order,
-            vec![
-                "nvidia/llama-3.1".to_string(),
-                "anthropic/claude-3-haiku".to_string(),
-                "openai/gpt-4o".to_string(),
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn combo_strategy_fastest_dispatches_lowest_latency_first() {
-        let order = attempt_order(
-            &combo_fixture(),
-            "fastest-combo",
-            ComboStrategy::Fastest,
-            &pricing_fixture(),
-        )
-        .await;
-        assert_eq!(
-            order,
-            vec![
-                "nvidia/llama-3.1".to_string(),
-                "anthropic/claude-3-haiku".to_string(),
-                "openai/gpt-4o".to_string(),
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn combo_strategy_fallback_keeps_declared_order_despite_pricing() {
-        let order = attempt_order(
-            &combo_fixture(),
-            "fallback-combo",
-            ComboStrategy::Fallback,
-            &pricing_fixture(),
-        )
-        .await;
+    async fn combo_strategy_fallback_keeps_declared_order() {
+        let order =
+            attempt_order(&combo_fixture(), "fallback-combo", ComboStrategy::Fallback).await;
         assert_eq!(
             order,
             combo_fixture(),
-            "fallback must ignore cost/latency and honor configured priority"
+            "fallback must honor configured priority"
         );
     }
 
     #[test]
     fn parse_combo_strategy_is_case_and_whitespace_tolerant() {
-        assert_eq!(parse_combo_strategy(" Cheapest "), ComboStrategy::Cheapest);
-        assert_eq!(parse_combo_strategy("FASTEST"), ComboStrategy::Fastest);
         assert_eq!(parse_combo_strategy("Quality"), ComboStrategy::Quality);
         assert_eq!(
             parse_combo_strategy("Round-Robin"),
@@ -1278,7 +1185,6 @@ mod tests {
         ];
         let mut required = HashSet::new();
         required.insert("vision".to_string());
-        let pricing = PricingTable::new();
         let attempted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let attempted_clone = attempted.clone();
         let result = execute_combo_strategy_full(
@@ -1288,7 +1194,6 @@ mod tests {
             &[],
             1,
             Some(&required),
-            &pricing,
             |_| ModelCapacity::Available,
             move |model: &str| {
                 let attempted_clone = attempted_clone.clone();

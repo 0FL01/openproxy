@@ -126,7 +126,7 @@ pub const TABLES_SQL: &[&str] = &[
         ON combos(name)
     "#,
     // Generic key/value store for modelAliases, customModels, mitmAlias,
-    // pricing — all stored as JSON blobs scoped by `scope`.
+    // Configuration maps are stored as JSON blobs scoped by `scope`.
     r#"
     CREATE TABLE IF NOT EXISTS kv (
         scope       TEXT NOT NULL,

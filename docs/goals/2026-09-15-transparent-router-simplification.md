@@ -41,15 +41,15 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: “Историю usage и расчёт стоимости — убрать из обработки запросов”.
   - Acceptance: Requests no longer append to or clone an in-memory/SQLite usage history and the pricing/dashboard live-usage/export surfaces are removed. Upstream usage remains in API responses. The existing bounded structured application-request record remains the sole request journal and contains request/route/provider/model/status/duration/token metadata without prompts, full responses, or secrets.
   - Primary evidence: Repository search plus focused chat/application-log and response-translation tests.
-  - Status: in_progress
-  - Evidence: Request-time usage history, in-memory/SQLite usage snapshots and writers, aggregate/live APIs and dashboard, usage/quota-counter CLI commands, budget enforcement, and usage export/import are removed. The retained 30-day request journal emits only request/route/provider/model/status/duration/input/output token metadata; focused request-log and chat tests, clippy, 1,657 library tests, and the dashboard build passed. Pricing configuration and its combo ordering consumers remain for the next checkpoint.
+  - Status: verified
+  - Evidence: Request-time usage history, in-memory/SQLite usage snapshots and writers, aggregate/live APIs and dashboard, usage/quota-counter CLI commands, budget enforcement, usage export/import, pricing engine/storage/API/UI/CLI, and cost/latency-based combo ordering are removed. The retained 30-day request journal emits only request/route/provider/model/status/duration/input/output token metadata. Final pricing checkpoint passed the dashboard build, clippy, 1,638 library tests, 53 focused combo tests, and 11 focused database tests.
 
 - R5: Reduce combos to explicit ordered fallback routes.
   - Source: “Combo превратить в простой маршрут, а не оркестратор моделей”.
   - Acceptance: Fusion, hedging, shadow, auto-combo, price/speed/quality ordering, round-robin state, quarantine, and capacity adaptation are removed. A combo alias resolves only its explicitly configured ordered model/account routes and may fall back to the next explicit entry after failure.
   - Primary evidence: Focused combo/chat tests and repository search for removed strategies/modules.
-  - Status: pending
-  - Evidence:
+  - Status: in_progress
+  - Evidence: Capacity adaptation and cost/latency-based ordering are removed; the remaining orchestration strategies and state are the current checkpoint.
 
 - R6: Remove standalone media generation/transcription and embeddings while preserving images attached to chat messages.
   - Source: “Media, embeddings ... Под удаление идут `src/core/media/`, media/STT-модули API, маршруты embeddings, генерации изображений, аудио и видео, соответствующие CLI-команды и настройки” and “поддержку изображений внутри сообщений не вырезай”.
@@ -107,17 +107,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R4
-- Smallest next action: Remove pricing storage/API/UI and cost/latency-based combo ordering that still consumes it, leaving combo members in explicit configured order.
-- Expected evidence: Pricing and cost-calculation symbols are absent; focused combo tests prove configured order is retained.
-- Stop or replan if: The retained request journal lacks one of the required metadata fields or contains prompts, full responses, or secrets.
+- Closes: R5
+- Smallest next action: Remove non-fallback combo strategies, orchestration modules, rotation/quarantine/capability reordering state, and strategy settings/UI so dispatch only walks explicitly configured members in order.
+- Expected evidence: Repository search finds only ordered fallback behavior and focused combo/chat tests prove declared order and failover.
+- Stop or replan if: Explicit combo members or account-level fallback would no longer be preserved.
 
 ## Current State
 
-- Resolved: R1-R3. R4 is in progress: internal usage history/live aggregation is removed and only the bounded metadata-only request journal remains.
-- Last relevant evidence: Dashboard build, Rust clippy, 1,657 library tests, one request-log integration test, and 12 chat integration tests passed after usage-history removal.
+- Resolved: R1-R4. R5 is in progress; pricing-driven combo ordering is already removed.
+- Last relevant evidence: Dashboard build, Rust clippy, 1,638 library tests, 53 focused combo tests, and 11 focused database tests passed after pricing removal.
 - Blocker: None.
-- Next: Commit the usage-history removal, then remove pricing and its automatic combo ordering consumers.
+- Next: Commit pricing removal, then simplify the remaining combo runtime to ordered fallback only.
 
 ## Material Decisions
 

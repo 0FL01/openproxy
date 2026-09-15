@@ -1,10 +1,7 @@
 //! `openproxy models *` — top-level model registry view.
 //!
 //! Reads the built-in provider catalog merged with the user's custom
-//! models, aliases, and disabled lists from `db.json`. Exposes a
-//! pricing view that mirrors the dashboard's pricing editor.
-
-use std::collections::BTreeMap;
+//! models, aliases, and disabled lists from `db.json`.
 
 use clap::Subcommand;
 use serde_json::{json, Value};
@@ -26,11 +23,6 @@ pub enum ModelsCmd {
     Info { model: String },
     /// Probe the underlying provider connection for the model.
     Test { model: String },
-    /// Show the pricing table for a model (or all models if not specified).
-    Pricing {
-        #[arg(long)]
-        model: Option<String>,
-    },
 }
 
 pub async fn run(cmd: ModelsCmd, db: &Db, ctx: OutputCtx) -> anyhow::Result<()> {
@@ -38,7 +30,6 @@ pub async fn run(cmd: ModelsCmd, db: &Db, ctx: OutputCtx) -> anyhow::Result<()> 
         ModelsCmd::List { provider } => run_list(db, ctx, provider.as_deref()).await,
         ModelsCmd::Info { model } => run_info(db, ctx, &model).await,
         ModelsCmd::Test { model } => run_test(db, ctx, &model).await,
-        ModelsCmd::Pricing { model } => run_pricing(db, ctx, model.as_deref()).await,
     }
 }
 
@@ -118,8 +109,6 @@ async fn run_info(db: &Db, ctx: OutputCtx, model: &str) -> anyhow::Result<()> {
     let snapshot = db.snapshot();
     let resolved = crate::core::model::get_model_info(model, &snapshot);
     let alias_target = snapshot.model_aliases.get(model).cloned();
-    let provider = resolved.provider.as_deref().unwrap_or("");
-    let pricing = snapshot.pricing.get(provider).cloned();
     let route_kind = match resolved.route_kind {
         crate::core::model::ModelRouteKind::Direct => "direct",
         crate::core::model::ModelRouteKind::Combo => "combo",
@@ -129,11 +118,11 @@ async fn run_info(db: &Db, ctx: OutputCtx, model: &str) -> anyhow::Result<()> {
         "provider": resolved.provider,
         "modelId": resolved.model,
         "routeKind": route_kind,
+        "pricing": Value::Null,
         "alias": alias_target.map(|t| match t {
             ModelAliasTarget::Path(s) => json!({"kind":"path","value":s}),
             ModelAliasTarget::Mapping(r) => json!({"kind":"mapping","provider":r.provider,"model":r.model}),
         }),
-        "pricing": pricing,
     });
     if ctx.is_robot() {
         emit_robot("openproxy.v1.models.info", payload)?;
@@ -211,28 +200,6 @@ async fn run_test(db: &Db, ctx: OutputCtx, model: &str) -> anyhow::Result<()> {
                 error.as_deref().unwrap_or("unknown")
             ),
         );
-    }
-    Ok(())
-}
-
-async fn run_pricing(db: &Db, ctx: OutputCtx, model: Option<&str>) -> anyhow::Result<()> {
-    let snapshot = db.snapshot();
-    let pricing = if let Some(m) = model {
-        let mut bucket: BTreeMap<String, Value> = BTreeMap::new();
-        for (provider, rows) in &snapshot.pricing {
-            if let Some(entry) = rows.get(m) {
-                bucket.insert(provider.clone(), entry.clone());
-            }
-        }
-        json!({ "model": m, "entries": bucket })
-    } else {
-        serde_json::to_value(&snapshot.pricing)?
-    };
-    if ctx.is_robot() {
-        emit_robot("openproxy.v1.models.pricing", pricing)?;
-    } else {
-        let pretty = serde_json::to_string_pretty(&pricing).unwrap_or_default();
-        println!("{pretty}");
     }
     Ok(())
 }

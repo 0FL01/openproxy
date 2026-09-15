@@ -23,7 +23,6 @@ pub mod models_disabled;
 pub mod models_metadata;
 pub mod oauth;
 pub mod observability;
-pub mod pricing;
 mod provider_connection_test;
 pub mod provider_filters;
 mod provider_model_tests;
@@ -319,7 +318,6 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .merge(usage::routes())
         .merge(crate::server::application_logs::routes())
         .merge(admin_items::routes())
-        .merge(pricing::routes())
         .merge(tags::routes())
         .merge(translator::routes())
         .merge(oauth::routes())
@@ -2366,9 +2364,6 @@ async fn settings_database_import_api(
             }
             if !imported.model_aliases.is_empty() {
                 db.model_aliases = imported.model_aliases.clone();
-            }
-            if !imported.pricing.is_empty() {
-                db.pricing = imported.pricing.clone();
             }
             merge_settings(&mut db.settings, &imported.settings);
         })

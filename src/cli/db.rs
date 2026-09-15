@@ -72,7 +72,6 @@ pub enum DumpResource {
     Pools,
     Models,
     Aliases,
-    Pricing,
     Settings,
 }
 
@@ -86,7 +85,6 @@ impl DumpResource {
             DumpResource::Pools => "proxyPools",
             DumpResource::Models => "customModels",
             DumpResource::Aliases => "modelAliases",
-            DumpResource::Pricing => "pricing",
             DumpResource::Settings => "settings",
         }
     }
@@ -100,7 +98,6 @@ impl DumpResource {
             DumpResource::Pools => "pools",
             DumpResource::Models => "models",
             DumpResource::Aliases => "aliases",
-            DumpResource::Pricing => "pricing",
             DumpResource::Settings => "settings",
         }
     }
@@ -504,7 +501,6 @@ mod tests {
             DumpResource::Pools,
             DumpResource::Models,
             DumpResource::Aliases,
-            DumpResource::Pricing,
             DumpResource::Settings,
         ] {
             let s = r.slug();

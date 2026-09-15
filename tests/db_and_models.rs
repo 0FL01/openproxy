@@ -101,7 +101,6 @@ fn app_db_round_trips_through_serde() {
             extra: BTreeMap::new(),
         }],
         settings: Settings::default(),
-        pricing: BTreeMap::new(),
         ..AppDb::default()
     };
 
@@ -226,8 +225,7 @@ async fn db_preserves_valid_sections_when_legacy_fields_are_null_or_invalid() {
             "mitmAlias": { "codex": { "chatgpt-4o-latest": "openai/gpt-4o" } },
             "combos": [{ "id": "combo-1", "name": "writer", "models": ["draft"] }],
             "apiKeys": [{ "id": "k1", "name": "Local", "key": "pk-test", "isActive": null }],
-            "settings": { "requireLogin": null, "outboundProxyUrl": "http://127.0.0.1:8080" },
-            "pricing": { "openai": { "gpt-4.1": { "input": 1.0, "output": 2.0 } } }
+            "settings": { "requireLogin": null, "outboundProxyUrl": "http://127.0.0.1:8080" }
         }))
         .expect("serialize db json"),
     )

@@ -781,26 +781,6 @@ export default function ProfilePageClient() {
           </div>
         </Card>
 
-        {/* ── Pricing ─────────────────────────────────────────────── */}
-        <Card className="p-4 sm:p-5">
-          <div className="flex items-center gap-3 mb-3">
-            <div className="size-9 rounded-lg bg-primary/10 flex items-center justify-center text-primary shrink-0">
-              <span className="material-symbols-outlined text-[20px]">payments</span>
-            </div>
-            <h3 className="text-base sm:text-lg font-semibold">Pricing</h3>
-          </div>
-          <p className="text-xs sm:text-sm text-muted-soft mb-3">
-            Configure per-model rates used for cost tracking on the Usage page.
-          </p>
-          <a
-            href="/dashboard/settings/pricing"
-            className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
-          >
-            Open Pricing Settings
-            <span className="material-symbols-outlined text-[16px]">arrow_forward</span>
-          </a>
-        </Card>
-
         {/* ── Observability ────────────────────────────────────────── */}
         <Card>
           <div className="flex items-center gap-3 mb-4">
