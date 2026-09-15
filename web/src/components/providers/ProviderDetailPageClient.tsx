@@ -267,9 +267,6 @@ export default function ProviderDetailPageClient() {
       const override = (settingsData.providerStrategies || {})[providerId] || {};
       setProviderStrategy(override.fallbackStrategy || null);
       setProviderStickyLimit(override.stickyRoundRobinLimit != null ? String(override.stickyRoundRobinLimit) : "1");
-      // Load per-provider thinking config
-      const thinkingCfg = (settingsData.providerThinking || {})[providerId] || {};
-      setThinkingMode(thinkingCfg.mode || "auto");
       const searchDepth = settingsData.codexWebSearchContextSize;
       setWebSearchContextSize(["off", "low", "medium", "high"].includes(searchDepth) ? searchDepth : "medium");
       const loadedContextLimit = String(
@@ -367,30 +364,8 @@ export default function ProviderDetailPageClient() {
     saveProviderStrategy("round-robin", value);
   };
 
-  const saveThinkingConfig = async (mode) => {
-    try {
-      const settingsRes = await fetch("/api/settings", { cache: "no-store" });
-      const settingsData = settingsRes.ok ? await settingsRes.json() : {};
-      const current = settingsData.providerThinking || {};
-      const updated = { ...current };
-      if (!mode || mode === "auto") {
-        delete updated[providerId];
-      } else {
-        updated[providerId] = { mode };
-      }
-      await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ providerThinking: updated }),
-      });
-    } catch (error) {
-      console.log("Error saving thinking config:", error);
-    }
-  };
-
   const handleThinkingModeChange = (mode) => {
     setThinkingMode(mode);
-    saveThinkingConfig(mode);
   };
 
   const handleWebSearchContextSizeChange = async (value) => {

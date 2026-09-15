@@ -114,8 +114,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current State
 
-- Resolved: R1. R2 is in progress: payload rewriting, system-prompt overrides, guardrails, and synthetic bypass/naming replies are removed.
-- Last relevant evidence: Rust clippy, 1,687 library tests, and the Astro production build passed after bypass removal.
+- Resolved: R1. R2 is in progress: payload rewriting, system-prompt overrides, guardrails, synthetic replies, and provider-owned thinking overrides are removed.
+- Last relevant evidence: Rust clippy, 1,687 library tests, and the Astro production build passed after provider-thinking removal.
 - Blocker: None.
 - Next: Commit R1, then execute R2.
 
@@ -272,6 +272,7 @@ Tool calling при этом остаётся. Прокси должен пер�
 - 2026-09-15: R2 checkpoint: removed payload rules and system-prompt overrides from chat, settings, API, and dashboard. Clippy, 1,713 library tests, and the dashboard build passed. Guardrails and the remaining request-policy hooks are next.
 - 2026-09-15: R2 checkpoint: removed the unused guardrail registry and its prompt-injection/PII mutation implementation. Clippy and 1,694 library tests passed. Synthetic bypass and thinking policy remain.
 - 2026-09-15: R2 checkpoint: removed Claude request bypass/naming heuristics, synthetic responses, the stale setting, and its CLI-tool toggle. Clippy, 1,687 library tests, and the dashboard build passed. Thinking and capacity policy remain.
+- 2026-09-15: R2 checkpoint: removed persisted `providerThinking` policy and source-body injection. The provider-page selector remains client-explicit by only appending a reasoning suffix to copied model IDs. Clippy, 1,687 library tests, and the dashboard build passed. Capacity/history adaptation remains.
 
 ## Completion
 

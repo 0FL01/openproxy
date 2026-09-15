@@ -827,53 +827,6 @@ async fn chat_completions_impl(
     response
 }
 
-/// Inject provider-level thinking override onto the **source** body
-/// (before translation). 9router chatCore.js:68-80.
-fn inject_provider_thinking(body: &mut Value, settings: &crate::types::Settings, provider: &str) {
-    let Some(provider_thinking) = settings
-        .extra
-        .get("providerThinking")
-        .and_then(|v| v.as_object())
-    else {
-        return;
-    };
-    let Some(mode_val) = provider_thinking.get(provider) else {
-        return;
-    };
-    let mode = mode_val.as_str().unwrap_or("auto");
-    if mode == "auto" {
-        return;
-    }
-    // JS: !body.thinking (any truthy) / !body.reasoning_effort
-    let has_thinking = body
-        .get("thinking")
-        .is_some_and(|v| !v.is_null() && v != &Value::Bool(false));
-    let has_effort = body
-        .get("reasoning_effort")
-        .and_then(Value::as_str)
-        .is_some_and(|s| !s.is_empty());
-
-    if mode == "on" && !has_thinking {
-        if let Some(obj) = body.as_object_mut() {
-            obj.insert(
-                "thinking".to_string(),
-                json!({"type": "enabled", "budget_tokens": 10000}),
-            );
-        }
-    } else if mode == "off" && !has_thinking {
-        if let Some(obj) = body.as_object_mut() {
-            obj.insert("thinking".to_string(), json!({"type": "disabled"}));
-        }
-    } else if mode != "on" && mode != "off" && !has_effort {
-        if let Some(obj) = body.as_object_mut() {
-            obj.insert(
-                "reasoning_effort".to_string(),
-                Value::String(mode.to_string()),
-            );
-        }
-    }
-}
-
 /// Prefetch remote images in OpenAI/Claude message content arrays.
 async fn prefetch_images_in_messages(body: &mut Value) {
     let Some(messages) = body.get_mut("messages").and_then(|m| m.as_array_mut()) else {
@@ -1127,9 +1080,6 @@ async fn execute_single_model(
         });
     }
 
-    // 0. providerThinking on SOURCE body BEFORE translate (9router chatCore.js:68-80)
-    inject_provider_thinking(&mut body, &snapshot.settings, &plan.provider);
-
     // Catalog stripList (image/audio) before modality strip — 9router translateRequest stripList
     if !plan.strip_list.is_empty() {
         let refs: Vec<&str> = plan.strip_list.iter().map(String::as_str).collect();
@@ -1216,9 +1166,7 @@ async fn execute_single_model(
         }
     }
 
-    // 3b. Re-apply model(level) thinking onto provider-native fields
-    // (9router applyThinking after translate). Suffix overrides; without a
-    // suffix, leave providerThinking / client fields untouched.
+    // 3b. Re-apply an explicit model(level) suffix onto provider-native fields.
     crate::core::utils::thinking_suffix::reapply_thinking_after_translate(
         plan.target_format,
         &plan.provider,

@@ -2138,8 +2138,6 @@ struct UpdateSettingsRequest {
     claude_auto_ping: Option<Value>,
     /// Stored in settings.extra so provider-detail UI can PATCH it.
     codex_auto_ping: Option<Value>,
-    /// Per-provider thinking mode map stored in settings.extra.
-    provider_thinking: Option<Value>,
     /// Depth for header-driven Codex hosted search, stored in settings.extra.
     codex_web_search_context_size: Option<String>,
     /// Per-capability model pools for the capacity adapter.
@@ -2253,16 +2251,13 @@ async fn update_settings_api(
             if let Some(v) = req.client_ping_any {
                 db.settings.client_ping_any = v;
             }
-            // Persist auto-ping + thinking maps into settings.extra (camelCase
-            // keys match the web UI PATCH body).
+            // Persist auto-ping maps into settings.extra (camelCase keys match
+            // the web UI PATCH body).
             if let Some(v) = req.claude_auto_ping {
                 db.settings.extra.insert("claudeAutoPing".into(), v);
             }
             if let Some(v) = req.codex_auto_ping {
                 db.settings.extra.insert("codexAutoPing".into(), v);
-            }
-            if let Some(v) = req.provider_thinking {
-                db.settings.extra.insert("providerThinking".into(), v);
             }
             if let Some(v) = req.codex_web_search_context_size {
                 db.settings

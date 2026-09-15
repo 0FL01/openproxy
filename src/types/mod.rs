@@ -624,6 +624,7 @@ impl Settings {
             "payloadRules",
             "systemPrompt",
             "ccFilterNaming",
+            "providerThinking",
         ] {
             self.extra.remove(key);
         }

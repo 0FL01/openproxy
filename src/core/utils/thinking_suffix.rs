@@ -185,10 +185,7 @@ fn is_gemini_level_model(model: &str) -> bool {
     m.contains("gemini-3") || m.contains("gemini3")
 }
 
-/// True when the body already carries a client- or settings-provided thinking intent.
-///
-/// Used to avoid double-applying when `providerThinking` already set fields and
-/// there is no model-suffix override.
+/// True when the body already carries a client-provided thinking intent.
 pub fn body_has_thinking_intent(body: &Value) -> bool {
     if body
         .get("thinking")
@@ -352,8 +349,7 @@ fn to_kimi_reasoning_effort(level: &str) -> Option<&'static str> {
 /// Port of 9router `applyThinking` for the common case where the config is a
 /// level override from `model(level)` / `model-level` suffix.
 ///
-/// Call after request translation. When `level` is `None`, this is a no-op
-/// (providerThinking / body fields already handled upstream).
+/// Call after request translation. When `level` is `None`, this is a no-op.
 pub fn apply_thinking_level(
     target_format: Format,
     provider: &str,
@@ -544,8 +540,7 @@ pub fn apply_thinking_level(
 /// Post-translate re-apply entry point.
 ///
 /// - When `suffix_level` is `Some`, always apply (model suffix is explicit override).
-/// - When `suffix_level` is `None`, leave body alone so `providerThinking` /
-///   client fields are not double-applied or wiped.
+/// - When `suffix_level` is `None`, leave client fields alone.
 ///
 /// When `stream` is `false`, the injection is skipped entirely — thinking/
 /// reasoning fields are only meaningful for streaming responses and some
@@ -565,10 +560,10 @@ pub fn reapply_thinking_after_translate(
         apply_thinking_level(target_format, provider, model, body, level);
         return;
     }
-    // No suffix override: respect existing body intent (providerThinking / client).
+    // No suffix override: respect existing client body intent.
     // 9router would still normalize format via extractThinking, but OP already
     // maps reasoning_effort → thinking during openai→claude translate. Skipping
-    // avoids wiping providerThinking-injected fields on passthrough/same-format.
+    // avoids wiping client fields on passthrough/same-format.
     let _ = (body, provider, model, target_format);
 }
 
@@ -698,7 +693,7 @@ mod tests {
             "messages": [],
             "thinking": {"type": "enabled", "budget_tokens": 10000}
         });
-        // providerThinking already set — no suffix → leave alone
+        // Client already set thinking — no suffix means leave it alone.
         reapply_thinking_after_translate(
             Format::Claude,
             "claude",
