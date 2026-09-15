@@ -125,7 +125,7 @@ async fn chat_completions_streams_openai_compatible_response() {
         })))
         .respond_with(
             ResponseTemplate::new(200).set_body_raw(
-                "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"},\"index\":0}]}\n\ndata: [DONE]\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"},\"index\":0}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":16,\"completion_tokens\":25,\"total_tokens\":41,\"prompt_tokens_details\":{\"cached_tokens\":3},\"completion_tokens_details\":{\"reasoning_tokens\":21}}}\n\ndata: [DONE]\n\n",
                 "text/event-stream",
             ),
         )
@@ -192,6 +192,10 @@ async fn chat_completions_streams_openai_compatible_response() {
     assert_eq!(logs[0].status.as_deref(), Some("success"));
     assert_eq!(logs[0].api_key_id.as_deref(), Some("test-key-id"));
     assert_eq!(logs[0].api_key_name.as_deref(), Some("Local"));
+    assert_eq!(logs[0].data["tokens"]["prompt_tokens"], 16);
+    assert_eq!(logs[0].data["tokens"]["completion_tokens"], 25);
+    assert_eq!(logs[0].data["tokens"]["cache_read_input_tokens"], 3);
+    assert_eq!(logs[0].data["tokens"]["reasoning_tokens"], 21);
 }
 
 #[tokio::test]

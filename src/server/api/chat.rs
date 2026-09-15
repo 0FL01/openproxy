@@ -3627,6 +3627,7 @@ async fn proxy_response_with_pending_tracking(
                 .into_response(),
         );
     }
+    let capture_sse_frames = ct.is_empty() || ct.contains("text/event-stream");
 
     let transformer = normalize_for_dashboard
         .then(|| transformer_for_provider(&provider))
@@ -3679,10 +3680,7 @@ async fn proxy_response_with_pending_tracking(
                 } else {
                     None
                 };
-                // Accumulate the last data frame for best-effort `usage` extraction
-                // at stream end. Streaming SSE responses usually lack a usage field,
-                // so most requests record with tokens=None (request count only).
-                let mut last_data: Option<Bytes> = None;
+                let mut usage_capture = StreamingUsageCapture::new(capture_sse_frames);
                 let mut completion_frames = String::new();
                 loop {
                     let next = tokio::time::timeout(SSE_STALL_TIMEOUT, upstream.try_next()).await;
@@ -3697,7 +3695,7 @@ async fn proxy_response_with_pending_tracking(
                                 "SSE stalled, closing stream"
                             );
                             let usage = record_streaming_usage(&state, &provider, &model,
-                                connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data).await;
+                                connection_id.as_deref(), api_key.as_deref(), endpoint, usage_capture.usage.as_ref()).await;
                             if let Some(log) = attempt_log.take() {
                                 log.finish("error", Some(502), usage.as_ref(), Some("Upstream SSE stream stalled")).await;
                             }
@@ -3712,7 +3710,7 @@ async fn proxy_response_with_pending_tracking(
                             return;
                         }
                         Ok(Ok(Some(chunk))) => {
-                            last_data = Some(chunk.clone());
+                            usage_capture.observe(&chunk);
                             let response_completed = stop_on_response_completed
                                 && responses_stream_completed(&mut completion_frames, &chunk);
                             if qoder_sse_unwrap {
@@ -3732,7 +3730,7 @@ async fn proxy_response_with_pending_tracking(
                                     // executor's pre-stream peek; this flag is
                                     // the backstop for already-open streams.)
                                     let usage = record_streaming_usage(&state, &provider, &model,
-                                        connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data).await;
+                                        connection_id.as_deref(), api_key.as_deref(), endpoint, usage_capture.usage.as_ref()).await;
                                     if let Some(log) = attempt_log.take() {
                                         log.finish("error", Some(403), usage.as_ref(), Some("Provider billing block")).await;
                                     }
@@ -3781,7 +3779,7 @@ async fn proxy_response_with_pending_tracking(
                                     }
                                 }
                                 let usage = record_streaming_usage(&state, &provider, &model,
-                                    connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data).await;
+                                    connection_id.as_deref(), api_key.as_deref(), endpoint, usage_capture.usage.as_ref()).await;
                                 if let Some(log) = attempt_log.take() {
                                     log.finish("success", Some(status.as_u16()), usage.as_ref(), None).await;
                                 }
@@ -3795,7 +3793,7 @@ async fn proxy_response_with_pending_tracking(
                         Ok(Ok(None)) => break,
                         Ok(Err(_)) => {
                             let usage = record_streaming_usage(&state, &provider, &model,
-                                connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data).await;
+                                connection_id.as_deref(), api_key.as_deref(), endpoint, usage_capture.usage.as_ref()).await;
                             if let Some(log) = attempt_log.take() {
                                 log.finish("error", Some(502), usage.as_ref(), Some("Upstream stream error")).await;
                             }
@@ -3840,7 +3838,7 @@ async fn proxy_response_with_pending_tracking(
                     }
                 }
                 let usage = record_streaming_usage(&state, &provider, &model,
-                    connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data).await;
+                    connection_id.as_deref(), api_key.as_deref(), endpoint, usage_capture.usage.as_ref()).await;
                 if let Some(log) = attempt_log.take() {
                     log.finish("success", Some(status.as_u16()), usage.as_ref(), None).await;
                 }
@@ -3878,9 +3876,7 @@ async fn proxy_response_with_pending_tracking(
                 } else {
                     None
                 };
-                // Accumulate the last data frame for best-effort `usage` extraction
-                // at stream end (streaming SSE responses usually lack a usage field).
-                let mut last_data: Option<Bytes> = None;
+                let mut usage_capture = StreamingUsageCapture::new(capture_sse_frames);
                 loop {
                     let next = tokio::time::timeout(SSE_STALL_TIMEOUT, body.frame()).await;
                     let frame_result = match next {
@@ -3892,7 +3888,7 @@ async fn proxy_response_with_pending_tracking(
                                 "SSE stalled, closing stream"
                             );
                             let usage = record_streaming_usage(&state, &provider, &model,
-                                connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data).await;
+                                connection_id.as_deref(), api_key.as_deref(), endpoint, usage_capture.usage.as_ref()).await;
                             if let Some(log) = attempt_log.take() {
                                 log.finish("error", Some(502), usage.as_ref(), Some("Upstream SSE stream stalled")).await;
                             }
@@ -3912,7 +3908,7 @@ async fn proxy_response_with_pending_tracking(
                     match frame_result {
                         Ok(frame) => {
                             if let Ok(data) = frame.into_data() {
-                                last_data = Some(data.clone());
+                                usage_capture.observe(&data);
                                 if let Some(transformer) = transformer.as_mut() {
                                     for line in transform_dashboard_sse_chunk(&data, transformer.as_mut(), &mut pending_text) {
                                         if let Some(frame) = sse_frame_for_dashboard(&line) {
@@ -3943,7 +3939,7 @@ async fn proxy_response_with_pending_tracking(
                         }
                         Err(_) => {
                             let usage = record_streaming_usage(&state, &provider, &model,
-                                connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data).await;
+                                connection_id.as_deref(), api_key.as_deref(), endpoint, usage_capture.usage.as_ref()).await;
                             if let Some(log) = attempt_log.take() {
                                 log.finish("error", Some(502), usage.as_ref(), Some("Upstream stream error")).await;
                             }
@@ -3980,7 +3976,7 @@ async fn proxy_response_with_pending_tracking(
                     }
                 }
                 let usage = record_streaming_usage(&state, &provider, &model,
-                    connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data).await;
+                    connection_id.as_deref(), api_key.as_deref(), endpoint, usage_capture.usage.as_ref()).await;
                 if let Some(log) = attempt_log.take() {
                     log.finish("success", Some(status.as_u16()), usage.as_ref(), None).await;
                 }
@@ -4013,10 +4009,8 @@ async fn proxy_response_with_pending_tracking(
 
 /// Record usage for a streaming SSE request at stream end.
 ///
-/// Streaming SSE responses from most providers do not contain a `usage` field,
-/// so we record the request with `tokens = None` (which still increments the
-/// request count and captures provider/model/endpoint). If the provider emits a
-/// final SSE data frame containing a Chat Completions `usage` block, extract it.
+/// Streaming SSE responses without a `usage` field are recorded with
+/// `tokens = None`, while providers that emit terminal usage retain it here.
 async fn record_streaming_usage(
     state: &AppState,
     provider: &str,
@@ -4024,23 +4018,64 @@ async fn record_streaming_usage(
     connection_id: Option<&str>,
     api_key: Option<&str>,
     endpoint: Option<&'static str>,
-    last_data: &Option<Bytes>,
+    usage: Option<&TokenUsage>,
 ) -> Option<TokenUsage> {
-    let usage = last_data
-        .as_ref()
-        .and_then(|b| extract_token_usage_from_bytes(b));
     state
         .usage_tracker()
-        .track_request(
-            provider,
-            model,
-            usage.as_ref(),
-            connection_id,
-            api_key,
-            endpoint,
-        )
+        .track_request(provider, model, usage, connection_id, api_key, endpoint)
         .await;
-    usage
+    usage.cloned()
+}
+
+struct StreamingUsageCapture {
+    capture_sse_frames: bool,
+    pending: Vec<u8>,
+    usage: Option<TokenUsage>,
+}
+
+impl StreamingUsageCapture {
+    fn new(capture_sse_frames: bool) -> Self {
+        Self {
+            capture_sse_frames,
+            pending: Vec::new(),
+            usage: None,
+        }
+    }
+
+    fn observe(&mut self, chunk: &[u8]) {
+        if let Some(usage) = extract_token_usage_from_bytes(chunk) {
+            self.usage = Some(usage);
+        }
+        if !self.capture_sse_frames {
+            return;
+        }
+
+        self.pending.extend_from_slice(chunk);
+        while let Some((frame_end, separator_len)) = next_sse_frame(&self.pending) {
+            let frame = self.pending[..frame_end].to_vec();
+            self.pending.drain(..frame_end + separator_len);
+            for line in String::from_utf8_lossy(&frame).lines() {
+                let Some(payload) = line.trim().strip_prefix("data:").map(str::trim) else {
+                    continue;
+                };
+                if let Some(usage) = extract_token_usage_from_bytes(payload.as_bytes()) {
+                    self.usage = Some(usage);
+                }
+            }
+        }
+    }
+}
+
+fn next_sse_frame(buffer: &[u8]) -> Option<(usize, usize)> {
+    let lf = buffer.windows(2).position(|window| window == b"\n\n");
+    let crlf = buffer.windows(4).position(|window| window == b"\r\n\r\n");
+    match (lf, crlf) {
+        (Some(left), Some(right)) if left <= right => Some((left, 2)),
+        (Some(_), Some(right)) => Some((right, 4)),
+        (Some(left), None) => Some((left, 2)),
+        (None, Some(right)) => Some((right, 4)),
+        (None, None) => None,
+    }
 }
 
 fn responses_stream_completed(buffer: &mut String, chunk: &[u8]) -> bool {
@@ -4438,6 +4473,12 @@ fn extract_token_usage_from_bytes(body: &[u8]) -> Option<TokenUsage> {
                 .get("result")
                 .and_then(|d| d.get("usage"))
                 .and_then(Value::as_object)
+        })
+        .or_else(|| {
+            value
+                .get("response")
+                .and_then(|d| d.get("usage"))
+                .and_then(Value::as_object)
         });
 
     let known_fields = [
@@ -4453,15 +4494,26 @@ fn extract_token_usage_from_bytes(body: &[u8]) -> Option<TokenUsage> {
     ];
 
     if let Some(usage) = usage_obj {
+        let nested_cached_tokens = usage
+            .get("prompt_tokens_details")
+            .or_else(|| usage.get("input_tokens_details"))
+            .and_then(|details| details.get("cached_tokens"))
+            .and_then(Value::as_u64);
+        let nested_reasoning_tokens = usage
+            .get("completion_tokens_details")
+            .or_else(|| usage.get("output_tokens_details"))
+            .and_then(|details| details.get("reasoning_tokens"))
+            .and_then(Value::as_u64);
         return Some(TokenUsage {
             prompt_tokens: extract_u64(usage, "prompt_tokens"),
             input_tokens: extract_u64(usage, "input_tokens"),
             completion_tokens: extract_u64(usage, "completion_tokens"),
             output_tokens: extract_u64(usage, "output_tokens"),
             total_tokens: extract_u64(usage, "total_tokens"),
-            reasoning_tokens: extract_u64(usage, "reasoning_tokens"),
-            cached_tokens: extract_u64(usage, "cached_tokens"),
-            cache_read_input_tokens: extract_u64(usage, "cache_read_input_tokens"),
+            reasoning_tokens: extract_u64(usage, "reasoning_tokens").or(nested_reasoning_tokens),
+            cached_tokens: extract_u64(usage, "cached_tokens").or(nested_cached_tokens),
+            cache_read_input_tokens: extract_u64(usage, "cache_read_input_tokens")
+                .or(nested_cached_tokens),
             cache_creation_input_tokens: extract_u64(usage, "cache_creation_input_tokens"),
             extra: usage
                 .iter()
