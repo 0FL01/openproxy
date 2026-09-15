@@ -473,9 +473,6 @@ async fn chat_completions_impl(
         BypassDecision::Pass => {}
     }
 
-    let is_streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
-    let cache_provider = resolved.provider.as_deref().unwrap_or("unknown");
-
     let response = match resolved.route_kind {
         ModelRouteKind::Combo => {
             let combo_name = resolved.model;
@@ -524,15 +521,6 @@ async fn chat_completions_impl(
                 return attempt_error_response(
                     first_context_error.expect("a filtered combo member has a context error"),
                 );
-            }
-            if let Some(response) = response_cache_hit(
-                &state,
-                &body,
-                cache_provider,
-                is_streaming,
-                codex_web_search_requested,
-            ) {
-                return response;
             }
             let adapter_added: HashSet<String> = augmented_models
                 .iter()
@@ -845,15 +833,6 @@ async fn chat_completions_impl(
             {
                 return attempt_error_response(error);
             }
-            if let Some(response) = response_cache_hit(
-                &state,
-                &body,
-                cache_provider,
-                is_streaming,
-                codex_web_search_requested,
-            ) {
-                return response;
-            }
             let mut plan = RequestPlan::new(
                 endpoint,
                 &body,
@@ -888,50 +867,7 @@ async fn chat_completions_impl(
         }
     };
 
-    // Feature4: populate the cache on a successful non-streaming miss.
-    if !is_streaming && !codex_web_search_requested {
-        return cache_miss_response(&state, &body, cache_provider, response).await;
-    }
     response
-}
-
-fn response_cache_hit(
-    state: &AppState,
-    body: &Value,
-    provider: &str,
-    is_streaming: bool,
-    codex_web_search_requested: bool,
-) -> Option<Response> {
-    if is_streaming || codex_web_search_requested {
-        return None;
-    }
-    let (cached, ttl_remaining) = state.response_cache.get_with_ttl(body)?;
-    let mut response = Response::new(Body::from(cached));
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("application/json"),
-    );
-    response
-        .headers_mut()
-        .insert("x-cache", HeaderValue::from_static("HIT"));
-
-    let envelope = json!({
-        "schema": "openproxy.v1.cache.hit",
-        "ok": true,
-        "data": {
-            "cache_hit": true,
-            "model": body.get("model").and_then(Value::as_str).unwrap_or(""),
-            "provider": provider,
-            "ttl_remaining": ttl_remaining,
-        },
-        "meta": {},
-    });
-    if let Ok(value) = serde_json::to_string(&envelope) {
-        if let Ok(value) = HeaderValue::from_str(&value) {
-            response.headers_mut().insert("x-cache-envelope", value);
-        }
-    }
-    Some(response)
 }
 
 /// Inject provider-level thinking override onto the **source** body
@@ -1028,61 +964,6 @@ async fn prefetch_images_in_messages(body: &mut Value) {
             }
         }
     }
-}
-
-/// Feature4: cache a successful response and tag it `X-Cache: MISS`.
-async fn cache_miss_response(
-    state: &AppState,
-    body: &Value,
-    provider: &str,
-    response: Response,
-) -> Response {
-    if !response.status().is_success() {
-        // Don't cache errors; just mark the miss.
-        let mut response = response;
-        response
-            .headers_mut()
-            .insert("x-cache", HeaderValue::from_static("MISS"));
-        return response;
-    }
-
-    let headers = response.headers().clone();
-    let bytes = match axum::body::to_bytes(response.into_body(), 64 * 1024 * 1024).await {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            // Body unreadable (should not happen for non-streaming JSON).
-            let mut err = Response::new(Body::from(""));
-            *err.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-            return err;
-        }
-    };
-
-    state
-        .response_cache
-        .set(body, bytes.to_vec(), provider, None);
-
-    let mut resp = Response::new(Body::from(bytes));
-    *resp.headers_mut() = headers;
-    resp.headers_mut()
-        .insert("x-cache", HeaderValue::from_static("MISS"));
-    resp
-}
-
-/// GET /api/cache/stats — response-cache hit-rate counters for the dashboard.
-///
-/// Returns the live `hits` / `misses` / `sets` / `entries` counts and the
-/// derived `hit_rate` (`hits / (hits + misses)`). Cheap: counters are atomic
-/// and the entry count is a single DashMap len.
-pub async fn cache_stats(State(state): State<AppState>) -> Response {
-    let stats = state.response_cache.stats();
-    Json(json!({
-        "hits": stats.hits,
-        "misses": stats.misses,
-        "sets": stats.sets,
-        "entries": stats.entries,
-        "hit_rate": stats.hit_rate,
-    }))
-    .into_response()
 }
 
 /// Apply 9router stream decision to a RequestPlan (mutates stream + sse_to_json).

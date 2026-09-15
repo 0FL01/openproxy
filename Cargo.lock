@@ -2081,7 +2081,6 @@ dependencies = [
  "directories",
  "dotenvy",
  "flate2",
- "fnv",
  "futures-util",
  "hex",
  "hmac",

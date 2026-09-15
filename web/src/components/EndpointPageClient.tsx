@@ -6,7 +6,6 @@ import { Card, Button, Input, Modal, CardSkeleton, Toggle } from "@/shared/compo
 import { ConfirmModal } from "@/shared/components/Modal";
 import { useNotificationStore } from "@/store/notificationStore";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
-import CacheStatsCard from "@/components/CacheStatsCard";
 
 interface ApiKey {
   id: string;
@@ -296,9 +295,6 @@ export default function APIPageClient({ machineId }: APIPageClientProps) {
           </div>
         )}
       </Card>
-
-      {/* Response Cache hit-rate */}
-      <CacheStatsCard />
 
       {/* API Keys */}
       <Card id="require-api-key">

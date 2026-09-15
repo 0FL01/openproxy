@@ -16,7 +16,6 @@ pub mod translator;
 pub mod usage;
 pub mod utils;
 
-pub mod cache;
 pub mod chat;
 pub mod circuit_breaker;
 pub mod eval;

@@ -20,8 +20,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: “Кэш готовых ответов — удалить полностью”.
   - Acceptance: `src/core/cache/`, `AppState.response_cache`, chat cache hit/fill behavior, cache administration routes/settings, and dependencies used only by this cache no longer exist.
   - Primary evidence: Repository search plus focused Rust build/tests for chat and server routing.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: Response-cache module/state/chat/admin/dashboard symbols are absent. `cargo clippy --all-targets --all-features`, 1,725 library tests, 12 `chat_completions` integration tests, and `pnpm run build` passed.
 
 - R2: Remove server-owned prompt/history/content policy while preserving protocol translation.
   - Source: “Обрезание истории и серверную политику промптов — удалить” and “Прокси меняет модель и необходимое представление протокола. Содержание задачи и поведение агента определяет клиент.”
@@ -107,17 +107,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R1
-- Smallest next action: Remove the completed-response cache and only its direct consumers, verify, update this document, and commit that removal.
-- Expected evidence: No response-cache runtime/admin references; focused Rust checks pass.
-- Stop or replan if: The cache symbol also owns provider-native prompt caching, which must remain.
+- Closes: R2
+- Smallest next action: Remove payload rules, guardrails, synthetic bypass/naming responses, provider thinking overrides, and combo capacity/history adaptation with only their direct consumers.
+- Expected evidence: No listed request-policy runtime references; focused chat/combo checks pass.
+- Stop or replan if: A candidate edit is required for wire-format translation rather than server-owned behavior policy.
 
 ## Current State
 
-- Resolved: Contract frozen; no implementation checkpoint completed yet.
-- Last relevant evidence: The repository is clean on `main` at `3fc4df6d`; the named cache/combo/server modules exist and production deployment is defined by `docker-compose.yml`.
+- Resolved: R1. Completed responses are no longer retained or served by OpenProxy, and the cache dashboard/API were removed without touching provider-native cache fields.
+- Last relevant evidence: Rust clippy, 1,725 library tests, 12 focused chat integration tests, and the Astro production build passed after cache removal.
 - Blocker: None.
-- Next: Commit this execution contract, then execute R1.
+- Next: Commit R1, then execute R2.
 
 ## Material Decisions
 
@@ -268,6 +268,7 @@ Tool calling при этом остаётся. Прокси должен пер�
 ## Checkpoint History
 
 - 2026-09-15: Contract frozen from the user-supplied plan. The source plan is copied above. First implementation checkpoint is the completed-response cache removal.
+- 2026-09-15: R1 passed. Removed the response cache, chat hit/fill path, state, admin stats route, dashboard card, focused cache test, and cache-only direct dependency. Provider-native prompt-cache translation remains untouched. Next is R2 request-policy removal.
 
 ## Completion
 

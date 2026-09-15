@@ -352,7 +352,6 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .route("/api/settings/proxy-test", post(proxy_test_api))
         .route("/api/version", get(get_version_api))
         .route("/api/version/update", post(version_update_api))
-        .route("/api/cache/stats", get(chat::cache_stats))
         .route(
             "/api/settings/database",
             get(settings_database_export_api).post(settings_database_import_api),
