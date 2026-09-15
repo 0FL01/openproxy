@@ -30,6 +30,8 @@ pub struct ProviderCatalogModel {
     pub context_window: Option<u32>,
     #[serde(default)]
     pub capabilities: Option<Vec<String>>,
+    #[serde(default)]
+    pub reasoning_efforts: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

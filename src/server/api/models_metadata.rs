@@ -135,7 +135,7 @@ impl OpenCodeModelConfig {
                 },
             ),
             modalities,
-            attachment,
+            attachment: attachment.or_else(|| has("vision").then_some(true)),
             reasoning: reasoning.or_else(|| {
                 (has("reasoning") || efforts.is_some_and(|values| !values.is_empty()))
                     .then_some(true)

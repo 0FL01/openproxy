@@ -426,6 +426,20 @@ mod tests {
             registry::get_target_format_for_provider("deepseek"),
             Format::OpenAi
         );
+        assert_eq!(
+            registry::get_target_format_for_provider("glm"),
+            Format::OpenAi
+        );
+    }
+
+    #[test]
+    fn glm_responses_requests_use_openai_target() {
+        let body = json!({"model": "glm-5.3-flash", "input": "READY", "stream": true});
+        let plan = RequestPlan::new(Some("/v1/responses"), &body, "glm", "glm-5.3-flash");
+
+        assert_eq!(plan.source_format, Format::OpenAiResponses);
+        assert_eq!(plan.target_format, Format::OpenAi);
+        assert!(plan.needs_translation());
     }
 
     #[test]

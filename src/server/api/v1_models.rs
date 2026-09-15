@@ -475,7 +475,7 @@ async fn build_models_list(
                 attachment: None,
                 reasoning: None,
                 tool_call: None,
-                efforts: None,
+                efforts: entry.and_then(|entry| entry.reasoning_efforts.as_deref()),
             });
             if let Some(entry) = models_dev
                 .as_ref()
@@ -1071,6 +1071,45 @@ mod tests {
             json!(["text", "image", "pdf"])
         );
         assert_eq!(metadata["variants"]["high"]["reasoningEffort"], "high");
+    }
+
+    #[tokio::test]
+    async fn glm_flash_advertises_vision_and_reasoning_variants() {
+        let snapshot = AppDb {
+            provider_connections: vec![ProviderConnection {
+                id: "conn-glm".into(),
+                provider: "glm".into(),
+                auth_type: "apikey".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let state = test_state().await;
+
+        let models = build_models_list(&state, &snapshot, &[LLM_KIND]).await;
+        let metadata = json!(
+            models
+                .iter()
+                .find(|model| model.id == "glm/glm-5.3-flash")
+                .unwrap()
+                .opencode
+        );
+
+        assert_eq!(metadata["attachment"], true);
+        assert_eq!(
+            metadata["modalities"]["input"],
+            json!(["text", "image", "pdf", "video"])
+        );
+        assert_eq!(metadata["reasoning"], true);
+        assert_eq!(metadata["tool_call"], true);
+        assert_eq!(
+            metadata["variants"],
+            json!({
+                "high": {"reasoningEffort": "high"},
+                "low": {"reasoningEffort": "low"},
+                "max": {"reasoningEffort": "max"}
+            })
+        );
     }
 
     #[tokio::test]

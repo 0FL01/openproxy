@@ -54,7 +54,7 @@ static PROVIDER_CONFIGS: Lazy<BTreeMap<&'static str, ProviderConfig>> = Lazy::ne
         ),
         (
             "glm",
-            ProviderConfig::claude_compatible("https://api.z.ai/api/anthropic/v1/messages"),
+            ProviderConfig::openai("https://api.z.ai/api/coding/paas/v4/chat/completions"),
         ),
         (
             "kimi",
@@ -936,7 +936,7 @@ impl DefaultExecutor {
 
         if matches!(
             self.provider.as_str(),
-            "claude" | "glm" | "kimi" | "minimax" | "minimax-cn" | "kimi-coding" | "agentrouter"
+            "claude" | "kimi" | "minimax" | "minimax-cn" | "kimi-coding" | "agentrouter"
         ) {
             return Ok(format!("{}?beta=true", self.config.base_url));
         }
@@ -958,6 +958,20 @@ impl DefaultExecutor {
                 reqwest::header::HeaderName::from_bytes(name.as_bytes())
                     .expect("static header name"),
                 HeaderValue::from_str(value)?,
+            );
+        }
+
+        let glm_claude_transport = self.provider == "glm"
+            && credentials
+                .runtime_transport
+                .as_ref()
+                .and_then(|transport| transport.base_url.as_deref())
+                .is_some_and(|url| url.contains("/anthropic/") || url.ends_with("/messages"));
+        if glm_claude_transport {
+            headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+            headers.insert(
+                "anthropic-beta",
+                HeaderValue::from_static("claude-code-20250219,interleaved-thinking-2025-05-14"),
             );
         }
 
@@ -1146,10 +1160,10 @@ impl DefaultExecutor {
         normalize_developer_role(&mut body);
 
         // Convert OpenAI-format tools to Claude format when the provider
-        // uses a Claude-compatible endpoint (minimax, glm, kimi, etc.)
+        // uses a Claude-compatible endpoint (minimax, kimi, etc.)
         if matches!(
             self.provider.as_str(),
-            "minimax" | "minimax-cn" | "glm" | "kimi" | "kimi-coding" | "agentrouter"
+            "minimax" | "minimax-cn" | "kimi" | "kimi-coding" | "agentrouter"
         ) {
             convert_openai_tools_to_claude(&mut body);
         }

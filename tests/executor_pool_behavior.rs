@@ -749,18 +749,34 @@ fn default_executor_builds_beta_provider_urls_and_special_headers() {
     assert_eq!(
         glm.build_url("glm-5", false, &connection("glm"))
             .expect("glm url"),
-        "https://api.z.ai/api/anthropic/v1/messages?beta=true"
+        "https://api.z.ai/api/coding/paas/v4/chat/completions"
     );
     let headers = glm
         .build_headers("glm-5", &connection("glm"), false)
         .expect("glm headers");
+    assert_eq!(headers["x-api-key"], "sk-test");
+    assert!(headers.get("anthropic-version").is_none());
+    assert!(headers.get("anthropic-beta").is_none());
+    assert!(headers.get("authorization").is_none());
+
+    let mut glm_claude_connection = connection("glm");
+    glm_claude_connection.runtime_transport = Some(openproxy::types::RuntimeTransport {
+        base_url: Some("https://api.z.ai/api/anthropic/v1/messages".into()),
+    });
+    assert_eq!(
+        glm.build_url("glm-5", false, &glm_claude_connection)
+            .expect("glm claude url"),
+        "https://api.z.ai/api/anthropic/v1/messages?beta=true"
+    );
+    let headers = glm
+        .build_headers("glm-5", &glm_claude_connection, false)
+        .expect("glm claude headers");
     assert_eq!(headers["x-api-key"], "sk-test");
     assert_eq!(headers["anthropic-version"], "2023-06-01");
     assert_eq!(
         headers["anthropic-beta"],
         "claude-code-20250219,interleaved-thinking-2025-05-14"
     );
-    assert!(headers.get("authorization").is_none());
 
     let minimax = DefaultExecutor::new("minimax", pool.clone(), None).expect("minimax executor");
     assert_eq!(

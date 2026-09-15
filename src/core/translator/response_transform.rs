@@ -1107,7 +1107,7 @@ pub fn transformer_for_provider(provider: &str) -> Option<Box<dyn StreamingTrans
         "gemini" => Some(Box::new(GeminiToOpenAiTransformer::new())),
         "ollama" => Some(Box::new(OllamaToOpenAiTransformer::new())),
         "commandcode" | "command-code" => Some(Box::new(CommandCodeToOpenAiTransformer::new())),
-        "claude" | "glm" | "kimi" | "minimax" | "minimax-cn" => {
+        "claude" | "kimi" | "minimax" | "minimax-cn" => {
             Some(Box::new(AnthropicToOpenAiTransformer::new()))
         }
         _ => Some(Box::new(OpenAiTransformer::new())),

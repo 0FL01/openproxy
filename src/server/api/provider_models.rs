@@ -886,10 +886,10 @@ fn glm_enriched_model(item: &Value) -> Option<ProviderModel> {
 
     let mut extra = BTreeMap::new();
     extra.insert("kind".to_string(), Value::String("llm".to_string()));
-    // GLM transports as Claude (translator registry), not openai-responses.
+    // Coding Plan uses its OpenAI-compatible endpoint by default.
     extra.insert(
         "targetFormat".to_string(),
-        Value::String("claude".to_string()),
+        Value::String("openai".to_string()),
     );
     if let Some(context) = context {
         extra.insert("contextWindow".to_string(), Value::from(context));
@@ -2089,10 +2089,10 @@ mod tests {
         );
         // Paas-only id keeps the flat shape.
         assert_eq!(by_id("glm-4.7").name, "glm-4.7");
-        // Transport marker follows the Claude path, not the codex one.
+        // Transport marker follows the Coding Plan OpenAI endpoint.
         assert_eq!(
             by_id("glm-5.3").extra.get("targetFormat"),
-            Some(&json!("claude"))
+            Some(&json!("openai"))
         );
     }
 

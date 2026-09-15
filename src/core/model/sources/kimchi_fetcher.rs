@@ -162,6 +162,7 @@ fn parse_model_value(v: &serde_json::Value) -> Option<ProviderCatalogModel> {
         upstream_model_id: None,
         context_window: None,
         capabilities: None,
+        reasoning_efforts: None,
     })
 }
 
