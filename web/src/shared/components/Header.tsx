@@ -96,14 +96,6 @@ const getPageInfo = (pathname: string): PageInfo => {
       icon: "layers",
       breadcrumbs: [],
     };
-  if (pathname.includes("/usage"))
-    return {
-      title: "Usage & Analytics",
-      description:
-        "Monitor your API usage, token consumption, and request logs",
-      icon: "bar_chart",
-      breadcrumbs: [],
-    };
   if (pathname.includes("/auth-files"))
     return {
       title: "Auth Files",

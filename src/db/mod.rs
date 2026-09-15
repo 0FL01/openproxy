@@ -7,9 +7,7 @@ use serde_json::Value;
 use tokio::fs;
 use tokio::sync::RwLock;
 
-use crate::types::{
-    AppDb, Combo, ModelAliasTarget, ProviderConnection, ProviderNode, Settings, UsageDb,
-};
+use crate::types::{AppDb, Combo, ModelAliasTarget, ProviderConnection, ProviderNode, Settings};
 
 pub mod backups;
 pub mod crypto;
@@ -26,7 +24,6 @@ pub struct Db {
     pub data_dir: PathBuf,
     pub sqlite: sqlite::SqliteDb,
     pub snapshot: ArcSwap<AppDb>,
-    pub usage_snapshot: ArcSwap<UsageDb>,
     write_lock: RwLock<()>,
 }
 
@@ -93,12 +90,11 @@ impl Db {
             )
         })?;
 
-        // ---- One-time migration from legacy db.json / usage.json ----
+        // ---- One-time migration from legacy db.json ----
         let migrated_marker = data_dir.join(".migrated-from-json");
         let db_json_path = data_dir.join("db.json");
-        let usage_json_path = data_dir.join("usage.json");
 
-        if !migrated_marker.exists() && (db_json_path.exists() || usage_json_path.exists()) {
+        if !migrated_marker.exists() && db_json_path.exists() {
             tracing::info!(
                 target: "openproxy::db",
                 "Legacy JSON files detected — importing into SQLite once"
@@ -129,21 +125,6 @@ impl Db {
                 tracing::info!(target: "openproxy::db", "db.json imported into SQLite");
             }
 
-            if usage_json_path.exists() {
-                let bytes = fs::read(&usage_json_path)
-                    .await
-                    .with_context(|| format!("read legacy {}", usage_json_path.display()))?;
-                let usage_value: Value = serde_json::from_slice(&bytes)
-                    .with_context(|| format!("parse legacy {}", usage_json_path.display()))?;
-                let sq = sqlite.clone();
-                tokio::task::spawn_blocking(move || {
-                    crate::db::sqlite::import::import_usage(&sq, &usage_value)
-                })
-                .await
-                .context("spawn_blocking for usage.json import")??;
-                tracing::info!(target: "openproxy::db", "usage.json imported into SQLite");
-            }
-
             fs::write(&migrated_marker, b"1").await.with_context(|| {
                 format!("write migrated marker at {}", migrated_marker.display())
             })?;
@@ -156,33 +137,26 @@ impl Db {
 
         // ---- Read snapshot from SQLite ----
         let sq = sqlite.clone();
-        let (app_db, usage_db) =
-            tokio::task::spawn_blocking(move || -> anyhow::Result<(AppDb, UsageDb)> {
-                let app_db = sq.with_conn(|conn| -> rusqlite::Result<AppDb> {
-                    let json_val = crate::db::sqlite::export::export_all(conn)
-                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-                    Ok(AppDb::from_json_value(json_val))
-                })?;
-                // SQLite stores ciphertext in the `data` column; the in-memory
-                // snapshot must hold plaintext so credential checks and the
-                // executors see real tokens (H20 boundary invariant).
-                let mut app_db = app_db;
-                decrypt_snapshot_connections(&mut app_db);
-                let usage_db = sq.with_conn(|conn| -> rusqlite::Result<UsageDb> {
-                    let json_val = crate::db::sqlite::export::export_usage_impl(conn)
-                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-                    Ok(UsageDb::from_json_value(json_val))
-                })?;
-                Ok((app_db, usage_db))
-            })
-            .await
-            .context("spawn_blocking for initial SQLite snapshot")??;
+        let app_db = tokio::task::spawn_blocking(move || -> anyhow::Result<AppDb> {
+            let app_db = sq.with_conn(|conn| -> rusqlite::Result<AppDb> {
+                let json_val = crate::db::sqlite::export::export_all(conn)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                Ok(AppDb::from_json_value(json_val))
+            })?;
+            // SQLite stores ciphertext in the `data` column; the in-memory
+            // snapshot must hold plaintext so credential checks and the
+            // executors see real tokens (H20 boundary invariant).
+            let mut app_db = app_db;
+            decrypt_snapshot_connections(&mut app_db);
+            Ok(app_db)
+        })
+        .await
+        .context("spawn_blocking for initial SQLite snapshot")??;
 
         Ok(Self {
             data_dir,
             sqlite,
             snapshot: ArcSwap::from_pointee(app_db),
-            usage_snapshot: ArcSwap::from_pointee(usage_db),
             write_lock: RwLock::new(()),
         })
     }
@@ -216,10 +190,6 @@ impl Db {
         // consistent snapshot.
         self.snapshot.store(next.clone());
         Ok(next)
-    }
-
-    pub fn usage_snapshot(&self) -> Arc<UsageDb> {
-        self.usage_snapshot.load_full()
     }
 
     /// Returns a reference to the SQLite handle.
@@ -279,10 +249,7 @@ impl Db {
 
     /// Incremental write — applies only the difference between the current
     /// snapshot and the mutated one to SQLite (H19). Unchanged rows are never
-    /// rewritten, and the append-only `usageHistory`/`usageDaily`/
-    /// `requestDetails` tables are left untouched (previously `import_db`
-    /// wiped them on every config change even though the AppDb payload never
-    /// contains usage data).
+    /// rewritten, and the append-only `requestDetails` table is left untouched.
     ///
     /// Prefer [`update_settings`] when only the settings have changed to
     /// avoid the diff overhead entirely.
@@ -346,47 +313,6 @@ impl Db {
         Ok(next)
     }
 
-    pub async fn update_usage<F>(&self, updater: F) -> anyhow::Result<Arc<UsageDb>>
-    where
-        F: FnOnce(&mut UsageDb),
-    {
-        let _guard = self.write_lock.write().await;
-        let prev = (*self.usage_snapshot()).clone();
-        let mut next = prev.clone();
-        updater(&mut next);
-        next.normalize();
-
-        if next != prev {
-            // Incremental append (9router usageRepo.saveRequestUsage): only
-            // the new rows are INSERTed — the DELETE-all + re-INSERT rewrite
-            // previously done here (import_usage) is reserved for imports.
-            let appended: Vec<crate::types::UsageEntry> = next
-                .history
-                .iter()
-                .skip(prev.history.len())
-                .cloned()
-                .collect();
-            if !appended.is_empty() {
-                let sq = self.sqlite.clone();
-                tokio::task::spawn_blocking(move || {
-                    sq.with_transaction(|conn| {
-                        for entry in &appended {
-                            crate::db::sqlite::repo::usage_repo::insert(conn, entry)?;
-                        }
-                        Ok(())
-                    })
-                    .map_err(|e| anyhow::anyhow!("SQLite usage append failed: {e}"))
-                })
-                .await
-                .map_err(|e| anyhow::anyhow!("spawn_blocking for update_usage: {e}"))??;
-            }
-        }
-
-        let next = Arc::new(next);
-        self.usage_snapshot.store(next.clone());
-        Ok(next)
-    }
-
     /// Atomically replace the in-memory and on-disk app db with the value
     /// produced by `make_next`. Used by the backup-restore / import flows
     /// where the entire payload comes from a foreign snapshot.
@@ -431,38 +357,6 @@ impl Db {
         }
         let next = AppDb::from_json_value(parsed);
         self.replace_app_db(move || next).await
-    }
-
-    /// Serialize the current `UsageDb` snapshot to pretty-printed JSON bytes.
-    pub fn export_usage_db(&self) -> anyhow::Result<(Vec<u8>, String)> {
-        let snapshot = self.usage_snapshot.load_full();
-        let json = serde_json::to_vec_pretty(snapshot.as_ref())?;
-        let filename = format!("openproxy-usage-{}.json", chrono_like_stamp());
-        Ok((json, filename))
-    }
-
-    /// Deserialize JSON bytes into `UsageDb` and atomically replace the
-    /// in-memory usage snapshot + SQLite in one write-locked operation.
-    /// Returns the new snapshot.
-    pub async fn import_usage_db(&self, json_bytes: &[u8]) -> anyhow::Result<Arc<UsageDb>> {
-        let _guard = self.write_lock.write().await;
-        let parsed: Value = serde_json::from_slice(json_bytes)?;
-        if !parsed.is_object() {
-            anyhow::bail!("import payload must be a JSON object");
-        }
-        let mut next = UsageDb::from_json_value(parsed);
-        next.normalize();
-        let json_val = serde_json::to_value(&next)?;
-        let sq = self.sqlite.clone();
-        tokio::task::spawn_blocking(move || {
-            crate::db::sqlite::import::import_usage(&sq, &json_val)
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("spawn_blocking for import_usage_db: {e}"))?
-        .map_err(|e| anyhow::anyhow!("SQLite usage import failed: {e}"))?;
-        let next = Arc::new(next);
-        self.usage_snapshot.store(next.clone());
-        Ok(next)
     }
 }
 
@@ -543,21 +437,6 @@ mod tests {
             .unwrap();
         assert_eq!(app_db.settings, Default::default());
         drop(sqlite);
-    }
-
-    #[tokio::test]
-    async fn db_init_creates_usage_sqlite() {
-        let dir = tempfile::tempdir().unwrap();
-        let sqlite_path = dir.path().join("openproxy-usage.sqlite");
-
-        let sqlite = SqliteDb::open(&sqlite_path).unwrap();
-        let usage_db = sqlite
-            .with_conn(|conn| {
-                let val = crate::db::sqlite::export::export_usage_impl(conn)?;
-                Ok(UsageDb::from_json_value(val))
-            })
-            .unwrap();
-        assert!(usage_db.history.is_empty());
     }
 
     #[tokio::test]

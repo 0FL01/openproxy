@@ -1,8 +1,7 @@
-//! Usage tracking and cost calculation.
+//! Provider quota fetching and model pricing.
 //!
 //! This module provides:
 //! - [`PricingTable`](pricing::PricingTable): Per-model pricing rates
-//! - [`UsageTracker`](tracker::UsageTracker): Tracks request/response usage and calculates costs
 //!
 //! ## Default Pricing (from README)
 //!
@@ -20,8 +19,6 @@
 pub mod grok_cli_quota_frame;
 mod pricing;
 pub mod quota_fetcher;
-mod tracker;
 
 pub(crate) use pricing::parse_model_pricing;
 pub use pricing::{CostModel, ModelPricing, Pricing};
-pub use tracker::{DailyUsageSummary, ProviderUsage, UsageSummary, UsageTracker};

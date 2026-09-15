@@ -10,9 +10,8 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use openproxy::cli::config::ResolvedConfig;
 use openproxy::cli::{
     chat as cli_chat, db as cli_db, logs as cli_logs, media as cli_media, mitm as cli_mitm,
-    provider_oauth, quota as cli_quota, settings as cli_settings, tool as cli_tool,
-    translator as cli_translator, usage as cli_usage, AuthCmd, Cli, Command, ProviderCmd,
-    SchemaCmd, ServerCmd,
+    provider_oauth, settings as cli_settings, tool as cli_tool, translator as cli_translator,
+    AuthCmd, Cli, Command, ProviderCmd, SchemaCmd, ServerCmd,
 };
 use openproxy::db::watcher::spawn_watcher;
 use openproxy::db::Db;
@@ -237,22 +236,8 @@ async fn main() -> anyhow::Result<()> {
                 }
                 return Ok(());
             }
-            Command::Usage { cmd } => {
-                let exit = cli_usage::run(cmd.clone(), &resolved, ctx).await?;
-                if exit != 0 {
-                    std::process::exit(exit);
-                }
-                return Ok(());
-            }
             Command::Logs { cmd } => {
                 let exit = cli_logs::run(cmd.clone(), &resolved, ctx).await?;
-                if exit != 0 {
-                    std::process::exit(exit);
-                }
-                return Ok(());
-            }
-            Command::Quota { cmd } => {
-                let exit = cli_quota::run(cmd.clone(), &resolved, ctx).await?;
                 if exit != 0 {
                     std::process::exit(exit);
                 }
@@ -348,7 +333,7 @@ async fn main() -> anyhow::Result<()> {
     spawn_watcher(db.clone());
     spawn_auto_backup(db.clone());
     // Prune old usage/request details on startup (keep 30 days).
-    spawn_usage_retention_cleanup(db.clone());
+    spawn_request_log_retention_cleanup(db.clone());
     openproxy::server::auth::spawn_jti_cleanup();
     // Snapshot before the db handle moves into AppState: the startup banner
     // needs the stored password-hash state after the server starts.
@@ -526,40 +511,11 @@ fn spawn_auto_backup(db: Arc<Db>) {
     });
 }
 
-/// Periodic cleanup: prune usageHistory, requestDetails, and usageDaily older than 30 days.
-/// Runs once at startup and then every 24 hours.
-fn spawn_usage_retention_cleanup(db: Arc<Db>) {
+/// Prune request metadata older than 30 days at startup and once per day.
+fn spawn_request_log_retention_cleanup(db: Arc<Db>) {
     tokio::spawn(async move {
         loop {
-            // Run retention cleanup
             let cutoff = (chrono::Utc::now() - chrono::Duration::days(30)).to_rfc3339();
-            // Prune usageHistory
-            match db.sqlite.with_conn(|conn| {
-                let count: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM usageHistory WHERE timestamp < ?1",
-                        [&cutoff],
-                        |row| row.get(0),
-                    )
-                    .unwrap_or(0);
-                if count > 0 {
-                    conn.execute("DELETE FROM usageHistory WHERE timestamp < ?1", [&cutoff])?;
-                }
-                Ok(count)
-            }) {
-                Ok(0) => {}
-                Ok(count) => tracing::info!(
-                    target: "openproxy::db::retention",
-                    deleted = count,
-                    "pruned old usageHistory records"
-                ),
-                Err(e) => tracing::warn!(
-                    target: "openproxy::db::retention",
-                    error = %e,
-                    "usage retention cleanup failed"
-                ),
-            }
-            // Prune requestDetails
             match db.sqlite.with_conn(|conn| {
                 let count: i64 = conn
                     .query_row(
@@ -579,43 +535,13 @@ fn spawn_usage_retention_cleanup(db: Arc<Db>) {
                     deleted = count,
                     "pruned old requestDetails records"
                 ),
-                Err(e) => tracing::warn!(
+                Err(error) => tracing::warn!(
                     target: "openproxy::db::retention",
-                    error = %e,
+                    %error,
                     "requestDetails retention cleanup failed"
                 ),
             }
-            // Prune usageDaily older than 90 days
-            let daily_cutoff = (chrono::Utc::now() - chrono::Duration::days(90))
-                .format("%Y-%m-%d")
-                .to_string();
-            match db.sqlite.with_conn(|conn| {
-                let count: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM usageDaily WHERE dateKey < ?1",
-                        [&daily_cutoff],
-                        |row| row.get(0),
-                    )
-                    .unwrap_or(0);
-                if count > 0 {
-                    conn.execute("DELETE FROM usageDaily WHERE dateKey < ?1", [&daily_cutoff])?;
-                }
-                Ok(count)
-            }) {
-                Ok(0) => {}
-                Ok(count) => tracing::info!(
-                    target: "openproxy::db::retention",
-                    deleted = count,
-                    "pruned old usageDaily records"
-                ),
-                Err(e) => tracing::warn!(
-                    target: "openproxy::db::retention",
-                    error = %e,
-                    "usageDaily retention cleanup failed"
-                ),
-            }
-            // Sleep 24 hours before next cleanup
-            tokio::time::sleep(std::time::Duration::from_secs(86400)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(86_400)).await;
         }
     });
 }
@@ -638,7 +564,6 @@ async fn seed_default_api_key_if_missing(db: &Db) -> anyhow::Result<()> {
         machine_id: Some(machine_id),
         is_active: Some(true),
         created_at: Some(chrono::Utc::now().to_rfc3339()),
-        monthly_budget_usd: None,
         extra: std::collections::BTreeMap::new(),
     };
 

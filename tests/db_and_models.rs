@@ -7,8 +7,8 @@ use openproxy::core::model::{
 };
 use openproxy::db::Db;
 use openproxy::types::{
-    ApiKey, AppDb, Combo, DailySummary, ModelAliasTarget, ProviderConnection, ProviderModelRef,
-    ProviderNode, Settings, SummaryCounter, TokenUsage, UsageDb, UsageEntry,
+    ApiKey, AppDb, Combo, ModelAliasTarget, ProviderConnection, ProviderModelRef, ProviderNode,
+    Settings,
 };
 use tempfile::tempdir;
 
@@ -99,7 +99,6 @@ fn app_db_round_trips_through_serde() {
             is_active: Some(true),
             created_at: Some("2026-01-01T00:00:00Z".into()),
             extra: BTreeMap::new(),
-            monthly_budget_usd: None,
         }],
         settings: Settings::default(),
         pricing: BTreeMap::new(),
@@ -112,87 +111,10 @@ fn app_db_round_trips_through_serde() {
     assert_eq!(decoded, db);
 }
 
-#[test]
-fn usage_db_round_trips_through_serde() {
-    let usage = UsageDb {
-        history: vec![UsageEntry {
-            timestamp: Some("2026-01-01T00:00:00Z".into()),
-            provider: Some("openai".into()),
-            model: "gpt-4.1".into(),
-            tokens: Some(TokenUsage {
-                prompt_tokens: Some(10),
-                input_tokens: None,
-                completion_tokens: Some(20),
-                output_tokens: None,
-                total_tokens: Some(30),
-                reasoning_tokens: None,
-                cached_tokens: None,
-                cache_read_input_tokens: None,
-                cache_creation_input_tokens: None,
-                extra: BTreeMap::new(),
-            }),
-            connection_id: Some("conn-1".into()),
-            api_key: Some("local-no-key".into()),
-            endpoint: Some("/v1/chat/completions".into()),
-            cost: Some(0.42),
-            status: Some("ok".into()),
-            bytes_before: 0,
-            bytes_after: 0,
-            bytes_saved: 0,
-            image_prompts: 0,
-            extra: BTreeMap::new(),
-        }],
-        total_requests_lifetime: 1,
-        daily_summary: BTreeMap::from([(
-            "2026-01-01".into(),
-            DailySummary {
-                requests: 1,
-                prompt_tokens: 10,
-                completion_tokens: 20,
-                reasoning_tokens: 0,
-                cached_tokens: 0,
-                cache_read_input_tokens: 0,
-                cache_creation_input_tokens: 0,
-                cost: 0.42,
-                by_provider: BTreeMap::from([(
-                    "openai".into(),
-                    SummaryCounter {
-                        requests: 1,
-                        prompt_tokens: 10,
-                        completion_tokens: 20,
-                        reasoning_tokens: 0,
-                        cached_tokens: 0,
-                        cache_read_input_tokens: 0,
-                        cache_creation_input_tokens: 0,
-                        cost: 0.42,
-                        raw_model: None,
-                        provider: None,
-                        api_key: None,
-                        endpoint: None,
-                        extra: BTreeMap::new(),
-                    },
-                )]),
-                by_model: BTreeMap::new(),
-                by_account: BTreeMap::new(),
-                by_api_key: BTreeMap::new(),
-                by_endpoint: BTreeMap::new(),
-                extra: BTreeMap::new(),
-            },
-        )]),
-        extra: BTreeMap::new(),
-    };
-
-    let encoded = serde_json::to_value(&usage).expect("encode usage db");
-    let decoded: UsageDb = serde_json::from_value(encoded).expect("decode usage db");
-
-    assert_eq!(decoded, usage);
-}
-
 #[tokio::test]
 async fn db_loads_normalizes_and_persists_json_files() {
     let temp = tempdir().expect("tempdir");
     let db_json = temp.path().join("db.json");
-    let usage_json = temp.path().join("usage.json");
 
     tokio::fs::write(
         &db_json,
@@ -206,23 +128,11 @@ async fn db_loads_normalizes_and_persists_json_files() {
     .await
     .expect("write db json");
 
-    tokio::fs::write(
-        &usage_json,
-        serde_json::to_vec_pretty(&serde_json::json!({
-            "history": [{ "model": "gpt-4.1" }]
-        }))
-        .expect("serialize usage json"),
-    )
-    .await
-    .expect("write usage json");
-
     let db = Db::load_from(temp.path()).await.expect("load db");
     let snapshot = db.snapshot();
-    let usage = db.usage_snapshot();
 
     assert!(snapshot.api_keys[0].is_active());
     assert!(snapshot.settings.outbound_proxy_enabled);
-    assert_eq!(usage.total_requests_lifetime, 1);
     assert!(db.data_dir.join("openproxy.sqlite").exists());
 
     db.update(|state| {
@@ -287,7 +197,6 @@ async fn db_updates_are_serialized_and_snapshots_remain_lock_free() {
 async fn db_preserves_valid_sections_when_legacy_fields_are_null_or_invalid() {
     let temp = tempdir().expect("tempdir");
     let db_json = temp.path().join("db.json");
-    let usage_json = temp.path().join("usage.json");
 
     tokio::fs::write(
         &db_json,
@@ -325,34 +234,8 @@ async fn db_preserves_valid_sections_when_legacy_fields_are_null_or_invalid() {
     .await
     .expect("write db json");
 
-    tokio::fs::write(
-        &usage_json,
-        serde_json::to_vec_pretty(&serde_json::json!({
-            "history": [
-                {
-                    "timestamp": "2026-01-01T00:00:00Z",
-                    "provider": "openai",
-                    "model": "gpt-4.1",
-                    "tokens": { "prompt_tokens": 10, "completion_tokens": 20 },
-                    "endpoint": "/v1/chat/completions"
-                }
-            ],
-            "dailySummary": null
-        }))
-        .expect("serialize usage json"),
-    )
-    .await
-    .expect("write usage json");
-
-    eprintln!(
-        "DBGFILES exists db={} usage={}",
-        db_json.exists(),
-        usage_json.exists()
-    );
     let db = Db::load_from(temp.path()).await.expect("load db");
     let snapshot = db.snapshot();
-    let usage = db.usage_snapshot();
-    eprintln!("DBGCONN count={}", snapshot.provider_connections.len());
     assert_eq!(snapshot.provider_connections.len(), 1);
     assert_eq!(snapshot.provider_connections[0].auth_type, "cookie");
     assert!(snapshot.provider_connections[0]
@@ -367,75 +250,6 @@ async fn db_preserves_valid_sections_when_legacy_fields_are_null_or_invalid() {
     );
     assert!(snapshot.api_keys[0].is_active());
     assert!(snapshot.settings.outbound_proxy_enabled);
-    assert_eq!(usage.daily_summary["2026-01-01"].requests, 1);
-    assert_eq!(usage.total_requests_lifetime, 1);
-}
-
-#[tokio::test]
-async fn usage_updates_persist_and_migrate_daily_summary() {
-    let temp = tempdir().expect("tempdir");
-    let db = Db::load_from(temp.path()).await.expect("load db");
-
-    db.update_usage(|usage| {
-        usage.history.push(UsageEntry {
-            timestamp: Some("2026-02-02T12:00:00Z".into()),
-            provider: Some("anthropic".into()),
-            model: "claude-sonnet-4-5".into(),
-            tokens: Some(TokenUsage {
-                prompt_tokens: Some(7),
-                input_tokens: None,
-                completion_tokens: Some(11),
-                output_tokens: None,
-                total_tokens: Some(18),
-                reasoning_tokens: None,
-                cached_tokens: None,
-                cache_read_input_tokens: None,
-                cache_creation_input_tokens: None,
-                extra: BTreeMap::new(),
-            }),
-            connection_id: Some("conn-9".into()),
-            api_key: Some("key-9".into()),
-            endpoint: Some("/v1/chat/completions".into()),
-            cost: Some(0.21),
-            status: Some("ok".into()),
-            bytes_before: 0,
-            bytes_after: 0,
-            bytes_saved: 0,
-            image_prompts: 0,
-            extra: BTreeMap::new(),
-        });
-    })
-    .await
-    .expect("update usage");
-
-    let reloaded = Db::load_from(temp.path()).await.expect("reload");
-    let usage = reloaded.usage_snapshot();
-    eprintln!(
-        "DBG usage hist={} daily_keys={:?}",
-        usage.history.len(),
-        usage.daily_summary.keys().collect::<Vec<_>>()
-    );
-    if !usage.daily_summary.contains_key("2026-02-02") {
-        panic!(
-            "DBG missing day; lifetime={}",
-            usage.total_requests_lifetime
-        );
-    }
-    let summary = &usage.daily_summary["2026-02-02"];
-    eprintln!(
-        "DBGEP keys={:?}",
-        summary.by_endpoint.keys().collect::<Vec<_>>()
-    );
-
-    assert_eq!(usage.total_requests_lifetime, 1);
-    assert_eq!(summary.requests, 1);
-    assert_eq!(summary.prompt_tokens, 7);
-    assert_eq!(summary.completion_tokens, 11);
-    assert_eq!(summary.by_provider["anthropic"].requests, 1);
-    assert_eq!(
-        summary.by_endpoint["/v1/chat/completions|claude-sonnet-4-5|anthropic"].requests,
-        1
-    );
 }
 
 #[test]

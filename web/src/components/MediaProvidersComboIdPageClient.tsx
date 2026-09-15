@@ -50,7 +50,6 @@ export default function MediaProvidersComboIdPageClient() {
   const [providers, setProviders] = useState<string[]>([]);
   const [roundRobin, setRoundRobin] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
-  const [logs, setLogs] = useState<string[]>([]);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{
     json?: string;
@@ -72,10 +71,9 @@ export default function MediaProvidersComboIdPageClient() {
   const fetchAll = async () => {
     if (!id) return;
     try {
-      const [comboRes, settingsRes, logsRes, keysRes, connsRes, aliasesRes] = await Promise.all([
+      const [comboRes, settingsRes, keysRes, connsRes, aliasesRes] = await Promise.all([
         fetch(`/api/combos/${id}`, { cache: "no-store" }),
         fetch("/api/settings", { cache: "no-store" }),
-        fetch("/api/usage/logs", { cache: "no-store" }),
         fetch("/api/keys", { cache: "no-store" }),
         fetch("/api/providers", { cache: "no-store" }),
         fetch("/api/models/alias", { cache: "no-store" }),
@@ -93,8 +91,6 @@ export default function MediaProvidersComboIdPageClient() {
       setProviders(c.models || []);
       const s = settingsRes.ok ? await settingsRes.json() : {};
       setRoundRobin(s.comboStrategies?.[c.name]?.fallbackStrategy === "round-robin");
-      const allLogs = logsRes.ok ? await logsRes.json() : [];
-      setLogs(allLogs.filter((l: any) => typeof l === "string" && l.includes(c.name)).slice(0, 50));
     } catch { /* noop */ }
     setLoading(false);
   };
@@ -389,17 +385,6 @@ export default function MediaProvidersComboIdPageClient() {
           )}
         </Card>
       )}
-
-      <Card>
-        <h2 className="text-lg font-semibold mb-3">Usage Logs</h2>
-        {logs.length === 0 ? (
-          <p className="text-xs text-text-muted italic">No usage yet.</p>
-        ) : (
-          <pre className="text-[11px] font-mono bg-black/[0.03] dark:bg-white/[0.03] p-3 rounded-mini-lg overflow-auto max-h-[400px] whitespace-pre-wrap">
-            {logs.join("\n")}
-          </pre>
-        )}
-      </Card>
 
       <ModelSelectModal
         isOpen={showPicker}

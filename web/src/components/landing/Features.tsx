@@ -53,18 +53,6 @@ const FEATURES: Feature[] = [
     }
   },
   {
-    icon: "monitoring",
-    title: "Usage Tracking",
-    desc: "Detailed analytics and cost monitoring across all models.",
-    colors: {
-      border: "hover:border-purple-500/50",
-      bg: "hover:bg-purple-500/5",
-      iconBg: "bg-purple-500/10",
-      iconText: "text-purple-500",
-      titleHover: "group-hover:text-purple-400"
-    }
-  },
-  {
     icon: "key",
     title: "OAuth & API Keys",
     desc: "Securely manage credentials in one vault.",
@@ -145,4 +133,3 @@ export default function Features() {
     </section>
   );
 }
-

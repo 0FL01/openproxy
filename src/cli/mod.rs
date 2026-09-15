@@ -35,7 +35,6 @@ pub mod provider_ext;
 pub mod provider_models;
 pub mod provider_node;
 pub mod provider_oauth;
-pub mod quota;
 pub mod runtime;
 pub mod schema;
 pub mod server;
@@ -43,7 +42,6 @@ pub mod settings;
 pub mod sync;
 pub mod tool;
 pub mod translator;
-pub mod usage;
 
 #[cfg(test)]
 pub(crate) mod test_lock {
@@ -253,20 +251,10 @@ pub enum Command {
         #[command(subcommand)]
         cmd: AuthCmd,
     },
-    /// Runtime usage statistics (talks to /api/usage/*).
-    Usage {
-        #[command(subcommand)]
-        cmd: usage::UsageCmd,
-    },
     /// Observability log buffer (talks to /api/observability/*).
     Logs {
         #[command(subcommand)]
         cmd: logs::LogsCmd,
-    },
-    /// Per-provider quota counters and reset.
-    Quota {
-        #[command(subcommand)]
-        cmd: quota::QuotaCmd,
     },
     /// Lightweight chat client against the running proxy.
     Chat {
@@ -718,25 +706,9 @@ impl Cli {
                             .map(|_| ()),
                     }
                 }
-                Command::Usage { cmd } => {
-                    let resolved = config::ResolvedConfig::resolve(overrides)?;
-                    let exit = rt.block_on(usage::run(cmd, &resolved, ctx))?;
-                    if exit != 0 {
-                        std::process::exit(exit);
-                    }
-                    Ok(())
-                }
                 Command::Logs { cmd } => {
                     let resolved = config::ResolvedConfig::resolve(overrides)?;
                     let exit = rt.block_on(logs::run(cmd, &resolved, ctx))?;
-                    if exit != 0 {
-                        std::process::exit(exit);
-                    }
-                    Ok(())
-                }
-                Command::Quota { cmd } => {
-                    let resolved = config::ResolvedConfig::resolve(overrides)?;
-                    let exit = rt.block_on(quota::run(cmd, &resolved, ctx))?;
                     if exit != 0 {
                         std::process::exit(exit);
                     }
@@ -1186,7 +1158,6 @@ pub async fn run_key(cmd: KeyCmd, db: &Db, ctx: output::OutputCtx) -> anyhow::Re
                 machine_id: None,
                 is_active: Some(true),
                 created_at: Some(chrono::Utc::now().to_rfc3339()),
-                monthly_budget_usd: None,
                 extra: std::collections::BTreeMap::new(),
             };
 

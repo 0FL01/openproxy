@@ -21,7 +21,6 @@ fn active_key() -> ApiKey {
         is_active: Some(true),
         created_at: None,
         extra: BTreeMap::new(),
-        monthly_budget_usd: None,
     }
 }
 
@@ -77,7 +76,6 @@ async fn get_settings_requires_auth_and_redacts_password() {
 
     assert_eq!(json["hasPassword"], true);
     assert_eq!(json["requireApiKey"], true);
-    assert_eq!(json["enableRequestLogs"], false);
     assert_eq!(json["enableTranslator"], false);
     assert_eq!(json["providerContextLimits"]["opencode-zen"], 500000);
     assert_eq!(json["providerContextLimits"]["opencode-go"], 500000);

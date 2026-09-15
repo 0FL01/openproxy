@@ -10,4 +10,3 @@ pub mod kv_repo;
 pub mod node_repo;
 pub mod pool_repo;
 pub mod request_repo;
-pub mod usage_repo;

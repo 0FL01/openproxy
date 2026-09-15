@@ -22,7 +22,6 @@ async fn build_test_app() -> axum::Router {
             is_active: Some(true),
             created_at: None,
             extra: Default::default(),
-            monthly_budget_usd: None,
         }];
         state.settings.require_login = false;
     })
@@ -101,26 +100,4 @@ async fn settings_proxy_test_route_rejects_missing_proxy_url() {
         json,
         serde_json::json!({ "ok": false, "error": "proxyUrl is required" })
     );
-}
-
-#[tokio::test]
-async fn usage_logs_route_returns_array_payload() {
-    let app = build_test_app().await;
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/api/usage/logs")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json, serde_json::json!([]));
 }

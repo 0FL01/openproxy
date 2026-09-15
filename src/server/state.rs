@@ -11,14 +11,12 @@ use crate::core::executor::ClientPool;
 use crate::core::health::{health_registry, HealthRegistry};
 use crate::core::mitm::server::MitmProxyHandle;
 use crate::core::model::models_dev::ModelsDevCatalog;
-use crate::core::usage::UsageTracker;
 use crate::db::Db;
 use crate::oauth::pending::PendingFlowStore;
 use crate::server::api::oauth::{CodexProxyState, XaiProxyState, ZedProxyState};
 use crate::server::auth::login_limiter::LoginLimiter;
 use crate::server::codex_catalog::CodexModelCatalog;
 use crate::server::console_logs::{shared_console_log_buffer, ConsoleLogBuffer};
-use crate::server::usage_live::UsageLiveState;
 
 /// Session info stored server-side
 #[derive(Debug, Clone)]
@@ -36,7 +34,6 @@ pub struct AppState {
     pub pending_flows: PendingFlowStore,
     pub account_registry: Arc<AccountRegistry>,
     pub console_logs: Arc<ConsoleLogBuffer>,
-    pub usage_live: Arc<UsageLiveState>,
     pub sessions: Arc<RwLock<HashMap<String, SessionInfo>>>,
     pub codex_proxy: Arc<CodexProxyState>,
     pub xai_proxy: Arc<XaiProxyState>,
@@ -106,7 +103,6 @@ impl AppState {
             pending_flows: PendingFlowStore::new(),
             account_registry: Arc::new(AccountRegistry::default()),
             console_logs: shared_console_log_buffer(),
-            usage_live: Arc::new(UsageLiveState::new()),
             sessions: Arc::new(RwLock::new(HashMap::new())),
             codex_proxy: Arc::new(CodexProxyState::new()),
             xai_proxy: Arc::new(XaiProxyState::new()),
@@ -147,13 +143,6 @@ impl AppState {
     pub fn with_web_dir(mut self, path: Option<PathBuf>) -> Self {
         self.web_dir = path;
         self
-    }
-
-    /// Returns a UsageTracker for tracking request/response usage.
-    /// The tracker is created fresh each call to ensure it picks up
-    /// the latest pricing configuration from the database.
-    pub fn usage_tracker(&self) -> UsageTracker {
-        UsageTracker::new(self.db.clone())
     }
 
     /// Trigger graceful shutdown. Notifies all waiters and

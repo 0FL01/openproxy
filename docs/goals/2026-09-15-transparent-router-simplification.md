@@ -41,8 +41,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: “Историю usage и расчёт стоимости — убрать из обработки запросов”.
   - Acceptance: Requests no longer append to or clone an in-memory/SQLite usage history and the pricing/dashboard live-usage/export surfaces are removed. Upstream usage remains in API responses. The existing bounded structured application-request record remains the sole request journal and contains request/route/provider/model/status/duration/token metadata without prompts, full responses, or secrets.
   - Primary evidence: Repository search plus focused chat/application-log and response-translation tests.
-  - Status: pending
-  - Evidence:
+  - Status: in_progress
+  - Evidence: Request-time usage history, in-memory/SQLite usage snapshots and writers, aggregate/live APIs and dashboard, usage/quota-counter CLI commands, budget enforcement, and usage export/import are removed. The retained 30-day request journal emits only request/route/provider/model/status/duration/input/output token metadata; focused request-log and chat tests, clippy, 1,657 library tests, and the dashboard build passed. Pricing configuration and its combo ordering consumers remain for the next checkpoint.
 
 - R5: Reduce combos to explicit ordered fallback routes.
   - Source: “Combo превратить в простой маршрут, а не оркестратор моделей”.
@@ -108,16 +108,16 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 ## Current Checkpoint
 
 - Closes: R4
-- Smallest next action: Remove request-time usage-history tracking, pricing/aggregate/live-usage/export consumers, and retain the bounded application-request journal as the sole structured request record.
-- Expected evidence: Focused application-log and response-translation tests pass; upstream usage remains in responses; internal usage history writers and presentation surfaces are absent.
+- Smallest next action: Remove pricing storage/API/UI and cost/latency-based combo ordering that still consumes it, leaving combo members in explicit configured order.
+- Expected evidence: Pricing and cost-calculation symbols are absent; focused combo tests prove configured order is retained.
 - Stop or replan if: The retained request journal lacks one of the required metadata fields or contains prompts, full responses, or secrets.
 
 ## Current State
 
-- Resolved: R1-R3. Request caching, server-owned content/history/thinking policy, Codex behavioral instructions, and invented Codex reasoning effort are removed; explicit client reasoning and protocol translation remain.
-- Last relevant evidence: Focused Codex tests (67), Rust clippy, and all 1,680 library tests passed after Codex policy removal.
+- Resolved: R1-R3. R4 is in progress: internal usage history/live aggregation is removed and only the bounded metadata-only request journal remains.
+- Last relevant evidence: Dashboard build, Rust clippy, 1,657 library tests, one request-log integration test, and 12 chat integration tests passed after usage-history removal.
 - Blocker: None.
-- Next: Commit R3, then execute R4 usage/accounting removal.
+- Next: Commit the usage-history removal, then remove pricing and its automatic combo ordering consumers.
 
 ## Material Decisions
 
@@ -266,6 +266,8 @@ Tool calling при этом остаётся. Прокси должен пер�
 Для личных харнессов я бы исходил из явной настройки `base_url`, без перехвата чужих соединений.
 
 ## Checkpoint History
+
+- 2026-09-15: R4 partial — removed internal request usage history, live aggregation, usage dashboard/CLI/export, and budget accounting; retained a 30-day metadata-only request journal and provider-native quota fetching. Dashboard build, clippy, 1,657 library tests, request-log integration, and 12 chat integration tests passed. Next: remove pricing and its combo ordering consumers.
 
 - 2026-09-15: Contract frozen from the user-supplied plan. The source plan is copied above. First implementation checkpoint is the completed-response cache removal.
 - 2026-09-15: R1 passed. Removed the response cache, chat hit/fill path, state, admin stats route, dashboard card, focused cache test, and cache-only direct dependency. Provider-native prompt-cache translation remains untouched. Next is R2 request-policy removal.

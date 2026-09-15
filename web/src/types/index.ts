@@ -3,15 +3,13 @@
 // Theme types
 export type Theme = "light" | "dark" | "system";
 
-// Dashboard API key (GET /api/keys). `monthlyBudgetUsd` is the optional
-// per-key monthly spend cap in USD (free-tier budget kill-switch).
+// Dashboard API key (GET /api/keys).
 export interface ApiKey {
   id: string;
   name: string;
   key: string;
   createdAt: string;
   isActive?: boolean;
-  monthlyBudgetUsd?: number | null;
 }
 
 // Provider types

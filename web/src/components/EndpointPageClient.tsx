@@ -13,7 +13,6 @@ interface ApiKey {
   key: string;
   createdAt: string;
   isActive?: boolean;
-  monthlyBudgetUsd?: number | null;
 }
 
 interface EndpointRowProps {
@@ -45,7 +44,6 @@ export default function APIPageClient({ machineId }: APIPageClientProps) {
   const [loading, setLoading] = useState<boolean>(true);
   const [showAddModal, setShowAddModal] = useState<boolean>(false);
   const [newKeyName, setNewKeyName] = useState<string>("");
-  const [newKeyBudget, setNewKeyBudget] = useState<string>("");
   const [createdKey, setCreatedKey] = useState<string | null>(null);
 
   const [requireApiKey, setRequireApiKey] = useState<boolean>(true);
@@ -150,17 +148,11 @@ export default function APIPageClient({ machineId }: APIPageClientProps) {
   const handleCreateKey = async (): Promise<void> => {
     if (!newKeyName.trim()) return;
 
-    const budget = parseFloat(newKeyBudget);
-    const body: Record<string, unknown> = { name: newKeyName };
-    if (!Number.isNaN(budget) && budget > 0) {
-      body.monthlyBudgetUsd = budget;
-    }
-
     try {
       const res = await fetch("/api/keys", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ name: newKeyName }),
       });
       const data = await res.json();
 
@@ -168,7 +160,6 @@ export default function APIPageClient({ machineId }: APIPageClientProps) {
         setCreatedKey(data.key);
         await fetchData();
         setNewKeyName("");
-        setNewKeyBudget("");
         setShowAddModal(false);
       }
     } catch (error) {
@@ -365,9 +356,6 @@ export default function APIPageClient({ machineId }: APIPageClientProps) {
                   </div>
                   <p className="text-xs text-text-muted mt-1">
                     Created {new Date(key.createdAt).toLocaleDateString()}
-                    {typeof key.monthlyBudgetUsd === "number" && (
-                      <> · Budget ${key.monthlyBudgetUsd.toFixed(2)}/mo</>
-                    )}
                   </p>
                   {key.isActive === false && (
                     <p className="text-xs text-orange-500 mt-1">Paused</p>
@@ -406,7 +394,6 @@ export default function APIPageClient({ machineId }: APIPageClientProps) {
         onClose={() => {
           setShowAddModal(false);
           setNewKeyName("");
-          setNewKeyBudget("");
         }}
       >
         <div className="flex flex-col gap-4">
@@ -415,15 +402,6 @@ export default function APIPageClient({ machineId }: APIPageClientProps) {
             value={newKeyName}
             onChange={(e: ChangeEvent<HTMLInputElement>) => setNewKeyName(e.target.value)}
             placeholder="Production Key"
-          />
-          <Input
-            label="Monthly Budget (USD, optional)"
-            type="number"
-            min="0"
-            step="0.01"
-            value={newKeyBudget}
-            onChange={(e: ChangeEvent<HTMLInputElement>) => setNewKeyBudget(e.target.value)}
-            placeholder="e.g. 10.00"
           />
           <div className="flex gap-2">
             <Button onClick={handleCreateKey} fullWidth disabled={!newKeyName.trim()}>

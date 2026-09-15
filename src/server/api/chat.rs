@@ -376,7 +376,7 @@ async fn chat_completions_impl(
     let model_str = model_str.as_str();
     let request_log_context = authenticated_api_key
         .as_ref()
-        .map(|api_key| RequestLogContext::new(state.db.clone(), api_key, endpoint, model_str));
+        .map(|_| RequestLogContext::new(state.db.clone(), model_str));
 
     let snapshot = state.db.snapshot();
     let resolved = get_model_info(model_str, &snapshot);
@@ -1205,7 +1205,7 @@ async fn forward_with_provider_fallback(
     provider: &str,
     model: &str,
     mut request_body: Value,
-    api_key: Option<&str>,
+    _api_key: Option<&str>,
     log_context: Option<&RequestLogContext>,
     endpoint: Option<&'static str>,
     plan: &RequestPlan,
@@ -1225,13 +1225,6 @@ async fn forward_with_provider_fallback(
             .await
     } else {
         None
-    };
-
-    // Per-key monthly budget kill-switch (free-tier Feature 3): block the
-    // request with 429 before any provider dispatch when the cap is reached.
-    let budget_remaining = match crate::server::api::budget_guard::enforce_budget(state, api_key) {
-        Ok(remaining) => remaining,
-        Err(response) => return Ok(response),
     };
 
     // Extract tool name map from body (set by Claude cloaking).
@@ -1417,12 +1410,8 @@ async fn forward_with_provider_fallback(
             obj.insert("stream".into(), Value::Bool(stream));
         }
 
-        state
-            .usage_live
-            .start_request(model, provider, Some(connection.id.as_str()))
-            .await;
         let attempt_log = match log_context {
-            Some(context) => context.start_attempt(provider, model, &connection.id).await,
+            Some(context) => context.start_attempt(provider, model).await,
             None => None,
         };
 
@@ -2206,21 +2195,8 @@ async fn forward_with_provider_fallback(
                     }
                     clear_connection_error_for_model(state, &connection.id, Some(model)).await;
                     if dashboard_stream {
-                        let response = proxy_dashboard_sse_with_usage_tracking(
-                            result.response,
-                            state,
-                            provider,
-                            model,
-                            Some(connection.id.as_str()),
-                            api_key,
-                            endpoint,
-                            attempt_log,
-                        )
-                        .await;
-                        return Ok(crate::server::api::budget_guard::with_budget_header(
-                            response,
-                            budget_remaining,
-                        ));
+                        let response = proxy_dashboard_sse(result.response, attempt_log).await;
+                        return Ok(response);
                     }
                     // forceStream + client non-stream → collect SSE → JSON (9router)
                     if plan.sse_to_json {
@@ -2230,32 +2206,15 @@ async fn forward_with_provider_fallback(
                             provider,
                             model
                         );
-                        let response = proxy_sse_to_json_response(
-                            result.response,
-                            state,
-                            provider,
-                            model,
-                            Some(connection.id.as_str()),
-                            api_key,
-                            endpoint,
-                            plan,
-                            attempt_log,
-                        )
-                        .await;
-                        return Ok(crate::server::api::budget_guard::with_budget_header(
-                            response,
-                            budget_remaining,
-                        ));
+                        let response =
+                            proxy_sse_to_json_response(result.response, model, plan, attempt_log)
+                                .await;
+                        return Ok(response);
                     }
                     if !stream {
-                        let response = proxy_response_with_usage_tracking(
+                        let response = proxy_response(
                             result.response,
-                            state,
                             provider,
-                            model,
-                            Some(connection.id.as_str()),
-                            api_key,
-                            endpoint,
                             plan,
                             tool_name_map.as_ref(),
                             attempt_log,
@@ -2263,21 +2222,14 @@ async fn forward_with_provider_fallback(
                         .await;
                         let response =
                             mark_codex_web_search_injected(response, codex_web_search_injected);
-                        return Ok(crate::server::api::budget_guard::with_budget_header(
-                            response,
-                            budget_remaining,
-                        ));
+                        return Ok(response);
                     }
                     let normalize_for_dashboard =
                         endpoint == Some("/api/dashboard/chat/completions");
                     let response = proxy_response_with_pending_tracking(
                         result.response,
-                        state.clone(),
                         provider.to_string(),
                         model.to_string(),
-                        Some(connection.id.clone()),
-                        api_key,
-                        endpoint,
                         normalize_for_dashboard,
                         plan,
                         tool_name_map.as_ref(),
@@ -2287,10 +2239,7 @@ async fn forward_with_provider_fallback(
                     .await;
                     let response =
                         mark_codex_web_search_injected(response, codex_web_search_injected);
-                    return Ok(crate::server::api::budget_guard::with_budget_header(
-                        response,
-                        budget_remaining,
-                    ));
+                    return Ok(response);
                 }
 
                 // 9router parity: retryAfter may come from the Retry-After header
@@ -2301,14 +2250,10 @@ async fn forward_with_provider_fallback(
                     extract_error_message_and_retry_after(result.response).await;
                 if let Some(attempt_log) = attempt_log {
                     attempt_log
-                        .finish("error", Some(status.as_u16()), None, Some(&message))
+                        .finish("error", Some(status.as_u16()), None)
                         .await;
                 }
                 let retry_after = header_retry_after.or(body_retry_after);
-                state
-                    .usage_live
-                    .finish_request(model, provider, Some(connection.id.as_str()), true)
-                    .await;
                 let current_backoff = connection.backoff_level.unwrap_or(0);
                 let decision = check_fallback_error(status.as_u16(), &message, current_backoff);
                 let cooldown = retry_after
@@ -2436,14 +2381,8 @@ async fn forward_with_provider_fallback(
             Err(error) => {
                 let message = format!("{:?}", error);
                 if let Some(attempt_log) = attempt_log {
-                    attempt_log
-                        .finish("error", Some(error.status), None, Some(&message))
-                        .await;
+                    attempt_log.finish("error", Some(error.status), None).await;
                 }
-                state
-                    .usage_live
-                    .finish_request(model, provider, Some(connection.id.as_str()), true)
-                    .await;
                 let current_backoff = connection.backoff_level.unwrap_or(0);
                 let decision = check_fallback_error(502, &message, current_backoff);
                 let error_for_return = ComboAttemptError::new(502, message.clone());
@@ -2470,59 +2409,28 @@ async fn forward_with_provider_fallback(
     }
 }
 
-async fn proxy_dashboard_sse_with_usage_tracking(
+async fn proxy_dashboard_sse(
     response: UpstreamResponse,
-    state: &AppState,
-    provider: &str,
-    model: &str,
-    connection_id: Option<&str>,
-    api_key: Option<&str>,
-    endpoint: Option<&str>,
     attempt_log: Option<AttemptLog>,
 ) -> Response {
     let status = response.status();
     let headers = response.headers().clone();
     let (body_bytes, body_complete) = collect_upstream_response_bytes(response).await;
 
-    let token_usage = if body_complete {
-        let usage = extract_token_usage_from_bytes(&body_bytes);
-        state
-            .usage_tracker()
-            .track_request(
-                provider,
-                model,
-                usage.as_ref(),
-                connection_id,
-                api_key,
-                endpoint,
-            )
-            .await;
-        state.usage_live.notify_update();
-        usage
-    } else {
-        None
-    };
+    let token_usage = body_complete
+        .then(|| extract_token_usage_from_bytes(&body_bytes))
+        .flatten();
     if let Some(attempt_log) = attempt_log {
         if body_complete {
             attempt_log
-                .finish("success", Some(status.as_u16()), token_usage.as_ref(), None)
+                .finish("success", Some(status.as_u16()), token_usage.as_ref())
                 .await;
         } else {
             attempt_log
-                .finish(
-                    "error",
-                    Some(StatusCode::BAD_GATEWAY.as_u16()),
-                    None,
-                    Some("Upstream response body ended unexpectedly"),
-                )
+                .finish("error", Some(StatusCode::BAD_GATEWAY.as_u16()), None)
                 .await;
         }
     }
-
-    state
-        .usage_live
-        .finish_request(model, provider, connection_id, false)
-        .await;
 
     let text = extract_dashboard_assistant_text_from_bytes(&body_bytes);
     let sse_body = build_dashboard_sse_body(text.as_deref(), token_usage.as_ref());
@@ -2970,12 +2878,7 @@ async fn clear_connection_error_for_model(
 /// forceStream SSE→JSON: collect upstream SSE and collapse to chat.completion JSON.
 async fn proxy_sse_to_json_response(
     response: UpstreamResponse,
-    state: &AppState,
-    provider: &str,
     model: &str,
-    connection_id: Option<&str>,
-    api_key: Option<&str>,
-    endpoint: Option<&str>,
     plan: &RequestPlan,
     attempt_log: Option<AttemptLog>,
 ) -> Response {
@@ -2999,44 +2902,20 @@ async fn proxy_sse_to_json_response(
 
     let out = Bytes::from(serde_json::to_vec(&json_body).unwrap_or_default());
 
-    let usage = if body_complete {
-        let usage = extract_token_usage_from_bytes(&out);
-        state
-            .usage_tracker()
-            .track_request(
-                provider,
-                model,
-                usage.as_ref(),
-                connection_id,
-                api_key,
-                endpoint,
-            )
-            .await;
-        usage
-    } else {
-        None
-    };
+    let usage = body_complete
+        .then(|| extract_token_usage_from_bytes(&out))
+        .flatten();
     if let Some(attempt_log) = attempt_log {
         if body_complete {
             attempt_log
-                .finish("success", Some(status.as_u16()), usage.as_ref(), None)
+                .finish("success", Some(status.as_u16()), usage.as_ref())
                 .await;
         } else {
             attempt_log
-                .finish(
-                    "error",
-                    Some(StatusCode::BAD_GATEWAY.as_u16()),
-                    None,
-                    Some("Upstream response body ended unexpectedly"),
-                )
+                .finish("error", Some(StatusCode::BAD_GATEWAY.as_u16()), None)
                 .await;
         }
     }
-    state
-        .usage_live
-        .finish_request(model, provider, connection_id, false)
-        .await;
-
     let resp = Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, "application/json")
@@ -3052,14 +2931,9 @@ async fn proxy_sse_to_json_response(
     with_cors_response(resp)
 }
 
-async fn proxy_response_with_usage_tracking(
+async fn proxy_response(
     response: UpstreamResponse,
-    state: &AppState,
     provider: &str,
-    model: &str,
-    connection_id: Option<&str>,
-    api_key: Option<&str>,
-    endpoint: Option<&str>,
     plan: &RequestPlan,
     tool_name_map: Option<&std::collections::BTreeMap<String, String>>,
     attempt_log: Option<AttemptLog>,
@@ -3071,7 +2945,7 @@ async fn proxy_response_with_usage_tracking(
     // 9router parity (open-sse/handlers/chatCore/nonStreamingHandler.js +
     // open-sse/shared/clineEnvelope.js unwrapClineEnvelope): unwrap before any
     // consumer reads choices/usage so non-stream clients get a bare OpenAI
-    // body and usage tracking sees data.usage. No-op unless the provider opts
+    // body. No-op unless the provider opts
     // in via transport.quirks.clineEnvelope (cline/clinepass).
     let unenveloped_body = unwrap_cline_envelope(&body_bytes, provider);
 
@@ -3100,19 +2974,6 @@ async fn proxy_response_with_usage_tracking(
         .flatten();
 
     let final_body = if body_complete {
-        state
-            .usage_tracker()
-            .track_request(
-                provider,
-                model,
-                token_usage.as_ref(),
-                connection_id,
-                api_key,
-                endpoint,
-            )
-            .await;
-        state.usage_live.notify_update();
-
         // 9router parity: translate non-streaming response body when source
         // and target formats differ (handleNonStreamingResponse).
         // For Responses API format (Codex), the raw body is a response.completed JSON,
@@ -3181,16 +3042,11 @@ async fn proxy_response_with_usage_tracking(
     if let Some(attempt_log) = attempt_log {
         if body_complete {
             attempt_log
-                .finish("success", Some(status.as_u16()), token_usage.as_ref(), None)
+                .finish("success", Some(status.as_u16()), token_usage.as_ref())
                 .await;
         } else {
             attempt_log
-                .finish(
-                    "error",
-                    Some(StatusCode::BAD_GATEWAY.as_u16()),
-                    None,
-                    Some("Upstream response body ended unexpectedly"),
-                )
+                .finish("error", Some(StatusCode::BAD_GATEWAY.as_u16()), None)
                 .await;
         }
     }
@@ -3289,21 +3145,14 @@ fn translate_codex_non_streaming(body: &[u8]) -> Option<Bytes> {
 
 async fn proxy_response_with_pending_tracking(
     response: UpstreamResponse,
-    state: AppState,
     provider: String,
     model: String,
-    connection_id: Option<String>,
-    api_key: Option<&str>,
-    endpoint: Option<&'static str>,
     normalize_for_dashboard: bool,
     plan: &RequestPlan,
     tool_name_map: Option<&std::collections::BTreeMap<String, String>>,
     custom_tool_names: Option<String>,
     mut attempt_log: Option<AttemptLog>,
 ) -> Response {
-    // Capture an owned copy of api_key for usage recording inside the stream
-    // (the SSE stream requires 'static lifetimes; &str borrows can't escape).
-    let api_key = api_key.map(|s| s.to_string());
     // Extract formats before stream closure to avoid lifetime issues
     let needs_stream_translation = plan.needs_translation();
     let stream_source_format = plan.source_format;
@@ -3345,12 +3194,7 @@ async fn proxy_response_with_pending_tracking(
         );
         if let Some(attempt_log) = attempt_log.take() {
             attempt_log
-                .finish(
-                    "error",
-                    Some(StatusCode::BAD_GATEWAY.as_u16()),
-                    None,
-                    Some("Upstream returned a non-streaming response to a streaming request"),
-                )
+                .finish("error", Some(StatusCode::BAD_GATEWAY.as_u16()), None)
                 .await;
         }
         let err = json!({
@@ -3393,11 +3237,8 @@ async fn proxy_response_with_pending_tracking(
         };
     let body = match response {
         UpstreamResponse::Reqwest(response) => {
-            let state = state.clone();
             let provider = provider.clone();
             let model = model.clone();
-            let connection_id = connection_id.clone();
-            let api_key = api_key.clone();
             let mut transformer = transformer;
             let mut pending_text = String::new();
             let custom_tool_names = custom_tool_names.clone();
@@ -3436,15 +3277,10 @@ async fn proxy_response_with_pending_tracking(
                                 model = %model,
                                 "SSE stalled, closing stream"
                             );
-                            let usage = record_streaming_usage(&state, &provider, &model,
-                                connection_id.as_deref(), api_key.as_deref(), endpoint, usage_capture.usage.as_ref()).await;
+                            let usage = usage_capture.usage.clone();
                             if let Some(log) = attempt_log.take() {
-                                log.finish("error", Some(502), usage.as_ref(), Some("Upstream SSE stream stalled")).await;
+                                log.finish("error", Some(502), usage.as_ref()).await;
                             }
-                            state
-                                .usage_live
-                                .finish_request(&model, &provider, connection_id.as_deref(), true)
-                                .await;
                             yield Ok::<Bytes, std::io::Error>(Bytes::from(write_streaming_error(
                                 "Upstream SSE stream stalled",
                                 "server_error",
@@ -3471,15 +3307,10 @@ async fn proxy_response_with_pending_tracking(
                                     // (Combo fallback itself happens in the
                                     // executor's pre-stream peek; this flag is
                                     // the backstop for already-open streams.)
-                                    let usage = record_streaming_usage(&state, &provider, &model,
-                                        connection_id.as_deref(), api_key.as_deref(), endpoint, usage_capture.usage.as_ref()).await;
+                                    let usage = usage_capture.usage.clone();
                                     if let Some(log) = attempt_log.take() {
-                                        log.finish("error", Some(403), usage.as_ref(), Some("Provider billing block")).await;
+                                        log.finish("error", Some(403), usage.as_ref()).await;
                                     }
-                                    state
-                                        .usage_live
-                                        .finish_request(&model, &provider, connection_id.as_deref(), true)
-                                        .await;
                                     return;
                                 }
                             } else if let Some(transformer) = transformer.as_mut() {
@@ -3520,29 +3351,19 @@ async fn proxy_response_with_pending_tracking(
                                         }
                                     }
                                 }
-                                let usage = record_streaming_usage(&state, &provider, &model,
-                                    connection_id.as_deref(), api_key.as_deref(), endpoint, usage_capture.usage.as_ref()).await;
+                                let usage = usage_capture.usage.clone();
                                 if let Some(log) = attempt_log.take() {
-                                    log.finish("success", Some(status.as_u16()), usage.as_ref(), None).await;
+                                    log.finish("success", Some(status.as_u16()), usage.as_ref()).await;
                                 }
-                                state
-                                    .usage_live
-                                    .finish_request(&model, &provider, connection_id.as_deref(), false)
-                                    .await;
                                 return;
                             }
                         }
                         Ok(Ok(None)) => break,
                         Ok(Err(_)) => {
-                            let usage = record_streaming_usage(&state, &provider, &model,
-                                connection_id.as_deref(), api_key.as_deref(), endpoint, usage_capture.usage.as_ref()).await;
+                            let usage = usage_capture.usage.clone();
                             if let Some(log) = attempt_log.take() {
-                                log.finish("error", Some(502), usage.as_ref(), Some("Upstream stream error")).await;
+                                log.finish("error", Some(502), usage.as_ref()).await;
                             }
-                            state
-                                .usage_live
-                                .finish_request(&model, &provider, connection_id.as_deref(), true)
-                                .await;
                             yield Ok::<Bytes, std::io::Error>(Bytes::from(write_streaming_error(
                                 "Upstream stream error",
                                 "server_error",
@@ -3579,25 +3400,17 @@ async fn proxy_response_with_pending_tracking(
                         }
                     }
                 }
-                let usage = record_streaming_usage(&state, &provider, &model,
-                    connection_id.as_deref(), api_key.as_deref(), endpoint, usage_capture.usage.as_ref()).await;
+                let usage = usage_capture.usage.clone();
                 if let Some(log) = attempt_log.take() {
-                    log.finish("success", Some(status.as_u16()), usage.as_ref(), None).await;
+                    log.finish("success", Some(status.as_u16()), usage.as_ref()).await;
                 }
-                state
-                    .usage_live
-                    .finish_request(&model, &provider, connection_id.as_deref(), false)
-                    .await;
             };
             Body::from_stream(stream)
         }
         UpstreamResponse::Hyper(response) => {
             let (_, mut body) = response.into_parts();
-            let state = state.clone();
             let provider = provider.clone();
             let model = model.clone();
-            let connection_id = connection_id.clone();
-            let api_key = api_key.clone();
             let mut transformer = transformer;
             let mut pending_text = String::new();
             let custom_tool_names2 = custom_tool_names.clone();
@@ -3629,15 +3442,10 @@ async fn proxy_response_with_pending_tracking(
                                 model = %model,
                                 "SSE stalled, closing stream"
                             );
-                            let usage = record_streaming_usage(&state, &provider, &model,
-                                connection_id.as_deref(), api_key.as_deref(), endpoint, usage_capture.usage.as_ref()).await;
+                            let usage = usage_capture.usage.clone();
                             if let Some(log) = attempt_log.take() {
-                                log.finish("error", Some(502), usage.as_ref(), Some("Upstream SSE stream stalled")).await;
+                                log.finish("error", Some(502), usage.as_ref()).await;
                             }
-                            state
-                                .usage_live
-                                .finish_request(&model, &provider, connection_id.as_deref(), true)
-                                .await;
                             yield Ok::<Bytes, std::io::Error>(Bytes::from(write_streaming_error(
                                 "Upstream SSE stream stalled",
                                 "server_error",
@@ -3680,15 +3488,10 @@ async fn proxy_response_with_pending_tracking(
                             }
                         }
                         Err(_) => {
-                            let usage = record_streaming_usage(&state, &provider, &model,
-                                connection_id.as_deref(), api_key.as_deref(), endpoint, usage_capture.usage.as_ref()).await;
+                            let usage = usage_capture.usage.clone();
                             if let Some(log) = attempt_log.take() {
-                                log.finish("error", Some(502), usage.as_ref(), Some("Upstream stream error")).await;
+                                log.finish("error", Some(502), usage.as_ref()).await;
                             }
-                            state
-                                .usage_live
-                                .finish_request(&model, &provider, connection_id.as_deref(), true)
-                                .await;
                             yield Ok::<Bytes, std::io::Error>(Bytes::from(write_streaming_error(
                                 "Upstream stream error",
                                 "server_error",
@@ -3717,15 +3520,10 @@ async fn proxy_response_with_pending_tracking(
                         }
                     }
                 }
-                let usage = record_streaming_usage(&state, &provider, &model,
-                    connection_id.as_deref(), api_key.as_deref(), endpoint, usage_capture.usage.as_ref()).await;
+                let usage = usage_capture.usage.clone();
                 if let Some(log) = attempt_log.take() {
-                    log.finish("success", Some(status.as_u16()), usage.as_ref(), None).await;
+                    log.finish("success", Some(status.as_u16()), usage.as_ref()).await;
                 }
-                state
-                    .usage_live
-                    .finish_request(&model, &provider, connection_id.as_deref(), false)
-                    .await;
             };
             Body::from_stream(stream)
         }
@@ -3747,26 +3545,6 @@ async fn proxy_response_with_pending_tracking(
         .headers_mut()
         .insert("Content-Type", "text/event-stream".parse().unwrap());
     response
-}
-
-/// Record usage for a streaming SSE request at stream end.
-///
-/// Streaming SSE responses without a `usage` field are recorded with
-/// `tokens = None`, while providers that emit terminal usage retain it here.
-async fn record_streaming_usage(
-    state: &AppState,
-    provider: &str,
-    model: &str,
-    connection_id: Option<&str>,
-    api_key: Option<&str>,
-    endpoint: Option<&'static str>,
-    usage: Option<&TokenUsage>,
-) -> Option<TokenUsage> {
-    state
-        .usage_tracker()
-        .track_request(provider, model, usage, connection_id, api_key, endpoint)
-        .await;
-    usage.cloned()
 }
 
 struct StreamingUsageCapture {

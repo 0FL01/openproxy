@@ -208,7 +208,6 @@ async fn e2e_export_import_roundtrip() {
             name: "test".into(),
             is_active: Some(true),
             created_at: Some("2026-01-01T00:00:00Z".into()),
-            monthly_budget_usd: None,
             ..Default::default()
         });
     })
@@ -254,40 +253,6 @@ async fn e2e_export_import_roundtrip() {
 }
 
 /// Usage DB writes persist via dual-write.
-#[tokio::test]
-async fn e2e_usage_persists_to_sqlite() {
-    let _env_guard = ENV_MUTEX.lock().await;
-    let tmp = TempDir::new().unwrap();
-    std::env::set_var("DATA_DIR", tmp.path());
-
-    let db = openproxy::db::Db::load().await.unwrap();
-    db.update_usage(|usage| {
-        usage.history.push(openproxy::types::UsageEntry {
-            model: "gpt-4o".into(),
-            provider: Some("openai".into()),
-            timestamp: Some("2026-01-01T00:00:00Z".into()),
-            cost: Some(0.01),
-            ..Default::default()
-        });
-    })
-    .await
-    .unwrap();
-
-    // Reload and verify
-    let db2 = openproxy::db::Db::load().await.unwrap();
-    let usage = db2.usage_snapshot();
-    assert_eq!(usage.history.len(), 1);
-    assert_eq!(usage.history[0].model, "gpt-4o");
-
-    // SQLite has it too
-    let sq = db2.sqlite_handle();
-    let count: i64 = sq
-        .with_conn(|c| c.query_row("SELECT COUNT(*) FROM usageHistory", [], |r| r.get(0)))
-        .unwrap();
-    assert_eq!(count, 1);
-}
-
-/// Concurrent stress: 50 tasks × 20 inserts = 1000 rows. Verifies WAL.
 #[tokio::test]
 async fn e2e_high_concurrency_stress() {
     let _env_guard = ENV_MUTEX.lock().await;

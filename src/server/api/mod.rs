@@ -1,7 +1,6 @@
 pub mod a2a;
 pub mod admin_items;
 mod auth;
-pub mod budget_guard;
 pub mod chat;
 pub mod chat_search;
 pub mod cli_tools;
@@ -318,6 +317,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .merge(provider_nodes::routes())
         .merge(providers::routes())
         .merge(usage::routes())
+        .merge(crate::server::application_logs::routes())
         .merge(admin_items::routes())
         .merge(pricing::routes())
         .merge(tags::routes())
@@ -404,7 +404,6 @@ async fn v1_root() -> Response {
             "/v1/search",
             "/v1/web/fetch",
             "/v1/models",
-            "/v1/usage",
         ]
     }))
     .into_response()
@@ -748,10 +747,6 @@ pub(crate) fn safe_settings_payload_with_db_path(
     if let Some(fields) = value.as_object_mut() {
         fields.remove("password");
         fields.retain(|key, _| !key.to_ascii_lowercase().contains("secret"));
-        fields.insert(
-            "enableRequestLogs".to_string(),
-            Value::Bool(std::env::var("ENABLE_REQUEST_LOGS").ok().as_deref() == Some("true")),
-        );
         fields.insert(
             "enableTranslator".to_string(),
             Value::Bool(std::env::var("ENABLE_TRANSLATOR").ok().as_deref() == Some("true")),
@@ -1573,8 +1568,6 @@ async fn list_keys_api(State(state): State<AppState>, headers: HeaderMap) -> Res
 #[derive(Debug, Deserialize)]
 struct CreateKeyRequest {
     name: Option<String>,
-    #[serde(default)]
-    monthly_budget_usd: Option<f64>,
 }
 
 async fn create_key_api(
@@ -1618,7 +1611,6 @@ async fn create_key_api(
         machine_id: Some(machine_id),
         is_active: Some(true),
         created_at: Some(now),
-        monthly_budget_usd: req.monthly_budget_usd,
         extra: std::collections::BTreeMap::new(),
     };
 
@@ -1654,7 +1646,6 @@ async fn create_key_api(
 struct UpdateKeyRequest {
     name: Option<String>,
     is_active: Option<bool>,
-    monthly_budget_usd: Option<f64>,
 }
 
 async fn update_key_api(
@@ -1687,9 +1678,6 @@ async fn update_key_api(
                 }
                 if let Some(is_active) = req.is_active {
                     key.is_active = Some(is_active);
-                }
-                if req.monthly_budget_usd.is_some() {
-                    key.monthly_budget_usd = req.monthly_budget_usd;
                 }
             }
         })

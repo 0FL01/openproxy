@@ -3,7 +3,7 @@
 //! The previous write path (`Db::update` → `import_db`) deleted and re-inserted
 //! every row of 11 tables on *every* config change — even a single settings
 //! toggle. That churned the WAL, rewrote unchanged rows, and wiped the
-//! append-only `usageHistory`/`usageDaily`/`requestDetails` tables on every
+//! append-only `requestDetails` table on every
 //! config change even though the in-memory `AppDb` payload never contains
 //! usage data.
 //!
@@ -12,7 +12,7 @@
 //! and writes only those, inside a single transaction (atomic — rollback on
 //! error, same guarantee as `import_db`). Unchanged rows are never written.
 //!
-//! `usageHistory` / `usageDaily` / `requestDetails` are never touched here —
+//! `requestDetails` is never touched here —
 //! they are append-only observability tables handled by the repo layer.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -28,7 +28,7 @@ use super::repo::{api_key_repo, combo_repo, connection_repo, kv_repo, node_repo,
 type DisabledMap = BTreeMap<String, Vec<String>>;
 
 /// Apply the difference between two `AppDb` snapshots to SQLite in one
-/// transaction. Never touches `usageHistory` / `usageDaily` / `requestDetails`.
+/// transaction. Never touches `requestDetails`.
 pub fn apply_app_db_diff(conn: &Connection, old: &AppDb, new: &AppDb) -> rusqlite::Result<()> {
     if old == new {
         return Ok(());
@@ -562,24 +562,22 @@ mod tests {
     }
 
     #[test]
-    fn usage_tables_untouched() {
+    fn request_logs_untouched() {
         let db = open();
-        // Seed a usage history row directly.
         db.with_conn(|c| {
             c.execute(
-                "INSERT INTO usageHistory(timestamp, provider, model) VALUES('2026-01-01','openai','gpt-4o')",
+                "INSERT INTO requestDetails(id, timestamp, status, data) VALUES('r1','2026-01-01','success','{}')",
                 [],
             )
         })
         .unwrap();
 
-        // A settings-only update must NOT wipe usageHistory.
         let mut old = AppDb::default();
         let mut new = AppDb::default();
         new.settings.cloud_enabled = true;
         db.with_transaction(|tx| apply_app_db_diff(tx, &old, &new))
             .unwrap();
-        assert_eq!(count_rows(&db, "usageHistory"), 1);
+        assert_eq!(count_rows(&db, "requestDetails"), 1);
     }
 
     #[test]

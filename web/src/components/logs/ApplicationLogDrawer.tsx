@@ -1,6 +1,5 @@
 import Drawer from "@/shared/components/Drawer";
 import type { ApplicationLog } from "./types";
-import { inputTokens, outputTokens } from "./types";
 
 interface Props {
   log: ApplicationLog | null;
@@ -24,34 +23,21 @@ export default function ApplicationLogDrawer({ log, onClose }: Props) {
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Field label="Status" value={log.status.toUpperCase()} />
             <Field label="HTTP status" value={log.statusCode} />
-            <Field label="Request ID" value={log.id} />
-            <Field label="Correlation ID" value={log.correlationId} />
-            <Field label="API key" value={log.apiKeyName} />
-            <Field label="Endpoint" value={log.endpoint} />
-            <Field label="Requested model" value={log.requestedModel} />
-            <Field label="Actual model" value={log.model} />
+            <Field label="Request ID" value={log.requestId} />
+            <Field label="Route" value={log.route} />
+            <Field label="Model" value={log.model} />
             <Field label="Provider" value={log.provider} />
-            <Field label="Account" value={log.account ?? log.connectionId} />
             <Field label="Started" value={new Date(log.timestamp).toLocaleString()} />
-            <Field label="Duration" value={`${log.latency?.total ?? 0} ms`} />
+            <Field label="Duration" value={`${log.durationMs} ms`} />
           </div>
 
           <div className="rounded-lg border border-border bg-bg-subtle p-4">
-            <h3 className="mb-3 text-sm font-semibold text-text-main">Tokens and cost</h3>
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-              <Field label="Input" value={inputTokens(log.tokens).toLocaleString()} />
-              <Field label="Output" value={outputTokens(log.tokens).toLocaleString()} />
-              <Field label="Cache read" value={(log.tokens?.cache_read_input_tokens ?? 0).toLocaleString()} />
-              <Field label="Cost" value={`$${(log.cost ?? 0).toFixed(6)}`} />
+            <h3 className="mb-3 text-sm font-semibold text-text-main">Tokens</h3>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Input" value={(log.inputTokens ?? 0).toLocaleString()} />
+              <Field label="Output" value={(log.outputTokens ?? 0).toLocaleString()} />
             </div>
           </div>
-
-          {log.error && (
-            <div className="rounded-lg border border-error/25 bg-error/5 p-4">
-              <h3 className="mb-2 text-sm font-semibold text-error">Error</h3>
-              <pre className="whitespace-pre-wrap break-words text-xs text-text-main">{log.error}</pre>
-            </div>
-          )}
         </div>
       )}
     </Drawer>

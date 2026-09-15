@@ -4,69 +4,48 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use axum::extract::{Query, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::{routing, Json, Router};
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::db::sqlite::repo::request_repo::{self, NewRequestDetail};
 use crate::db::Db;
-use crate::types::{ApiKey, TokenUsage};
-
-const MAX_ERROR_CHARS: usize = 4_000;
+use crate::server::state::AppState;
+use crate::types::TokenUsage;
 
 #[derive(Clone)]
 pub struct RequestLogContext {
     db: Arc<Db>,
-    correlation_id: String,
-    api_key_id: String,
-    api_key_name: String,
-    endpoint: Option<String>,
-    requested_model: String,
+    route: String,
 }
 
 impl RequestLogContext {
-    pub fn new(
-        db: Arc<Db>,
-        api_key: &ApiKey,
-        endpoint: Option<&str>,
-        requested_model: &str,
-    ) -> Self {
+    pub fn new(db: Arc<Db>, route: &str) -> Self {
         Self {
             db,
-            correlation_id: uuid::Uuid::new_v4().to_string(),
-            api_key_id: api_key.id.clone(),
-            api_key_name: api_key.name.clone(),
-            endpoint: endpoint.map(str::to_string),
-            requested_model: requested_model.to_string(),
+            route: route.to_string(),
         }
     }
 
-    pub async fn start_attempt(
-        &self,
-        provider: &str,
-        model: &str,
-        connection_id: &str,
-    ) -> Option<AttemptLog> {
+    pub async fn start_attempt(&self, provider: &str, model: &str) -> Option<AttemptLog> {
         let id = uuid::Uuid::new_v4().to_string();
         let timestamp = Utc::now().to_rfc3339();
         let data = json!({
-            "method": "POST",
-            "endpoint": self.endpoint,
-            "requestedModel": self.requested_model,
+            "route": self.route,
             "statusCode": Value::Null,
             "durationMs": 0,
-            "tokens": Value::Null,
-            "cost": 0.0,
-            "error": Value::Null,
+            "inputTokens": Value::Null,
+            "outputTokens": Value::Null,
         });
         let sqlite = self.db.sqlite.clone();
         let record_id = id.clone();
         let record_timestamp = timestamp.clone();
         let record_provider = provider.to_string();
         let record_model = model.to_string();
-        let record_connection = connection_id.to_string();
-        let api_key_id = self.api_key_id.clone();
-        let api_key_name = self.api_key_name.clone();
-        let correlation_id = self.correlation_id.clone();
         let record_data = data.clone();
         let inserted = tokio::task::spawn_blocking(move || {
             sqlite.with_conn(|conn| {
@@ -77,11 +56,11 @@ impl RequestLogContext {
                         timestamp: &record_timestamp,
                         provider: Some(&record_provider),
                         model: Some(&record_model),
-                        connection_id: Some(&record_connection),
+                        connection_id: None,
                         status: "pending",
-                        api_key_id: Some(&api_key_id),
-                        api_key_name: Some(&api_key_name),
-                        correlation_id: Some(&correlation_id),
+                        api_key_id: None,
+                        api_key_name: None,
+                        correlation_id: None,
                         data: &record_data,
                     },
                 )
@@ -93,8 +72,6 @@ impl RequestLogContext {
             Ok(Ok(())) => Some(AttemptLog {
                 db: self.db.clone(),
                 id,
-                provider: provider.to_string(),
-                model: model.to_string(),
                 started: Instant::now(),
                 data,
                 finished: Arc::new(AtomicBool::new(false)),
@@ -114,8 +91,6 @@ impl RequestLogContext {
 pub struct AttemptLog {
     db: Arc<Db>,
     id: String,
-    provider: String,
-    model: String,
     started: Instant,
     data: Value,
     finished: Arc<AtomicBool>,
@@ -127,38 +102,29 @@ impl AttemptLog {
         status: &'static str,
         status_code: Option<u16>,
         tokens: Option<&TokenUsage>,
-        error: Option<&str>,
     ) {
         if self.finished.load(Ordering::Acquire) {
             return;
         }
-        let data = self.finished_data(status_code, tokens, error);
+        let data = self.finished_data(status_code, tokens);
         persist_finish(self.db.clone(), self.id.clone(), status, data).await;
         self.finished.store(true, Ordering::Release);
     }
 
-    fn finished_data(
-        &self,
-        status_code: Option<u16>,
-        tokens: Option<&TokenUsage>,
-        error: Option<&str>,
-    ) -> Value {
+    fn finished_data(&self, status_code: Option<u16>, tokens: Option<&TokenUsage>) -> Value {
         let mut data = self.data.as_object().cloned().unwrap_or_else(Map::new);
         data.insert("statusCode".into(), json!(status_code));
         data.insert(
             "durationMs".into(),
             json!(self.started.elapsed().as_millis()),
         );
-        data.insert("tokens".into(), json!(tokens));
         data.insert(
-            "cost".into(),
-            json!(request_cost(&self.db, &self.provider, &self.model, tokens)),
+            "inputTokens".into(),
+            json!(tokens.and_then(|tokens| tokens.prompt_tokens.or(tokens.input_tokens))),
         );
         data.insert(
-            "error".into(),
-            error
-                .map(|value| Value::String(value.chars().take(MAX_ERROR_CHARS).collect()))
-                .unwrap_or(Value::Null),
+            "outputTokens".into(),
+            json!(tokens.and_then(|tokens| tokens.completion_tokens.or(tokens.output_tokens))),
         );
         Value::Object(data)
     }
@@ -172,7 +138,7 @@ impl Drop for AttemptLog {
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
-        let data = self.finished_data(None, None, Some("Request interrupted before completion"));
+        let data = self.finished_data(None, None);
         let db = self.db.clone();
         let id = self.id.clone();
         runtime.spawn(async move {
@@ -201,22 +167,195 @@ async fn persist_finish(db: Arc<Db>, id: String, status: &'static str, data: Val
     }
 }
 
-fn request_cost(db: &Db, provider: &str, model: &str, tokens: Option<&TokenUsage>) -> f64 {
-    let Some(tokens) = tokens else {
-        return 0.0;
+pub fn routes() -> Router<AppState> {
+    Router::new().route("/api/request-logs", routing::get(get_request_logs))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RequestLogsQuery {
+    page: Option<usize>,
+    page_size: Option<usize>,
+    provider: Option<String>,
+    model: Option<String>,
+    status: Option<String>,
+    start_date: Option<String>,
+    end_date: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RequestLogsPayload {
+    requests: Vec<RequestLogRecord>,
+    pagination: RequestLogsPagination,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RequestLogsPagination {
+    page: usize,
+    page_size: usize,
+    total_items: usize,
+    total_pages: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RequestLogRecord {
+    request_id: String,
+    timestamp: String,
+    route: String,
+    provider: String,
+    model: String,
+    status: String,
+    status_code: Option<u16>,
+    duration_ms: u64,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+}
+
+async fn get_request_logs(
+    State(state): State<AppState>,
+    Query(query): Query<RequestLogsQuery>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) =
+        crate::server::api::require_dashboard_or_management_api_key(&headers, &state)
+    {
+        return response;
+    }
+
+    let page = query.page.unwrap_or(1);
+    let page_size = query.page_size.unwrap_or(20);
+    if page == 0 || !(1..=100).contains(&page_size) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "page must be >= 1 and pageSize must be between 1 and 100" })),
+        )
+            .into_response();
+    }
+
+    let clean = |value: Option<String>| {
+        value
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
     };
-    let input = tokens.prompt_tokens.or(tokens.input_tokens).unwrap_or(0);
-    let output = tokens
-        .completion_tokens
-        .or(tokens.output_tokens)
-        .unwrap_or(0);
-    let cache_creation = tokens.cache_creation_input_tokens.unwrap_or(0);
-    let cache_read = tokens.cache_read_input_tokens.unwrap_or(0);
-    let snapshot = db.snapshot();
-    let pricing = if snapshot.pricing.is_empty() {
-        crate::core::usage::Pricing::default()
-    } else {
-        crate::core::usage::Pricing::from_db(&snapshot.pricing)
+    let provider = clean(query.provider);
+    let model = clean(query.model);
+    let status = clean(query.status);
+    let start_date = query.start_date.as_deref().and_then(parse_timestamp);
+    let end_date = query.end_date.as_deref().and_then(parse_timestamp);
+    let offset = (page - 1) * page_size;
+    let sqlite = state.db.sqlite.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        sqlite.with_conn(|conn| {
+            let filter = request_repo::RequestDetailFilter {
+                provider: provider.as_deref(),
+                model: model.as_deref(),
+                status: status.as_deref(),
+                start_date: start_date.as_deref(),
+                end_date: end_date.as_deref(),
+                ..Default::default()
+            };
+            let total = request_repo::count(conn, &filter)?;
+            let rows = request_repo::list(conn, &filter, page_size, offset)?;
+            Ok((total, rows))
+        })
+    })
+    .await;
+
+    let (total_items, rows) = match result {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => {
+            tracing::error!(target: "openproxy::logs", %error, "failed to query request logs");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+        Err(error) => {
+            tracing::error!(target: "openproxy::logs", %error, "request log query task failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
     };
-    pricing.calculate_cost(provider, model, input, output, cache_creation, cache_read)
+    let total_pages = total_items.div_ceil(page_size);
+    Json(RequestLogsPayload {
+        requests: rows.into_iter().map(request_log_from_row).collect(),
+        pagination: RequestLogsPagination {
+            page,
+            page_size,
+            total_items,
+            total_pages,
+        },
+    })
+    .into_response()
+}
+
+fn parse_timestamp(value: &str) -> Option<String> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|timestamp| timestamp.with_timezone(&Utc).to_rfc3339())
+}
+
+fn request_log_from_row(row: request_repo::RequestDetailRow) -> RequestLogRecord {
+    RequestLogRecord {
+        request_id: row.id,
+        timestamp: row.timestamp,
+        route: row
+            .data
+            .get("route")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        provider: row.provider.unwrap_or_default(),
+        model: row.model.unwrap_or_default(),
+        status: row.status.unwrap_or_else(|| "interrupted".to_string()),
+        status_code: row
+            .data
+            .get("statusCode")
+            .and_then(Value::as_u64)
+            .and_then(|value| u16::try_from(value).ok()),
+        duration_ms: row
+            .data
+            .get("durationMs")
+            .and_then(Value::as_u64)
+            .unwrap_or_default(),
+        input_tokens: row.data.get("inputTokens").and_then(Value::as_u64),
+        output_tokens: row.data.get("outputTokens").and_then(Value::as_u64),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_log_exposes_only_metadata() {
+        let record = request_log_from_row(request_repo::RequestDetailRow {
+            id: "request-1".into(),
+            timestamp: "2026-09-15T12:00:00Z".into(),
+            provider: Some("openai".into()),
+            model: Some("gpt-5".into()),
+            connection_id: Some("secret-connection".into()),
+            status: Some("success".into()),
+            api_key_id: Some("secret-key".into()),
+            api_key_name: Some("private".into()),
+            correlation_id: Some("internal".into()),
+            data: json!({
+                "route": "work",
+                "statusCode": 200,
+                "durationMs": 42,
+                "inputTokens": 10,
+                "outputTokens": 20,
+                "request": "secret prompt",
+                "response": "secret response"
+            }),
+        });
+
+        let value = serde_json::to_value(record).unwrap();
+        assert_eq!(value["requestId"], "request-1");
+        assert_eq!(value["route"], "work");
+        assert_eq!(value["inputTokens"], 10);
+        let serialized = value.to_string();
+        assert!(!serialized.contains("secret"));
+        assert!(!serialized.contains("private"));
+        assert!(!serialized.contains("internal"));
+    }
 }

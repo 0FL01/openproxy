@@ -176,8 +176,6 @@ mod tests {
             "combos",
             "kv",
             "disabledModels",
-            "usageHistory",
-            "usageDaily",
             "requestDetails",
         ] {
             assert!(
@@ -209,10 +207,6 @@ mod tests {
             "idx_ak_key",
             "idx_combo_name",
             "idx_kv_scope",
-            "idx_uh_ts",
-            "idx_uh_provider",
-            "idx_uh_model",
-            "idx_uh_conn",
             "idx_rd_ts",
             "idx_rd_provider",
             "idx_rd_model",

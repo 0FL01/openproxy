@@ -3,7 +3,7 @@
 //! These exercise the *real* `openproxy` binary (via assert_cmd) against a
 //! local wiremock server, then compare the `--robot` stdout against golden
 //! JSON envelopes. They cover the happy path for every M4 subcommand:
-//! usage / logs / quota / chat / provider oauth.
+//! logs / chat / provider oauth.
 //!
 //! Streaming commands are tested separately at the lib level (see
 //! `src/cli/runtime.rs` tests for `SseFrames`) — driving an indefinite SSE
@@ -60,58 +60,6 @@ fn parse_robot(stdout: &[u8]) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn usage_summary_emits_robot_envelope() {
-    let server = boot_server().await;
-    Mock::given(method("GET"))
-        .and(path("/api/usage/summary"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "total_requests": 42,
-            "total_prompt_tokens": 1000,
-            "total_completion_tokens": 500,
-            "total_cost": 0.12345,
-        })))
-        .mount(&server)
-        .await;
-
-    let out = op(&server, &["--robot", "usage", "summary"]);
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let env = parse_robot(&out.stdout);
-    assert_eq!(env["schema"], "openproxy.v1.usage.summary");
-    assert_eq!(env["ok"], true);
-    assert_eq!(env["data"]["total_requests"], 42);
-    assert_eq!(env["data"]["total_cost"], 0.12345);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn usage_providers_emits_robot_envelope() {
-    let server = boot_server().await;
-    Mock::given(method("GET"))
-        .and(path("/api/usage/providers"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "providers": [
-                {"provider": "openai",    "requests": 10, "tokens": 1234, "cost": 0.05},
-                {"provider": "anthropic", "requests":  3, "tokens":  234, "cost": 0.01},
-            ],
-        })))
-        .mount(&server)
-        .await;
-
-    let out = op(&server, &["--robot", "usage", "providers"]);
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let env = parse_robot(&out.stdout);
-    assert_eq!(env["schema"], "openproxy.v1.usage.providers");
-    assert_eq!(env["data"]["providers"].as_array().unwrap().len(), 2);
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn logs_stats_emits_robot_envelope() {
     let server = boot_server().await;
     Mock::given(method("GET"))
@@ -153,50 +101,6 @@ async fn logs_clear_posts_and_envelopes() {
     let env = parse_robot(&out.stdout);
     assert_eq!(env["schema"], "openproxy.v1.log.clear");
     assert_eq!(env["data"]["cleared"], true);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn quota_list_uses_usage_providers() {
-    let server = boot_server().await;
-    Mock::given(method("GET"))
-        .and(path("/api/usage/providers"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "providers": [
-                {"provider": "openai", "requests": 1, "tokens": 100, "cost": 0.01},
-            ],
-        })))
-        .mount(&server)
-        .await;
-
-    let out = op(&server, &["--robot", "quota", "list"]);
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let env = parse_robot(&out.stdout);
-    assert_eq!(env["schema"], "openproxy.v1.quota.list");
-    let quotas = env["data"]["quotas"].as_array().expect("quotas array");
-    assert_eq!(quotas.len(), 1);
-    assert_eq!(quotas[0]["provider"], "openai");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn quota_get_returns_not_found_for_missing_provider() {
-    let server = boot_server().await;
-    Mock::given(method("GET"))
-        .and(path("/api/usage/providers"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "providers": [],
-        })))
-        .mount(&server)
-        .await;
-
-    let out = op(&server, &["--robot", "quota", "get", "openai"]);
-    assert!(!out.status.success(), "should fail with not_found");
-    let env = parse_robot(&out.stdout);
-    assert_eq!(env["schema"], "openproxy.v1.error");
-    assert_eq!(env["error"]["code"], "not_found");
 }
 
 #[tokio::test(flavor = "multi_thread")]

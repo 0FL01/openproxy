@@ -3,8 +3,7 @@
 //! Mirrors the upstream 9router schema (see `9router/src/lib/db/schema.js`)
 //! with openproxy-specific columns added for encrypted secrets and snapshots.
 //!
-//! All tables use TEXT primary keys (UUIDs or human-readable slugs) except
-//! for `usageHistory` (AUTOINCREMENT id) and `usageDaily` (date string PK).
+//! Tables use TEXT primary keys (UUIDs or human-readable slugs).
 //! Free-form columns (`data`) hold JSON blobs so schema changes don't require
 //! DDL migrations.
 
@@ -103,8 +102,7 @@ pub const TABLES_SQL: &[&str] = &[
         name        TEXT,
         machineId   TEXT,
         isActive    INTEGER NOT NULL DEFAULT 1,
-        createdAt   TEXT NOT NULL,
-        monthly_budget_usd REAL
+        createdAt   TEXT NOT NULL
     )
     "#,
     r#"
@@ -148,52 +146,6 @@ pub const TABLES_SQL: &[&str] = &[
         provider    TEXT NOT NULL,
         model       TEXT NOT NULL,
         PRIMARY KEY (provider, model)
-    )
-    "#,
-    // Append-only usage log. Indexes on the common query dimensions
-    // (timestamp DESC for recent, provider/model/connectionId for filters).
-    r#"
-    CREATE TABLE IF NOT EXISTS usageHistory (
-        id               INTEGER PRIMARY KEY AUTOINCREMENT,
-        timestamp        TEXT NOT NULL,
-        provider         TEXT,
-        model            TEXT,
-        connectionId     TEXT,
-        apiKey           TEXT,
-        endpoint         TEXT,
-        promptTokens     INTEGER DEFAULT 0,
-        completionTokens INTEGER DEFAULT 0,
-        cost             REAL DEFAULT 0,
-        status           TEXT,
-        tokens           TEXT,
-        meta             TEXT,
-        bytesBefore      INTEGER DEFAULT 0,
-        bytesAfter       INTEGER DEFAULT 0,
-        bytesSaved       INTEGER DEFAULT 0,
-        imagePrompts     INTEGER DEFAULT 0
-    )
-    "#,
-    r#"
-    CREATE INDEX IF NOT EXISTS idx_uh_ts
-        ON usageHistory(timestamp DESC)
-    "#,
-    r#"
-    CREATE INDEX IF NOT EXISTS idx_uh_provider
-        ON usageHistory(provider)
-    "#,
-    r#"
-    CREATE INDEX IF NOT EXISTS idx_uh_model
-        ON usageHistory(model)
-    "#,
-    r#"
-    CREATE INDEX IF NOT EXISTS idx_uh_conn
-        ON usageHistory(connectionId)
-    "#,
-    // Per-day rollups for charts. `data` holds the full DailySummary JSON.
-    r#"
-    CREATE TABLE IF NOT EXISTS usageDaily (
-        dateKey TEXT PRIMARY KEY,
-        data    TEXT NOT NULL
     )
     "#,
     // Per-request observability records. Mirrors 9router's requestDetails

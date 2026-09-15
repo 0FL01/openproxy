@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use rusqlite::Connection;
 use serde_json::{json, Value};
 
-use crate::types::{AppDb, UsageDb};
+use crate::types::AppDb;
 
 use super::SqliteDb;
 
@@ -20,16 +20,6 @@ pub fn export_db(db: &SqliteDb) -> (Vec<u8>, String) {
     let bytes = serde_json::to_vec_pretty(&json_val).unwrap_or_default();
     let stamp = chrono_like_stamp();
     (bytes, format!("openproxy-db-{stamp}.json"))
-}
-
-/// Export usage history to canonical format.
-pub fn export_usage(db: &SqliteDb) -> (Vec<u8>, String) {
-    let json_val = db
-        .with_conn(|conn| -> rusqlite::Result<Value> { export_usage_impl(conn) })
-        .unwrap_or(Value::Null);
-    let bytes = serde_json::to_vec_pretty(&json_val).unwrap_or_default();
-    let stamp = chrono_like_stamp();
-    (bytes, format!("openproxy-usage-{stamp}.json"))
 }
 
 pub(crate) fn export_all(conn: &Connection) -> rusqlite::Result<Value> {
@@ -144,9 +134,8 @@ pub(crate) fn export_all(conn: &Connection) -> rusqlite::Result<Value> {
 
     // API keys
     let api_keys: Vec<Value> = {
-        let mut stmt = conn.prepare(
-            "SELECT id, key, name, machineId, isActive, createdAt, monthly_budget_usd FROM apiKeys",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT id, key, name, machineId, isActive, createdAt FROM apiKeys")?;
         let rows = stmt.query_map([], |row| {
             let id: String = row.get(0)?;
             let key: String = row.get(1)?;
@@ -157,11 +146,9 @@ pub(crate) fn export_all(conn: &Connection) -> rusqlite::Result<Value> {
                 .map(|v| v.map(|x| x != 0))
                 .unwrap_or(None);
             let created_at: String = row.get(5)?;
-            let monthly_budget_usd: Option<f64> = row.get(6)?;
             Ok(json!({
                 "id": id, "key": key, "name": name, "machineId": machine_id,
                 "isActive": is_active, "createdAt": created_at,
-                "monthlyBudgetUsd": monthly_budget_usd,
             }))
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()?
@@ -218,41 +205,6 @@ pub(crate) fn export_all(conn: &Connection) -> rusqlite::Result<Value> {
         "providerFilters": provider_filters,
         "favoriteModels": favorite_models,
         "disabledModels": disabled_models,
-    }))
-}
-
-pub(crate) fn export_usage_impl(conn: &Connection) -> rusqlite::Result<Value> {
-    let history: Vec<Value> = {
-        let mut stmt = conn.prepare(
-            "SELECT timestamp, provider, model, connectionId, apiKey, endpoint,
-                    promptTokens, completionTokens, cost, status, tokens, meta
-             FROM usageHistory ORDER BY timestamp DESC LIMIT 10000",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(json!({
-                "timestamp": row.get::<_, String>(0)?,
-                "provider": row.get::<_, Option<String>>(1)?,
-                "model": row.get::<_, String>(2)?,
-                "connectionId": row.get::<_, Option<String>>(3)?,
-                "apiKey": row.get::<_, Option<String>>(4)?,
-                "endpoint": row.get::<_, Option<String>>(5)?,
-                "promptTokens": row.get::<_, Option<i64>>(6)?,
-                "completionTokens": row.get::<_, Option<i64>>(7)?,
-                "tokens": row.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
-                "cost": row.get::<_, Option<f64>>(8)?,
-                "status": row.get::<_, Option<String>>(9)?,
-            }))
-        })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()?
-    };
-
-    // Daily summaries are derived (UsageDb::normalize rebuilds them from
-    // history on load) — exporting them is unnecessary and would duplicate
-    // state. Keep the payload minimal like before; the in-memory snapshot
-    // always recomputes daily_summary.
-    Ok(json!({
-        "history": history,
-        "totalRequestsLifetime": history.len(),
     }))
 }
 
@@ -324,13 +276,5 @@ mod tests {
         ] {
             assert!(val.get(*key).is_some(), "missing key {key}");
         }
-    }
-
-    #[test]
-    fn export_usage_returns_history() {
-        let db = SqliteDb::open_in_memory().unwrap();
-        let (bytes, _) = export_usage(&db);
-        let val: Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(val.get("history").is_some());
     }
 }

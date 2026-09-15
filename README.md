@@ -285,7 +285,6 @@ Most operators set stable `JWT_SECRET` and `OPENPROXY_ENCRYPTION_KEY` values and
 | `MACHINE_ID_SALT` | `endpoint-proxy-salt` | Salt for the stable machine-ID hash. |
 | `AUTH_COOKIE_SECURE` | `false` | Force `Secure` flag on the auth cookie. Set `true` behind HTTPS. |
 | `REQUIRE_API_KEY` | `false` | Reject `/v1/*` requests without `Authorization: Bearer …`. Recommended for any internet-exposed deploy. |
-| `ENABLE_REQUEST_LOGS` | `false` | Write per-request logs under `logs/`. |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` | _unset_ | Forward outbound provider calls through an HTTP proxy. Lowercase variants also honored. |
 
 ### TOML config profiles
@@ -521,7 +520,6 @@ For internet-exposed deploys: set `REQUIRE_API_KEY=true`, `AUTH_COOKIE_SECURE=tr
 | `cargo build` fails with "web/dist not built" | Embedded build needs the dashboard | `(cd web && pnpm install --frozen-lockfile && pnpm run build)` first |
 | First login password rejected | Wrong dashboard password | If you set `INITIAL_PASSWORD`, check `.env.prod` is loaded. Otherwise the password was generated at first boot — look for "Initial dashboard password" in the startup banner or run `openproxy auth reset-password --show` |
 
-Logs: enable with `ENABLE_REQUEST_LOGS=true`, then watch `logs/` (or stderr).
 
 ---
 

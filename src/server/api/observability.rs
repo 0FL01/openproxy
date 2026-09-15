@@ -114,12 +114,9 @@ async fn get_stats(State(state): State<AppState>, headers: HeaderMap) -> Respons
     }
 
     let logs = state.console_logs.get_logs().await;
-    let usage_db = state.usage_tracker().get_usage_db();
     let level_counts = count_levels(&logs);
     let payload: Value = json!({
         "logBufferLines": logs.len(),
-        "totalRequestsLifetime": usage_db.total_requests_lifetime,
-        "totalHistoryEntries": usage_db.history.len(),
         "levels": level_counts,
     });
     Json(payload).into_response()

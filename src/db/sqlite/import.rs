@@ -18,12 +18,6 @@ pub fn import_db(db: &SqliteDb, payload: &Value) -> anyhow::Result<usize> {
         .map_err(|e| anyhow::anyhow!("SQLite import: {e}"))
 }
 
-/// Import usage JSON payload.
-pub fn import_usage(db: &SqliteDb, payload: &Value) -> anyhow::Result<usize> {
-    db.with_transaction(|conn| -> rusqlite::Result<usize> { import_usage_impl(conn, payload) })
-        .map_err(|e| anyhow::anyhow!("SQLite usage import: {e}"))
-}
-
 fn import_all(conn: &Connection, payload: &Value) -> rusqlite::Result<usize> {
     // Wipe all data (keep _meta)
     let tables = [
@@ -35,8 +29,6 @@ fn import_all(conn: &Connection, payload: &Value) -> rusqlite::Result<usize> {
         "combos",
         "kv",
         "disabledModels",
-        "usageHistory",
-        "usageDaily",
         "requestDetails",
     ];
     for table in &tables {
@@ -140,7 +132,7 @@ fn import_all(conn: &Connection, payload: &Value) -> rusqlite::Result<usize> {
     if let Some(arr) = payload.get("apiKeys").and_then(Value::as_array) {
         for item in arr {
             conn.execute(
-                "INSERT INTO apiKeys(id, key, name, machineId, isActive, createdAt, monthly_budget_usd) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                "INSERT INTO apiKeys(id, key, name, machineId, isActive, createdAt) VALUES(?1,?2,?3,?4,?5,?6)",
                 rusqlite::params![
                     item.get("id").and_then(Value::as_str).unwrap_or(""),
                     item.get("key").and_then(Value::as_str).unwrap_or(""),
@@ -148,7 +140,6 @@ fn import_all(conn: &Connection, payload: &Value) -> rusqlite::Result<usize> {
                     item.get("machineId").and_then(Value::as_str),
                     item.get("isActive").and_then(Value::as_bool).map(|v| v as i32).unwrap_or(1),
                     item.get("createdAt").and_then(Value::as_str).unwrap_or(""),
-                    item.get("monthlyBudgetUsd").and_then(Value::as_f64),
                 ],
             )?;
         }
@@ -218,38 +209,6 @@ fn import_all(conn: &Connection, payload: &Value) -> rusqlite::Result<usize> {
         .unwrap_or(0);
 
     Ok(count as usize)
-}
-
-fn import_usage_impl(conn: &Connection, payload: &Value) -> rusqlite::Result<usize> {
-    conn.execute("DELETE FROM usageHistory", [])?;
-    conn.execute("DELETE FROM usageDaily", [])?;
-
-    if let Some(arr) = payload.get("history").and_then(Value::as_array) {
-        for item in arr {
-            let tokens_str = item
-                .get("tokens")
-                .map(|t| serde_json::to_string(t).unwrap_or_default());
-            conn.execute(
-                "INSERT INTO usageHistory(timestamp, provider, model, cost, status, tokens)
-                 VALUES(?1,?2,?3,?4,?5,?6)",
-                rusqlite::params![
-                    item.get("timestamp").and_then(Value::as_str).unwrap_or(""),
-                    item.get("provider").and_then(Value::as_str),
-                    item.get("model").and_then(Value::as_str).unwrap_or(""),
-                    item.get("cost").and_then(Value::as_f64),
-                    item.get("status").and_then(Value::as_str),
-                    tokens_str,
-                ],
-            )?;
-        }
-    }
-
-    let count = payload
-        .get("history")
-        .and_then(Value::as_array)
-        .map(|a| a.len())
-        .unwrap_or(0);
-    Ok(count)
 }
 
 fn import_kv_scope(conn: &Connection, scope: &str, val: Option<&Value>) -> rusqlite::Result<()> {

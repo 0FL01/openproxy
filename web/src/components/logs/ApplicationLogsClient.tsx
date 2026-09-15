@@ -6,21 +6,13 @@ import Card from "@/shared/components/Card";
 import Pagination from "@/shared/components/Pagination";
 import ApplicationLogDrawer from "./ApplicationLogDrawer";
 import type { ApplicationLog, LogsPayload } from "./types";
-import { inputTokens, outputTokens } from "./types";
 
 const REFRESH_MS = 10_000;
 
 interface Filters {
-  apiKeyId: string;
   status: string;
   provider: string;
   model: string;
-  correlationId: string;
-}
-
-interface ApiKeyOption {
-  id: string;
-  name: string;
 }
 
 function statusClass(status: string) {
@@ -32,7 +24,6 @@ function statusClass(status: string) {
 
 export default function ApplicationLogsClient() {
   const [logs, setLogs] = useState<ApplicationLog[]>([]);
-  const [keys, setKeys] = useState<ApiKeyOption[]>([]);
   const [selected, setSelected] = useState<ApplicationLog | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -40,14 +31,7 @@ export default function ApplicationLogsClient() {
   const [pageSize, setPageSize] = useState(20);
   const [totalItems, setTotalItems] = useState(0);
   const [refresh, setRefresh] = useState(0);
-  const [filters, setFilters] = useState<Filters>({ apiKeyId: "", status: "", provider: "", model: "", correlationId: "" });
-
-  useEffect(() => {
-    fetch("/api/keys")
-      .then(async (response) => (response.ok ? response.json() : { keys: [] }))
-      .then((data) => setKeys((data.keys ?? []).map(({ id, name }: ApiKeyOption) => ({ id, name }))))
-      .catch(() => setKeys([]));
-  }, []);
+  const [filters, setFilters] = useState<Filters>({ status: "", provider: "", model: "" });
 
   useEffect(() => {
     let disposed = false;
@@ -61,14 +45,14 @@ export default function ApplicationLogsClient() {
       const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
       Object.entries(filters).forEach(([key, value]) => value && params.set(key, value));
       try {
-        const response = await fetch(`/api/usage/request-details?${params}`, {
+        const response = await fetch(`/api/request-logs?${params}`, {
           cache: "no-store",
           signal: controller.signal,
         });
         if (!response.ok) throw new Error(`Failed to load logs (${response.status})`);
         const data: LogsPayload = await response.json();
         if (!disposed) {
-          setLogs(data.details ?? []);
+          setLogs(data.requests ?? []);
           setTotalItems(data.pagination?.totalItems ?? 0);
           setError("");
         }
@@ -108,7 +92,7 @@ export default function ApplicationLogsClient() {
       <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
         <div>
           <h1 className="text-2xl font-semibold text-text-main">Application Logs</h1>
-          <p className="text-sm text-text-muted">Provider attempts attributed to API keys · refreshes every 10 seconds</p>
+          <p className="text-sm text-text-muted">Metadata-only provider attempts · refreshes every 10 seconds</p>
         </div>
         <Button variant="outline" onClick={() => setRefresh((value) => value + 1)}>
           <span className="material-symbols-outlined text-[18px]">refresh</span> Refresh
@@ -116,19 +100,14 @@ export default function ApplicationLogsClient() {
       </div>
 
       <Card padding="md">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
-          <select value={filters.apiKeyId} onChange={(event) => updateFilter("apiKeyId", event.target.value)} className="h-10 rounded-lg border border-border bg-surface px-3 text-sm text-text-main">
-            <option value="">All API keys</option>
-            {keys.map((key) => <option key={key.id} value={key.id}>{key.name}</option>)}
-          </select>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <select value={filters.status} onChange={(event) => updateFilter("status", event.target.value)} className="h-10 rounded-lg border border-border bg-surface px-3 text-sm text-text-main">
             <option value="">All statuses</option>
             <option value="pending">Live</option><option value="success">Success</option>
             <option value="error">Error</option><option value="interrupted">Interrupted</option>
           </select>
           <input value={filters.provider} onChange={(event) => updateFilter("provider", event.target.value)} placeholder="Provider" className="h-10 rounded-lg border border-border bg-surface px-3 text-sm text-text-main" />
-          <input value={filters.model} onChange={(event) => updateFilter("model", event.target.value)} placeholder="Actual model" className="h-10 rounded-lg border border-border bg-surface px-3 text-sm text-text-main" />
-          <input value={filters.correlationId} onChange={(event) => updateFilter("correlationId", event.target.value)} placeholder="Correlation ID" className="h-10 rounded-lg border border-border bg-surface px-3 text-sm text-text-main" />
+          <input value={filters.model} onChange={(event) => updateFilter("model", event.target.value)} placeholder="Model" className="h-10 rounded-lg border border-border bg-surface px-3 text-sm text-text-main" />
         </div>
       </Card>
 
@@ -136,22 +115,20 @@ export default function ApplicationLogsClient() {
 
       <Card padding="none">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1050px] text-sm">
+          <table className="w-full min-w-[850px] text-sm">
             <thead><tr className="border-b border-border text-left text-xs uppercase tracking-wide text-text-muted">
               <th className="p-4">Status</th><th className="p-4">Model</th><th className="p-4">Provider</th>
-              <th className="p-4">Account</th><th className="p-4">API key</th><th className="p-4 text-right">Tokens</th>
-              <th className="p-4 text-right">Duration</th><th className="p-4">Time</th>
+              <th className="p-4">Route</th><th className="p-4 text-right">Tokens</th><th className="p-4 text-right">Duration</th><th className="p-4">Time</th>
             </tr></thead>
             <tbody>
-              {loading && logs.length === 0 ? <tr><td colSpan={8} className="p-10 text-center text-text-muted">Loading logs…</td></tr> :
-               logs.length === 0 ? <tr><td colSpan={8} className="p-10 text-center text-text-muted">No application logs yet.</td></tr> :
-               logs.map((log) => <tr key={log.id} onClick={() => setSelected(log)} className="cursor-pointer border-b border-border/60 transition-colors hover:bg-primary/5">
+              {loading && logs.length === 0 ? <tr><td colSpan={7} className="p-10 text-center text-text-muted">Loading logs…</td></tr> :
+               logs.length === 0 ? <tr><td colSpan={7} className="p-10 text-center text-text-muted">No application logs yet.</td></tr> :
+               logs.map((log) => <tr key={log.requestId} onClick={() => setSelected(log)} className="cursor-pointer border-b border-border/60 transition-colors hover:bg-primary/5">
                  <td className="p-4"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(log.status)}`}>{log.status === "pending" ? "LIVE" : log.status.toUpperCase()}</span></td>
-                 <td className="max-w-[240px] p-4"><div className="truncate font-mono text-text-main">{log.model}</div>{log.requestedModel && log.requestedModel !== log.model && <div className="truncate text-xs text-text-muted">{log.requestedModel}</div>}</td>
-                 <td className="p-4 text-text-main">{log.provider || "—"}</td><td className="p-4 text-text-main">{log.account ?? log.connectionId ?? "—"}</td>
-                 <td className="p-4 font-medium text-text-main">{log.apiKeyName ?? "—"}</td>
-                 <td className="p-4 text-right font-mono text-text-main">{inputTokens(log.tokens).toLocaleString()} / {outputTokens(log.tokens).toLocaleString()}</td>
-                 <td className="p-4 text-right font-mono text-text-main">{(log.latency?.total ?? 0).toLocaleString()} ms</td>
+                  <td className="max-w-[240px] p-4"><div className="truncate font-mono text-text-main">{log.model}</div></td>
+                  <td className="p-4 text-text-main">{log.provider || "—"}</td><td className="p-4 font-mono text-text-main">{log.route || "—"}</td>
+                  <td className="p-4 text-right font-mono text-text-main">{(log.inputTokens ?? 0).toLocaleString()} / {(log.outputTokens ?? 0).toLocaleString()}</td>
+                  <td className="p-4 text-right font-mono text-text-main">{log.durationMs.toLocaleString()} ms</td>
                  <td className="whitespace-nowrap p-4 text-text-muted">{new Date(log.timestamp).toLocaleString()}</td>
                </tr>)}
             </tbody>

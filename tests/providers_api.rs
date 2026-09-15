@@ -121,7 +121,6 @@ async fn test_state(connections: Vec<ProviderConnection>) -> AppState {
             is_active: Some(true),
             created_at: None,
             extra: BTreeMap::new(),
-            monthly_budget_usd: None,
         }];
     })
     .await
