@@ -1,6 +1,6 @@
 # Goal: API-key application logs
 
-Status: active
+Status: complete
 Source: User request to provide API-key request logs comparable to OmniRoute `Logs / Application logs`, without WebSocket, followed by the instruction to preserve the plan and implement, commit, push, and deploy it end to end.
 Last updated: 2026-09-15
 
@@ -48,8 +48,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: “потом коммит пуш деплой”.
   - Acceptance: The verified focused diff is committed on `main`, pushed to `origin/main`, deployed through the repository production Docker Compose service, and the production health endpoint responds successfully.
   - Primary evidence: Git commit/push output, `docker compose up -d --build`, `docker compose ps`, and `curl -fsS http://127.0.0.1:4623/health`.
-  - Status: in_progress
-  - Evidence:
+  - Status: verified
+  - Evidence: Commit `49da58e9` was pushed to `origin/main`. `docker compose up -d --build` produced image `sha256:b080f33bbc19ce3150d55b47ef5d5a444a8d774dec56a5b979316c961469c2a3`; the production container uses that image and reports healthy. Production returned HTTP 200 for `/dashboard/logs` and the authenticated `/api/usage/request-details` endpoint, and `/health` returned `status: ok`.
 
 ### Constraints
 
@@ -94,17 +94,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R5
-- Smallest next action: Stage the reviewed focused diff, commit and push it, deploy production Compose without removing its volume, and verify production health and logs page.
-- Expected evidence: Commit/push output, healthy Compose service, HTTP 200 health/logs page.
-- Stop or replan if: The production environment lacks its existing `.env.prod`/volume or the deployment health check fails.
+- Closes: R1-R5
+- Smallest next action: None; the goal is complete.
+- Expected evidence: Recorded below.
+- Stop or replan if: A new user request opens a separate objective.
 
 ## Current State
 
-- Resolved: R1-R4. Durable attempt persistence, API-key attribution/correlation, streaming lifecycle finalization, SQL-backed API filtering/pagination, and the HTTP-polling dashboard page are implemented and verified.
-- Last relevant evidence: `cargo fmt --check`, `cargo clippy --all-targets --all-features`, all 1,736 lib tests, targeted API/chat tests, dashboard build, and local runtime smoke passed.
+- Resolved: R1-R5. Durable attempt persistence, API-key attribution/correlation, streaming lifecycle finalization, SQL-backed API filtering/pagination, the HTTP-polling dashboard page, commit/push, and production deployment are verified.
+- Last relevant evidence: The production Compose container is healthy on the newly built image; health, logs page, and authenticated logs API checks passed.
 - Blocker: None.
-- Next: Commit, push, and deploy R5.
+- Next: None.
 
 ## Material Decisions
 
@@ -119,10 +119,11 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-09-15: RECON complete; local OmniRoute source confirmed list polling at 10 seconds and separate attempt rows with API-key snapshots/correlation IDs. Contract frozen; next checkpoint is SQLite persistence.
 - 2026-09-15: R1/R2 implementation checkpoint passed targeted migration, repository, API, streaming, and fallback tests. R3/R4 dashboard build passed and generated `/dashboard/logs.html`; next checkpoint is closure verification.
 - 2026-09-15: R1-R4 closure evidence passed: fmt, clippy, 1,736 lib tests, targeted integrations, dashboard build, and local runtime HTTP smoke. R5 delivery remains.
+- 2026-09-15: R5 passed. Commit `49da58e9` was pushed, production Compose was rebuilt without removing its volume, and the new container passed health, page, and authenticated API checks.
 
 ## Completion
 
-- Resolved outcomes:
-- Commands and artifacts:
-- Constraint and diff-scope check:
-- Final status:
+- Resolved outcomes: R1-R5 verified.
+- Commands and artifacts: Rust fmt/clippy/lib and focused integration tests; Astro build; commit `49da58e9`; production image `sha256:b080f33bbc19ce3150d55b47ef5d5a444a8d774dec56a5b979316c961469c2a3`; healthy Compose service; HTTP 200 dashboard and authenticated API probes.
+- Constraint and diff-scope check: The log dashboard uses ordinary HTTP fetch polling with no WebSocket/EventSource; the new path persists only API-key ID/name snapshots and metadata, not raw keys or request/response payloads; the existing production volume was preserved; the implementation remained within the frozen change envelope.
+- Final status: complete
