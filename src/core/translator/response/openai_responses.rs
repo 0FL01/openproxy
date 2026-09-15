@@ -397,7 +397,8 @@ fn close_tool_call(
                     "type": "custom_tool_call",
                     "input": extract_custom_tool_input(&args),
                     "call_id": call_id,
-                    "name": name
+                    "name": name,
+                    "status": "completed"
                 })
             } else {
                 serde_json::json!({
@@ -405,7 +406,8 @@ fn close_tool_call(
                     "type": "function_call",
                     "arguments": args,
                     "call_id": call_id,
-                    "name": name
+                    "name": name,
+                    "status": "completed"
                 })
             }
         }),
@@ -562,50 +564,50 @@ fn emit_tool_calls_block(
                     },
                 }),
             );
+        }
 
-            if let Some(args) = tc
-                .get("function")
-                .and_then(|f| f.get("arguments"))
-                .and_then(|v| v.as_str())
-            {
-                if !args.is_empty() {
-                    let ref_call_id = func_call_ids
+        if let Some(args) = tc
+            .get("function")
+            .and_then(|f| f.get("arguments"))
+            .and_then(|v| v.as_str())
+        {
+            if !args.is_empty() {
+                let ref_call_id = func_call_ids
+                    .get(&tc_idx_str)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&call_id);
+                // Custom input is emitted once at close, after the Chat JSON
+                // wrapper can be parsed. Streaming raw fragments would expose
+                // {"input":"..."} instead of the freeform program.
+                let is_custom_now = is_custom_tool(
+                    state,
+                    func_names
                         .get(&tc_idx_str)
                         .and_then(|v| v.as_str())
-                        .unwrap_or(&call_id);
-                    // Custom input is emitted once at close, after the Chat JSON
-                    // wrapper can be parsed. Streaming raw fragments would expose
-                    // {"input":"..."} instead of the freeform program.
-                    let is_custom_now = is_custom_tool(
+                        .unwrap_or(""),
+                );
+                if func_item_added.get(&tc_idx_str).is_some()
+                    && !ref_call_id.is_empty()
+                    && !is_custom_now
+                {
+                    emit(
+                        events,
                         state,
-                        func_names
-                            .get(&tc_idx_str)
-                            .and_then(|v| v.as_str())
-                            .unwrap_or(""),
+                        "response.function_call_arguments.delta",
+                        serde_json::json!({
+                            "type": "response.function_call_arguments.delta",
+                            "item_id": format!("fc_{}", ref_call_id),
+                            "output_index": tc_idx,
+                            "delta": args
+                        }),
                     );
-                    if func_item_added.get(&tc_idx_str).is_some()
-                        && !ref_call_id.is_empty()
-                        && !is_custom_now
-                    {
-                        emit(
-                            events,
-                            state,
-                            "response.function_call_arguments.delta",
-                            serde_json::json!({
-                                "type": "response.function_call_arguments.delta",
-                                "item_id": format!("fc_{}", ref_call_id),
-                                "output_index": tc_idx,
-                                "delta": args
-                            }),
-                        );
-                    }
-                    let existing = func_args_buf
-                        .get(&tc_idx_str)
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    func_args_buf[&tc_idx_str] = Value::String(format!("{}{}", existing, args));
                 }
+                let existing = func_args_buf
+                    .get(&tc_idx_str)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                func_args_buf[&tc_idx_str] = Value::String(format!("{}{}", existing, args));
             }
         }
     }
@@ -1560,10 +1562,9 @@ mod tests {
 
     #[test]
     fn non_empty_tool_calls_still_processed() {
-        // Verify that real tool_calls still work correctly.
         let mut state = ResponseTransformState::default();
 
-        let chunk = json!({
+        let start = json!({
             "choices": [{
                 "delta": {
                     "tool_calls": [{
@@ -1571,7 +1572,7 @@ mod tests {
                         "id": "call_123",
                         "type": "function",
                         "function": {
-                            "name": "get_weather",
+                            "name": "glob",
                             "arguments": ""
                         }
                     }]
@@ -1579,18 +1580,78 @@ mod tests {
                 "finish_reason": null
             }]
         });
-
-        let events = chat_to_responses_response(&chunk, &mut state.responses.state);
-
-        // Should produce function_call events for the tool call.
-        let has_function_call = events.iter().any(|e| {
-            let s = serde_json::to_string(e).unwrap_or_default();
-            s.contains("function_call") || s.contains("get_weather")
+        let fragment = |arguments: &str| {
+            json!({
+                "choices": [{
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "function": {"arguments": arguments}
+                        }]
+                    },
+                    "finish_reason": null
+                }]
+            })
+        };
+        let finish = json!({
+            "choices": [{
+                "delta": {},
+                "finish_reason": "tool_calls"
+            }]
         });
+
+        let mut events = chat_to_responses_response(&start, &mut state.responses.state);
+        events.extend(chat_to_responses_response(
+            &fragment("{\"pattern\":\""),
+            &mut state.responses.state,
+        ));
+        events.extend(chat_to_responses_response(
+            &fragment("**/*.rs\"}"),
+            &mut state.responses.state,
+        ));
+        events.extend(chat_to_responses_response(
+            &finish,
+            &mut state.responses.state,
+        ));
+
+        let added_count = events
+            .iter()
+            .filter(|event| {
+                event["event"] == "response.output_item.added"
+                    && event["data"]["item"]["type"] == "function_call"
+            })
+            .count();
+        assert_eq!(added_count, 1);
+
+        let deltas: Vec<&str> = events
+            .iter()
+            .filter(|event| event["event"] == "response.function_call_arguments.delta")
+            .filter_map(|event| event["data"]["delta"].as_str())
+            .collect();
+        assert_eq!(deltas, vec!["{\"pattern\":\"", "**/*.rs\"}"]);
+
+        let arguments = "{\"pattern\":\"**/*.rs\"}";
+        let arguments_done = events
+            .iter()
+            .find(|event| event["event"] == "response.function_call_arguments.done")
+            .expect("function arguments done event");
+        assert_eq!(arguments_done["data"]["arguments"], arguments);
+
+        let item_done = events
+            .iter()
+            .find(|event| {
+                event["event"] == "response.output_item.done"
+                    && event["data"]["item"]["type"] == "function_call"
+            })
+            .expect("function item done event");
+        assert_eq!(item_done["data"]["item"]["arguments"], arguments);
+        assert_eq!(item_done["data"]["item"]["name"], "glob");
+        assert_eq!(item_done["data"]["item"]["status"], "completed");
         assert!(
-            has_function_call,
-            "non-empty tool_calls should produce function_call events, got: {:?}",
             events
+                .iter()
+                .any(|event| event["event"] == "response.completed"),
+            "tool-call finish should complete the response"
         );
     }
 
