@@ -1,4 +1,5 @@
 pub mod api;
+pub mod application_logs;
 pub mod auth;
 pub mod codex_catalog;
 pub mod console_logs;

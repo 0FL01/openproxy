@@ -1,6 +1,6 @@
 use axum::body::Body;
 use axum::extract::{Query, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{routing, Json, Router};
 use bytes::Bytes;
@@ -1346,72 +1346,71 @@ async fn get_request_details(
             .into_response();
     }
 
-    let usage_db = state.usage_tracker().get_usage_db();
-    let mut details = build_request_detail_records(&usage_db);
-
-    if let Some(provider) = query
-        .provider
+    let clean = |value: Option<String>| {
+        value
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    let provider = clean(query.provider);
+    let model = clean(query.model);
+    let connection_id = clean(query.connection_id);
+    let status = clean(query.status);
+    let api_key_id = clean(query.api_key_id);
+    let correlation_id = clean(query.correlation_id);
+    let start_date = query
+        .start_date
         .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        details.retain(|detail| detail.provider == provider);
-    }
-    if let Some(model) = query
-        .model
+        .and_then(parse_usage_timestamp)
+        .map(|value| value.to_rfc3339());
+    let end_date = query
+        .end_date
         .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        details.retain(|detail| detail.model == model);
-    }
-    if let Some(connection_id) = query
-        .connection_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        details.retain(|detail| detail.connection_id.as_deref() == Some(connection_id));
-    }
-    if let Some(status) = query
-        .status
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        details.retain(|detail| detail.status == status);
-    }
-    if let Some(start_date) = query.start_date.as_deref().and_then(parse_usage_timestamp) {
-        details.retain(|detail| {
-            parse_usage_timestamp(&detail.timestamp)
-                .is_some_and(|timestamp| timestamp >= start_date)
-        });
-    }
-    if let Some(end_date) = query.end_date.as_deref().and_then(parse_usage_timestamp) {
-        details.retain(|detail| {
-            parse_usage_timestamp(&detail.timestamp).is_some_and(|timestamp| timestamp <= end_date)
-        });
-    }
-
-    let total_items = details.len();
+        .and_then(parse_usage_timestamp)
+        .map(|value| value.to_rfc3339());
+    let offset = (page - 1) * page_size;
+    let sqlite = state.db.sqlite.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        sqlite.with_conn(|conn| {
+            let filter = crate::db::sqlite::repo::request_repo::RequestDetailFilter {
+                provider: provider.as_deref(),
+                model: model.as_deref(),
+                connection_id: connection_id.as_deref(),
+                status: status.as_deref(),
+                api_key_id: api_key_id.as_deref(),
+                correlation_id: correlation_id.as_deref(),
+                start_date: start_date.as_deref(),
+                end_date: end_date.as_deref(),
+            };
+            let total = crate::db::sqlite::repo::request_repo::count(conn, &filter)?;
+            let rows =
+                crate::db::sqlite::repo::request_repo::list(conn, &filter, page_size, offset)?;
+            Ok((total, rows))
+        })
+    })
+    .await;
+    let (total_items, rows) = match result {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => {
+            tracing::error!(target: "openproxy::logs", %error, "failed to query request logs");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+        Err(error) => {
+            tracing::error!(target: "openproxy::logs", %error, "request log query task failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let connections = state.db.snapshot().provider_connections.clone();
+    let details = rows
+        .into_iter()
+        .map(|row| request_detail_from_row(row, &connections))
+        .collect();
     let total_pages = if total_items == 0 {
         0
     } else {
         total_items.div_ceil(page_size)
     };
-    let start_index = (page - 1) * page_size;
-    let paged = if start_index >= total_items {
-        Vec::new()
-    } else {
-        details
-            .into_iter()
-            .skip(start_index)
-            .take(page_size)
-            .collect::<Vec<_>>()
-    };
-
     Json(RequestDetailsPayload {
-        details: paged,
+        details,
         pagination: RequestDetailsPagination {
             page,
             page_size,
@@ -1543,6 +1542,8 @@ struct RequestDetailsQuery {
     model: Option<String>,
     connection_id: Option<String>,
     status: Option<String>,
+    api_key_id: Option<String>,
+    correlation_id: Option<String>,
     start_date: Option<String>,
     end_date: Option<String>,
 }
@@ -1578,8 +1579,10 @@ struct RequestDetailRecord {
     provider: String,
     model: String,
     connection_id: Option<String>,
+    account: Option<String>,
     timestamp: String,
     status: String,
+    status_code: Option<u16>,
     latency: RequestLatency,
     tokens: TokenUsage,
     request: Option<Value>,
@@ -1587,6 +1590,96 @@ struct RequestDetailRecord {
     provider_response: Option<Value>,
     response: Option<Value>,
     endpoint: Option<String>,
+    method: String,
+    requested_model: Option<String>,
+    api_key_id: Option<String>,
+    api_key_name: Option<String>,
+    correlation_id: Option<String>,
+    cost: f64,
+    error: Option<String>,
+}
+
+fn request_detail_from_row(
+    row: crate::db::sqlite::repo::request_repo::RequestDetailRow,
+    connections: &[ProviderConnection],
+) -> RequestDetailRecord {
+    let duration = row
+        .data
+        .get("durationMs")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    RequestDetailRecord {
+        id: row.id,
+        provider: row.provider.unwrap_or_default(),
+        model: row.model.unwrap_or_default(),
+        account: row.connection_id.as_deref().and_then(|connection_id| {
+            connections
+                .iter()
+                .find(|connection| connection.id == connection_id)
+                .map(|connection| {
+                    connection
+                        .name
+                        .clone()
+                        .or_else(|| connection.email.clone())
+                        .unwrap_or_else(|| connection_id.to_string())
+                })
+        }),
+        connection_id: row.connection_id,
+        timestamp: row.timestamp,
+        status: row.status.unwrap_or_else(|| "interrupted".to_string()),
+        status_code: row
+            .data
+            .get("statusCode")
+            .and_then(Value::as_u64)
+            .and_then(|value| u16::try_from(value).ok()),
+        latency: RequestLatency {
+            ttft: row
+                .data
+                .get("ttftMs")
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            total: duration,
+        },
+        tokens: row
+            .data
+            .get("tokens")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_else(empty_token_usage),
+        request: None,
+        provider_request: None,
+        provider_response: None,
+        response: None,
+        endpoint: row
+            .data
+            .get("endpoint")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        method: row
+            .data
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or("POST")
+            .to_string(),
+        requested_model: row
+            .data
+            .get("requestedModel")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        api_key_id: row.api_key_id,
+        api_key_name: row.api_key_name,
+        correlation_id: row.correlation_id,
+        cost: row
+            .data
+            .get("cost")
+            .and_then(Value::as_f64)
+            .unwrap_or_default(),
+        error: row
+            .data
+            .get("error")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    }
 }
 
 fn usage_provider_options(
@@ -1597,9 +1690,10 @@ fn usage_provider_options(
         .iter()
         .map(|node| (node.id.as_str(), node.name.as_str()))
         .collect::<HashMap<_, _>>();
-    let provider_ids = build_request_detail_records(usage_db)
-        .into_iter()
-        .map(|detail| detail.provider)
+    let provider_ids = usage_db
+        .history
+        .iter()
+        .filter_map(|entry| entry.provider.clone())
         .filter(|provider| !provider.is_empty())
         .collect::<BTreeSet<_>>();
 
@@ -1615,45 +1709,8 @@ fn usage_provider_options(
         .collect()
 }
 
-fn build_request_detail_records(usage_db: &UsageDb) -> Vec<RequestDetailRecord> {
-    let mut details = usage_db
-        .history
-        .iter()
-        .enumerate()
-        .map(|(index, entry)| RequestDetailRecord {
-            id: entry
-                .extra
-                .get("id")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .unwrap_or_else(|| fallback_request_detail_id(entry, index)),
-            provider: entry.provider.clone().unwrap_or_default(),
-            model: entry.model.clone(),
-            connection_id: entry.connection_id.clone(),
-            timestamp: entry
-                .timestamp
-                .clone()
-                .unwrap_or_else(|| Utc::now().to_rfc3339()),
-            status: entry
-                .status
-                .clone()
-                .unwrap_or_else(|| "success".to_string()),
-            latency: request_latency_from_extra(&entry.extra),
-            tokens: usage_tokens(entry),
-            request: entry.extra.get("request").cloned(),
-            provider_request: entry.extra.get("providerRequest").cloned(),
-            provider_response: entry.extra.get("providerResponse").cloned(),
-            response: entry.extra.get("response").cloned(),
-            endpoint: entry.endpoint.clone(),
-        })
-        .collect::<Vec<_>>();
-
-    details.sort_by(|left, right| right.timestamp.cmp(&left.timestamp));
-    details
-}
-
-fn usage_tokens(entry: &UsageEntry) -> TokenUsage {
-    entry.tokens.clone().unwrap_or(TokenUsage {
+fn empty_token_usage() -> TokenUsage {
+    TokenUsage {
         prompt_tokens: None,
         input_tokens: None,
         completion_tokens: None,
@@ -1664,27 +1721,7 @@ fn usage_tokens(entry: &UsageEntry) -> TokenUsage {
         cached_tokens: None,
         reasoning_tokens: None,
         extra: BTreeMap::new(),
-    })
-}
-
-fn request_latency_from_extra(extra: &BTreeMap<String, Value>) -> RequestLatency {
-    extra
-        .get("latency")
-        .cloned()
-        .and_then(|value| serde_json::from_value::<RequestLatency>(value).ok())
-        .unwrap_or_default()
-}
-
-fn fallback_request_detail_id(entry: &UsageEntry, index: usize) -> String {
-    let timestamp = entry.timestamp.as_deref().unwrap_or("unknown");
-    format!(
-        "{timestamp}-{index}-{}",
-        entry
-            .model
-            .chars()
-            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
-            .collect::<String>()
-    )
+    }
 }
 
 fn parse_usage_timestamp(value: &str) -> Option<chrono::DateTime<Utc>> {
@@ -1758,8 +1795,10 @@ mod tests {
             provider: "openai".to_string(),
             model: "gpt-4".to_string(),
             connection_id: Some("conn-456".to_string()),
+            account: Some("Primary".to_string()),
             endpoint: Some("/v1/chat/completions".to_string()),
             status: "success".to_string(),
+            status_code: Some(200),
             latency: RequestLatency {
                 ttft: 120,
                 total: 320,
@@ -1780,6 +1819,13 @@ mod tests {
             provider_request: None,
             provider_response: None,
             response: Some(serde_json::json!({ "content": "world" })),
+            method: "POST".to_string(),
+            requested_model: Some("gpt-4".to_string()),
+            api_key_id: Some("key-1".to_string()),
+            api_key_name: Some("OpenCode".to_string()),
+            correlation_id: Some("request-1".to_string()),
+            cost: 0.01,
+            error: None,
         };
         let json = serde_json::to_string(&detail).unwrap();
         assert!(json.contains("gpt-4"));

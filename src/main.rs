@@ -4,7 +4,7 @@ use clap::Parser;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use openproxy::cli::config::ResolvedConfig;
@@ -329,6 +329,21 @@ async fn main() -> anyhow::Result<()> {
 
     let db = Db::load().await?;
     seed_default_api_key_if_missing(&db).await?;
+    let request_log_db = db.sqlite.clone();
+    match tokio::task::spawn_blocking(move || {
+        request_log_db.with_conn(|conn| {
+            openproxy::db::sqlite::repo::request_repo::mark_pending_interrupted(conn)
+        })
+    })
+    .await
+    {
+        Ok(Ok(count)) if count > 0 => {
+            info!(count, "marked stale request logs as interrupted");
+        }
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => warn!(%error, "failed to recover stale request logs"),
+        Err(error) => warn!(%error, "request log recovery task failed"),
+    }
     let db = Arc::new(db);
     spawn_watcher(db.clone());
     spawn_auto_backup(db.clone());

@@ -217,6 +217,9 @@ mod tests {
             "idx_rd_provider",
             "idx_rd_model",
             "idx_rd_conn",
+            "idx_rd_api_key",
+            "idx_rd_correlation",
+            "idx_rd_status",
         ] {
             assert!(
                 names.iter().any(|n| n == required),

@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use openproxy::db::sqlite::repo::request_repo::{self, RequestDetailFilter};
 use openproxy::db::Db;
 use openproxy::server::state::AppState;
 use openproxy::types::{ApiKey, Combo, ProviderConnection, ProviderNode, Settings};
@@ -14,7 +15,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn active_key(key: &str) -> ApiKey {
     ApiKey {
-        id: format!("{key}-id"),
+        id: "test-key-id".into(),
         name: "Local".into(),
         key: key.into(),
         machine_id: None,
@@ -143,7 +144,7 @@ async fn chat_completions_streams_openai_compatible_response() {
     )
     .await;
 
-    let app = openproxy::build_app(state);
+    let app = openproxy::build_app(state.clone());
     let response = app
         .oneshot(
             Request::builder()
@@ -181,6 +182,16 @@ async fn chat_completions_streams_openai_compatible_response() {
     let text = String::from_utf8(body.to_vec()).unwrap();
     assert!(text.contains("data: {\"choices\""));
     assert!(text.contains("data: [DONE]"));
+
+    let logs = state
+        .db
+        .sqlite
+        .with_conn(|conn| request_repo::list(conn, &RequestDetailFilter::default(), 10, 0))
+        .unwrap();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].status.as_deref(), Some("success"));
+    assert_eq!(logs[0].api_key_id.as_deref(), Some("test-key-id"));
+    assert_eq!(logs[0].api_key_name.as_deref(), Some("Local"));
 }
 
 #[tokio::test]
@@ -375,6 +386,20 @@ async fn chat_completions_falls_back_to_next_account_on_retryable_error() {
         .unwrap();
     assert!(first.extra.contains_key("modelLock_gpt-4o-mini"));
     assert_eq!(first.error_code.as_deref(), Some("429"));
+
+    let logs = state
+        .db
+        .sqlite
+        .with_conn(|conn| request_repo::list(conn, &RequestDetailFilter::default(), 10, 0))
+        .unwrap();
+    assert_eq!(logs.len(), 2);
+    assert_eq!(logs[0].status.as_deref(), Some("success"));
+    assert_eq!(logs[1].status.as_deref(), Some("error"));
+    assert_eq!(logs[0].correlation_id, logs[1].correlation_id);
+    assert_eq!(logs[0].api_key_id.as_deref(), Some("test-key-id"));
+    assert!(!logs
+        .iter()
+        .any(|log| log.data.to_string().contains("valid-bearer")));
 }
 
 #[tokio::test]

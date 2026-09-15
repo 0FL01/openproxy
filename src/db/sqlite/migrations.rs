@@ -48,11 +48,56 @@ pub fn apply_pending_migrations(conn: &Connection) -> rusqlite::Result<()> {
     // Ensure the apiKeys table carries the monthly_budget_usd column
     // (free-tier Feature 3). Safe to run on every open — no-op when present.
     add_api_keys_budget_column(conn)?;
+    add_request_details_log_columns(conn)?;
 
     let current = get_schema_version(conn)?;
     if current < SCHEMA_VERSION {
         set_schema_version(conn, SCHEMA_VERSION)?;
     }
+    Ok(())
+}
+
+/// Add application-log attribution columns and indexes to databases created
+/// before schema v3. Column probes keep this safe on every startup.
+fn add_request_details_log_columns(conn: &Connection) -> rusqlite::Result<()> {
+    let table_exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='requestDetails'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count > 0)
+        .unwrap_or(false);
+    if !table_exists {
+        return Ok(());
+    }
+
+    for (column, definition) in [
+        ("apiKeyId", "TEXT"),
+        ("apiKeyName", "TEXT"),
+        ("correlationId", "TEXT"),
+    ] {
+        let has_column: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('requestDetails') WHERE name = ?1",
+                [column],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|count| count > 0)
+            .unwrap_or(false);
+        if !has_column {
+            conn.execute(
+                &format!("ALTER TABLE requestDetails ADD COLUMN {column} {definition}"),
+                [],
+            )?;
+        }
+    }
+
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_rd_api_key ON requestDetails(apiKeyId);\
+         CREATE INDEX IF NOT EXISTS idx_rd_correlation ON requestDetails(correlationId);\
+         CREATE INDEX IF NOT EXISTS idx_rd_status ON requestDetails(status);",
+    )?;
     Ok(())
 }
 
@@ -119,5 +164,32 @@ mod tests {
         set_schema_version(&conn, SCHEMA_VERSION - 1).unwrap();
         apply_pending_migrations(&conn).unwrap();
         assert_eq!(get_schema_version(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn upgrades_legacy_request_details_for_application_logs() {
+        let conn = fresh();
+        conn.execute_batch(
+            "CREATE TABLE _meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);\
+             CREATE TABLE requestDetails(\
+                id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, provider TEXT, model TEXT,\
+                connectionId TEXT, status TEXT, data TEXT NOT NULL\
+             );",
+        )
+        .unwrap();
+
+        apply_pending_migrations(&conn).unwrap();
+
+        for column in ["apiKeyId", "apiKeyName", "correlationId"] {
+            let present: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('requestDetails') WHERE name = ?1",
+                    [column],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|count| count == 1)
+                .unwrap();
+            assert!(present, "missing migrated column {column}");
+        }
     }
 }

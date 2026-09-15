@@ -1,6 +1,6 @@
 import { Suspense, useState, useEffect } from "react";
 // import { useSearchParams, useRouter } from "next/navigation";  // ported: next.js -> Astro+React
-import { UsageStats, RequestLogger, CardSkeleton, SegmentedControl } from "@/shared/components";
+import { UsageStats, CardSkeleton, SegmentedControl } from "@/shared/components";
 import RequestDetailsTab from "@/components/usage/RequestDetailsTab";
 import ProviderBreakdownTable from "@/components/usage/ProviderBreakdownTable";
 import UsageAnalyticsGrid from "@/components/usage/UsageAnalyticsGrid";
@@ -45,7 +45,7 @@ function UsageContent() {
   const tabFromUrl = searchParams.get("tab");
   const activeTab =
     tabFromUrl &&
-    ["overview", "logs", "details", "providers", "analytics", "compression"].includes(tabFromUrl)
+    ["overview", "details", "providers", "analytics", "compression"].includes(tabFromUrl)
       ? tabFromUrl
       : "overview";
 
@@ -94,7 +94,6 @@ function UsageContent() {
               <UsageStats period={period} setPeriod={setPeriod} hidePeriodSelector />
             </Suspense>
           )}
-          {activeTab === "logs" && <RequestLogger />}
           {activeTab === "providers" && <ProviderBreakdownTable period={period} />}
           {activeTab === "analytics" && <UsageAnalyticsGrid period={period} />}
           {activeTab === "compression" && <CompressionStats period={period} />}

@@ -10,7 +10,7 @@
 
 /// Current schema version. Bump whenever you add a migration to
 /// `migrations/`.
-pub const SCHEMA_VERSION: i32 = 2;
+pub const SCHEMA_VERSION: i32 = 3;
 
 /// All DDL statements that define the OpenProxy schema. Run inside a single
 /// transaction during `init_db`.
@@ -207,6 +207,9 @@ pub const TABLES_SQL: &[&str] = &[
         model       TEXT,
         connectionId TEXT,
         status      TEXT,
+        apiKeyId    TEXT,
+        apiKeyName  TEXT,
+        correlationId TEXT,
         data        TEXT NOT NULL
     )
     "#,

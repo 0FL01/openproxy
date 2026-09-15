@@ -43,6 +43,7 @@ use crate::core::utils::client_detector::{detect_client_tool, is_native_passthro
 use crate::core::utils::stream_flags::resolve_stream_flags;
 use crate::core::utils::tool_deduper::dedupe_tools;
 use crate::payload_rules::{apply_request_rules, apply_system_prompt};
+use crate::server::application_logs::{AttemptLog, RequestLogContext};
 use crate::server::auth::{extract_api_key, require_api_key, require_api_key_with_reload};
 use crate::server::state::AppState;
 use crate::types::{AppDb, ProviderConnection, TokenUsage};
@@ -326,11 +327,23 @@ async fn chat_completions_impl(
     strip_forwarding_headers(&mut headers);
 
     let presented_api_key = extract_api_key(&headers);
-    if require_api_key_auth && state.db.snapshot().settings.require_api_key {
-        if let Err(error) = require_api_key_with_reload(&headers, &state.db).await {
-            return auth_error_response(error);
-        }
-    }
+    let authenticated_api_key =
+        if require_api_key_auth && state.db.snapshot().settings.require_api_key {
+            match require_api_key_with_reload(&headers, &state.db).await {
+                Ok(api_key) => Some(api_key),
+                Err(error) => return auth_error_response(error),
+            }
+        } else {
+            presented_api_key.as_deref().and_then(|key| {
+                state
+                    .db
+                    .snapshot()
+                    .api_key_map
+                    .get(key)
+                    .filter(|api_key| api_key.is_active())
+                    .cloned()
+            })
+        };
 
     let Json(mut body) = match body {
         Ok(body) => body,
@@ -367,6 +380,9 @@ async fn chat_completions_impl(
         return json_error_response(StatusCode::BAD_REQUEST, "Missing model");
     };
     let model_str = model_str.as_str();
+    let request_log_context = authenticated_api_key
+        .as_ref()
+        .map(|api_key| RequestLogContext::new(state.db.clone(), api_key, endpoint, model_str));
 
     let snapshot = state.db.snapshot();
     let resolved = get_model_info(model_str, &snapshot);
@@ -560,6 +576,7 @@ async fn chat_completions_impl(
                 let f_api_key = presented_api_key.clone();
                 let f_client_tool = client_tool;
                 let f_headers = headers_map.clone();
+                let f_log_context = request_log_context.clone();
 
                 let panel_count = context_allowed_models.len();
                 let fusion_cfg = fusion_config_for(&snapshot, &combo_name, panel_count);
@@ -583,6 +600,7 @@ async fn chat_completions_impl(
                             let api_key = f_api_key.clone();
                             let client_tool = f_client_tool;
                             let headers = f_headers.clone();
+                            let log_context = f_log_context.clone();
                             async move {
                                 let response = dispatch_fusion_leg(
                                     &state,
@@ -590,6 +608,7 @@ async fn chat_completions_impl(
                                     &panel_body,
                                     &model,
                                     api_key.as_deref(),
+                                    log_context.as_ref(),
                                     endpoint,
                                     client_tool,
                                     &headers,
@@ -623,6 +642,7 @@ async fn chat_completions_impl(
                             let api_key = f_api_key.clone();
                             let client_tool = f_client_tool;
                             let headers = f_headers.clone();
+                            let log_context = f_log_context.clone();
                             async move {
                                 let response = dispatch_fusion_leg(
                                     &state,
@@ -630,6 +650,7 @@ async fn chat_completions_impl(
                                     &panel_body,
                                     &model,
                                     api_key.as_deref(),
+                                    log_context.as_ref(),
                                     endpoint,
                                     client_tool,
                                     &headers,
@@ -676,6 +697,7 @@ async fn chat_completions_impl(
                                 &dispatch_body,
                                 &model,
                                 presented_api_key.as_deref(),
+                                request_log_context.as_ref(),
                                 endpoint,
                                 client_tool,
                                 &headers_map,
@@ -707,6 +729,7 @@ async fn chat_completions_impl(
             } else {
                 let attempted_members = attempted_members.clone();
                 let combo_headers = headers_map.clone();
+                let combo_log_context = request_log_context.clone();
                 execute_combo_strategy_full(
                     &context_allowed_models,
                     Some(&combo_name),
@@ -722,6 +745,7 @@ async fn chat_completions_impl(
                         let combo_model = combo_model.to_string();
                         let api_key = combo_api_key.clone();
                         let headers = combo_headers.clone();
+                        let log_context = combo_log_context.clone();
                         // 9router parity: history stripping applies ONLY to
                         // models the capacity adapter added — never to the
                         // original combo members.
@@ -771,6 +795,7 @@ async fn chat_completions_impl(
                                 &body,
                                 &resolved_model,
                                 api_key.as_deref(),
+                                log_context.as_ref(),
                                 endpoint,
                                 &plan_for_combo,
                                 client_tool_for_combo,
@@ -848,6 +873,7 @@ async fn chat_completions_impl(
                 &body,
                 model_str,
                 presented_api_key.as_deref(),
+                request_log_context.as_ref(),
                 endpoint,
                 &plan,
                 client_tool,
@@ -1101,6 +1127,7 @@ async fn dispatch_fusion_leg(
     leg_body: &Value,
     model: &str,
     api_key: Option<&str>,
+    log_context: Option<&RequestLogContext>,
     endpoint: Option<&'static str>,
     client_tool: Option<ClientTool>,
     headers: &std::collections::HashMap<String, String>,
@@ -1128,6 +1155,7 @@ async fn dispatch_fusion_leg(
         leg_body,
         &resolved_model,
         api_key,
+        log_context,
         endpoint,
         &plan,
         client_tool,
@@ -1201,6 +1229,7 @@ async fn execute_single_model(
     request_body: &Value,
     model_str: &str,
     api_key: Option<&str>,
+    log_context: Option<&RequestLogContext>,
     endpoint: Option<&'static str>,
     base_plan: &RequestPlan,
     client_tool: Option<ClientTool>,
@@ -1419,6 +1448,7 @@ async fn execute_single_model(
         &dispatch_model,
         body,
         api_key,
+        log_context,
         endpoint,
         &plan,
         client_tool,
@@ -1434,6 +1464,7 @@ async fn forward_with_provider_fallback(
     model: &str,
     mut request_body: Value,
     api_key: Option<&str>,
+    log_context: Option<&RequestLogContext>,
     endpoint: Option<&'static str>,
     plan: &RequestPlan,
     client_tool: Option<ClientTool>,
@@ -1648,6 +1679,10 @@ async fn forward_with_provider_fallback(
             .usage_live
             .start_request(model, provider, Some(connection.id.as_str()))
             .await;
+        let attempt_log = match log_context {
+            Some(context) => context.start_attempt(provider, model, &connection.id).await,
+            None => None,
+        };
 
         use crate::core::executor::{
             AntigravityExecutionRequest, AntigravityExecutor, AzureExecutionRequest, AzureExecutor,
@@ -1666,7 +1701,7 @@ async fn forward_with_provider_fallback(
         let is_codex_model = provider == "codex";
         let is_cursor_model =
             model.starts_with("cursor/") || provider == "cu" || provider == "cursor";
-        let executor_result: Result<KiroExecutorResponse, ComboAttemptError> =
+        let executor_result: Result<KiroExecutorResponse, ComboAttemptError> = async {
             if provider == "kiro" {
                 let executor = KiroExecutor::new(state.client_pool.clone(), provider_node)
                     .map_err(|e| ComboAttemptError {
@@ -2412,7 +2447,9 @@ async fn forward_with_provider_fallback(
                     transformed_body: result.transformed_body,
                     transport: result.transport,
                 })
-            };
+            }
+        }
+        .await;
 
         let execution = executor_result;
 
@@ -2435,6 +2472,7 @@ async fn forward_with_provider_fallback(
                             Some(connection.id.as_str()),
                             api_key,
                             endpoint,
+                            attempt_log,
                         )
                         .await;
                         return Ok(crate::server::api::budget_guard::with_budget_header(
@@ -2459,6 +2497,7 @@ async fn forward_with_provider_fallback(
                             api_key,
                             endpoint,
                             plan,
+                            attempt_log,
                         )
                         .await;
                         return Ok(crate::server::api::budget_guard::with_budget_header(
@@ -2477,6 +2516,7 @@ async fn forward_with_provider_fallback(
                             endpoint,
                             plan,
                             tool_name_map.as_ref(),
+                            attempt_log,
                         )
                         .await;
                         let response =
@@ -2500,6 +2540,7 @@ async fn forward_with_provider_fallback(
                         plan,
                         tool_name_map.as_ref(),
                         custom_tool_names.clone(),
+                        attempt_log,
                     )
                     .await;
                     let response =
@@ -2516,6 +2557,11 @@ async fn forward_with_provider_fallback(
                 let header_retry_after = retry_after_from_headers(result.response.headers());
                 let (message, body_retry_after) =
                     extract_error_message_and_retry_after(result.response).await;
+                if let Some(attempt_log) = attempt_log {
+                    attempt_log
+                        .finish("error", Some(status.as_u16()), None, Some(&message))
+                        .await;
+                }
                 let retry_after = header_retry_after.or(body_retry_after);
                 state
                     .usage_live
@@ -2647,6 +2693,11 @@ async fn forward_with_provider_fallback(
             }
             Err(error) => {
                 let message = format!("{:?}", error);
+                if let Some(attempt_log) = attempt_log {
+                    attempt_log
+                        .finish("error", Some(error.status), None, Some(&message))
+                        .await;
+                }
                 state
                     .usage_live
                     .finish_request(model, provider, Some(connection.id.as_str()), true)
@@ -2685,6 +2736,7 @@ async fn proxy_dashboard_sse_with_usage_tracking(
     connection_id: Option<&str>,
     api_key: Option<&str>,
     endpoint: Option<&str>,
+    attempt_log: Option<AttemptLog>,
 ) -> Response {
     let status = response.status();
     let headers = response.headers().clone();
@@ -2708,6 +2760,22 @@ async fn proxy_dashboard_sse_with_usage_tracking(
     } else {
         None
     };
+    if let Some(attempt_log) = attempt_log {
+        if body_complete {
+            attempt_log
+                .finish("success", Some(status.as_u16()), token_usage.as_ref(), None)
+                .await;
+        } else {
+            attempt_log
+                .finish(
+                    "error",
+                    Some(StatusCode::BAD_GATEWAY.as_u16()),
+                    None,
+                    Some("Upstream response body ended unexpectedly"),
+                )
+                .await;
+        }
+    }
 
     state
         .usage_live
@@ -3167,6 +3235,7 @@ async fn proxy_sse_to_json_response(
     api_key: Option<&str>,
     endpoint: Option<&str>,
     plan: &RequestPlan,
+    attempt_log: Option<AttemptLog>,
 ) -> Response {
     let status = response.status();
     let (body_bytes, body_complete) = collect_upstream_response_bytes(response).await;
@@ -3188,7 +3257,7 @@ async fn proxy_sse_to_json_response(
 
     let out = Bytes::from(serde_json::to_vec(&json_body).unwrap_or_default());
 
-    if body_complete {
+    let usage = if body_complete {
         let usage = extract_token_usage_from_bytes(&out);
         state
             .usage_tracker()
@@ -3201,6 +3270,25 @@ async fn proxy_sse_to_json_response(
                 endpoint,
             )
             .await;
+        usage
+    } else {
+        None
+    };
+    if let Some(attempt_log) = attempt_log {
+        if body_complete {
+            attempt_log
+                .finish("success", Some(status.as_u16()), usage.as_ref(), None)
+                .await;
+        } else {
+            attempt_log
+                .finish(
+                    "error",
+                    Some(StatusCode::BAD_GATEWAY.as_u16()),
+                    None,
+                    Some("Upstream response body ended unexpectedly"),
+                )
+                .await;
+        }
     }
     state
         .usage_live
@@ -3232,6 +3320,7 @@ async fn proxy_response_with_usage_tracking(
     endpoint: Option<&str>,
     plan: &RequestPlan,
     tool_name_map: Option<&std::collections::BTreeMap<String, String>>,
+    attempt_log: Option<AttemptLog>,
 ) -> Response {
     let status = response.status();
     let headers = response.headers().clone();
@@ -3264,9 +3353,11 @@ async fn proxy_response_with_usage_tracking(
     } else {
         unenveloped_body.clone()
     };
+    let token_usage = body_complete
+        .then(|| extract_token_usage_from_bytes(decloaked_body.as_ref()))
+        .flatten();
 
     let final_body = if body_complete {
-        let token_usage = extract_token_usage_from_bytes(decloaked_body.as_ref());
         state
             .usage_tracker()
             .track_request(
@@ -3344,6 +3435,23 @@ async fn proxy_response_with_usage_tracking(
     } else {
         Body::from(decloaked_body)
     };
+
+    if let Some(attempt_log) = attempt_log {
+        if body_complete {
+            attempt_log
+                .finish("success", Some(status.as_u16()), token_usage.as_ref(), None)
+                .await;
+        } else {
+            attempt_log
+                .finish(
+                    "error",
+                    Some(StatusCode::BAD_GATEWAY.as_u16()),
+                    None,
+                    Some("Upstream response body ended unexpectedly"),
+                )
+                .await;
+        }
+    }
 
     build_proxied_response(status, &headers, final_body)
 }
@@ -3449,6 +3557,7 @@ async fn proxy_response_with_pending_tracking(
     plan: &RequestPlan,
     tool_name_map: Option<&std::collections::BTreeMap<String, String>>,
     custom_tool_names: Option<String>,
+    mut attempt_log: Option<AttemptLog>,
 ) -> Response {
     // Capture an owned copy of api_key for usage recording inside the stream
     // (the SSE stream requires 'static lifetimes; &str borrows can't escape).
@@ -3492,6 +3601,16 @@ async fn proxy_response_with_pending_tracking(
             status.as_u16(),
             msg.chars().take(120).collect::<String>()
         );
+        if let Some(attempt_log) = attempt_log.take() {
+            attempt_log
+                .finish(
+                    "error",
+                    Some(StatusCode::BAD_GATEWAY.as_u16()),
+                    None,
+                    Some("Upstream returned a non-streaming response to a streaming request"),
+                )
+                .await;
+        }
         let err = json!({
             "error": {
                 "message": format!("Upstream returned non-SSE content-type '{ct}': {msg}"),
@@ -3539,6 +3658,7 @@ async fn proxy_response_with_pending_tracking(
             let mut transformer = transformer;
             let mut pending_text = String::new();
             let custom_tool_names = custom_tool_names.clone();
+            let mut attempt_log = attempt_log;
             let stream = async_stream::stream! {
                 let mut upstream = response.bytes_stream();
                 // Persistent state for streaming format translation (e.g. Responses API -> Chat Completions).
@@ -3576,8 +3696,11 @@ async fn proxy_response_with_pending_tracking(
                                 model = %model,
                                 "SSE stalled, closing stream"
                             );
-                            record_streaming_usage(&state, &provider, &model,
+                            let usage = record_streaming_usage(&state, &provider, &model,
                                 connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data).await;
+                            if let Some(log) = attempt_log.take() {
+                                log.finish("error", Some(502), usage.as_ref(), Some("Upstream SSE stream stalled")).await;
+                            }
                             state
                                 .usage_live
                                 .finish_request(&model, &provider, connection_id.as_deref(), true)
@@ -3608,8 +3731,11 @@ async fn proxy_response_with_pending_tracking(
                                     // (Combo fallback itself happens in the
                                     // executor's pre-stream peek; this flag is
                                     // the backstop for already-open streams.)
-                                    record_streaming_usage(&state, &provider, &model,
+                                    let usage = record_streaming_usage(&state, &provider, &model,
                                         connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data).await;
+                                    if let Some(log) = attempt_log.take() {
+                                        log.finish("error", Some(403), usage.as_ref(), Some("Provider billing block")).await;
+                                    }
                                     state
                                         .usage_live
                                         .finish_request(&model, &provider, connection_id.as_deref(), true)
@@ -3654,8 +3780,11 @@ async fn proxy_response_with_pending_tracking(
                                         }
                                     }
                                 }
-                                record_streaming_usage(&state, &provider, &model,
+                                let usage = record_streaming_usage(&state, &provider, &model,
                                     connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data).await;
+                                if let Some(log) = attempt_log.take() {
+                                    log.finish("success", Some(status.as_u16()), usage.as_ref(), None).await;
+                                }
                                 state
                                     .usage_live
                                     .finish_request(&model, &provider, connection_id.as_deref(), false)
@@ -3665,8 +3794,11 @@ async fn proxy_response_with_pending_tracking(
                         }
                         Ok(Ok(None)) => break,
                         Ok(Err(_)) => {
-                            record_streaming_usage(&state, &provider, &model,
+                            let usage = record_streaming_usage(&state, &provider, &model,
                                 connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data).await;
+                            if let Some(log) = attempt_log.take() {
+                                log.finish("error", Some(502), usage.as_ref(), Some("Upstream stream error")).await;
+                            }
                             state
                                 .usage_live
                                 .finish_request(&model, &provider, connection_id.as_deref(), true)
@@ -3707,8 +3839,11 @@ async fn proxy_response_with_pending_tracking(
                         }
                     }
                 }
-                record_streaming_usage(&state, &provider, &model,
+                let usage = record_streaming_usage(&state, &provider, &model,
                     connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data).await;
+                if let Some(log) = attempt_log.take() {
+                    log.finish("success", Some(status.as_u16()), usage.as_ref(), None).await;
+                }
                 state
                     .usage_live
                     .finish_request(&model, &provider, connection_id.as_deref(), false)
@@ -3726,6 +3861,7 @@ async fn proxy_response_with_pending_tracking(
             let mut transformer = transformer;
             let mut pending_text = String::new();
             let custom_tool_names2 = custom_tool_names.clone();
+            let mut attempt_log = attempt_log;
             let stream = async_stream::stream! {
                 // Persistent state for streaming format translation (e.g. Responses API -> Chat Completions).
                 let mut t_state = if needs_stream_translation {
@@ -3755,8 +3891,11 @@ async fn proxy_response_with_pending_tracking(
                                 model = %model,
                                 "SSE stalled, closing stream"
                             );
-                            record_streaming_usage(&state, &provider, &model,
+                            let usage = record_streaming_usage(&state, &provider, &model,
                                 connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data).await;
+                            if let Some(log) = attempt_log.take() {
+                                log.finish("error", Some(502), usage.as_ref(), Some("Upstream SSE stream stalled")).await;
+                            }
                             state
                                 .usage_live
                                 .finish_request(&model, &provider, connection_id.as_deref(), true)
@@ -3803,8 +3942,11 @@ async fn proxy_response_with_pending_tracking(
                             }
                         }
                         Err(_) => {
-                            record_streaming_usage(&state, &provider, &model,
+                            let usage = record_streaming_usage(&state, &provider, &model,
                                 connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data).await;
+                            if let Some(log) = attempt_log.take() {
+                                log.finish("error", Some(502), usage.as_ref(), Some("Upstream stream error")).await;
+                            }
                             state
                                 .usage_live
                                 .finish_request(&model, &provider, connection_id.as_deref(), true)
@@ -3837,8 +3979,11 @@ async fn proxy_response_with_pending_tracking(
                         }
                     }
                 }
-                record_streaming_usage(&state, &provider, &model,
+                let usage = record_streaming_usage(&state, &provider, &model,
                     connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data).await;
+                if let Some(log) = attempt_log.take() {
+                    log.finish("success", Some(status.as_u16()), usage.as_ref(), None).await;
+                }
                 state
                     .usage_live
                     .finish_request(&model, &provider, connection_id.as_deref(), false)
@@ -3880,7 +4025,7 @@ async fn record_streaming_usage(
     api_key: Option<&str>,
     endpoint: Option<&'static str>,
     last_data: &Option<Bytes>,
-) {
+) -> Option<TokenUsage> {
     let usage = last_data
         .as_ref()
         .and_then(|b| extract_token_usage_from_bytes(b));
@@ -3895,6 +4040,7 @@ async fn record_streaming_usage(
             endpoint,
         )
         .await;
+    usage
 }
 
 fn responses_stream_completed(buffer: &mut String, chunk: &[u8]) -> bool {

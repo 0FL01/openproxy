@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use openproxy::db::sqlite::repo::request_repo::{self, NewRequestDetail};
 use openproxy::db::Db;
 use openproxy::server::state::AppState;
 use openproxy::types::{ApiKey, ProviderNode, TokenUsage, UsageEntry};
@@ -84,6 +85,40 @@ async fn build_test_app() -> axum::Router {
     })
     .await
     .expect("seed usage");
+
+    db.sqlite
+        .with_conn(|conn| {
+            request_repo::insert(
+                conn,
+                &NewRequestDetail {
+                    id: "detail-1",
+                    timestamp: "2026-05-06T10:15:00Z",
+                    provider: Some("openai"),
+                    model: Some("gpt-4.1"),
+                    connection_id: Some("conn-1"),
+                    status: "success",
+                    api_key_id: Some("test-key-id"),
+                    api_key_name: Some("test"),
+                    correlation_id: Some("request-1"),
+                    data: &json!({
+                        "method": "POST",
+                        "endpoint": "/v1/chat/completions",
+                        "requestedModel": "openai/gpt-4.1",
+                        "statusCode": 200,
+                        "durationMs": 456,
+                        "ttftMs": 123,
+                        "tokens": {
+                            "prompt_tokens": 100,
+                            "completion_tokens": 50,
+                            "total_tokens": 150
+                        },
+                        "cost": 0.5,
+                        "error": null
+                    }),
+                },
+            )
+        })
+        .expect("seed request log");
 
     openproxy::build_app(AppState::new(db))
 }
@@ -173,7 +208,7 @@ async fn usage_request_details_route_returns_paginated_records() {
             Request::builder()
                 .header("authorization", format!("Bearer {TEST_KEY}"))
                 .method("GET")
-                .uri("/api/usage/request-details?page=1&pageSize=20&provider=openai")
+                .uri("/api/usage/request-details?page=1&pageSize=20&provider=openai&apiKeyId=test-key-id&status=success")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -192,4 +227,7 @@ async fn usage_request_details_route_returns_paginated_records() {
     assert_eq!(json["details"][0]["id"], "detail-1");
     assert_eq!(json["details"][0]["tokens"]["prompt_tokens"], 100);
     assert_eq!(json["details"][0]["latency"]["ttft"], 123);
+    assert_eq!(json["details"][0]["apiKeyId"], "test-key-id");
+    assert_eq!(json["details"][0]["apiKeyName"], "test");
+    assert!(!String::from_utf8_lossy(&body).contains(TEST_KEY));
 }
