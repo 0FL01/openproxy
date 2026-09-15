@@ -8,7 +8,6 @@ use crate::core::account_fallback::AccountRegistry;
 use crate::core::circuit_breaker::CircuitBreakerRegistry;
 use crate::core::executor::ClientPool;
 use crate::core::health::{health_registry, HealthRegistry};
-use crate::core::mitm::server::MitmProxyHandle;
 use crate::core::model::models_dev::ModelsDevCatalog;
 use crate::db::Db;
 use crate::oauth::pending::PendingFlowStore;
@@ -66,10 +65,6 @@ pub struct AppState {
     ///   3. embedded assets (default)
     pub web_dir: Option<PathBuf>,
 
-    /// Live MITM proxy listener handle, when one is running. Drop or
-    /// `stop()` to shut it down. `None` while the proxy is not running.
-    pub mitm_handle: Arc<tokio::sync::Mutex<Option<MitmProxyHandle>>>,
-
     /// Triggered on graceful shutdown (SIGTERM, SIGINT, or API call).
     /// Await `.notified()` to block until shutdown is requested.
     pub shutdown_signal: Arc<Notify>,
@@ -106,7 +101,6 @@ impl AppState {
             dashboard_sidecar_url: None,
             dashboard_client: None,
             web_dir: None,
-            mitm_handle: Arc::new(tokio::sync::Mutex::new(None)),
             shutdown_signal: Arc::new(Notify::new()),
             circuit_breaker: Arc::new(CircuitBreakerRegistry::default()),
             health: health_registry(),

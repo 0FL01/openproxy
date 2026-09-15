@@ -125,7 +125,7 @@ pub const TABLES_SQL: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_combo_name
         ON combos(name)
     "#,
-    // Generic key/value store for modelAliases, customModels, mitmAlias,
+    // Generic key/value store for modelAliases, customModels,
     // Configuration maps are stored as JSON blobs scoped by `scope`.
     r#"
     CREATE TABLE IF NOT EXISTS kv (

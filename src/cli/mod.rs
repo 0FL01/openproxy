@@ -23,7 +23,6 @@ pub mod db;
 pub mod doctor;
 pub mod key_ext;
 pub mod logs;
-pub mod mitm;
 pub mod models;
 pub mod output;
 pub mod pool_ext;
@@ -187,11 +186,6 @@ pub enum Command {
     Models {
         #[command(subcommand)]
         cmd: models::ModelsCmd,
-    },
-    /// Manage the in-process MITM router (PLAN v3 §4.10).
-    Mitm {
-        #[command(subcommand)]
-        cmd: mitm::MitmCmd,
     },
     /// Manage CLI-tool integrations (claude, codex, copilot, ...).
     Tool {
@@ -708,14 +702,6 @@ impl Cli {
                 Command::Chat { cmd } => {
                     let resolved = config::ResolvedConfig::resolve(overrides)?;
                     let exit = rt.block_on(chat::run(cmd, &resolved, ctx))?;
-                    if exit != 0 {
-                        std::process::exit(exit);
-                    }
-                    Ok(())
-                }
-                Command::Mitm { cmd } => {
-                    let resolved = config::ResolvedConfig::resolve(overrides)?;
-                    let exit = rt.block_on(mitm::run(cmd, &resolved, ctx))?;
                     if exit != 0 {
                         std::process::exit(exit);
                     }

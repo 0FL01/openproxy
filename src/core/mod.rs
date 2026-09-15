@@ -6,7 +6,6 @@ pub mod context_limit;
 pub mod dns;
 pub mod executor;
 pub mod h2c;
-pub mod mitm;
 pub mod model;
 pub mod proxy;
 pub mod translator;

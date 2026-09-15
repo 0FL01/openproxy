@@ -57,27 +57,6 @@ pub enum ToolCmd {
     },
     /// Show help index from the server.
     Doc,
-    /// Antigravity MITM helpers.
-    AntigravityMitm {
-        #[command(subcommand)]
-        cmd: AntigravityCmd,
-    },
-}
-
-#[derive(Debug, Clone, Subcommand)]
-pub enum AntigravityCmd {
-    /// Enable antigravity MITM (optionally aliased).
-    Enable {
-        /// Optional alias name to register.
-        #[arg(long)]
-        alias: Option<String>,
-    },
-    /// Disable antigravity MITM (and any alias).
-    Disable {
-        /// Optional alias name to remove.
-        #[arg(long)]
-        alias: Option<String>,
-    },
 }
 
 pub async fn run(cmd: ToolCmd, cfg: &ResolvedConfig, ctx: OutputCtx) -> anyhow::Result<i32> {
@@ -99,10 +78,6 @@ pub async fn run(cmd: ToolCmd, cfg: &ResolvedConfig, ctx: OutputCtx) -> anyhow::
         ToolCmd::Execute { argv } => run_execute(&rt, ctx, argv).await,
         ToolCmd::Run { name, argv } => run_run(&rt, ctx, &name, argv).await,
         ToolCmd::Doc => run_help(&rt, ctx).await,
-        ToolCmd::AntigravityMitm { cmd } => match cmd {
-            AntigravityCmd::Enable { alias } => run_antigravity(&rt, ctx, true, alias).await,
-            AntigravityCmd::Disable { alias } => run_antigravity(&rt, ctx, false, alias).await,
-        },
     }
 }
 
@@ -374,73 +349,6 @@ async fn run_help(rt: &Runtime, ctx: OutputCtx) -> anyhow::Result<i32> {
         }
         Err(e) => rt_error_to_exit(ctx, e),
     }
-}
-
-async fn run_antigravity(
-    rt: &Runtime,
-    ctx: OutputCtx,
-    enable: bool,
-    alias: Option<String>,
-) -> anyhow::Result<i32> {
-    let (alias_method, alias_body) = match (&alias, enable) {
-        (Some(name), true) => (Some("put"), json!({"alias": name})),
-        (Some(_), false) => (Some("delete"), Value::Null),
-        (None, _) => (None, Value::Null),
-    };
-
-    // First, toggle the underlying integration.
-    let core_result = if enable {
-        rt.post_empty("/api/cli-tools/antigravity-mitm").await
-    } else {
-        rt.delete_json("/api/cli-tools/antigravity-mitm").await
-    };
-    let core_payload = match core_result {
-        Ok(v) => v,
-        Err(e) => return rt_error_to_exit(ctx, e),
-    };
-
-    // Then, optionally adjust the alias.
-    let alias_payload = match alias_method {
-        Some("put") => match rt
-            .put_json("/api/cli-tools/antigravity-mitm/alias", &alias_body)
-            .await
-        {
-            Ok(v) => Some(v),
-            Err(e) => return rt_error_to_exit(ctx, e),
-        },
-        Some("delete") => match rt
-            .delete_json("/api/cli-tools/antigravity-mitm/alias")
-            .await
-        {
-            Ok(v) => Some(v),
-            Err(e) => return rt_error_to_exit(ctx, e),
-        },
-        _ => None,
-    };
-
-    let combined = json!({
-        "core": core_payload,
-        "alias": alias_payload,
-        "enabled": enable,
-    });
-    let schema = if enable {
-        "openproxy.v1.tool.antigravity.enable"
-    } else {
-        "openproxy.v1.tool.antigravity.disable"
-    };
-    if ctx.is_robot() {
-        emit_robot(schema, combined)?;
-    } else {
-        humanln(
-            ctx,
-            format!(
-                "Antigravity MITM {}{}.",
-                if enable { "enabled" } else { "disabled" },
-                alias.map(|a| format!(" (alias `{a}`)")).unwrap_or_default(),
-            ),
-        );
-    }
-    Ok(0)
 }
 
 #[cfg(test)]

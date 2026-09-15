@@ -1,4 +1,4 @@
-//! M5 CLI integration tests — mitm / tool / translator.
+//! M5 CLI integration tests — tool / translator.
 //!
 //! Exercises the `openproxy` binary against a wiremock server and asserts the
 //! `--robot` JSON envelopes. We hit one happy-path per subcommand group; the
@@ -78,94 +78,6 @@ fn parse_robot(stdout: &[u8]) -> Value {
     serde_json::from_str(s.trim()).unwrap_or_else(|e| {
         panic!("invalid robot envelope: {e}\nraw: {s}");
     })
-}
-
-// ─── mitm ───────────────────────────────────────────────────────────────────
-
-#[tokio::test(flavor = "multi_thread")]
-async fn mitm_status_emits_envelope() {
-    let server = boot_server().await;
-    Mock::given(method("GET"))
-        .and(path("/api/mitm-config"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "enabled": true,
-            "routes": {"claude": {"upstreamUrl": "https://api.anthropic.com"}},
-            "certStatus": {"fingerprint": "abc"},
-        })))
-        .mount(&server)
-        .await;
-
-    let out = op(&server, &["--robot", "mitm", "status"]);
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let env = parse_robot(&out.stdout);
-    assert_eq!(env["schema"], "openproxy.v1.mitm.status");
-    assert_eq!(env["ok"], true);
-    assert_eq!(env["data"]["enabled"], true);
-    assert_eq!(env["data"]["routes"], 1);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn mitm_start_emits_envelope() {
-    let server = boot_server().await;
-    Mock::given(method("POST"))
-        .and(path("/api/mitm/start"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"started": true})))
-        .mount(&server)
-        .await;
-
-    let out = op(&server, &["--robot", "mitm", "start"]);
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let env = parse_robot(&out.stdout);
-    assert_eq!(env["schema"], "openproxy.v1.mitm.start");
-    assert_eq!(env["data"]["started"], true);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn mitm_cert_generate_emits_envelope() {
-    let server = boot_server().await;
-    Mock::given(method("POST"))
-        .and(path("/api/mitm/cert/generate"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"fingerprint": "deadbeef"})))
-        .mount(&server)
-        .await;
-
-    let out = op(&server, &["--robot", "mitm", "cert", "generate"]);
-    assert!(out.status.success());
-    let env = parse_robot(&out.stdout);
-    assert_eq!(env["schema"], "openproxy.v1.mitm.cert.generate");
-    assert_eq!(env["data"]["fingerprint"], "deadbeef");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn mitm_config_apply_reads_stdin() {
-    let server = boot_server().await;
-    Mock::given(method("PUT"))
-        .and(path("/api/mitm-config"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
-        .mount(&server)
-        .await;
-
-    let body = r#"{"routerBaseUrl":"http://router.example/"}"#;
-    let out = op_stdin(
-        &server,
-        &["--robot", "mitm", "config", "apply", "--from-file", "-"],
-        body,
-    );
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let env = parse_robot(&out.stdout);
-    assert_eq!(env["schema"], "openproxy.v1.mitm.config.apply");
 }
 
 // ─── tool ───────────────────────────────────────────────────────────────────

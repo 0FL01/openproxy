@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { CardSkeleton } from "@/shared/components";
-import { CLI_TOOLS, MITM_TOOLS } from "@/shared/constants/cliTools";
+import { CLI_TOOLS } from "@/shared/constants/cliTools";
 import { getModelsByProviderId, PROVIDER_ID_TO_ALIAS, useEnsureCatalog } from "@/shared/constants/models";
 import {
   ClaudeToolCard,
@@ -19,7 +19,6 @@ import {
   DeepSeekTuiToolCard,
   JcodeToolCard,
   GrokBuildToolCard,
-  MitmLinkCard,
 } from "@/components/cli-tools";
 
 const CLOUD_URL: string | undefined = (import.meta.env as Record<string, string | undefined>)?.PUBLIC_CLOUD_URL;
@@ -59,8 +58,7 @@ export default function ToolDetailClient() {
     setToolId(id);
   }, []);
 
-  const tool = CLI_TOOLS[toolId] || MITM_TOOLS[toolId];
-  const isMitm = !!MITM_TOOLS[toolId];
+  const tool = CLI_TOOLS[toolId];
 
   useEffect(() => {
     if (!toolId) return;
@@ -151,11 +149,6 @@ export default function ToolDetailClient() {
       apiKeys,
       cloudUrl: CLOUD_URL,
     };
-
-    // MITM tools render as a MitmLinkCard
-    if (isMitm) {
-      return <MitmLinkCard tool={tool} />;
-    }
 
     switch (toolId) {
       case "claude":

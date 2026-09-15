@@ -3,8 +3,6 @@ use std::collections::{BTreeMap, HashMap};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 
-pub const DEFAULT_MITM_ROUTER_BASE: &str = "http://localhost:4623";
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AppDb {
@@ -27,8 +25,6 @@ pub struct AppDb {
     #[serde(default, deserialize_with = "deserialize_null_default")]
     pub custom_models: Vec<CustomModel>,
     #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub mitm_alias: BTreeMap<String, BTreeMap<String, String>>,
-    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub combos: Vec<Combo>,
     #[serde(default, deserialize_with = "deserialize_null_default")]
     pub api_keys: Vec<ApiKey>,
@@ -46,6 +42,7 @@ impl AppDb {
     pub fn normalize(&mut self) {
         self.settings.normalize();
         self.extra.remove("pricing");
+        self.extra.remove("mitmAlias");
 
         for api_key in &mut self.api_keys {
             if api_key.is_active.is_none() {
@@ -117,7 +114,6 @@ impl AppDb {
             proxy_pools: extract_named_field(&mut fields, "proxyPools"),
             model_aliases: extract_named_field(&mut fields, "modelAliases"),
             custom_models: extract_named_field(&mut fields, "customModels"),
-            mitm_alias: extract_named_field(&mut fields, "mitmAlias"),
             combos: extract_named_field(&mut fields, "combos"),
             api_keys: extract_named_field(&mut fields, "apiKeys"),
             api_key_map: HashMap::new(),
@@ -472,16 +468,6 @@ pub struct Settings {
     pub outbound_proxy_url: String,
     #[serde(default, deserialize_with = "deserialize_null_default")]
     pub outbound_no_proxy: String,
-    #[serde(
-        default = "default_mitm_router_base_url",
-        deserialize_with = "deserialize_null_default"
-    )]
-    pub mitm_router_base_url: String,
-    #[serde(
-        default = "default_mitm_port",
-        deserialize_with = "deserialize_null_default"
-    )]
-    pub mitm_port: u16,
     #[serde(default, skip_serializing)]
     pub password: Option<String>,
     /// Account-level round-robin: "fill-first" or "round-robin".
@@ -518,8 +504,6 @@ impl Default for Settings {
             outbound_proxy_enabled: false,
             outbound_proxy_url: String::new(),
             outbound_no_proxy: String::new(),
-            mitm_router_base_url: default_mitm_router_base_url(),
-            mitm_port: default_mitm_port(),
             password: None,
             fallback_strategy: default_fallback_strategy(),
             client_ping_url: String::new(),
@@ -558,6 +542,8 @@ impl Settings {
             "comboStrategy",
             "comboStrategies",
             "comboStickyRoundRobinLimit",
+            "mitmRouterBaseUrl",
+            "mitmPort",
         ] {
             self.extra.remove(key);
         }
@@ -666,15 +652,6 @@ fn default_observability_flush_interval_ms() -> u32 {
 
 fn default_observability_max_json_size() -> u32 {
     1024
-}
-
-fn default_mitm_router_base_url() -> String {
-    DEFAULT_MITM_ROUTER_BASE.into()
-}
-
-/// Default MITM proxy port. 0 = OS-assigned ephemeral port.
-fn default_mitm_port() -> u16 {
-    0
 }
 
 fn default_true() -> bool {

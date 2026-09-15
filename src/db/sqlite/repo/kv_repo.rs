@@ -1,5 +1,5 @@
 //! Generic key-value store repository for modelAliases, customModels, and
-//! mitmAlias — everything stored in the `kv` table.
+//! Named configuration maps stored in the `kv` table.
 
 use std::collections::HashMap;
 

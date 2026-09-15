@@ -35,18 +35,6 @@ interface EnvVars {
   haikuModel?: string;
 }
 
-interface MITMTool {
-  id: string;
-  name: string;
-  image: string;
-  color: string;
-  description: string;
-  configType: string;
-  mitmDomain: string;
-  modelAliases?: string[];
-  defaultModels: DefaultModel[];
-}
-
 interface CLITool {
   id: string;
   name: string;
@@ -66,75 +54,6 @@ interface CLITool {
   guideSteps?: GuideStep[];
   codeBlock?: CodeBlock;
 }
-
-export const MITM_TOOLS: Record<string, MITMTool> = {
-  antigravity: {
-    id: "antigravity",
-    name: "Antigravity",
-    image: "/providers/antigravity.png",
-    color: "#4285F4",
-    description: "Google Antigravity IDE with MITM",
-    configType: "mitm",
-    mitmDomain: "daily-cloudcode-pa.googleapis.com",
-    modelAliases: [
-      "gemini-3.5-flash-low",
-      "gemini-3-flash-agent",
-      "gemini-3.5-flash-extra-low",
-      "gemini-3.1-pro-low",
-      "gemini-pro-agent",
-      "claude-sonnet-4-6",
-      "claude-opus-4-6-thinking",
-      "gpt-oss-120b-medium",
-      "gemini-3-flash",
-    ],
-    defaultModels: [
-      { id: "gemini-3.5-flash-low", name: "Gemini 3.5 Flash (Medium) / Default", alias: "gemini-3.5-flash-low" },
-      { id: "gemini-3-flash-agent", name: "Gemini 3.5 Flash (High)", alias: "gemini-3-flash-agent" },
-      { id: "gemini-3.5-flash-extra-low", name: "Gemini 3.5 Flash (Low)", alias: "gemini-3.5-flash-extra-low" },
-      { id: "gemini-3.1-pro-low", name: "Gemini 3.1 Pro (Low)", alias: "gemini-3.1-pro-low" },
-      { id: "gemini-pro-agent", name: "Gemini 3.1 Pro (High)", alias: "gemini-pro-agent" },
-      { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6 (Thinking)", alias: "claude-sonnet-4-6" },
-      { id: "claude-opus-4-6-thinking", name: "Claude Opus 4.6 (Thinking)", alias: "claude-opus-4-6-thinking" },
-      { id: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)", alias: "gpt-oss-120b-medium" },
-      { id: "gemini-3-flash", name: "Gemini 3 Flash (Command)", alias: "gemini-3-flash" },
-    ],
-  },
-  copilot: {
-    id: "copilot",
-    name: "GitHub Copilot",
-    image: "/providers/copilot.png",
-    color: "#1F6FEB",
-    description: "GitHub Copilot IDE with MITM",
-    configType: "mitm",
-    mitmDomain: "api.individual.githubcopilot.com",
-    modelAliases: ["gpt-5-mini", "gpt-5.4-nano", "claude-haiku-4.5", "gpt-4o", "gpt-4.1"],
-    defaultModels: [
-      { id: "gpt-5-mini", name: "GPT-5 mini", alias: "gpt-5-mini" },
-      { id: "gpt-5.4-nano", name: "GPT-5.4 nano", alias: "gpt-5.4-nano" },
-      { id: "claude-haiku-4.5", name: "Claude Haiku 4.5", alias: "claude-haiku-4.5" },
-      { id: "gpt-4o", name: "GPT-4o", alias: "gpt-4o" },
-      { id: "gpt-4.1", name: "GPT-4.1", alias: "gpt-4.1" },
-    ],
-  },
-  kiro: {
-    id: "kiro",
-    name: "Kiro",
-    image: "/providers/kiro.png",
-    color: "#FF6B00",
-    description: "Kiro IDE with MITM",
-    configType: "mitm",
-    mitmDomain: "q.us-east-1.amazonaws.com",
-    defaultModels: [
-      { id: "claude-sonnet-5", name: "Claude Sonnet 5", alias: "claude-sonnet-5" },
-      { id: "claude-sonnet-4.5", name: "Claude Sonnet 4.5", alias: "claude-sonnet-4.5" },
-      { id: "claude-sonnet-4", name: "Claude Sonnet 4", alias: "claude-sonnet-4" },
-      { id: "claude-haiku-4.5", name: "Claude Haiku 4.5", alias: "claude-haiku-4.5" },
-      { id: "deepseek-3.2", name: "DeepSeek 3.2", alias: "deepseek-3.2" },
-      { id: "minimax-m2.1", name: "MiniMax M2.1", alias: "minimax-m2.1" },
-      { id: "simple-task", name: "Qwen3 Coder Next", alias: "simple-task" },
-    ],
-  },
-};
 
 export const CLI_TOOLS: Record<string, CLITool> = {
   claude: {

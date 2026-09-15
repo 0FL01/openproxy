@@ -2,8 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { CardSkeleton } from "@/shared/components";
-import { CLI_TOOLS, MITM_TOOLS } from "@/shared/constants/cliTools";
-import { MitmLinkCard } from "./cli-tools";
+import { CLI_TOOLS } from "@/shared/constants/cliTools";
 import ToolSummaryCard from "./cli-tools/ToolSummaryCard";
 
 const STATUS_ENDPOINTS: Record<string, string> = {
@@ -83,8 +82,6 @@ export default function CLIToolsPageClient(_props: CLIToolsPageClientProps) {
   }
 
   const regularTools = Object.entries(CLI_TOOLS);
-  const mitmTools = Object.entries(MITM_TOOLS);
-
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-1 sm:px-0">
       <div className="flex flex-col gap-1">
@@ -103,18 +100,6 @@ export default function CLIToolsPageClient(_props: CLIToolsPageClientProps) {
             status={toolStatuses[toolId]}
           />
         ))}
-      </div>
-
-      <div className="flex flex-col gap-3 sm:gap-4">
-        <div className="flex items-center gap-2 px-1">
-          <span className="material-symbols-outlined text-[18px] text-primary">security</span>
-          <h2 className="text-sm font-semibold text-text-main">MITM Tools</h2>
-        </div>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3">
-          {mitmTools.map(([toolId, tool]) => (
-            <MitmLinkCard key={toolId} tool={tool} />
-          ))}
-        </div>
       </div>
     </div>
   );

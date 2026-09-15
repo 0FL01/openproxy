@@ -5,7 +5,6 @@ import { useNotificationStore } from "@/store/notificationStore";
 import Sidebar from "../Sidebar";
 import Header from "../Header";
 import React from "react";
-import { initializeApp } from "@/shared/services/initializeApp";
 
 interface DashboardLayoutProps {
   children: React.ReactNode;
@@ -53,10 +52,6 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
     setMounted(true);
     setPathname(window.location.pathname);
     document.body.classList.add("dashboard-ready");
-    // Resume MITM once per tab; background schedulers live in the Rust server.
-    initializeApp().catch((e) =>
-      console.error("[DashboardLayout] initializeApp failed:", (e as Error).message),
-    );
     return () => {
       document.body.classList.remove("dashboard-ready");
     };

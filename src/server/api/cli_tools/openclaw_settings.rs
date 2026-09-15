@@ -49,16 +49,7 @@ async fn get_openclaw_config(State(state): State<AppState>, headers: HeaderMap) 
 
     let snapshot = state.db.snapshot();
 
-    // Base URL: use the configured mitm_router_base_url, or the default.
-    let base_url = if snapshot.settings.mitm_router_base_url.is_empty() {
-        DEFAULT_BASE_URL.to_string()
-    } else {
-        snapshot
-            .settings
-            .mitm_router_base_url
-            .trim_end_matches('/')
-            .to_string()
-    };
+    let base_url = DEFAULT_BASE_URL.to_string();
 
     // API key: first active key from the database.
     let api_key = snapshot

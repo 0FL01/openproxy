@@ -27,8 +27,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: “Обрезание истории и серверную политику промптов — удалить” and “Прокси меняет модель и необходимое представление протокола. Содержание задачи и поведение агента определяет клиент.”
   - Acceptance: Combo history stripping/capacity adaptation, payload rules/system-prompt rewriting, guardrail prompt-injection/PII rewriting, synthetic bypass/naming replies, and provider thinking overrides are absent from chat handling.
   - Primary evidence: Repository search and focused chat/combo tests proving requests still reach normal dispatch.
-  - Status: verified
-  - Evidence: Payload/system-prompt rules, guardrails, synthetic bypass/naming responses, provider thinking overrides, capacity augmentation, and history stripping are absent. Explicit reasoning suffix handling remains. Final checkpoint passed clippy, 1,680 library tests, and 12 chat integration tests.
+  - Status: in_progress
+  - Evidence: Payload/system-prompt rules, guardrails, synthetic bypass/naming responses, provider thinking overrides, capacity augmentation, and history stripping are absent. Explicit reasoning suffix handling remains. A closure search later found executor-specific Antigravity competitive-prompt stripping and reachable Claude cloaking mutations that still need removal.
 
 - R3: Remove Codex behavioral defaults but retain required Codex wire compatibility.
   - Source: “выкинул ... DEFAULT_CODEX_INSTRUCTIONS” and separate necessary wire constraints from the default `reasoning.effort = "low"` policy.
@@ -69,8 +69,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: “удалил `src/core/mitm/`, MITM API/CLI, handle из AppState ... `ClientPool` uses `MitmBypassResolver`”.
   - Acceptance: MITM core/API/CLI/state and certificate dependencies are absent, and ordinary provider clients resolve explicitly configured URLs without an MITM-specific resolver.
   - Primary evidence: Repository search plus focused client/server build/tests.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: Deleted `src/core/mitm/`, MITM certificates/listener/capture/hosts logic, MITM API and CLI commands, Antigravity MITM management, `AppState` handle, settings/persistence fields, dashboard surfaces, and dedicated dependencies. `ClientPool` now uses reqwest's normal resolver for explicit provider URLs; only the shared private-address check remains in `core::dns`. Dashboard build, Rust check/clippy, all 1,358 library tests, and 16 focused CLI/database tests passed.
 
 - R9: Deliver the completed simplification.
   - Source: “коммит делать после каждого выпиливания и потом пуш деплой”.
@@ -107,17 +107,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R8
-- Smallest next action: Remove MITM core/API/CLI/state/certificate infrastructure and replace the ordinary client pool's MITM-specific resolver with normal explicit-URL resolution.
-- Expected evidence: MITM modules, routes, commands, state, and certificate dependencies are absent; focused client/server tests and repository gates pass.
-- Stop or replan if: Explicit provider `base_url` routing or ordinary TLS/DNS behavior would be removed.
+- Closes: R2
+- Smallest next action: Remove the remaining reachable Antigravity competitive-system-prompt rewrite and Claude cloaking content/tool mutation while preserving protocol-required request translation.
+- Expected evidence: Focused executor/chat tests show client prompts and tool declarations pass without server-authored behavioral content.
+- Stop or replan if: The behavior is wire-required rather than server-owned prompt/tool policy.
 
 ## Current State
 
-- Resolved: R1-R7. R8 is the next unresolved outcome.
-- Last relevant evidence: Built-in MCP/A2A/evaluation services and their state/routes/management UI are absent; dashboard build, Rust clippy, 1,397 library tests, 328 translator tests, and 4 CoWork API tests passed while tool-call translation remains covered.
+- Resolved: R1 and R3-R8. R2 is reopened for confirmed executor-specific policy remnants.
+- Last relevant evidence: MITM core/API/CLI/state/certificate/dashboard surfaces and the special DNS resolver are absent; dashboard build, Rust check/clippy, 1,358 library tests, and 16 focused CLI/database tests passed.
 - Blocker: None.
-- Next: Commit the agent-service removal, then remove MITM/certificate interception and its DNS coupling.
+- Next: Commit the MITM removal, then remove the confirmed remaining R2 policy mutations in a separate commit.
 
 ## Material Decisions
 
@@ -126,6 +126,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-09-15: Treat the user's listed whole-subsystem removals as intentional API/CLI product removals; do not preserve compatibility shims for deleted services.
 - 2026-09-15: Split delivery into atomic subsystem-removal commits, each verified before commit, as explicitly requested.
 - 2026-09-16: Retain `/v1/web/fetch`: it is a separate URL-fetch utility, not one of the requested standalone media/STT/embeddings/image/audio/video services. Remove the hosted search path that depended on `src/core/media/`.
+- 2026-09-16: Leave historical MITM KV rows/certificate files inert rather than destructively migrating user data; remove every runtime reader, writer, route, command, and export surface.
 
 ## Agreed Implementation Plan (source copy)
 

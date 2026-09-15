@@ -2,6 +2,5 @@
 export * from "./colors";
 export * from "./config";
 export * from "./cliTools";
-export * from "./mitmToolHosts";
 export * from "./skills";
 export * from "./locales";

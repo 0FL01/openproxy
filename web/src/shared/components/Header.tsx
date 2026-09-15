@@ -78,13 +78,6 @@ const getPageInfo = (pathname: string): PageInfo => {
       icon: "data_usage",
       breadcrumbs: [],
     };
-  if (pathname.includes("/mitm"))
-    return {
-      title: "MITM Proxy",
-      description: "Intercept CLI tool traffic and route through OpenProxy",
-      icon: "security",
-      breadcrumbs: [],
-    };
   if (pathname.includes("/cli-tools"))
     return {
       title: "CLI Tools",

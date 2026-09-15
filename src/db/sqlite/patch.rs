@@ -92,12 +92,6 @@ pub fn apply_app_db_diff(conn: &Connection, old: &AppDb, new: &AppDb) -> rusqlit
     )?;
     diff_kv_scope(
         conn,
-        "mitmAlias",
-        kv_map_nested(&old.mitm_alias),
-        kv_map_nested(&new.mitm_alias),
-    )?;
-    diff_kv_scope(
-        conn,
         "customModels",
         custom_models_map(&old.custom_models),
         custom_models_map(&new.custom_models),
@@ -216,14 +210,6 @@ fn diff_kv_scope(
 
 /// Serialize a `BTreeMap<String, ModelAliasTarget>` into a `String → Value` map.
 fn kv_map(map: &BTreeMap<String, ModelAliasTarget>) -> HashMap<String, Value> {
-    map.iter()
-        .map(|(k, v)| (k.clone(), serde_json::to_value(v).unwrap_or(Value::Null)))
-        .collect()
-}
-
-/// Serialize `mitm_alias` (`BTreeMap<String, BTreeMap<String, String>>`) into a
-/// `String → Value` map.
-fn kv_map_nested(map: &BTreeMap<String, BTreeMap<String, String>>) -> HashMap<String, Value> {
     map.iter()
         .map(|(k, v)| (k.clone(), serde_json::to_value(v).unwrap_or(Value::Null)))
         .collect()
@@ -572,14 +558,18 @@ mod tests {
         let db = open();
         let mut old = AppDb::default();
         let mut new = AppDb::default();
-        // Simulate a closure touching settings + mitm_alias together.
+        // Simulate a closure touching settings + model aliases together.
         new.settings.cloud_enabled = true;
-        new.mitm_alias
-            .insert("router".into(), BTreeMap::from([("a".into(), "b".into())]));
+        new.model_aliases.insert(
+            "alias".into(),
+            ModelAliasTarget::Path("provider/model".into()),
+        );
         db.with_transaction(|tx| apply_app_db_diff(tx, &old, &new))
             .unwrap();
         assert_eq!(count_rows(&db, "settings"), 1);
-        let all = db.with_conn(|c| kv_repo::get_all(c, "mitmAlias")).unwrap();
+        let all = db
+            .with_conn(|c| kv_repo::get_all(c, "modelAliases"))
+            .unwrap();
         assert_eq!(all.len(), 1);
     }
 

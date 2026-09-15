@@ -9,7 +9,6 @@ pub mod cors;
 pub mod db_backups;
 pub mod guard;
 pub mod locale;
-pub mod mitm_config;
 pub mod models_alias;
 pub mod models_availability;
 pub mod models_custom;
@@ -240,7 +239,6 @@ pub fn routes(state: AppState) -> Router<AppState> {
         // whose dashboard error message differs from the handler contract.
         .merge(cloud_credentials::routes())
         .merge(observability::routes())
-        .merge(mitm_config::routes())
         .merge(auth::routes())
         .merge(provider_validate::routes());
 
@@ -1960,7 +1958,6 @@ struct UpdateSettingsRequest {
     sticky_round_robin_limit: Option<u32>,
     provider_strategies: Option<BTreeMap<String, crate::types::ProviderStrategyEntry>>,
     provider_context_limits: Option<BTreeMap<String, u32>>,
-    mitm_router_base_url: Option<String>,
     require_api_key: Option<bool>,
     require_login: Option<bool>,
     observability_enabled: Option<bool>,
@@ -2043,9 +2040,6 @@ async fn update_settings_api(
             }
             if let Some(v) = req.provider_context_limits {
                 db.settings.provider_context_limits = v;
-            }
-            if let Some(v) = req.mitm_router_base_url {
-                db.settings.mitm_router_base_url = v;
             }
             if let Some(v) = req.require_api_key {
                 db.settings.require_api_key = v;

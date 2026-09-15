@@ -36,7 +36,6 @@ async function apiFetch(path: string, init: RequestInit = {}): Promise<Response>
 
 export interface Settings {
   cloudEnabled?: boolean;
-  mitmEnabled?: boolean;
   claudeAutoPing?: AutoPingConfig;
   codexAutoPing?: AutoPingConfig;
   [key: string]: unknown;
@@ -59,12 +58,6 @@ interface ConsoleLog {
   timestamp: string;
   level: string;
   message: string;
-  [key: string]: unknown;
-}
-
-interface MitmConfig {
-  enabled: boolean;
-  port?: number;
   [key: string]: unknown;
 }
 
@@ -115,40 +108,6 @@ export async function getConsoleLogs(): Promise<ConsoleLog[]> {
   }
   const data = await response.json();
   return data.logs || [];
-}
-
-/**
- * Get MITM config
- */
-export async function getMitmConfig(): Promise<MitmConfig> {
-  const response = await apiFetch("/api/mitm-config");
-  if (!response.ok) {
-    if (response.status === 401) return { enabled: false };
-    throw new Error(`Failed to get MITM config: ${response.statusText}`);
-  }
-  return await response.json();
-}
-
-/**
- * Start MITM proxy
- */
-export async function startMitm(): Promise<Record<string, unknown>> {
-  const response = await apiFetch("/api/mitm/start", { method: "POST" });
-  if (!response.ok) {
-    throw new Error(`Failed to start MITM: ${response.statusText}`);
-  }
-  return await response.json();
-}
-
-/**
- * Stop MITM proxy
- */
-export async function stopMitm(): Promise<Record<string, unknown>> {
-  const response = await apiFetch("/api/mitm/stop", { method: "POST" });
-  if (!response.ok) {
-    throw new Error(`Failed to stop MITM: ${response.statusText}`);
-  }
-  return await response.json();
 }
 
 /**

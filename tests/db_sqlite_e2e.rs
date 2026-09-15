@@ -81,7 +81,6 @@ async fn e2e_auto_import_legacy_json() {
         "proxyPools": [],
         "modelAliases": {},
         "customModels": [],
-        "mitmAlias": {},
         "combos": [],
         "apiKeys": [],
         "settings": {},
@@ -229,7 +228,6 @@ async fn e2e_export_import_roundtrip() {
         "combos": [],
         "modelAliases": {},
         "customModels": [],
-        "mitmAlias": {},
     });
     db.import_db(&serde_json::to_vec(&empty).unwrap())
         .await
