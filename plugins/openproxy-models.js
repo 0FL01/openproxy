@@ -98,6 +98,11 @@ export default async function OpenProxyModels() {
           const local = Object.hasOwn(provider.models ?? {}, row.id) ? provider.models[row.id] : {}
           const merged = { ...remote, ...local }
           if (remote.limit || local.limit) merged.limit = { ...remote.limit, ...local.limit }
+          // OpenCode allows omitting limit, but requires context AND output
+          // when present. Check after local overrides have filled any gaps.
+          if (!positiveInteger(merged.limit?.context) || !positiveInteger(merged.limit?.output)) {
+            delete merged.limit
+          }
           if (remote.variants || local.variants) {
             merged.variants = { ...remote.variants, ...local.variants }
           }

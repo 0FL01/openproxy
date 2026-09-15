@@ -18,6 +18,7 @@ test("OpenCode auto-loads the plugin and refresh discovers new IDs without rewri
   await mkdir(join(configDir, "plugins"), { recursive: true })
   await copyFile(new URL("../plugins/openproxy-models.js", import.meta.url), join(configDir, "plugins", "openproxy-models.js"))
   let id = "cx/first"
+  let limit = { context: 628000, input: 500000, output: 128000 }
   let discoveries = 0
   const server = createServer((req, res) => {
     res.setHeader("Content-Type", "application/json")
@@ -29,7 +30,7 @@ test("OpenCode auto-loads the plugin and refresh discovers new IDs without rewri
       id,
       opencode: {
         name: "Fixture model",
-        limit: { context: 628000, input: 500000, output: 128000 },
+        limit,
         modalities: { input: ["text", "image"], output: ["text"] },
         reasoning: true,
         variants: { high: { reasoningEffort: "high" } },
@@ -79,5 +80,14 @@ test("OpenCode auto-loads the plugin and refresh discovers new IDs without rewri
   assert.equal(model.capabilities.input.image, true)
   assert.equal(model.variants.high.reasoningEffort, "high")
   assert.equal(discoveries, 2)
+  // Codex discovery can supply context without an output limit. The config
+  // consumed by clients must not contain a partial OpenCode limit object.
+  id = "cx/gpt-5.5"
+  limit = { context: 400000 }
+  const resolved = await run(process.env.OPENCODE_BINARY, ["debug", "config"], { cwd: directory, env, timeout: 50000 })
+  const discovered = JSON.parse(resolved.stdout).provider.ludka2.models[id]
+  assert.ok(discovered, "context-only model must remain discoverable")
+  assert.equal(Object.hasOwn(discovered, "limit"), false)
+  assert.equal(discoveries, 3)
   assert.equal(await readFile(configPath, "utf8"), config)
 })
