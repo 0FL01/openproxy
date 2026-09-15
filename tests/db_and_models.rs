@@ -10,7 +10,6 @@ use openproxy::types::{
     ApiKey, AppDb, Combo, DailySummary, ModelAliasTarget, ProviderConnection, ProviderModelRef,
     ProviderNode, Settings, SummaryCounter, TokenUsage, UsageDb, UsageEntry,
 };
-use serde_json::json;
 use tempfile::tempdir;
 
 #[test]

@@ -915,7 +915,7 @@ pub async fn rewrite_qoder_message_attachments(
                 let extras: Vec<Value> = arr
                     .iter()
                     .filter_map(|u| u.as_str())
-                    .map(|u| qoder_image_url_block(u))
+                    .map(qoder_image_url_block)
                     .collect();
                 if !extras.is_empty() {
                     let content = obj
@@ -2439,7 +2439,7 @@ impl QoderExecutor {
         };
         if let Some(line) = first_line {
             let trimmed = line.trim_end_matches('\r').trim().to_string();
-            if trimmed.starts_with("data:") {
+            if let Some(stripped) = trimmed.strip_prefix("data:") {
                 if let Some(err_msg) = check_billing_in_sse_line(&trimmed)
                     .and_then(|f| serde_json::from_str::<Value>(&f["data: ".len()..]).ok())
                     .and_then(|v| v.get("message").and_then(Value::as_str).map(String::from))
@@ -2456,7 +2456,7 @@ impl QoderExecutor {
                     };
                 }
                 // Also detect via the raw envelope when the helper shape differs.
-                let payload = trimmed["data:".len()..].trim();
+                let payload = stripped.trim();
                 if payload != "[DONE]" {
                     if let Ok(envelope) = serde_json::from_str::<Value>(payload) {
                         let status_val = envelope

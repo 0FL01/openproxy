@@ -9,9 +9,6 @@ fn next_seq(state: &mut serde_json::Map<String, Value>) -> u64 {
     s
 }
 
-/// Emit an SSE event into `events`, stamping `data.sequence_number` with the
-/// next value from `state`.
-
 /// Look up a Responses item key (item.id / data.item_id) in the
 /// item_id → chat tool_calls index map, returning the mapped index.
 fn resp_tool_index(state: &serde_json::Map<String, Value>, key: Option<&str>) -> Option<u64> {
@@ -56,6 +53,8 @@ fn resp_tool_args_emitted(state: &serde_json::Map<String, Value>, idx: u64) -> b
         .is_some_and(|list| list.iter().any(|v| v.as_u64() == Some(idx)))
 }
 
+/// Emit an SSE event into `events`, stamping `data.sequence_number` with the
+/// next value from `state`.
 fn emit(
     events: &mut Vec<Value>,
     state: &mut serde_json::Map<String, Value>,

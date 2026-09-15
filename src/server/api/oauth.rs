@@ -6164,7 +6164,7 @@ fn read_mimo_desktop_pass_token() -> Option<(String, Option<String>, Option<Stri
     let tmp = std::env::temp_dir().join(format!(
         "openproxy-mimo-cookies-{}-{}.db",
         std::process::id(),
-        uuid::Uuid::new_v4().to_string()[..8].to_string()
+        &uuid::Uuid::new_v4().to_string()[..8]
     ));
     // Locked by a running Desktop — non-fatal, return null.
     if std::fs::copy(&cookie_src, &tmp).is_err() {
@@ -7047,7 +7047,7 @@ mod tests {
     fn jwt_with_payload(payload: &serde_json::Value) -> String {
         let encode = |bytes: &[u8]| {
             let mut encoded = URL_SAFE_NO_PAD.encode(bytes);
-            while encoded.len() % 4 != 0 {
+            while !encoded.len().is_multiple_of(4) {
                 encoded.push('=');
             }
             encoded
