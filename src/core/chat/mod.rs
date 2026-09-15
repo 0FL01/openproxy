@@ -7,16 +7,13 @@
 //!   1. Detect source format (from endpoint path + body)
 //!   2. Resolve model (provider, model, alias, combo)
 //!   3. Select credentials (with account fallback)
-//!   4. Run guardrails (pre_call — injection scan, PII masking)
-//!   5. Translate request (source -> OpenAI intermediate -> target)
-//!   6. Dispatch to executor (body forwarded unmutated — no context munging)
-//!   7. Run guardrails (post_call — PII masking on response)
-//!   8. Translate response (target -> OpenAI intermediate -> source)
-//!   9. Stream or return JSON
+//!   4. Translate request (source -> OpenAI intermediate -> target)
+//!   5. Dispatch to executor (body forwarded unmutated — no context munging)
+//!   6. Translate response (target -> OpenAI intermediate -> source)
+//!   7. Stream or return JSON
 
 use serde_json::Value;
 
-use crate::core::guardrails::global_guardrail_registry;
 use crate::core::model::catalog::provider_catalog;
 use crate::core::model::models_dev::OpenCodeModelMetadata;
 use crate::core::translator::registry::{self, Format};
@@ -281,47 +278,6 @@ pub fn plan_request(
     model: &str,
 ) -> RequestPlan {
     RequestPlan::new(endpoint_path, body, provider, model)
-}
-
-/// Run guardrail pre_call hooks on the request body.
-///
-/// This should be called **before** translation so that PII masking and
-/// injection detection see the original (un-translated) request.
-///
-/// Returns `true` if the request was modified by any guardrail.
-pub async fn apply_guardrails_pre_call(body: &mut Value) -> bool {
-    let registry = global_guardrail_registry();
-    match registry.run_pre_call(body).await {
-        Ok(()) => false,
-        Err(errors) => {
-            for e in &errors {
-                tracing::warn!(target: "openproxy::guardrails", "pre_call guardrail: {e}");
-            }
-            // Guardrails that return errors (like injection detection) do not
-            // block the request in this release — they only log a warning.
-            // Set `GUARDRAIL_BLOCK_ON_INJECTION` or a future settings toggle
-            // to make them blocking.
-            true
-        }
-    }
-}
-
-/// Run guardrail post_call hooks on the response body.
-///
-/// This should be called **after** the upstream response is received but
-/// **before** response translation, so PII masking can clean the provider's
-/// raw output.
-pub async fn apply_guardrails_post_call(response: &mut Value) -> bool {
-    let registry = global_guardrail_registry();
-    match registry.run_post_call(response).await {
-        Ok(()) => false,
-        Err(errors) => {
-            for e in &errors {
-                tracing::warn!(target: "openproxy::guardrails", "post_call guardrail: {e}");
-            }
-            true
-        }
-    }
 }
 
 #[cfg(test)]

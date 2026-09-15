@@ -114,8 +114,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current State
 
-- Resolved: R1. R2 is in progress: payload rules and system-prompt overrides are removed.
-- Last relevant evidence: Rust clippy, 1,713 library tests, and the Astro production build passed after payload-policy removal.
+- Resolved: R1. R2 is in progress: payload rewriting, system-prompt overrides, and guardrails are removed.
+- Last relevant evidence: Rust clippy and 1,694 library tests passed after guardrail removal.
 - Blocker: None.
 - Next: Commit R1, then execute R2.
 
@@ -270,6 +270,7 @@ Tool calling при этом остаётся. Прокси должен пер�
 - 2026-09-15: Contract frozen from the user-supplied plan. The source plan is copied above. First implementation checkpoint is the completed-response cache removal.
 - 2026-09-15: R1 passed. Removed the response cache, chat hit/fill path, state, admin stats route, dashboard card, focused cache test, and cache-only direct dependency. Provider-native prompt-cache translation remains untouched. Next is R2 request-policy removal.
 - 2026-09-15: R2 checkpoint: removed payload rules and system-prompt overrides from chat, settings, API, and dashboard. Clippy, 1,713 library tests, and the dashboard build passed. Guardrails and the remaining request-policy hooks are next.
+- 2026-09-15: R2 checkpoint: removed the unused guardrail registry and its prompt-injection/PII mutation implementation. Clippy and 1,694 library tests passed. Synthetic bypass and thinking policy remain.
 
 ## Completion
 
