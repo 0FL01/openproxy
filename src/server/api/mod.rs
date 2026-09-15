@@ -33,7 +33,6 @@ pub mod provider_nodes;
 mod provider_validate;
 pub mod providers;
 pub mod quota_auto_ping;
-pub mod settings_payload_rules;
 pub mod shutdown;
 pub mod stt;
 pub mod tags;
@@ -318,7 +317,6 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .merge(models_custom::routes())
         .merge(provider_nodes::routes())
         .merge(providers::routes())
-        .merge(settings_payload_rules::routes())
         .merge(usage::routes())
         .merge(admin_items::routes())
         .merge(pricing::routes())

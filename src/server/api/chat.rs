@@ -42,7 +42,6 @@ use crate::core::utils::claude_cloaking::{cloak_claude_tools, CloakedRequest};
 use crate::core::utils::client_detector::{detect_client_tool, is_native_passthrough, ClientTool};
 use crate::core::utils::stream_flags::resolve_stream_flags;
 use crate::core::utils::tool_deduper::dedupe_tools;
-use crate::payload_rules::{apply_request_rules, apply_system_prompt};
 use crate::server::application_logs::{AttemptLog, RequestLogContext};
 use crate::server::auth::{extract_api_key, require_api_key, require_api_key_with_reload};
 use crate::server::state::AppState;
@@ -405,15 +404,6 @@ async fn chat_completions_impl(
                 (snapshot, resolved)
             }
         };
-
-    // Payload-rules + system-prompt override (OmniRoute-style).
-    // Applied here, after the model field has been validated but before
-    // we fan out into combo / direct dispatch — so both branches see the
-    // same transformed body. Wildcard matching uses the user-facing
-    // `model` field; the protocol tag is left empty for now (it can be
-    // wired in once we surface upstream protocol metadata at this layer).
-    apply_system_prompt(&mut body, &snapshot.settings.system_prompt);
-    apply_request_rules(&mut body, model_str, None, &snapshot.settings.payload_rules);
 
     // Convert headers once for client-tool detection shared by both
     // Direct and Combo dispatch paths.

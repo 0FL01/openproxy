@@ -3,8 +3,6 @@ use std::collections::{BTreeMap, HashMap};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::payload_rules::{PayloadRulesConfig, SystemPromptConfig};
-
 pub const DEFAULT_MITM_ROUTER_BASE: &str = "http://localhost:4623";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -540,10 +538,6 @@ pub struct Settings {
         deserialize_with = "deserialize_null_default"
     )]
     pub mitm_port: u16,
-    #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub payload_rules: PayloadRulesConfig,
-    #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub system_prompt: SystemPromptConfig,
     #[serde(default, skip_serializing)]
     pub password: Option<String>,
     /// Account-level round-robin: "fill-first" or "round-robin".
@@ -595,8 +589,6 @@ impl Default for Settings {
             outbound_no_proxy: String::new(),
             mitm_router_base_url: default_mitm_router_base_url(),
             mitm_port: default_mitm_port(),
-            payload_rules: PayloadRulesConfig::default(),
-            system_prompt: SystemPromptConfig::default(),
             password: None,
             fallback_strategy: default_fallback_strategy(),
             combo_sticky_round_robin_limit: default_combo_sticky_round_robin_limit(),
@@ -629,6 +621,8 @@ impl Settings {
             "tailscaleEnabled",
             "tailscaleUrl",
             "tunnelDashboardAccess",
+            "payloadRules",
+            "systemPrompt",
         ] {
             self.extra.remove(key);
         }
@@ -640,8 +634,6 @@ impl Settings {
         if self.combo_sticky_round_robin_limit == 0 {
             self.combo_sticky_round_robin_limit = default_combo_sticky_round_robin_limit();
         }
-        self.payload_rules.normalize();
-        self.system_prompt.normalize();
     }
 }
 

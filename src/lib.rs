@@ -23,7 +23,6 @@ pub mod cli;
 pub mod core;
 pub mod db;
 pub mod oauth;
-pub mod payload_rules;
 pub mod server;
 pub mod types;
 
