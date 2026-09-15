@@ -61,7 +61,7 @@ Decision logs: `target: openproxy::chat|translator|combo|fusion|github`.
 | Refresh dedup does not cache null failures | 9router bug |
 | Combo quarantine + RR capacity pre-skip | Reliability (CLI hang) |
 | Encrypted SQLite secrets | Security |
-| **PXPIPE token-saver** | Optional JS image-context compressor; requires external `pxpipe-proxy`. Not ported — use RTK + Headroom + Caveman/Ponytail. |
+| **PXPIPE / RTK / Headroom / Caveman / Ponytail token-savers** | Removed by design — context cleanup lives on the harness side; the proxy forwards bodies unmutated. |
 | **Hedging / Shadow / Auto-combo** | Modules scaffolded under `src/core/combo/{hedging,shadow,auto_combo}.rs`; chat dispatcher maps unknown names to **fallback** until product demand. |
 | Combo capacity precheck | OpenProxy skips saturated members; optional future gate `capacity_precheck=false` for 9router try-anyway. |
 
@@ -74,7 +74,7 @@ Decision logs: `target: openproxy::chat|translator|combo|fusion|github`.
 5. providerThinking on **source** body
 6. stripList + modality strip; Claude → `normalize_claude_passthrough` when passthrough
 7. Else translate: **direct route** or OpenAI pivot; prepare_claude / filter_openai
-8. RTK → Headroom → Caveman/Ponytail → tool dedupe → TTS tool strip
+8. Tool dedupe → TTS tool strip (no context-munging passes — savers removed)
 9. Executor (specialized or Default)
 10. 401/403 refresh with merge (expires_at); 429 → next fallback URL
 11. forceStream SSE→JSON or stream/non-stream proxy; **non-SSE content-type guard** on stream path
@@ -139,10 +139,10 @@ Accepts legacy string **or** nested 9router object:
 | `web_fetch` still clear-**all** `modelLock_*` on success (chat is selective) | P1 | `openproxy-webfetch-selective-lock-1rb` |
 | Global `model(high)` stripThinkingSuffix (only kiro/codex partial) | P2 | `openproxy-thinking-suffix-global-zya` |
 | Vertex SA JWT mint | OK in `vertex.rs` executor (not OAuth dispatch) — design split, not a gap | — |
-| PXPIPE | Intentional skip | — |
+| PXPIPE / token-savers | Intentionally removed (harness owns context cleanup) | — |
 | Hedging / shadow / auto-combo chat wire | Intentional scaffold-only | — |
 
 ## Remaining intentional backlog
 
 - **Fixed (this pass):** grok-cli specialized executor (`cli-chat-proxy`); xiaomi-tokenplan Claude dual path; xiaomi-mimo in `resolve_transport`; web_fetch selective lock; global `model(level)` strip via `thinking_suffix`.
-- **P3 product-optional:** full PXPIPE port; wire hedging/shadow/auto-combo into chat dispatcher when needed.
+- **P3 product-optional:** wire hedging/shadow/auto-combo into chat dispatcher when needed.
