@@ -8,14 +8,6 @@ use crate::types::{TokenUsage, UsageDb, UsageEntry};
 
 use super::pricing::Pricing;
 
-#[derive(Debug, Clone, Default)]
-pub struct CompressionStats {
-    pub bytes_before: u64,
-    pub bytes_after: u64,
-    pub bytes_saved: u64,
-    pub image_prompts: u64,
-}
-
 pub struct UsageTracker {
     db: Arc<Db>,
     pricing: Pricing,
@@ -40,7 +32,6 @@ impl UsageTracker {
         connection_id: Option<&str>,
         api_key: Option<&str>,
         endpoint: Option<&str>,
-        compression: Option<CompressionStats>,
     ) {
         let prompt_tokens = tokens
             .and_then(|t| t.prompt_tokens.or(t.input_tokens))
@@ -62,16 +53,6 @@ impl UsageTracker {
             cache_read_tokens,
         );
 
-        let (bytes_before, bytes_after, bytes_saved, image_prompts) = match compression {
-            Some(c) => (
-                c.bytes_before,
-                c.bytes_after,
-                c.bytes_saved,
-                c.image_prompts,
-            ),
-            None => (0, 0, 0, 0),
-        };
-
         let entry = UsageEntry {
             timestamp: Some(Utc::now().to_rfc3339()),
             provider: Some(provider.to_string()),
@@ -82,10 +63,10 @@ impl UsageTracker {
             endpoint: endpoint.map(String::from),
             cost: Some(cost),
             status: None,
-            bytes_before,
-            bytes_after,
-            bytes_saved,
-            image_prompts,
+            bytes_before: 0,
+            bytes_after: 0,
+            bytes_saved: 0,
+            image_prompts: 0,
             extra: Default::default(),
         };
 

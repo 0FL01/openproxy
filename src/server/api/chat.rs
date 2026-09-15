@@ -37,7 +37,6 @@ use crate::core::translator::helpers::modality_helper::{
 };
 use crate::core::translator::registry::{self, Format};
 use crate::core::translator::response_transform::{transform_sse_stream, transformer_for_provider};
-use crate::core::usage::CompressionStats;
 use crate::core::utils::bypass_handler::{detect_bypass, BypassDecision, DEFAULT_BYPASS_TEXT};
 use crate::core::utils::claude_cloaking::{cloak_claude_tools, CloakedRequest};
 use crate::core::utils::client_detector::{detect_client_tool, is_native_passthrough, ClientTool};
@@ -1232,10 +1231,6 @@ async fn execute_single_model(
         plan.stream,
     );
 
-    // Context cleanup lives on the harness side — the proxy forwards the
-    // translated body unmutated (no RTK/headroom/caveman/ponytail passes).
-    let compression_stats: Option<CompressionStats> = None;
-
     // 7. Tool dedupe for Claude clients (after translate, before dispatch)
     if client_tool == Some(ClientTool::Claude) {
         if let Some(tools_val) = body.get("tools").and_then(|t| t.as_array()) {
@@ -1297,7 +1292,6 @@ async fn execute_single_model(
         endpoint,
         &plan,
         client_tool,
-        compression_stats,
         client_headers,
         codex_web_search_requested,
     )
@@ -1313,7 +1307,6 @@ async fn forward_with_provider_fallback(
     endpoint: Option<&'static str>,
     plan: &RequestPlan,
     client_tool: Option<ClientTool>,
-    compression: Option<CompressionStats>,
     client_headers: Option<&std::collections::HashMap<String, String>>,
     codex_web_search_requested: bool,
 ) -> Result<Response, ComboAttemptError> {
@@ -2312,7 +2305,6 @@ async fn forward_with_provider_fallback(
                             Some(connection.id.as_str()),
                             api_key,
                             endpoint,
-                            compression.clone(),
                         )
                         .await;
                         return Ok(crate::server::api::budget_guard::with_budget_header(
@@ -2337,7 +2329,6 @@ async fn forward_with_provider_fallback(
                             api_key,
                             endpoint,
                             plan,
-                            compression.clone(),
                         )
                         .await;
                         return Ok(crate::server::api::budget_guard::with_budget_header(
@@ -2356,7 +2347,6 @@ async fn forward_with_provider_fallback(
                             endpoint,
                             plan,
                             tool_name_map.as_ref(),
-                            compression.clone(),
                         )
                         .await;
                         let response =
@@ -2379,7 +2369,6 @@ async fn forward_with_provider_fallback(
                         normalize_for_dashboard,
                         plan,
                         tool_name_map.as_ref(),
-                        compression.clone(),
                         custom_tool_names.clone(),
                     )
                     .await;
@@ -2566,7 +2555,6 @@ async fn proxy_dashboard_sse_with_usage_tracking(
     connection_id: Option<&str>,
     api_key: Option<&str>,
     endpoint: Option<&str>,
-    compression: Option<CompressionStats>,
 ) -> Response {
     let status = response.status();
     let headers = response.headers().clone();
@@ -2583,7 +2571,6 @@ async fn proxy_dashboard_sse_with_usage_tracking(
                 connection_id,
                 api_key,
                 endpoint,
-                compression,
             )
             .await;
         state.usage_live.notify_update();
@@ -3050,7 +3037,6 @@ async fn proxy_sse_to_json_response(
     api_key: Option<&str>,
     endpoint: Option<&str>,
     plan: &RequestPlan,
-    compression: Option<CompressionStats>,
 ) -> Response {
     let status = response.status();
     let (body_bytes, body_complete) = collect_upstream_response_bytes(response).await;
@@ -3083,7 +3069,6 @@ async fn proxy_sse_to_json_response(
                 connection_id,
                 api_key,
                 endpoint,
-                compression,
             )
             .await;
     }
@@ -3117,7 +3102,6 @@ async fn proxy_response_with_usage_tracking(
     endpoint: Option<&str>,
     plan: &RequestPlan,
     tool_name_map: Option<&std::collections::BTreeMap<String, String>>,
-    compression: Option<CompressionStats>,
 ) -> Response {
     let status = response.status();
     let headers = response.headers().clone();
@@ -3162,7 +3146,6 @@ async fn proxy_response_with_usage_tracking(
                 connection_id,
                 api_key,
                 endpoint,
-                compression,
             )
             .await;
         state.usage_live.notify_update();
@@ -3335,7 +3318,6 @@ async fn proxy_response_with_pending_tracking(
     normalize_for_dashboard: bool,
     plan: &RequestPlan,
     tool_name_map: Option<&std::collections::BTreeMap<String, String>>,
-    compression: Option<CompressionStats>,
     custom_tool_names: Option<String>,
 ) -> Response {
     // Capture an owned copy of api_key for usage recording inside the stream
@@ -3424,7 +3406,6 @@ async fn proxy_response_with_pending_tracking(
             let model = model.clone();
             let connection_id = connection_id.clone();
             let api_key = api_key.clone();
-            let compression = compression.clone();
             let mut transformer = transformer;
             let mut pending_text = String::new();
             let custom_tool_names = custom_tool_names.clone();
@@ -3466,7 +3447,7 @@ async fn proxy_response_with_pending_tracking(
                                 "SSE stalled, closing stream"
                             );
                             record_streaming_usage(&state, &provider, &model,
-                                connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data, compression.clone()).await;
+                                connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data).await;
                             state
                                 .usage_live
                                 .finish_request(&model, &provider, connection_id.as_deref(), true)
@@ -3498,7 +3479,7 @@ async fn proxy_response_with_pending_tracking(
                                     // executor's pre-stream peek; this flag is
                                     // the backstop for already-open streams.)
                                     record_streaming_usage(&state, &provider, &model,
-                                        connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data, compression.clone()).await;
+                                        connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data).await;
                                     state
                                         .usage_live
                                         .finish_request(&model, &provider, connection_id.as_deref(), true)
@@ -3544,7 +3525,7 @@ async fn proxy_response_with_pending_tracking(
                                     }
                                 }
                                 record_streaming_usage(&state, &provider, &model,
-                                    connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data, compression.clone()).await;
+                                    connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data).await;
                                 state
                                     .usage_live
                                     .finish_request(&model, &provider, connection_id.as_deref(), false)
@@ -3555,7 +3536,7 @@ async fn proxy_response_with_pending_tracking(
                         Ok(Ok(None)) => break,
                         Ok(Err(_)) => {
                             record_streaming_usage(&state, &provider, &model,
-                                connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data, compression.clone()).await;
+                                connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data).await;
                             state
                                 .usage_live
                                 .finish_request(&model, &provider, connection_id.as_deref(), true)
@@ -3597,7 +3578,7 @@ async fn proxy_response_with_pending_tracking(
                     }
                 }
                 record_streaming_usage(&state, &provider, &model,
-                    connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data, compression.clone()).await;
+                    connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data).await;
                 state
                     .usage_live
                     .finish_request(&model, &provider, connection_id.as_deref(), false)
@@ -3612,7 +3593,6 @@ async fn proxy_response_with_pending_tracking(
             let model = model.clone();
             let connection_id = connection_id.clone();
             let api_key = api_key.clone();
-            let compression = compression.clone();
             let mut transformer = transformer;
             let mut pending_text = String::new();
             let custom_tool_names2 = custom_tool_names.clone();
@@ -3646,7 +3626,7 @@ async fn proxy_response_with_pending_tracking(
                                 "SSE stalled, closing stream"
                             );
                             record_streaming_usage(&state, &provider, &model,
-                                connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data, compression.clone()).await;
+                                connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data).await;
                             state
                                 .usage_live
                                 .finish_request(&model, &provider, connection_id.as_deref(), true)
@@ -3694,7 +3674,7 @@ async fn proxy_response_with_pending_tracking(
                         }
                         Err(_) => {
                             record_streaming_usage(&state, &provider, &model,
-                                connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data, compression.clone()).await;
+                                connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data).await;
                             state
                                 .usage_live
                                 .finish_request(&model, &provider, connection_id.as_deref(), true)
@@ -3728,7 +3708,7 @@ async fn proxy_response_with_pending_tracking(
                     }
                 }
                 record_streaming_usage(&state, &provider, &model,
-                    connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data, compression.clone()).await;
+                    connection_id.as_deref(), api_key.as_deref(), endpoint, &last_data).await;
                 state
                     .usage_live
                     .finish_request(&model, &provider, connection_id.as_deref(), false)
@@ -3770,7 +3750,6 @@ async fn record_streaming_usage(
     api_key: Option<&str>,
     endpoint: Option<&'static str>,
     last_data: &Option<Bytes>,
-    compression: Option<CompressionStats>,
 ) {
     let usage = last_data
         .as_ref()
@@ -3784,7 +3763,6 @@ async fn record_streaming_usage(
             connection_id,
             api_key,
             endpoint,
-            compression,
         )
         .await;
 }

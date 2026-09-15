@@ -189,30 +189,6 @@ fn usage_db_round_trips_through_serde() {
     assert_eq!(decoded, usage);
 }
 
-#[test]
-fn settings_normalize_canonicalizes_caveman_level() {
-    let mut settings = Settings {
-        caveman_level: " ULTRA ".into(),
-        ..Settings::default()
-    };
-
-    settings.normalize();
-    assert_eq!(settings.caveman_level, "ultra");
-
-    settings.caveman_level = "not-a-level".into();
-    settings.normalize();
-    assert_eq!(settings.caveman_level, "full");
-
-    let db = AppDb::from_json_value(json!({
-        "settings": {
-            "cavemanEnabled": null,
-            "cavemanLevel": " ??? "
-        }
-    }));
-    assert!(!db.settings.caveman_enabled);
-    assert_eq!(db.settings.caveman_level, "full");
-}
-
 #[tokio::test]
 async fn db_loads_normalizes_and_persists_json_files() {
     let temp = tempdir().expect("tempdir");

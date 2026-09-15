@@ -184,7 +184,7 @@ async fn chat_completions_streams_openai_compatible_response() {
 }
 
 #[tokio::test]
-async fn chat_completions_skips_caveman_prompt_for_short_requests() {
+async fn chat_completions_forwards_short_requests_unmutated() {
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
@@ -202,11 +202,6 @@ async fn chat_completions_skips_caveman_prompt_for_short_requests() {
         .mount(&upstream)
         .await;
 
-    let settings = Settings {
-        caveman_enabled: true,
-        caveman_level: "lite".into(),
-        ..Settings::default()
-    };
     let state = seeded_state_with_settings(
         vec![provider_node(
             "node-openai",
@@ -215,7 +210,7 @@ async fn chat_completions_skips_caveman_prompt_for_short_requests() {
         )],
         vec![connection("conn-1", "node-openai", 1, "upstream-key")],
         Vec::new(),
-        settings,
+        Settings::default(),
     )
     .await;
 

@@ -128,9 +128,6 @@ async fn patch_settings_updates_values_and_rejects_password_fields() {
     assert_eq!(json["requireLogin"], false);
     assert_eq!(json["providerStrategies"]["openai"], "latency");
     assert_eq!(json["comboStrategies"]["writer"], "cost");
-    assert_eq!(json["rtkEnabled"], false);
-    assert_eq!(json["cavemanEnabled"], true);
-    assert_eq!(json["cavemanLevel"], "ultra");
     assert_eq!(json["tunnelDashboardAccess"], false);
     assert_eq!(json["tunnelUrl"], "https://demo.example");
     assert_eq!(json["tailscaleUrl"], "https://tail.example");

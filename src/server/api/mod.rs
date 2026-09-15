@@ -2078,9 +2078,6 @@ struct UpdateSettingsRequest {
     mitm_router_base_url: Option<String>,
     require_api_key: Option<bool>,
     require_login: Option<bool>,
-    rtk_enabled: Option<bool>,
-    caveman_enabled: Option<bool>,
-    caveman_level: Option<String>,
     observability_enabled: Option<bool>,
     cloud_enabled: Option<bool>,
     cloud_url: Option<String>,
@@ -2098,12 +2095,6 @@ struct UpdateSettingsRequest {
     combo_sticky_round_robin_limit: Option<u32>,
     client_ping_url: Option<String>,
     client_ping_any: Option<bool>,
-    headroom_enabled: Option<bool>,
-    headroom_url: Option<String>,
-    headroom_code_aware: Option<bool>,
-    headroom_kompress: Option<bool>,
-    ponytail_enabled: Option<bool>,
-    ponytail_level: Option<String>,
     /// Stored in settings.extra so provider-detail UI can PATCH it.
     claude_auto_ping: Option<Value>,
     /// Stored in settings.extra so provider-detail UI can PATCH it.
@@ -2175,15 +2166,6 @@ async fn update_settings_api(
             if let Some(v) = req.require_login {
                 db.settings.require_login = v;
             }
-            if let Some(v) = req.rtk_enabled {
-                db.settings.rtk_enabled = v;
-            }
-            if let Some(v) = req.caveman_enabled {
-                db.settings.caveman_enabled = v;
-            }
-            if let Some(v) = req.caveman_level {
-                db.settings.caveman_level = v;
-            }
             if let Some(v) = req.observability_enabled {
                 db.settings.observability_enabled = v;
             }
@@ -2228,24 +2210,6 @@ async fn update_settings_api(
             }
             if let Some(v) = req.client_ping_any {
                 db.settings.client_ping_any = v;
-            }
-            if let Some(v) = req.headroom_enabled {
-                db.settings.headroom_enabled = v;
-            }
-            if let Some(v) = req.headroom_url {
-                db.settings.headroom_url = v;
-            }
-            if let Some(v) = req.headroom_code_aware {
-                db.settings.headroom_code_aware = v;
-            }
-            if let Some(v) = req.headroom_kompress {
-                db.settings.headroom_kompress = v;
-            }
-            if let Some(v) = req.ponytail_enabled {
-                db.settings.ponytail_enabled = v;
-            }
-            if let Some(v) = req.ponytail_level {
-                db.settings.ponytail_level = v;
             }
             // Persist auto-ping + thinking maps into settings.extra (camelCase
             // keys match the web UI PATCH body).
@@ -2448,15 +2412,6 @@ fn merge_settings(target: &mut crate::types::Settings, source: &crate::types::Se
     if source.outbound_no_proxy != target.outbound_no_proxy {
         target.outbound_no_proxy = source.outbound_no_proxy.clone();
     }
-    if source.rtk_enabled != target.rtk_enabled {
-        target.rtk_enabled = source.rtk_enabled;
-    }
-    if source.caveman_enabled != target.caveman_enabled {
-        target.caveman_enabled = source.caveman_enabled;
-    }
-    if source.caveman_level != target.caveman_level {
-        target.caveman_level = source.caveman_level.clone();
-    }
     if source.sticky_round_robin_limit != target.sticky_round_robin_limit {
         target.sticky_round_robin_limit = source.sticky_round_robin_limit;
     }
@@ -2471,24 +2426,6 @@ fn merge_settings(target: &mut crate::types::Settings, source: &crate::types::Se
     }
     if source.client_ping_any != target.client_ping_any {
         target.client_ping_any = source.client_ping_any;
-    }
-    if source.headroom_enabled != target.headroom_enabled {
-        target.headroom_enabled = source.headroom_enabled;
-    }
-    if source.headroom_url != target.headroom_url {
-        target.headroom_url = source.headroom_url.clone();
-    }
-    if source.headroom_code_aware != target.headroom_code_aware {
-        target.headroom_code_aware = source.headroom_code_aware;
-    }
-    if source.headroom_kompress != target.headroom_kompress {
-        target.headroom_kompress = source.headroom_kompress;
-    }
-    if source.ponytail_enabled != target.ponytail_enabled {
-        target.ponytail_enabled = source.ponytail_enabled;
-    }
-    if source.ponytail_level != target.ponytail_level {
-        target.ponytail_level = source.ponytail_level.clone();
     }
     for (key, value) in &source.extra {
         target.extra.insert(key.clone(), value.clone());

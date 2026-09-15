@@ -578,7 +578,7 @@ mod tests {
         let db = Db::load_from(dir.path()).await.unwrap();
         let stored = db.snapshot().settings.password.clone().unwrap();
         assert!(bcrypt::verify("correct horse battery staple", &stored).unwrap());
-        db.update_settings(|settings| settings.rtk_enabled = !settings.rtk_enabled)
+        db.update_settings(|settings| settings.require_api_key = !settings.require_api_key)
             .await
             .unwrap();
         drop(db);

@@ -41,7 +41,6 @@ fn project_structure_matches_bead_layout() {
         "src/core/combo/mod.rs",
         "src/core/executor/mod.rs",
         "src/core/translator/mod.rs",
-        "src/core/rtk/mod.rs",
         "src/core/auth/mod.rs",
         "src/core/model/mod.rs",
         "src/db/mod.rs",
@@ -165,7 +164,7 @@ async fn db_loader_creates_initial_files() {
 
     assert!(db.data_dir.join("openproxy.sqlite").exists());
     assert!(snapshot.provider_connections.is_empty());
-    assert!(snapshot.settings.rtk_enabled);
+    assert!(snapshot.settings.require_api_key);
 
     let state = AppState::new(Arc::new(db));
     assert!(state.db.data_dir.starts_with(temp.path()));

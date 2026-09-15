@@ -201,9 +201,6 @@ fn schema_for(resource: &str) -> Option<Value> {
             "title": "Settings",
             "type": "object",
             "properties": {
-                "rtkEnabled": {"type": "boolean"},
-                "cavemanEnabled": {"type": "boolean"},
-                "cavemanLevel": {"type": "string", "enum": ["light", "medium", "heavy"]},
                 "comboStrategy": {"type": "string"},
                 "requireApiKey": {"type": "boolean", "default": true},
                 "requireLogin": {"type": "boolean"},
@@ -334,9 +331,6 @@ fn example_for(resource: &str) -> Option<Value> {
             "type": "http"
         }),
         "settings" => json!({
-            "rtkEnabled": true,
-            "cavemanEnabled": false,
-            "cavemanLevel": "medium",
             "requireApiKey": true,
             "requireLogin": true
         }),

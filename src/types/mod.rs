@@ -552,49 +552,6 @@ pub struct Settings {
         deserialize_with = "deserialize_null_default"
     )]
     pub mitm_port: u16,
-    #[serde(
-        default = "default_true",
-        deserialize_with = "deserialize_null_default"
-    )]
-    pub rtk_enabled: bool,
-    #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub caveman_enabled: bool,
-    #[serde(
-        default = "default_caveman_level",
-        deserialize_with = "deserialize_null_default"
-    )]
-    pub caveman_level: String,
-    #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub ponytail_enabled: bool,
-    #[serde(
-        default = "default_ponytail_level",
-        deserialize_with = "deserialize_null_default"
-    )]
-    pub ponytail_level: String,
-    #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub headroom_enabled: bool,
-    #[serde(
-        default = "default_headroom_url",
-        deserialize_with = "deserialize_null_default"
-    )]
-    pub headroom_url: String,
-    #[serde(
-        default = "default_headroom_timeout_ms",
-        deserialize_with = "deserialize_null_default"
-    )]
-    pub headroom_timeout_ms: u64,
-    #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub headroom_compress_user_messages: bool,
-    /// When true, pass `--code-aware` to the managed Headroom proxy (AST compression).
-    #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub headroom_code_aware: bool,
-    /// When false, pass `--disable-kompress` to the managed Headroom proxy.
-    /// Defaults to true (Kompress is on by default in Headroom).
-    #[serde(
-        default = "default_true",
-        deserialize_with = "deserialize_null_default"
-    )]
-    pub headroom_kompress: bool,
     #[serde(default, deserialize_with = "deserialize_null_default")]
     pub payload_rules: PayloadRulesConfig,
     #[serde(default, deserialize_with = "deserialize_null_default")]
@@ -655,17 +612,6 @@ impl Default for Settings {
             outbound_no_proxy: String::new(),
             mitm_router_base_url: default_mitm_router_base_url(),
             mitm_port: default_mitm_port(),
-            rtk_enabled: true,
-            caveman_enabled: false,
-            caveman_level: default_caveman_level(),
-            ponytail_enabled: false,
-            ponytail_level: default_ponytail_level(),
-            headroom_enabled: false,
-            headroom_url: default_headroom_url(),
-            headroom_timeout_ms: default_headroom_timeout_ms(),
-            headroom_compress_user_messages: false,
-            headroom_code_aware: false,
-            headroom_kompress: true,
             payload_rules: PayloadRulesConfig::default(),
             system_prompt: SystemPromptConfig::default(),
             password: None,
@@ -689,8 +635,6 @@ impl Settings {
         if self.combo_sticky_round_robin_limit == 0 {
             self.combo_sticky_round_robin_limit = default_combo_sticky_round_robin_limit();
         }
-        self.caveman_level = normalize_caveman_level_value(&self.caveman_level);
-        self.ponytail_level = normalize_ponytail_level_value(&self.ponytail_level);
         self.payload_rules.normalize();
         self.system_prompt.normalize();
     }
@@ -953,43 +897,6 @@ fn default_mitm_router_base_url() -> String {
 /// Default MITM proxy port. 0 = OS-assigned ephemeral port.
 fn default_mitm_port() -> u16 {
     0
-}
-
-fn default_caveman_level() -> String {
-    "full".into()
-}
-
-fn normalize_caveman_level_value(value: &str) -> String {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "lite" => "lite".into(),
-        "full" => "full".into(),
-        "ultra" => "ultra".into(),
-        "wenyan-lite" => "wenyan-lite".into(),
-        "wenyan" => "wenyan".into(),
-        "wenyan-ultra" => "wenyan-ultra".into(),
-        _ => default_caveman_level(),
-    }
-}
-
-fn default_ponytail_level() -> String {
-    "full".into()
-}
-
-fn normalize_ponytail_level_value(value: &str) -> String {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "lite" => "lite".into(),
-        "full" => "full".into(),
-        "ultra" => "ultra".into(),
-        _ => default_ponytail_level(),
-    }
-}
-
-fn default_headroom_url() -> String {
-    "http://localhost:8787".into()
-}
-
-fn default_headroom_timeout_ms() -> u64 {
-    3000
 }
 
 fn default_true() -> bool {
