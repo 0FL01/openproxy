@@ -9,20 +9,16 @@
 //!   3. Select credentials (with account fallback)
 //!   4. Run guardrails (pre_call — injection scan, PII masking)
 //!   5. Translate request (source -> OpenAI intermediate -> target)
-//!   6. Apply preprocessing (RTK, caveman)
-//!   7. Dispatch to executor
-//!   8. Run guardrails (post_call — PII masking on response)
-//!   9. Translate response (target -> OpenAI intermediate -> source)
-//!   10. Stream or return JSON
+//!   6. Dispatch to executor (body forwarded unmutated — no context munging)
+//!   7. Run guardrails (post_call — PII masking on response)
+//!   8. Translate response (target -> OpenAI intermediate -> source)
+//!   9. Stream or return JSON
 
 use serde_json::Value;
 
 use crate::core::guardrails::global_guardrail_registry;
 use crate::core::model::catalog::provider_catalog;
 use crate::core::model::models_dev::OpenCodeModelMetadata;
-use crate::core::rtk::system_inject::inject_system_prompt;
-use crate::core::translator::caveman::inject_caveman;
-use crate::core::translator::ponytail::{inject_ponytail_prompt, PonytailLevel};
 use crate::core::translator::registry::{self, Format};
 use crate::types::Settings;
 
@@ -325,73 +321,6 @@ pub async fn apply_guardrails_post_call(response: &mut Value) -> bool {
             }
             true
         }
-    }
-}
-
-/// Apply preprocessing steps (caveman prompt injection, system prompt injection)
-/// to the request body.
-///
-/// This should be called after translation but before dispatch, corresponding
-/// to step 5 in the pipeline: "Apply preprocessing (RTK, caveman)".
-///
-/// Returns `true` if any modification was made.
-pub fn apply_preprocessing(
-    body: &mut Value,
-    settings: &Settings,
-    source_format: &Format,
-    plan: &RequestPlan,
-) -> bool {
-    let mut modified = false;
-    if settings.caveman_enabled {
-        modified |= inject_caveman(body, source_format, &settings.caveman_level);
-    }
-    if settings.ponytail_enabled {
-        // Ponytail always applies if enabled (no context-pressure gate).
-        modified |= inject_ponytail_prompt(
-            body,
-            PonytailLevel::parse_or_default(&settings.ponytail_level),
-        );
-    }
-    // System prompt injection at RTK layer.
-    // Reads `systemInject` (bool) and `systemPrompt` (string) from the settings
-    // `extra` map.
-    modified |= apply_chat_system_prompt_injection(body, settings);
-    modified
-}
-
-/// Check the RTK-layer system injection settings and apply if enabled.
-/// Reads `systemInject` (bool) and `systemPrompt` (string) from the settings
-/// `extra` map.
-fn apply_chat_system_prompt_injection(body: &mut Value, settings: &Settings) -> bool {
-    let system_inject = settings
-        .extra
-        .get("systemInject")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    if !system_inject {
-        return false;
-    }
-    let prompt = settings
-        .extra
-        .get("systemPrompt")
-        .and_then(Value::as_str)
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| s.to_string());
-    match prompt {
-        Some(p) => {
-            // Dispatch by body shape (9router injectSystemPrompt format switch).
-            let format = if body.get("system").is_some() {
-                "claude"
-            } else if body.get("systemInstruction").is_some()
-                || body.get("system_instruction").is_some()
-            {
-                "gemini"
-            } else {
-                "openai"
-            };
-            inject_system_prompt(body, format, &p)
-        }
-        None => false,
     }
 }
 

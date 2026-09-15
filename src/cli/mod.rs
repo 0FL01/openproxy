@@ -14,10 +14,6 @@ use crate::core::combo::{
 use crate::core::executor::{ClientPool, DefaultExecutor, ExecutionRequest};
 use crate::core::model::get_model_info;
 use crate::core::proxy::resolve_proxy_target;
-use crate::core::rtk::headroom::{
-    compress_with_headroom, estimate_phantom_savings, HeadroomConfig,
-};
-use crate::core::rtk::{apply_request_preprocessing, compress_messages};
 use crate::db::Db;
 use crate::types::{ApiKey, AppDb, ProviderConnection, ProxyPool};
 
@@ -1638,47 +1634,11 @@ async fn run_direct_route(
         std::process::exit(1);
     };
 
-    let mut request_body = serde_json::json!({
+    let request_body = serde_json::json!({
         "model": resolved.model,
         "messages": [{"role": "user", "content": prompt}],
         "stream": stream,
     });
-
-    compress_messages(&mut request_body, snapshot.settings.rtk_enabled);
-    {
-        let hc = HeadroomConfig {
-            enabled: snapshot.settings.headroom_enabled,
-            url: snapshot.settings.headroom_url.clone(),
-            timeout_ms: snapshot.settings.headroom_timeout_ms,
-            compress_user_messages: snapshot.settings.headroom_compress_user_messages,
-        };
-        let phantom_saved = estimate_phantom_savings(&request_body);
-        if phantom_saved > 0 {
-            eprintln!(
-                "headroom estimated savings ~{} tokens (phantom)",
-                phantom_saved
-            );
-        }
-        let handle = tokio::runtime::Handle::current();
-        if let Some(stats) = handle.block_on(compress_with_headroom(
-            &mut request_body,
-            &hc,
-            &resolved.model,
-            "openai",
-            None,
-        )) {
-            let log = stats.format_headroom_log().unwrap_or_default();
-            if phantom_saved > 0 {
-                eprintln!(
-                    "headroom actual savings {} tokens (estimated ~{}), {}",
-                    stats.tokens_saved, phantom_saved, log
-                );
-            } else {
-                eprintln!("{}", log);
-            }
-        }
-    }
-    let _ = apply_request_preprocessing(&mut request_body, &snapshot.settings, &resolved.model);
 
     let mut excluded = HashSet::new();
     let mut last_error = None;
@@ -1810,47 +1770,11 @@ async fn run_combo_route(
         std::process::exit(1);
     };
 
-    let mut request_body = serde_json::json!({
+    let request_body = serde_json::json!({
         "model": resolved.model,
         "messages": [{"role": "user", "content": prompt}],
         "stream": stream,
     });
-
-    compress_messages(&mut request_body, snapshot.settings.rtk_enabled);
-    {
-        let hc = HeadroomConfig {
-            enabled: snapshot.settings.headroom_enabled,
-            url: snapshot.settings.headroom_url.clone(),
-            timeout_ms: snapshot.settings.headroom_timeout_ms,
-            compress_user_messages: snapshot.settings.headroom_compress_user_messages,
-        };
-        let phantom_saved = estimate_phantom_savings(&request_body);
-        if phantom_saved > 0 {
-            eprintln!(
-                "headroom estimated savings ~{} tokens (phantom)",
-                phantom_saved
-            );
-        }
-        let handle = tokio::runtime::Handle::current();
-        if let Some(stats) = handle.block_on(compress_with_headroom(
-            &mut request_body,
-            &hc,
-            &resolved.model,
-            "openai",
-            None,
-        )) {
-            let log = stats.format_headroom_log().unwrap_or_default();
-            if phantom_saved > 0 {
-                eprintln!(
-                    "headroom actual savings {} tokens (estimated ~{}), {}",
-                    stats.tokens_saved, phantom_saved, log
-                );
-            } else {
-                eprintln!("{}", log);
-            }
-        }
-    }
-    let _ = apply_request_preprocessing(&mut request_body, &snapshot.settings, &resolved.model);
 
     let mut excluded = HashSet::new();
 

@@ -31,8 +31,6 @@ use crate::core::combo::{
 use crate::core::executor::UpstreamResponse;
 use crate::core::model::{get_model_info, ModelRouteKind};
 use crate::core::proxy::resolve_proxy_target;
-use crate::core::rtk::headroom::{compress_with_headroom_diag, HeadroomConfig};
-use crate::core::rtk::{apply_request_preprocessing, compress_messages};
 use crate::core::translator::helpers::image_helper::fetch_image_as_base64;
 use crate::core::translator::helpers::modality_helper::{
     capabilities_for_format, strip_unsupported_modalities, ModalityCapabilities,
@@ -1121,18 +1119,6 @@ async fn execute_single_model(
         plan.apply_opencode_metadata(metadata);
     }
 
-    // 9router chatCore.js:229 — the `x-9router-token-saver` request header
-    // opts a single request out of RTK/headroom/caveman/ponytail when its
-    // value is the literal "off" (case-insensitive). Absent header (or any
-    // other value incl. "") keeps savers ON.
-    let token_saver_enabled = client_headers
-        .map(|h| {
-            h.get("x-9router-token-saver")
-                .map(|v| !v.eq_ignore_ascii_case("off"))
-                .unwrap_or(true)
-        })
-        .unwrap_or(true);
-
     let mut body = request_body.clone();
     if let Some(fields) = body.as_object_mut() {
         fields.insert("model".into(), Value::String(plan.model.clone()));
@@ -1246,79 +1232,9 @@ async fn execute_single_model(
         plan.stream,
     );
 
-    // 4. RTK tool-result compression (after translate — 9router parity)
-    let compression_stats: Option<CompressionStats> = compress_messages(
-        &mut body,
-        token_saver_enabled && snapshot.settings.rtk_enabled,
-    )
-    .map(|rtk_stats| CompressionStats {
-        bytes_before: rtk_stats.bytes_before as u64,
-        bytes_after: rtk_stats.bytes_after as u64,
-        bytes_saved: rtk_stats.hits.iter().map(|h| h.saved as u64).sum(),
-        image_prompts: rtk_stats.image_prompts as u64,
-    });
-
-    // 5. Headroom (after translate — 9router parity; format = final body shape)
-    {
-        let headroom_cfg = HeadroomConfig {
-            enabled: token_saver_enabled && snapshot.settings.headroom_enabled,
-            url: snapshot.settings.headroom_url.clone(),
-            timeout_ms: snapshot.settings.headroom_timeout_ms,
-            compress_user_messages: snapshot.settings.headroom_compress_user_messages,
-        };
-        let final_is_claude = (plan.passthrough && plan.source_format == Format::Claude)
-            || (!plan.passthrough && plan.target_format == Format::Claude);
-        // 9router parity: dispatch the headroom pass on the final body format.
-        // Kiro stays a Kiro-shaped body; Responses-API gets its own path.
-        let headroom_format = if final_is_claude {
-            "claude"
-        } else if plan.target_format == Format::Kiro || plan.source_format == Format::Kiro {
-            "kiro"
-        } else if plan.target_format == Format::OpenAiResponses
-            || plan.source_format == Format::OpenAiResponses
-        {
-            "openai-responses"
-        } else {
-            "openai"
-        };
-        if let Ok(body_str) = serde_json::to_string(&body) {
-            let est_tokens = body_str.len().div_ceil(4);
-            if est_tokens > 0 {
-                tracing::debug!(
-                    "headroom input ~{} tokens (estimated from body size)",
-                    est_tokens
-                );
-            }
-        }
-        let mut headroom_diag = crate::core::rtk::headroom::HeadroomDiagnostics::default();
-        if let Some(stats) = compress_with_headroom_diag(
-            &mut body,
-            &headroom_cfg,
-            &plan.model,
-            headroom_format,
-            None,
-            Some(&mut headroom_diag),
-        )
-        .await
-        {
-            tracing::debug!("{}", stats.format_headroom_log().unwrap_or_default());
-        }
-        let size_log = crate::core::rtk::headroom::format_headroom_size_log(&headroom_diag);
-        if !size_log.is_empty() {
-            tracing::debug!("headroom {size_log}");
-        }
-        if let Some(reason) = &headroom_diag.reason {
-            tracing::debug!("headroom skip={reason}");
-        }
-    }
-
-    // 6. Caveman + Ponytail (after translate — 9router parity; gated by the
-    //    per-request token-saver header like JS chatCore.js:252,258)
-    let _ = if token_saver_enabled {
-        apply_request_preprocessing(&mut body, &snapshot.settings, &plan.model)
-    } else {
-        false
-    };
+    // Context cleanup lives on the harness side — the proxy forwards the
+    // translated body unmutated (no RTK/headroom/caveman/ponytail passes).
+    let compression_stats: Option<CompressionStats> = None;
 
     // 7. Tool dedupe for Claude clients (after translate, before dispatch)
     if client_tool == Some(ClientTool::Claude) {
@@ -5258,16 +5174,6 @@ mod tests {
         assert_eq!(collected.to_bytes(), body);
     }
 
-    /// 9router chatCore.js:229 — the x-9router-token-saver header opts out of
-    /// savers when its value is the literal "off" (case-insensitive); absent
-    /// header or any other value keeps savers ON.
-    fn token_saver_gate(headers: &std::collections::HashMap<String, String>) -> bool {
-        headers
-            .get("x-9router-token-saver")
-            .map(|v| !v.eq_ignore_ascii_case("off"))
-            .unwrap_or(true)
-    }
-
     /// 9router parity (open-sse/shared/clineEnvelope.js unwrapClineEnvelope +
     /// tests/unit/cline-free-models-envelope.test.js): non-stream Cline/ClinePass
     /// responses wrapped in {"success":true,"data":...} unwrap to data before
@@ -5315,24 +5221,6 @@ mod tests {
             let val: Value = serde_json::from_slice(&out).unwrap();
             assert_eq!(val["choices"][0]["message"]["content"], "Hi");
         }
-    }
-
-    #[test]
-    fn token_saver_header_disables_rtk_and_caveman() {
-        use std::collections::HashMap;
-        // "off" → savers disabled.
-        let off = HashMap::from([("x-9router-token-saver".to_string(), "off".to_string())]);
-        assert!(!token_saver_gate(&off));
-        // Case-insensitive: "OFF"/"Off".
-        let off_upper = HashMap::from([("x-9router-token-saver".to_string(), "OFF".to_string())]);
-        assert!(!token_saver_gate(&off_upper));
-        // Absent header → enabled.
-        assert!(token_saver_gate(&HashMap::new()));
-        // Empty value / other value → enabled (JS `!== "off"`).
-        let empty = HashMap::from([("x-9router-token-saver".to_string(), String::new())]);
-        assert!(token_saver_gate(&empty));
-        let yes = HashMap::from([("x-9router-token-saver".to_string(), "yes".to_string())]);
-        assert!(token_saver_gate(&yes));
     }
 
     #[test]
