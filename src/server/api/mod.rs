@@ -1,4 +1,3 @@
-pub mod a2a;
 pub mod admin_items;
 mod auth;
 pub mod chat;
@@ -10,8 +9,6 @@ pub mod cors;
 pub mod db_backups;
 pub mod guard;
 pub mod locale;
-pub mod mcp;
-pub mod mcp_server;
 pub mod mitm_config;
 pub mod models_alias;
 pub mod models_availability;
@@ -244,10 +241,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .merge(cloud_credentials::routes())
         .merge(observability::routes())
         .merge(mitm_config::routes())
-        .merge(mcp::routes())
-        .merge(mcp_server::routes())
         .merge(auth::routes())
-        .merge(a2a::routes(state.clone()))
         .merge(provider_validate::routes());
 
     // ── Assemble ──

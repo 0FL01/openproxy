@@ -33,7 +33,6 @@ use crate::core::translator::response_transform::{transform_sse_stream, transfor
 use crate::core::utils::claude_cloaking::{cloak_claude_tools, CloakedRequest};
 use crate::core::utils::client_detector::{detect_client_tool, is_native_passthrough, ClientTool};
 use crate::core::utils::stream_flags::resolve_stream_flags;
-use crate::core::utils::tool_deduper::dedupe_tools;
 use crate::server::application_logs::{AttemptLog, RequestLogContext};
 use crate::server::auth::{extract_api_key, require_api_key, require_api_key_with_reload};
 use crate::server::state::AppState;
@@ -863,19 +862,7 @@ async fn execute_single_model(
         plan.stream,
     );
 
-    // 7. Tool dedupe for Claude clients (after translate, before dispatch)
-    if client_tool == Some(ClientTool::Claude) {
-        if let Some(tools_val) = body.get("tools").and_then(|t| t.as_array()) {
-            let result = dedupe_tools(tools_val);
-            if !result.stripped.is_empty() {
-                if let Some(obj) = body.as_object_mut() {
-                    obj.insert("tools".into(), Value::Array(result.tools));
-                }
-            }
-        }
-    }
-
-    // 7b. Pin cache breakpoints LAST on Claude passthrough (9router
+    // Pin cache breakpoints LAST on Claude passthrough (9router
     // chatCore.js:306): every saver above can reshape system/tools/messages,
     // and a stale anchor costs a full prefix rewrite.
     if plan.passthrough && client_tool == Some(ClientTool::Claude) {

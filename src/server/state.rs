@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::{Notify, RwLock};
 
-use crate::core::a2a::TaskStore;
 use crate::core::account_fallback::AccountRegistry;
 use crate::core::circuit_breaker::CircuitBreakerRegistry;
 use crate::core::executor::ClientPool;
@@ -79,10 +78,6 @@ pub struct AppState {
     /// Tracked per provider+endpoint to fast-fail when upstreams are down.
     pub circuit_breaker: Arc<CircuitBreakerRegistry>,
 
-    /// A2A (Agent-to-Agent) task store. Used by the A2A protocol endpoints
-    /// to track task lifecycle across agent interactions.
-    pub a2a_task_store: TaskStore,
-
     /// Provider health records written by the health daemon. Shares the
     /// process-global registry (`core::health::health_registry`) so the combo
     /// dispatcher and account fallback observe the same degrade windows.
@@ -114,7 +109,6 @@ impl AppState {
             mitm_handle: Arc::new(tokio::sync::Mutex::new(None)),
             shutdown_signal: Arc::new(Notify::new()),
             circuit_breaker: Arc::new(CircuitBreakerRegistry::default()),
-            a2a_task_store: TaskStore::new(),
             health: health_registry(),
             models_dev: Arc::new(ModelsDevCatalog::default()),
             codex_models: Arc::new(CodexModelCatalog::default()),

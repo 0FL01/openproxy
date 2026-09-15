@@ -1,4 +1,3 @@
-pub mod a2a;
 pub mod account_fallback;
 pub mod auth;
 pub mod combo;
@@ -7,7 +6,6 @@ pub mod context_limit;
 pub mod dns;
 pub mod executor;
 pub mod h2c;
-pub mod mcp;
 pub mod mitm;
 pub mod model;
 pub mod proxy;
@@ -17,6 +15,5 @@ pub mod utils;
 
 pub mod chat;
 pub mod circuit_breaker;
-pub mod eval;
 pub mod health;
 pub mod tls;

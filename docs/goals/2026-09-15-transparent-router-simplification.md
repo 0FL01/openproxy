@@ -62,8 +62,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: “Также я бы удалил: `src/core/mcp/`, `src/core/a2a.rs`, `src/core/eval/` ... Tool calling при этом остаётся.”
   - Acceptance: Those core modules, API routes, `a2a_task_store`, management interfaces, and CLI commands are absent; chat tool declarations/calls/results remain supported.
   - Primary evidence: Repository search plus focused tool-call translation tests.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: Deleted `src/core/mcp/`, `src/core/a2a.rs`, `src/core/eval/`, their HTTP routes, A2A task state, MCP bridge/native server, CoWork MCP marketplace/probe/configuration UI, and MCP tool-deduplication policy. CoWork model/endpoint configuration remains. Repository search found no retained service routes/modules; dashboard build, clippy, all 1,397 library tests, 328 focused translator tests, and 4 CoWork API tests passed.
 
 - R8: Remove MITM and certificate interception infrastructure from ordinary HTTP clients.
   - Source: “удалил `src/core/mitm/`, MITM API/CLI, handle из AppState ... `ClientPool` uses `MitmBypassResolver`”.
@@ -107,17 +107,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R7
-- Smallest next action: Remove built-in MCP, A2A, and evaluation runtime modules, state, routes, CLI, and dashboard surfaces while retaining chat tool declarations/calls/results.
-- Expected evidence: Removed service modules/routes are absent; focused tool-call translation tests still pass.
-- Stop or replan if: Ordinary proxied tool calling would be removed.
+- Closes: R8
+- Smallest next action: Remove MITM core/API/CLI/state/certificate infrastructure and replace the ordinary client pool's MITM-specific resolver with normal explicit-URL resolution.
+- Expected evidence: MITM modules, routes, commands, state, and certificate dependencies are absent; focused client/server tests and repository gates pass.
+- Stop or replan if: Explicit provider `base_url` routing or ordinary TLS/DNS behavior would be removed.
 
 ## Current State
 
-- Resolved: R1-R6. R7 is the next unresolved outcome.
-- Last relevant evidence: Standalone media services are absent; dashboard build, Rust clippy, 1,434 library tests, focused Codex/translator/stream tests, affected API/CLI/provider tests, and OpenCode model discovery tests passed.
+- Resolved: R1-R7. R8 is the next unresolved outcome.
+- Last relevant evidence: Built-in MCP/A2A/evaluation services and their state/routes/management UI are absent; dashboard build, Rust clippy, 1,397 library tests, 328 translator tests, and 4 CoWork API tests passed while tool-call translation remains covered.
 - Blocker: None.
-- Next: Commit the media removal, then inventory and remove built-in MCP/A2A/evaluation without touching proxied tool calling.
+- Next: Commit the agent-service removal, then remove MITM/certificate interception and its DNS coupling.
 
 ## Material Decisions
 
@@ -268,6 +268,7 @@ Tool calling при этом остаётся. Прокси должен пер�
 
 ## Checkpoint History
 
+- 2026-09-16: R7 passed. Removed built-in MCP bridge/server, A2A lifecycle and state, evaluation library, related routes and CoWork MCP management UI/configuration, plus tool-declaration deduplication policy. CoWork endpoint/model configuration and protocol-level tool translation remain. Dashboard build, clippy, 1,397 library tests, 328 translator tests, and 4 CoWork API tests passed. Next is R8 MITM/DNS removal.
 - 2026-09-16: R6 passed. Removed standalone media/STT/embeddings/image/audio/video/search implementations, routes, CLI, provider/dashboard configuration, and tests; moved retained SSE-to-JSON chat handling under `core::chat`. Chat image input translation and Codex image prefetch remain. Dashboard build, clippy, 1,434 library tests, focused multimodal tests, affected integration tests, and OpenCode model tests passed. Next is R7 MCP/A2A/evaluation removal.
 - 2026-09-15: R4 partial — removed internal request usage history, live aggregation, usage dashboard/CLI/export, and budget accounting; retained a 30-day metadata-only request journal and provider-native quota fetching. Dashboard build, clippy, 1,657 library tests, request-log integration, and 12 chat integration tests passed. Next: remove pricing and its combo ordering consumers.
 

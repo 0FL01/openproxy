@@ -34,7 +34,6 @@ export { default as Tooltip } from "./Tooltip";
 export { default as ProviderInfoCard } from "./ProviderInfoCard";
 export { default as FreeTierLimits } from "./FreeTierLimits";
 export { default as AnthropicSpike } from "./AnthropicSpike";
-export { default as McpMarketplaceModal } from "./McpMarketplaceModal";
 
 // Layouts
 export * from "./layouts";
