@@ -1,6 +1,6 @@
 # Goal: Transparent router simplification
 
-Status: active
+Status: complete
 Source: User instruction on 2026-09-15 to remove request intervention, retained accounting data, model orchestration, non-chat services, and MITM; commit after each removal; then push and deploy.
 Last updated: 2026-09-16
 
@@ -76,8 +76,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: “коммит делать после каждого выпиливания и потом пуш деплой”.
   - Acceptance: Every subsystem removal is an independently buildable Conventional Commit on `main`; the completed goal is pushed to `origin/main`, production is rebuilt through Docker Compose without deleting its volume, and `/health` succeeds.
   - Primary evidence: Git history/push output, `docker compose up -d --build`, `docker compose ps`, and `curl -fsS http://127.0.0.1:4623/health`.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: Fourteen independently buildable removal commits plus the initial goal commit were pushed to `origin/main` through `46d97b70`. `docker compose up -d --build` rebuilt and recreated `openproxy-prod-openproxy-1` without deleting its volume; Compose reports the service healthy and `curl -fsS http://127.0.0.1:4623/health` returned `status: ok`.
 
 ### Constraints
 
@@ -107,17 +107,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R9
-- Smallest next action: Run the final closure check, mark this goal complete, commit it, push `main`, rebuild production with Docker Compose, and verify `/health`.
-- Expected evidence: Clean repository gate and goal closure, successful push/deploy output, healthy Compose service, and HTTP 200 health response.
-- Stop or replan if: A required gate fails from the current changes, push is rejected, or deployment cannot preserve the production volume.
+- Closes: R1-R9
+- Smallest next action: None; closure passed.
+- Expected evidence: Complete.
+- Stop or replan if: A newer user instruction supersedes this completed objective.
 
 ## Current State
 
-- Resolved: R1-R8.
-- Last relevant evidence: Server-owned executor/translator prompts and Claude cloaking are absent; client instructions, tools, images, prompt caching, and explicit reasoning translation remain. Rust format/diff checks, clippy, and all 1,343 library tests passed.
+- Resolved: R1-R9.
+- Last relevant evidence: Code was pushed through `46d97b70`; the production image rebuilt successfully, Compose reports `openproxy-prod-openproxy-1` healthy, and `/health` returned `status: ok`.
 - Blocker: None.
-- Next: Commit the final R2 policy removal, then perform R9 closure, push, and production deployment.
+- Next: None.
 
 ## Material Decisions
 
@@ -269,6 +269,7 @@ Tool calling при этом остаётся. Прокси должен пер�
 
 ## Checkpoint History
 
+- 2026-09-16: R9 and closure passed. All R1-R8 evidence is current, the 14 removal commits and initial goal commit were pushed to `origin/main`, production was rebuilt and recreated with Docker Compose while preserving its volume, Compose reports healthy, and `/health` returned `status: ok`. Goal complete.
 - 2026-09-16: R2 follow-up passed. Removed Claude OAuth prompt/tool cloaking, Antigravity competitive-brand rewriting and default prompt injection, OpenAI-to-Claude default branding, CodeBuddy prompt replacement, MiMo marker injection, Kiro current-time/agentic prefixes, and stale Codex prompt files while retaining wire translation and explicit reasoning. Format/diff checks, clippy, and all 1,343 library tests passed. Next is R9 closure/push/deploy.
 - 2026-09-16: R8 passed. Removed MITM certificates/listener/capture/hosts infrastructure, API/CLI/state/settings/dashboard surfaces, certificate dependencies, and the MITM-specific DNS resolver while retaining SSRF private-address checks. Dashboard build, Rust check/clippy, 1,358 library tests, and 16 focused CLI/database tests passed. Next is the deferred R2 policy follow-up.
 - 2026-09-16: R7 passed. Removed built-in MCP bridge/server, A2A lifecycle and state, evaluation library, related routes and CoWork MCP management UI/configuration, plus tool-declaration deduplication policy. CoWork endpoint/model configuration and protocol-level tool translation remain. Dashboard build, clippy, 1,397 library tests, 328 translator tests, and 4 CoWork API tests passed. Next is R8 MITM/DNS removal.
@@ -285,7 +286,7 @@ Tool calling при этом остаётся. Прокси должен пер�
 
 ## Completion
 
-- Resolved outcomes:
-- Commands and artifacts:
-- Constraint and diff-scope check:
-- Final status:
+- Resolved outcomes: R1-R9 verified.
+- Commands and artifacts: Dashboard builds passed for affected frontend checkpoints; final Rust gate passed `cargo fmt --check`, `git diff --check`, `cargo clippy --all-targets --all-features`, and 1,343 library tests. `git push origin main`, `docker compose up -d --build`, `docker compose ps`, and `curl -fsS http://127.0.0.1:4623/health` succeeded.
+- Constraint and diff-scope check: Provider-native prompt caching/upstream usage, chat images, tool calling, explicit reasoning, provider/account configuration, ordered fallback, Available Models/OpenCode integration, stable retained envelopes, secrets, and the production data volume remain preserved. Removed product routes are intentional per the frozen contract.
+- Final status: complete
