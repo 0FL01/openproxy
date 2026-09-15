@@ -269,11 +269,12 @@ Created from `Combos` in the dashboard or `openproxy combo create`. Use the comb
 
 ## Configuration
 
-Most operators only set `JWT_SECRET` and leave the rest at defaults. The dashboard password is a random value generated on first boot (see `INITIAL_PASSWORD` below).
+Most operators set stable `JWT_SECRET` and `OPENPROXY_ENCRYPTION_KEY` values and leave the rest at defaults. The dashboard password is a random value generated on first boot (see `INITIAL_PASSWORD` below).
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `JWT_SECRET` | `openproxy-default-secret-change-me` | Sign the dashboard session cookie. **Change in production.** |
+| `OPENPROXY_ENCRYPTION_KEY` | _unset_ | Encrypt provider credentials in SQLite. Keep it stable across restarts and backups. |
 | `INITIAL_PASSWORD` | _random, generated once_ | First-login password when no saved hash exists. When unset, a random password is generated at first boot and **printed once in the startup banner** (`$DATA_DIR/initial_password` is persisted so it stays stable). Reset it anytime with `openproxy auth reset-password`. |
 | `DATA_DIR` | `~/.openproxy` | Where `openproxy.sqlite`, data, and logs live. |
 | `PORT` | `4623` | HTTP listen port. |
@@ -468,7 +469,7 @@ UI live-reload via the Astro dev server:
 pnpm --dir web run dev   # → http://127.0.0.1:4624
 
 # Terminal 2
-cargo run -- --dashboard-sidecar-url http://127.0.0.1:4624
+cargo run -- --port 4625 --data-dir ~/.openproxy-dev --dashboard-sidecar-url http://127.0.0.1:4624
 ```
 
 Headless build (no embedded dashboard, smaller binary):
@@ -482,33 +483,25 @@ cargo build --release --locked --no-default-features
 
 ## Deployment
 
-### Docker
+### Docker Compose (production)
 
-Pull the prebuilt image (published to GHCR by the release pipeline):
-
-```bash
-docker run -d \
-  --name openproxy \
-  -p 4623:4623 \
-  -v openproxy-data:/app/data \
-  ghcr.io/quangdang46/openproxy:latest
-```
-
-Or build locally:
+The repository's `docker-compose.yml` is the production deployment. It keeps
+the database, backups, logs, password hash, and encrypted OAuth credentials in
+the named `openproxy-prod-data` volume. Create `.env.prod` once, set strong
+stable values for `JWT_SECRET` and `OPENPROXY_ENCRYPTION_KEY`, then run:
 
 ```bash
-docker build -t openproxy .
-docker run -d \
-  --name openproxy \
-  -p 4623:4623 \
-  --env-file ./.env \
-  -v openproxy-data:/app/data \
-  openproxy
+cp .env.example .env.prod
+# Edit .env.prod and replace the example authentication/encryption values.
+docker compose up -d --build
+docker compose ps
+curl -sS http://127.0.0.1:4623/health
 ```
 
-Container defaults: `HOSTNAME=0.0.0.0`, `PORT=4623`, `DATA_DIR=/app/data`. The dashboard is embedded — no separate volume needed for it. Mount `/app/data` to persist the SQLite database, `db_backups/`, and request logs across container restarts.
-
-> First-time pulls from GHCR for this repo may require the package to be set to public at https://github.com/quangdang46/openproxy/pkgs/container/openproxy.
+Use `docker compose down` when stopping the service; do not add `--volumes` if
+the persistent configuration and provider credentials must be retained.
+Container defaults: `HOSTNAME=0.0.0.0`, `PORT=4623`, `DATA_DIR=/app/data`.
+The dashboard is embedded — no separate web volume is needed.
 
 ### Behind a reverse proxy
 
@@ -520,13 +513,13 @@ For internet-exposed deploys: set `REQUIRE_API_KEY=true`, `AUTH_COOKIE_SECURE=tr
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `EADDRINUSE` on `4623` | Port in use | `openproxy --port 4624` or `openproxy server stop` |
+| `EADDRINUSE` on `4623` | Port in use | Check the owner with `ss -ltnp 'sport = :4623'`; run development on `4625` or `4626`. |
 | Dashboard shows blank page | Embedded asset not hashed correctly | Hard reload (`Ctrl+Shift+R`); check `/health` returns 200 |
 | OAuth "callback failed" | Browser blocked the redirect | Retry from the dashboard's `Providers → Reconnect` |
 | 401 on `/v1/chat/completions` | Wrong API key | Copy fresh from dashboard. Header: `Authorization: Bearer <key>` |
 | Quota exhausted message | Subscription / API limit hit | Combo fallback handles this — add a cheaper or free tier as the next entry |
 | `cargo build` fails with "web/dist not built" | Embedded build needs the dashboard | `(cd web && pnpm install --frozen-lockfile && pnpm run build)` first |
-| First login password rejected | Wrong dashboard password | If you set `INITIAL_PASSWORD`, check `.env` is sourced. Otherwise the password was generated at first boot — look for "Initial dashboard password" in the startup banner or run `openproxy auth reset-password --show` |
+| First login password rejected | Wrong dashboard password | If you set `INITIAL_PASSWORD`, check `.env.prod` is loaded. Otherwise the password was generated at first boot — look for "Initial dashboard password" in the startup banner or run `openproxy auth reset-password --show` |
 
 Logs: enable with `ENABLE_REQUEST_LOGS=true`, then watch `logs/` (or stderr).
 

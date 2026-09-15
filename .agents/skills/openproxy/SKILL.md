@@ -140,7 +140,7 @@ Stop / restart:
 
 ```bash
 openproxy server stop
-openproxy server start --detach --no-open --port 4624   # alt port
+openproxy server start --detach --no-open --port 4626   # alt port
 ```
 
 ## 4 · Configure providers + combos non-interactively
@@ -270,7 +270,7 @@ Maintainers refresh the embedded snapshots by running
 
 | Symptom | Fix |
 |---|---|
-| `EADDRINUSE :4623` | `openproxy server stop` then restart, or `openproxy --port 4624 server start --detach`. |
+| `EADDRINUSE :4623` | `openproxy server stop` then restart, or `openproxy --port 4626 server start --detach`. |
 | `401 on /v1/*` | Wrong bearer; re-issue with `openproxy key add` or fall back to the admin key from `server init`. |
 | `db.json already exists at … (use --force to overwrite)` | Data dir is pre-populated. **Ask the user before passing `--force`** — it wipes existing config. |
 | `installer: could not resolve latest version` | No GitHub Release tags published yet. Pass `--version vX.Y.Z` or `--from-source`. |

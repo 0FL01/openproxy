@@ -44,13 +44,13 @@ Optional: `fuser`, `ss`, `gh` CLI.
 git clone https://github.com/quangdang46/openproxy.git
 cd openproxy
 
-# quick is the default: cargo build + web build + quick tests + start detached on :4623
+# quick is the default: cargo build + web build + quick tests + start detached on :4625
 ./scripts/dev.sh
 
 # verify
-curl -sf http://127.0.0.1:4623/health
-openproxy --robot server status
-openproxy --robot doctor
+curl -sf http://127.0.0.1:4625/health
+./target/debug/openproxy --data-dir ~/.openproxy-dev --robot server status
+./target/debug/openproxy --data-dir ~/.openproxy-dev --robot doctor
 ```
 
 Common variants (see `AGENTS.md` and `scripts/dev.sh`):
@@ -59,15 +59,15 @@ Common variants (see `AGENTS.md` and `scripts/dev.sh`):
 ./scripts/dev.sh            # build + run foreground (Ctrl+C to stop)
 ./scripts/dev.sh build      # only build, don't run
 ./scripts/dev.sh detach     # build + run detached
-PORT=4624 ./scripts/dev.sh  # custom port
+PORT=4626 ./scripts/dev.sh  # custom port
 ```
 
 Live dashboard iteration without rebuilding the Rust binary:
 
 ```bash
-pnpm --dir web dev               # Astro dev on :4624 (proxies API to :4623)
+pnpm --dir web dev               # Astro dev on :4624 (proxies API to :4625)
 # in another terminal:
-cargo run -- --dashboard-sidecar-url http://127.0.0.1:4624
+cargo run -- --port 4625 --data-dir ~/.openproxy-dev --dashboard-sidecar-url http://127.0.0.1:4624
 ```
 
 ## Project Layout
@@ -206,6 +206,6 @@ This is a hard rule (also in `AGENTS.md`):
 
 ---
 
-**New contributor?** Start with `./scripts/dev.sh` → open `http://127.0.0.1:4623/dashboard/providers` → add one API-key provider → `curl http://127.0.0.1:4623/v1/models -H "Authorization: Bearer $OPENPROXY_API_KEY"` → read `src/core/translator/` for format translation.
+**New contributor?** Start with `./scripts/dev.sh` → open `http://127.0.0.1:4625/dashboard/providers` → add one API-key provider → `curl http://127.0.0.1:4625/v1/models -H "Authorization: Bearer $OPENPROXY_API_KEY"` → read `src/core/translator/` for format translation.
 
 Questions? Open a Discussion or an issue with `type: question`.

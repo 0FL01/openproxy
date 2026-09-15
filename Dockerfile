@@ -13,10 +13,7 @@
 # already contains the dashboard via rust-embed).
 #
 # Build:    docker build -t openproxy .
-# Run:      docker run -d --name openproxy -p 4623:4623 \
-#               -v openproxy-data:/app/data \
-#               -e TRUST_PROXY=false \
-#               openproxy
+# Run:      docker compose up -d --build
 #
 # ──────────────────────────────────────────────────────────────────────────
 # Reverse-proxy deployment notes

@@ -24,10 +24,14 @@ Fork: parity with other routers is not tracked. Use beads only for own product t
 Single smooth loop — backend and dashboard are **separate builds** served by the same binary:
 
 ```bash
-./scripts/dev.sh              # incremental cargo build --bin openproxy + run on :4623 (foreground)
+./scripts/dev.sh              # incremental cargo build --bin openproxy + run on :4625 (foreground)
 ./scripts/dev.sh detach       # build + run detached
 ./scripts/dev.sh build        # only cargo build, don't run
 ```
+
+The dev server uses port `4625` and `~/.openproxy-dev` by default so it cannot
+stop or read the production Compose instance on `4623` and its persistent volume.
+Override them with `PORT` and `DATA_DIR` when needed.
 
 **Dashboard is not live-reloaded.** `web/src` → `web/dist` (Astro) is what the Rust server serves.
 After any `web/src` change you **must** rebuild the dashboard or the feature will be invisible
@@ -37,15 +41,15 @@ After any `web/src` change you **must** rebuild the dashboard or the feature wil
 cd web && pnpm install        # once
 pnpm build                    # rebuild web/dist after every web/src change
 # or during iteration:
-pnpm dev                      # Astro dev on :4624 (proxy API to :4623)
+pnpm dev                      # Astro dev on :4624 (proxy API to :4625)
 ```
 
 Full loop for a feature touching both layers:
 
 ```bash
 ./scripts/dev.sh build && (cd web && pnpm build) && ./scripts/dev.sh detach
-curl -s http://127.0.0.1:4623/health
-open http://127.0.0.1:4623/dashboard/providers
+curl -s http://127.0.0.1:4625/health
+open http://127.0.0.1:4625/dashboard/providers
 ```
 
 ## Contributing & Git Hygiene
@@ -73,7 +77,7 @@ Active fork. Run `cargo test -p openproxy --lib parity_tests stream_flags` for s
 
 ## Local Config & Secrets — Never Commit
 - **Do not commit** local user config or secrets: `opencode.json`, `.env`, `.env.*`, `*.pem`, `~/.openproxy/db.json`, `~/.openproxy/admin.key`, API keys, `provider_specific_data` with live credentials, or any file containing `sk-`, `Bearer`, `refresh_token`.
-- `opencode.json` is local agent config (model, MCP keys like `CONTEXT7_API_KEY`, permissions) — keep untracked. `scripts/dev.sh` builds locally; real secrets live in SQLite (`db.json` encrypted) + `OPENPROXY_API_KEY` env, not in git.
+- `opencode.json` is local agent config (model, MCP keys like `CONTEXT7_API_KEY`, permissions) — keep untracked. `scripts/dev.sh` builds locally; real secrets live in SQLite (encrypted provider fields) + `OPENPROXY_API_KEY` env, not in git.
 - Before `git add`/`commit`, run `git status` and `git diff --cached`; if a file contains secrets or is machine-local, `git restore --staged <file>` and add it to `.gitignore`. Prefer `git check-ignore -v <file>` to verify.
 - If a secret is accidentally committed, rotate it immediately and purge history (`git filter-repo` or BFG) — do not just revert.
 

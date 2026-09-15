@@ -7,29 +7,30 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.join(__dirname, '../..');
+const devDataDir = process.env.DATA_DIR || `${process.env.HOME || '/tmp'}/.openproxy-dev`;
 
 // Environment variables for Rust backend
 const rustEnv = {
   ...process.env,
-  DATA_DIR: process.env.DATA_DIR || '/tmp/openproxy',
-  BASE_URL: process.env.BASE_URL || 'http://127.0.0.1:4623',
-  NEXT_PUBLIC_BASE_URL: process.env.NEXT_PUBLIC_BASE_URL || 'http://127.0.0.1:4623',
+  DATA_DIR: devDataDir,
+  BASE_URL: process.env.BASE_URL || 'http://127.0.0.1:4625',
+  NEXT_PUBLIC_BASE_URL: process.env.NEXT_PUBLIC_BASE_URL || 'http://127.0.0.1:4625',
   DASHBOARD_SIDECAR_URL: process.env.DASHBOARD_SIDECAR_URL || 'http://127.0.0.1:4624',
 };
 
 // Environment variables for Next.js
 const nextEnv = {
   ...process.env,
-  NEXT_PUBLIC_BASE_URL: process.env.NEXT_PUBLIC_BASE_URL || 'http://127.0.0.1:4623',
+  NEXT_PUBLIC_BASE_URL: process.env.NEXT_PUBLIC_BASE_URL || 'http://127.0.0.1:4625',
 };
 
 console.log('🚀 Starting OpenProxy development stack...');
-console.log('📦 Rust backend: http://127.0.0.1:4623');
+console.log('📦 Rust backend: http://127.0.0.1:4625');
 console.log('🎨 Next.js dashboard: http://127.0.0.1:4624');
 console.log('');
 
 // Start Rust backend
-const rustProcess = spawn('cargo', ['run', '--', '--port', '4623'], {
+const rustProcess = spawn('cargo', ['run', '--', '--port', '4625', '--data-dir', devDataDir], {
   cwd: rootDir,
   env: rustEnv,
   stdio: 'inherit',
