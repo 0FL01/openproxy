@@ -712,10 +712,16 @@ async fn provider_test_models_route_fetches_live_compatible_models_and_warms_fir
         .and(header("authorization", "Bearer compat-key"))
         .and(body_partial_json(json!({ "model": "gpt-5.2" })))
         .respond_with(
-            ResponseTemplate::new(400)
+            ResponseTemplate::new(200)
                 .set_delay(Duration::from_millis(200))
                 .set_body_json(json!({
-                    "error": { "message": "unsupported for chat" }
+                    "id": "chatcmpl-second",
+                    "object": "chat.completion",
+                    "choices": [{
+                        "index": 0,
+                        "message": { "role": "assistant", "content": "ok" },
+                        "finish_reason": "stop"
+                    }]
                 })),
         )
         .expect(1)

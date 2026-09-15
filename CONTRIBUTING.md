@@ -140,7 +140,7 @@ Touched `tests/common/`, `server/api`, auth, DB, or pools → run all related in
 | `cargo test --test providers_api import_catalog -- --nocapture` | 4 import catalog tests |
 | `cargo test -p openproxy --lib parity_tests -- --nocapture` | stream_flags smoke |
 | `cargo test -p openproxy --lib -- --test-threads=1` | full 1727-test lib suite |
-| `cargo test --test providers_api -- --test-threads=1 --skip provider_test_models_route_fetches_live_compatible_models_and_warms_first_request` | providers API (full) |
+| `cargo test --test providers_api -- --test-threads=1` | providers API (full) |
 | `pnpm --dir web exec astro check` | dashboard typecheck |
 
 Add regression coverage for provider model changes in `tests/provider_baseline.json` (+ `tests/verify_no_regression.mjs`).
