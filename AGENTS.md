@@ -72,6 +72,10 @@ These 4 surfaces ARE the product. Everything else is optional. They must be flaw
 
 Core workflow that must never break: configure provider → customize available models → create combos → select models for opencode CLI config.
 
+## OpenCode Model Discovery
+- `plugins/openproxy-models.js` is the supported fetch path for the aggregate `ludka2` provider; OpenCode auto-loads its installed copy from `~/.config/opencode/plugins/` and fetches `/v1/models` at startup.
+- `/v1/models` supplies canonical `opencode.source`; the plugin appends it to every display name. Never infer the upstream provider from configurable route prefixes. See `plugins/README.md` and run the two `tests/opencode_models*.test.mjs` checks after changes.
+
 ## Status
 Active fork. Run `cargo test -p openproxy --lib parity_tests stream_flags` for smoke.
 

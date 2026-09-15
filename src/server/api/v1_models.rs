@@ -538,6 +538,9 @@ async fn build_models_list(
                     }
                 }
             }
+            // The route prefix is configurable; expose the canonical provider
+            // identity so aggregate clients can distinguish equivalent models.
+            metadata.source = Some(provider_id.to_string());
             if kind_filter.contains(&LLM_KIND) {
                 model.opencode = Some(metadata);
             }
@@ -1059,6 +1062,7 @@ mod tests {
             .unwrap();
         let metadata = json!(model.opencode);
         assert_eq!(metadata["limit"]["context"], 500000);
+        assert_eq!(metadata["source"], "opencode-zen");
         assert_eq!(metadata["limit"]["input"], 372000);
         assert_eq!(metadata["limit"]["output"], 128000);
         assert_eq!(metadata["attachment"], true);
@@ -1076,6 +1080,7 @@ mod tests {
             provider: "codex".into(),
             auth_type: "oauth".into(),
             access_token: Some("token".into()),
+            provider_specific_data: BTreeMap::from([("prefix".into(), json!("custom-cx"))]),
             ..Default::default()
         };
         let snapshot = AppDb {
@@ -1107,14 +1112,15 @@ mod tests {
             .await;
 
         let llm = build_models_list(&state, &snapshot, &[LLM_KIND]).await;
-        assert!(llm.iter().any(|model| model.id == "cx/gpt-5.6-luna"));
+        assert!(llm.iter().any(|model| model.id == "custom-cx/gpt-5.6-luna"));
         let metadata = json!(
             llm.iter()
-                .find(|model| model.id == "cx/gpt-5.6-luna")
+                .find(|model| model.id == "custom-cx/gpt-5.6-luna")
                 .unwrap()
                 .opencode
         );
         assert_eq!(metadata["limit"]["context"], 872000);
+        assert_eq!(metadata["source"], "codex");
         assert_eq!(metadata["limit"]["output"], 128000);
         assert_eq!(metadata["attachment"], true);
         assert_eq!(metadata["modalities"]["input"], json!(["text", "image"]));
@@ -1126,18 +1132,24 @@ mod tests {
         );
         let unknown = json!(
             llm.iter()
-                .find(|model| model.id == "cx/future-model")
+                .find(|model| model.id == "custom-cx/future-model")
                 .unwrap()
                 .opencode
         );
         assert_eq!(unknown["limit"]["context"], 999000);
         assert!(unknown["limit"].get("output").is_none());
         assert_eq!(unknown["variants"], json!({}));
-        assert!(!llm.iter().any(|model| model.id == "cx/gpt-5.5-image"));
+        assert!(!llm
+            .iter()
+            .any(|model| model.id == "custom-cx/gpt-5.5-image"));
 
         let image = build_models_list(&state, &snapshot, &["image"]).await;
-        assert!(image.iter().any(|model| model.id == "cx/gpt-5.5-image"));
-        assert!(!image.iter().any(|model| model.id == "cx/gpt-5.6-luna"));
+        assert!(image
+            .iter()
+            .any(|model| model.id == "custom-cx/gpt-5.5-image"));
+        assert!(!image
+            .iter()
+            .any(|model| model.id == "custom-cx/gpt-5.6-luna"));
     }
 
     #[tokio::test]

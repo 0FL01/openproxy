@@ -35,6 +35,11 @@ function explicitModelName(name, id) {
   return [id, withoutPrefix].includes(name.trim()) ? undefined : name.trim()
 }
 
+function sourceModelName(name, source) {
+  const suffix = ` · ${source}`
+  return name.endsWith(suffix) ? name : `${name}${suffix}`
+}
+
 // Only accept model metadata, never remote SDK/URL/header/options overrides.
 function modelConfig(row) {
   if (!record(row) || typeof row.id !== "string" || !row.id.trim()) throw new Error()
@@ -48,6 +53,11 @@ function modelConfig(row) {
   }
   const metadata = row.opencode ?? {}
   if (!record(metadata)) throw new Error()
+  let source
+  if (metadata.source !== undefined) {
+    if (typeof metadata.source !== "string" || !metadata.source.trim() || metadata.source !== metadata.source.trim()) throw new Error()
+    source = metadata.source
+  }
   if (metadata.name !== undefined) {
     if (typeof metadata.name !== "string") throw new Error()
     result.name = normalizeModelName(explicitModelName(metadata.name, row.id) ?? result.name)
@@ -96,7 +106,7 @@ function modelConfig(row) {
       if (!Object.hasOwn(result.variants, name)) result.variants[name] = { disabled: true }
     }
   }
-  return result
+  return { config: result, source }
 }
 
 export default async function OpenProxyModels() {
@@ -130,10 +140,11 @@ export default async function OpenProxyModels() {
         const body = await response.json()
         if (!record(body) || body.object !== "list" || !Array.isArray(body.data)) throw new Error()
         const entries = body.data.map((row) => {
-          const remote = modelConfig(row)
+          const { config: remote, source } = modelConfig(row)
           const local = Object.hasOwn(provider.models ?? {}, row.id) ? provider.models[row.id] : {}
           const merged = { ...remote, ...local }
           if (typeof merged.name === "string") merged.name = normalizeModelName(merged.name)
+          if (source && typeof merged.name === "string") merged.name = sourceModelName(merged.name, source)
           if (remote.limit || local.limit) merged.limit = { ...remote.limit, ...local.limit }
           // OpenCode allows omitting limit, but requires context AND output
           // when present. Check after local overrides have filled any gaps.

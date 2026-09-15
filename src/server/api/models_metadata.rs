@@ -10,6 +10,8 @@ pub struct OpenCodeModelConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<ModelLimit>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub modalities: Option<ModelModalities>,
@@ -124,6 +126,7 @@ impl OpenCodeModelConfig {
             });
         Self {
             name,
+            source: None,
             limit: (context.is_some() || input.is_some() || output.is_some()).then_some(
                 ModelLimit {
                     context: context.and_then(NonZeroU32::new),

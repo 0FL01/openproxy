@@ -31,6 +31,7 @@ test("OpenCode auto-loads the plugin and refresh discovers new IDs without rewri
       id,
       opencode: {
         ...(name ? { name } : {}),
+        source: "codex",
         limit,
         modalities: { input: ["text", "image"], output: ["text"] },
         attachment: true,
@@ -78,6 +79,7 @@ test("OpenCode auto-loads the plugin and refresh discovers new IDs without rewri
   const model = JSON.parse(modelOutput)
   assert.equal(model.api.id, "cx/added")
   assert.equal(model.api.npm, "@ai-sdk/openai")
+  assert.equal(model.name, "Fixture model · codex")
   assert.deepEqual(model.limit, { context: 628000, input: 500000, output: 128000 })
   assert.equal(model.capabilities.attachment, true)
   assert.equal(model.capabilities.input.image, true)
@@ -92,7 +94,7 @@ test("OpenCode auto-loads the plugin and refresh discovers new IDs without rewri
   const resolved = await run(process.env.OPENCODE_BINARY, ["debug", "config"], { cwd: directory, env, timeout: 50000 })
   const discovered = JSON.parse(resolved.stdout).provider.ludka2.models[id]
   assert.ok(discovered, "context-only model must remain discoverable")
-  assert.equal(discovered.name, "GPT-5.5")
+  assert.equal(discovered.name, "GPT-5.5 · codex")
   assert.equal(Object.hasOwn(discovered, "limit"), false)
   assert.equal(discoveries, 3)
   assert.equal(await readFile(configPath, "utf8"), config)

@@ -62,13 +62,17 @@ Local `models` entries override metadata for matching IDs (limits are merged
 field by field); other provider options and other providers are untouched.
 When neither the proxy nor a local override supplies a useful name, the plugin
 removes the router prefix for display and formats the slug (for example,
-`cx/gpt-5.6-luna` becomes `GPT-5.6 Luna`). The model ID used for requests is
-unchanged. Explicit proxy and local names retain priority.
+`cx/gpt-5.6-luna` becomes `GPT-5.6 Luna`). The canonical source provider is
+always appended, so equivalent routes remain distinct: `GPT-5.6 Luna · codex`
+and `GPT-5.6 Luna · opencode-go`. The source comes from backend routing metadata,
+never from the configurable model prefix. The model ID used for requests is
+unchanged. Explicit proxy and local names retain priority before the source suffix.
 Known acronym casing is preserved for the generated `GPT` and `GLM` names;
 `Glm 5.2` from proxy metadata is normalized to `GLM 5.2`.
 
 The updated router supplies an additive `opencode` object on `/v1/models` rows:
-name, limits, modalities, reasoning/tool support, and reasoning-effort variants.
+name, canonical `source`, limits, modalities, reasoning/tool support, and
+reasoning-effort variants.
 It reuses static, models.dev and Codex metadata. Missing metadata is **not
 guessed** from model names or from one member of a combo. Input limits and some
 output limits may be unknown. The plugin warns about missing context/output

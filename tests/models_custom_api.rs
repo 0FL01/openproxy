@@ -182,6 +182,7 @@ async fn custom_model_discovery_preserves_metadata_and_hides_disabled_rows() {
         .unwrap();
     let mut expected = metadata.clone();
     expected["name"] = json!("New Model");
+    expected["source"] = json!("proxy");
     assert_eq!(model["opencode"], expected);
 
     // Use the dashboard's actual disable API, not a synthetic internal state.
