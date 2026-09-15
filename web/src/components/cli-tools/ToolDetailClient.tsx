@@ -47,10 +47,6 @@ export default function ToolDetailClient() {
   const [loading, setLoading] = useState<boolean>(true);
   const [modelMappings, setModelMappings] = useState<Record<string, Record<string, string>>>({});
   const [cloudEnabled, setCloudEnabled] = useState<boolean>(false);
-  const [tunnelEnabled, setTunnelEnabled] = useState<boolean>(false);
-  const [tunnelPublicUrl, setTunnelPublicUrl] = useState<string>("");
-  const [tailscaleEnabled, setTailscaleEnabled] = useState<boolean>(false);
-  const [tailscaleUrl, setTailscaleUrl] = useState<string>("");
   const [apiKeys, setApiKeys] = useState<any[]>([]);
   const [toolStatus, setToolStatus] = useState<any>(null);
 
@@ -71,10 +67,9 @@ export default function ToolDetailClient() {
     let mountedFlag = true;
     (async () => {
       try {
-        const [provRes, settingsRes, tunnelRes, keysRes] = await Promise.all([
+        const [provRes, settingsRes, keysRes] = await Promise.all([
           fetch("/api/providers"),
           fetch("/api/settings"),
-          fetch("/api/tunnel/status"),
           fetch("/api/keys"),
         ]);
         if (!mountedFlag) return;
@@ -85,13 +80,6 @@ export default function ToolDetailClient() {
         if (settingsRes.ok) {
           const data = await settingsRes.json();
           setCloudEnabled(data.cloudEnabled || false);
-        }
-        if (tunnelRes.ok) {
-          const data = await tunnelRes.json();
-          setTunnelEnabled(!!(data.tunnel?.enabled || data.tunnel?.settingsEnabled));
-          setTunnelPublicUrl(data.tunnel?.publicUrl || "");
-          setTailscaleEnabled(!!(data.tailscale?.enabled || data.tailscale?.settingsEnabled));
-          setTailscaleUrl(data.tailscale?.tunnelUrl || "");
         }
         if (keysRes.ok) {
           const data = await keysRes.json();
@@ -147,7 +135,6 @@ export default function ToolDetailClient() {
   }, []);
 
   const getBaseUrl = (): string => {
-    if (tunnelEnabled && tunnelPublicUrl) return tunnelPublicUrl;
     if (cloudEnabled && CLOUD_URL) return CLOUD_URL;
     if (typeof window !== "undefined") return window.location.origin;
     return "http://localhost:4623";
@@ -162,10 +149,6 @@ export default function ToolDetailClient() {
       onToggle: () => {},
       baseUrl: getBaseUrl(),
       apiKeys,
-      tunnelEnabled,
-      tunnelPublicUrl,
-      tailscaleEnabled,
-      tailscaleUrl,
       cloudUrl: CLOUD_URL,
     };
 
@@ -199,10 +182,6 @@ export default function ToolDetailClient() {
             hasActiveProviders={hasActiveProviders}
             cloudEnabled={cloudEnabled}
             cloudUrl={CLOUD_URL}
-            tunnelEnabled={tunnelEnabled}
-            tunnelPublicUrl={tunnelPublicUrl}
-            tailscaleEnabled={tailscaleEnabled}
-            tailscaleUrl={tailscaleUrl}
             initialStatus={toolStatus}
           />
         );
@@ -233,7 +212,7 @@ export default function ToolDetailClient() {
           />
         );
       default:
-        return <DefaultToolCard toolId={toolId} {...commonProps} activeProviders={getActiveProviders()} cloudEnabled={cloudEnabled} tunnelEnabled={tunnelEnabled} />;
+        return <DefaultToolCard toolId={toolId} {...commonProps} activeProviders={getActiveProviders()} cloudEnabled={cloudEnabled} />;
     }
   };
 

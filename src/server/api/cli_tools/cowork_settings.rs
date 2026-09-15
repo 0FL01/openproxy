@@ -114,7 +114,7 @@ async fn save_cowork_settings(
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({
-                "error": "Claude Cowork sandbox cannot reach localhost. Enable Tunnel/Cloud Endpoint or use Tailscale/VPS."
+                "error": "Claude Cowork sandbox cannot reach localhost. Use a public URL (Cloud Endpoint or VPS)."
             })),
         )
             .into_response();

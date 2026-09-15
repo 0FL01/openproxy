@@ -12,7 +12,6 @@ use crate::core::executor::ClientPool;
 use crate::core::health::{health_registry, HealthRegistry};
 use crate::core::mitm::server::MitmProxyHandle;
 use crate::core::model::models_dev::ModelsDevCatalog;
-use crate::core::tunnel::TunnelManager;
 use crate::core::usage::UsageTracker;
 use crate::db::Db;
 use crate::oauth::pending::PendingFlowStore;
@@ -35,7 +34,6 @@ pub struct SessionInfo {
 pub struct AppState {
     pub db: Arc<Db>,
     pub client_pool: Arc<ClientPool>,
-    pub tunnel_manager: Arc<TunnelManager>,
     pub pending_flows: PendingFlowStore,
     pub account_registry: Arc<AccountRegistry>,
     pub console_logs: Arc<ConsoleLogBuffer>,
@@ -111,7 +109,6 @@ impl AppState {
         Self {
             db: db.clone(),
             client_pool: Arc::new(ClientPool::new()),
-            tunnel_manager: Arc::new(TunnelManager::new(db.clone())),
             pending_flows: PendingFlowStore::new(),
             account_registry: Arc::new(AccountRegistry::default()),
             console_logs: shared_console_log_buffer(),

@@ -12,7 +12,6 @@ pub mod mitm;
 pub mod model;
 pub mod proxy;
 pub mod translator;
-pub mod tunnel;
 pub mod usage;
 pub mod utils;
 

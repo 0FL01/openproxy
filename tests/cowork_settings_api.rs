@@ -221,7 +221,7 @@ async fn cowork_settings_post_rejects_localhost_urls() {
     assert_eq!(
         json,
         json!({
-            "error": "Claude Cowork sandbox cannot reach localhost. Enable Tunnel/Cloud Endpoint or use Tailscale/VPS."
+            "error": "Claude Cowork sandbox cannot reach localhost. Use a public URL (Cloud Endpoint or VPS)."
         })
     );
 }

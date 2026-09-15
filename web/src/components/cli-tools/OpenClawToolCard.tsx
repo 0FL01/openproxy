@@ -64,10 +64,6 @@ interface OpenClawToolCardProps {
   apiKeys: ApiKey[];
   activeProviders: string[];
   cloudEnabled: boolean;
-  tunnelEnabled?: boolean;
-  tunnelPublicUrl?: string;
-  tailscaleEnabled?: boolean;
-  tailscaleUrl?: string;
   cloudUrl?: string;
   initialStatus?: OpenclawStatus | null;
 }
@@ -81,10 +77,6 @@ export default function OpenClawToolCard({
   apiKeys,
   activeProviders,
   cloudEnabled,
-  tunnelEnabled = false,
-  tunnelPublicUrl = "",
-  tailscaleEnabled = false,
-  tailscaleUrl = "",
   cloudUrl = "",
   initialStatus,
 }: OpenClawToolCardProps): React.ReactNode {
@@ -108,8 +100,6 @@ export default function OpenClawToolCard({
     const currentProvider = openclawStatus.settings?.models?.providers?.["openproxy"];
     if (!currentProvider) return "not_configured";
     const matched = matchKnownEndpoint(currentProvider.baseUrl, {
-      tunnelPublicUrl,
-      tailscaleUrl,
       cloudUrl,
     });
     return matched ? "configured" : "other";
@@ -371,10 +361,6 @@ export default function OpenClawToolCard({
                     value={getDisplayUrl()}
                     onChange={(url: string) => setCustomBaseUrl(url)}
                     requiresExternalUrl={false}
-                    tunnelEnabled={tunnelEnabled}
-                    tunnelPublicUrl={tunnelPublicUrl}
-                    tailscaleEnabled={tailscaleEnabled}
-                    tailscaleUrl={tailscaleUrl}
                     cloudEnabled={cloudEnabled}
                     cloudUrl={cloudUrl}
                   />

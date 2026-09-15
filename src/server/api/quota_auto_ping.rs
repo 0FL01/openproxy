@@ -1143,48 +1143,6 @@ fn auto_ping_connections(settings: &Settings, key: &str) -> BTreeMap<String, boo
         .collect()
 }
 
-/// Resume tunnel / tailscale from persisted settings after process boot.
-pub fn spawn_boot_resume(state: AppState, port: u16) {
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(2)).await;
-
-        let settings = state.db.snapshot().settings.clone();
-        let tunnel_mgr = state.tunnel_manager.clone();
-
-        if settings.tunnel_enabled {
-            info!(
-                target: "openproxy::boot",
-                "tunnel was enabled — auto-resuming cloudflared"
-            );
-            if let Err(err) = tunnel_mgr
-                .start(crate::core::tunnel::TunnelProvider::Cloudflare, port)
-                .await
-            {
-                warn!(
-                    target: "openproxy::boot",
-                    error = %err,
-                    "tunnel auto-resume failed"
-                );
-            }
-        } else if settings.tailscale_enabled {
-            info!(
-                target: "openproxy::boot",
-                "tailscale was enabled — auto-resuming funnel"
-            );
-            if let Err(err) = tunnel_mgr
-                .start(crate::core::tunnel::TunnelProvider::Tailscale, port)
-                .await
-            {
-                warn!(
-                    target: "openproxy::boot",
-                    error = %err,
-                    "tailscale auto-resume failed"
-                );
-            }
-        }
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -53,9 +53,7 @@ export function GenericExampleCard({ providerId, kind }: { providerId: string; k
     (safeExConfig.extraFields || []).reduce((acc: Record<string, any>, f: any) => { acc[f.key] = f.default ?? ""; return acc; }, {})
   );
   const [apiKey, setApiKey] = useState("");
-  const [useTunnel, setUseTunnel] = useState(false);
   const [localEndpoint, setLocalEndpoint] = useState("");
-  const [tunnelEndpoint, setTunnelEndpoint] = useState("");
   const [result, setResult] = useState<{ data: any; latencyMs: number } | null>(null);
   const [progress, setProgress] = useState<{ stage?: string; bytesReceived?: number } | null>(null);
   const [partialImage, setPartialImage] = useState<{ b64_json?: string } | null>(null);
@@ -74,10 +72,6 @@ export function GenericExampleCard({ providerId, kind }: { providerId: string; k
       .then((r) => r.json())
       .then((d: any) => { setApiKey((d.keys || []).find((k: any) => k.isActive !== false)?.key || ""); })
       .catch(() => {});
-    fetch("/api/tunnel/status")
-      .then((r) => r.json())
-      .then((d: any) => { if (d.publicUrl) setTunnelEndpoint(d.publicUrl); })
-      .catch(() => {});
     fetch("/api/providers/client")
       .then((r) => r.json())
       .then((d: any) => {
@@ -89,7 +83,7 @@ export function GenericExampleCard({ providerId, kind }: { providerId: string; k
 
   if (!kindConfig || !exConfig) return null;
 
-  const endpoint = useTunnel ? tunnelEndpoint : localEndpoint;
+  const endpoint = localEndpoint;
   const apiPath = kindConfig.endpoint.path;
   const modelFull = !needsModel
     ? safeProviderAlias
@@ -242,18 +236,6 @@ export function GenericExampleCard({ providerId, kind }: { providerId: string; k
             <span className="w-full min-w-0 flex-1 px-3 py-1.5 text-sm font-mono text-ink bg-surface-card border border-hairline-soft rounded-mini-md truncate">
               {endpoint}{apiPath}
             </span>
-            {tunnelEndpoint && (
-              <button
-                onClick={() => setUseTunnel((v) => !v)}
-                title={useTunnel ? "Using tunnel" : "Using local"}
-                className={`flex items-center gap-1 text-xs px-2 py-1.5 rounded-mini-md border shrink-0 transition-colors ${
-                  useTunnel ? "border-brand-coral/40 bg-brand-coral/10 text-brand-coral" : "border-hairline text-text-muted hover:text-brand-coral"
-                }`}
-              >
-                <span className="material-symbols-outlined text-[14px]">wifi_tethering</span>
-                Tunnel
-              </button>
-            )}
           </div>
         </Row>
 

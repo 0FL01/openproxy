@@ -1,18 +1,12 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
-import type { ChangeEvent, MutableRefObject, ReactNode, MouseEvent } from "react";
+import { useState, useEffect } from "react";
+import type { ChangeEvent, ReactNode, MouseEvent } from "react";
 import { Card, Button, Input, Modal, CardSkeleton, Toggle } from "@/shared/components";
 import { ConfirmModal } from "@/shared/components/Modal";
 import { useNotificationStore } from "@/store/notificationStore";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import CacheStatsCard from "@/components/CacheStatsCard";
-
-interface TunnelBenefit {
-  icon: string;
-  title: string;
-  desc: string;
-}
 
 interface ApiKey {
   id: string;
@@ -21,16 +15,6 @@ interface ApiKey {
   createdAt: string;
   isActive?: boolean;
   monthlyBudgetUsd?: number | null;
-}
-
-interface Status {
-  type: "success" | "warning" | "error" | "info";
-  message: string;
-}
-
-interface SecurityAction {
-  label: string;
-  href: string;
 }
 
 interface EndpointRowProps {
@@ -43,13 +27,9 @@ interface EndpointRowProps {
   actions?: ReactNode;
 }
 
-interface StatusAlertProps {
-  status: Status;
-  className?: string;
-}
-
-interface TooltipProps {
-  text: string;
+interface SecurityAction {
+  label: string;
+  href: string;
 }
 
 interface SecurityWarningProps {
@@ -59,51 +39,6 @@ interface SecurityWarningProps {
 
 interface APIPageClientProps {
   machineId: string;
-}
-
-const TUNNEL_BENEFITS: TunnelBenefit[] = [
-  { icon: "public", title: "Access Anywhere", desc: "Use your API from any network" },
-  { icon: "group", title: "Share Endpoint", desc: "Share URL with team members" },
-  { icon: "code", title: "Use in Cursor/Cline", desc: "Connect AI tools remotely" },
-  { icon: "lock", title: "Encrypted", desc: "End-to-end TLS via Cloudflare" },
-];
-
-const TUNNEL_PING_INTERVAL_MS = 2000;
-const TUNNEL_PING_MAX_MS = 300000;
-const STATUS_POLL_INTERVAL_MS = 5000;
-/** Only flip UI to "reconnecting" after N consecutive probe misses (avoids flicker). */
-const REACHABLE_MISS_THRESHOLD = 5;
-const CLIENT_PING_FAST_MS = 10000;
-const CLIENT_PING_TIMEOUT_MS = 5000;
-
-/** Browser-side health probe against a tunnel/tailscale base URL. */
-async function clientPingUrl(url: string): Promise<boolean> {
-  if (!url) return false;
-  try {
-    const res = await fetch(`${url.replace(/\/$/, "")}/api/health`, {
-      mode: "cors",
-      cache: "no-store",
-      signal: AbortSignal.timeout(CLIENT_PING_TIMEOUT_MS),
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
-/** Race multiple URLs: resolve true as soon as any one passes. */
-async function clientPingAny(...urls: Array<string | undefined | null>): Promise<boolean> {
-  const checks = urls.filter((u): u is string => !!u).map(clientPingUrl);
-  if (!checks.length) return false;
-  return new Promise((resolve) => {
-    let pending = checks.length;
-    checks.forEach((p) =>
-      p.then((ok) => {
-        if (ok) resolve(true);
-        else if (--pending === 0) resolve(false);
-      }),
-    );
-  });
 }
 
 export default function APIPageClient({ machineId }: APIPageClientProps) {
@@ -117,49 +52,8 @@ export default function APIPageClient({ machineId }: APIPageClientProps) {
   const [requireApiKey, setRequireApiKey] = useState<boolean>(true);
   const [requireLogin, setRequireLogin] = useState<boolean>(true);
   const [hasPassword, setHasPassword] = useState<boolean>(true);
-  // True when the dashboard is opened via a non-loopback host (LAN / tunnel).
+  // True when the dashboard is opened via a non-loopback host (LAN).
   const [isRemoteHost, setIsRemoteHost] = useState<boolean>(false);
-  const [tunnelDashboardAccess, setTunnelDashboardAccess] = useState<boolean>(false);
-
-  // Cloudflare Tunnel state
-  const [tunnelChecking, setTunnelChecking] = useState<boolean>(true);
-  const [tunnelEnabled, setTunnelEnabled] = useState<boolean>(false);
-  const [tunnelReachable, setTunnelReachable] = useState<boolean>(false);
-  // Once true, subsequent unreachable periods show "reconnecting" not "checking".
-  const [tunnelEverReachable, setTunnelEverReachable] = useState<boolean>(false);
-  const [tunnelUrl, setTunnelUrl] = useState<string>("");
-  const [tunnelPublicUrl, setTunnelPublicUrl] = useState<string>("");
-  const [tunnelLoading, setTunnelLoading] = useState<boolean>(false);
-  const [tunnelProgress, setTunnelProgress] = useState<string>("");
-  const [tunnelStatus, setTunnelStatus] = useState<Status | null>(null);
-  const [showEnableTunnelModal, setShowEnableTunnelModal] = useState<boolean>(false);
-  const [showDisableTunnelModal, setShowDisableTunnelModal] = useState<boolean>(false);
-
-  // Tailscale state
-  const [tsEnabled, setTsEnabled] = useState<boolean>(false);
-  const [tsReachable, setTsReachable] = useState<boolean>(false);
-  const [tsEverReachable, setTsEverReachable] = useState<boolean>(false);
-  const [tsUrl, setTsUrl] = useState<string>("");
-  const [tsLoading, setTsLoading] = useState<boolean>(false);
-  const [tsProgress, setTsProgress] = useState<string>("");
-  const [tsStatus, setTsStatus] = useState<Status | null>(null);
-  const [tsInstalled, setTsInstalled] = useState<boolean | null>(null); // null=checking, true/false
-  const [tsInstalling, setTsInstalling] = useState<boolean>(false);
-  const [tsInstallLog, setTsInstallLog] = useState<string[]>([]);
-  const [tsSudoPassword, setTsSudoPassword] = useState<string>("");
-  const [tsConnecting, setTsConnecting] = useState<boolean>(false);
-  // Persisted auth URL for re-opening login/connection popup (9router parity).
-  const [tsAuthUrl, setTsAuthUrl] = useState<string>("");
-  const tsAuthLabelRef = useRef<string>("Login");
-  const [showTsModal, setShowTsModal] = useState<boolean>(false);
-  const [showDisableTsModal, setShowDisableTsModal] = useState<boolean>(false);
-  const tsLogRef = useRef<HTMLDivElement>(null);
-
-  // Debounce reachable=false: only flip UI after N consecutive misses.
-  const tunnelMissRef = useRef(0);
-  const tsMissRef = useRef(0);
-  const tunnelClientReachableRef = useRef(false);
-  const tsClientReachableRef = useRef(false);
 
   // API key visibility toggle state
   const [visibleKeys, setVisibleKeys] = useState<Set<string>>(new Set());
@@ -171,63 +65,6 @@ export default function APIPageClient({ machineId }: APIPageClientProps) {
 
   const notify = useNotificationStore();
   const { copied, copy } = useCopyToClipboard();
-
-  // Auto-scroll install log
-  useEffect(() => {
-    if (tsLogRef.current) tsLogRef.current.scrollTop = tsLogRef.current.scrollHeight;
-  }, [tsInstallLog]);
-
-  // Miss-debounce helper: only flip reachable=false after N consecutive misses.
-  const updateReachable = useCallback(
-    (
-      clientRef: MutableRefObject<boolean>,
-      missRef: MutableRefObject<number>,
-      setter: (v: boolean) => void,
-      everSetter?: (v: boolean) => void,
-    ) => {
-      if (clientRef.current) {
-        missRef.current = 0;
-        setter(true);
-        everSetter?.(true);
-      } else {
-        missRef.current += 1;
-        if (missRef.current >= REACHABLE_MISS_THRESHOLD) setter(false);
-      }
-    },
-    [],
-  );
-
-  // Trust user intent (settingsEnabled): UI stays "enabled" while watchdog restarts process
-  const syncTunnelStatus = useCallback(async (): Promise<void> => {
-    try {
-      const statusRes = await fetch("/api/tunnel/status", { cache: "no-store" });
-      if (!statusRes.ok) return;
-      const data = await statusRes.json();
-      const tEnabled = data.tunnel?.settingsEnabled ?? data.tunnel?.enabled ?? false;
-      const tUrl = data.tunnel?.tunnelUrl || "";
-      const tPublicUrl = data.tunnel?.publicUrl || "";
-      setTunnelUrl(tUrl);
-      setTunnelPublicUrl(tPublicUrl);
-      setTunnelEnabled(tEnabled);
-      updateReachable(
-        tunnelClientReachableRef,
-        tunnelMissRef,
-        setTunnelReachable,
-        setTunnelEverReachable,
-      );
-
-      const tsEn = data.tailscale?.settingsEnabled ?? data.tailscale?.enabled ?? false;
-      const tsUrlVal = data.tailscale?.tunnelUrl || "";
-      setTsUrl(tsUrlVal);
-      setTsEnabled(tsEn);
-      updateReachable(
-        tsClientReachableRef,
-        tsMissRef,
-        setTsReachable,
-        setTsEverReachable,
-      );
-    } catch { /* ignore poll errors */ }
-  }, [updateReachable]);
 
   useEffect(() => {
     fetchData();
@@ -247,142 +84,17 @@ export default function APIPageClient({ machineId }: APIPageClientProps) {
     setIsRemoteHost(!loopback);
   }, []);
 
-  // Status poll: only while degraded (not yet reachable). Stop once healthy to avoid spam.
-  useEffect(() => {
-    const anyEnabled = tunnelEnabled || tsEnabled;
-    if (!anyEnabled) return;
-    const tunnelHealthy = !tunnelEnabled || tunnelReachable;
-    const tsHealthy = !tsEnabled || tsReachable;
-    const allHealthy = tunnelHealthy && tsHealthy;
-    const onVisible = () => {
-      if (!document.hidden) void syncTunnelStatus();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    if (allHealthy) {
-      return () => document.removeEventListener("visibilitychange", onVisible);
-    }
-    const timer = setInterval(() => {
-      if (!document.hidden) void syncTunnelStatus();
-    }, STATUS_POLL_INTERVAL_MS);
-    return () => {
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [tunnelEnabled, tsEnabled, tunnelReachable, tsReachable, syncTunnelStatus]);
-
-  // Browser-side periodic ping with miss-threshold debounce.
-  // Adaptive: slow when healthy, fast when degraded; pause when tab hidden.
-  useEffect(() => {
-    const probeBoth = async () => {
-      if (document.hidden) return;
-      if (tunnelEnabled && (tunnelUrl || tunnelPublicUrl)) {
-        const ok = await clientPingAny(tunnelPublicUrl, tunnelUrl);
-        tunnelClientReachableRef.current = ok;
-        if (ok) {
-          tunnelMissRef.current = 0;
-          setTunnelReachable(true);
-          setTunnelEverReachable(true);
-          setTunnelStatus((prev) =>
-            prev?.type === "warning" && prev.message.includes("reconnecting") ? null : prev,
-          );
-        } else {
-          tunnelMissRef.current += 1;
-          if (tunnelMissRef.current >= REACHABLE_MISS_THRESHOLD) {
-            setTunnelReachable(false);
-            setTunnelStatus({ type: "warning", message: "Tunnel reconnecting..." });
-          }
-        }
-      } else {
-        tunnelClientReachableRef.current = false;
-      }
-      if (tsEnabled && tsUrl) {
-        const ok = await clientPingUrl(tsUrl);
-        tsClientReachableRef.current = ok;
-        if (ok) {
-          tsMissRef.current = 0;
-          setTsReachable(true);
-          setTsEverReachable(true);
-          setTsStatus((prev) =>
-            prev?.type === "warning" && prev.message.includes("reconnecting") ? null : prev,
-          );
-        } else {
-          tsMissRef.current += 1;
-          if (tsMissRef.current >= REACHABLE_MISS_THRESHOLD) {
-            setTsReachable(false);
-            setTsStatus({ type: "warning", message: "Tailscale reconnecting..." });
-          }
-        }
-      } else {
-        tsClientReachableRef.current = false;
-      }
-    };
-    const anyEnabled =
-      (tunnelEnabled && (tunnelUrl || tunnelPublicUrl)) || (tsEnabled && tsUrl);
-    if (!anyEnabled) return;
-    void probeBoth();
-    const tunnelHealthy = !tunnelEnabled || tunnelReachable;
-    const tsHealthy = !tsEnabled || tsReachable;
-    if (tunnelHealthy && tsHealthy) return;
-    const id = setInterval(() => {
-      void probeBoth();
-    }, CLIENT_PING_FAST_MS);
-    return () => clearInterval(id);
-  }, [
-    tunnelEnabled,
-    tunnelUrl,
-    tunnelPublicUrl,
-    tsEnabled,
-    tsUrl,
-    tunnelReachable,
-    tsReachable,
-  ]);
-
   const loadSettings = async (): Promise<void> => {
-    setTunnelChecking(true);
     try {
-      const [settingsRes, statusRes] = await Promise.all([
-        fetch("/api/settings"),
-        fetch("/api/tunnel/status", { cache: "no-store" }),
-      ]);
+      const settingsRes = await fetch("/api/settings");
       if (settingsRes.ok) {
         const data = await settingsRes.json();
         setRequireApiKey(data.requireApiKey !== false);
         setRequireLogin(data.requireLogin !== false);
         setHasPassword(data.hasPassword || false);
-        setTunnelDashboardAccess(data.tunnelDashboardAccess || false);
-      }
-      if (statusRes.ok) {
-        const data = await statusRes.json();
-        const tEnabled = data.tunnel?.settingsEnabled ?? data.tunnel?.enabled ?? false;
-        const tUrl = data.tunnel?.tunnelUrl || "";
-        const tPublicUrl = data.tunnel?.publicUrl || "";
-        setTunnelUrl(tUrl);
-        setTunnelPublicUrl(tPublicUrl);
-        // Trust user intent: stays enabled while watchdog restores process
-        setTunnelEnabled(tEnabled);
-
-        const tsEn = data.tailscale?.settingsEnabled ?? data.tailscale?.enabled ?? false;
-        const tsUrlVal = data.tailscale?.tunnelUrl || "";
-        setTsUrl(tsUrlVal);
-        setTsEnabled(tsEn);
       }
     } catch (error) {
       console.log("Error loading settings:", error);
-    } finally {
-      setTunnelChecking(false);
-    }
-  };
-
-  const handleTunnelDashboardAccess = async (value: boolean): Promise<void> => {
-    try {
-      const res = await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tunnelDashboardAccess: value }),
-      });
-      if (res.ok) setTunnelDashboardAccess(value);
-    } catch (error) {
-      console.log("Error updating tunnelDashboardAccess:", error);
     }
   };
 
@@ -434,367 +146,7 @@ export default function APIPageClient({ machineId }: APIPageClientProps) {
     }
   };
 
-  // ──── Cloudflare Tunnel handlers
-  // Ping tunnel health until reachable, also check backend status to detect process die
-  const pingTunnelHealth = async (url: string): Promise<boolean> => {
-    setTunnelLoading(true);
-    setTunnelProgress("Waiting for tunnel ready...");
-    const healthUrl = `${url}/api/health`;
-    const start = Date.now();
-    while (Date.now() - start < TUNNEL_PING_MAX_MS) {
-      await new Promise((r) => setTimeout(r, TUNNEL_PING_INTERVAL_MS));
-      try {
-        const ping = await fetch(healthUrl, { mode: "no-cors", cache: "no-store" });
-        if (ping.ok || ping.type === "opaque") {
-          setTunnelEnabled(true);
-          setTunnelLoading(false);
-          setTunnelProgress("");
-          return true;
-        }
-      } catch { /* not ready yet */ }
-      // Every 5 pings (~10s), check if backend process still alive
-      if ((Date.now() - start) % 10000 < TUNNEL_PING_INTERVAL_MS) {
-        try {
-          const statusRes = await fetch("/api/tunnel/status");
-          if (statusRes.ok) {
-            const status = await statusRes.json();
-            if (!status.tunnel?.enabled) {
-              setTunnelStatus({ type: "error", message: "Tunnel process stopped unexpectedly." });
-              setTunnelLoading(false);
-              setTunnelProgress("");
-              return false;
-            }
-          }
-        } catch { /* ignore */ }
-      }
-    }
-    setTunnelStatus({ type: "error", message: "Tunnel created but not reachable. Please try again." });
-    setTunnelLoading(false);
-    setTunnelProgress("");
-    return false;
-  };
-
-  const handleEnableTunnel = async (): Promise<void> => {
-    setShowEnableTunnelModal(false);
-    setTunnelLoading(true);
-    setTunnelStatus(null);
-    setTunnelProgress("Creating tunnel...");
-
-    // Poll download progress while enable request is pending
-    let polling = true;
-    const pollProgress = async (): Promise<void> => {
-      while (polling) {
-        try {
-          const r = await fetch("/api/tunnel/status");
-          if (r.ok) {
-            const s = await r.json();
-            if (s.download?.downloading) {
-              setTunnelProgress(`Downloading cloudflared... ${s.download.progress}%`);
-            } else if (polling) {
-              setTunnelProgress("Creating tunnel...");
-            }
-          }
-        } catch { /* ignore */ }
-        await new Promise((r) => setTimeout(r, 1000));
-      }
-    };
-    pollProgress();
-
-    try {
-      const res = await fetch("/api/tunnel/enable", { method: "POST" });
-      polling = false;
-      const data = await res.json();
-      if (!res.ok) {
-        setTunnelStatus({ type: "error", message: data.error || "Failed to enable tunnel" });
-        return;
-      }
-
-      const url = data.publicUrl || data.tunnelUrl;
-      if (!url) {
-        setTunnelStatus({ type: "error", message: "No tunnel URL returned" });
-        return;
-      }
-
-      setTunnelUrl(data.tunnelUrl || "");
-      setTunnelPublicUrl(data.publicUrl || "");
-      await pingTunnelHealth(url);
-    } catch (error) {
-      setTunnelStatus({ type: "error", message: (error as Error).message });
-    } finally {
-      polling = false;
-      setTunnelLoading(false);
-      setTunnelProgress("");
-    }
-  };
-
-  const handleDisableTunnel = async (): Promise<void> => {
-    setTunnelLoading(true);
-    setTunnelStatus(null);
-    try {
-      const res = await fetch("/api/tunnel/disable", { method: "POST" });
-      const data = await res.json();
-      if (res.ok) {
-        setTunnelEnabled(false);
-        setTunnelUrl("");
-        setTunnelPublicUrl("");
-        setShowDisableTunnelModal(false);
-        setTunnelStatus({ type: "success", message: "Tunnel disabled" });
-      } else {
-        setTunnelStatus({ type: "error", message: data.error || "Failed to disable tunnel" });
-      }
-    } catch (error) {
-      setTunnelStatus({ type: "error", message: (error as Error).message });
-    } finally {
-      setTunnelLoading(false);
-    }
-  };
-
-  // ──── Tailscale handlers
-  const checkTailscaleInstalled = async (): Promise<{ installed: boolean }> => {
-    setTsInstalled(null);
-    try {
-      const res = await fetch("/api/tunnel/tailscale-check");
-      if (res.ok) {
-        const data = await res.json();
-        setTsInstalled(data.installed);
-        return data;
-      }
-    } catch { /* ignore */ }
-    setTsInstalled(false);
-    return { installed: false };
-  };
-
-  const handleInstallTailscale = async (): Promise<void> => {
-    setTsInstalling(true);
-    setTsStatus(null);
-    setTsInstallLog([]);
-    try {
-      const res = await fetch("/api/tunnel/tailscale-install", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sudoPassword: tsSudoPassword }),
-      });
-      setTsSudoPassword("");
-
-      const reader = res.body?.getReader();
-      if (!reader) {
-        throw new Error("No response body");
-      }
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop() || "";
-        for (const part of parts) {
-          const lines = part.split("\n");
-          let event = "progress";
-          let data: { message?: string; error?: string } | null = null;
-          for (const line of lines) {
-            if (line.startsWith("event: ")) event = line.slice(7).trim();
-            if (line.startsWith("data: ")) {
-              try { data = JSON.parse(line.slice(6)); } catch { /* skip */ }
-            }
-          }
-          if (!data) continue;
-          if (event === "progress" && data.message) {
-            setTsInstallLog((prev) => [...prev.slice(-50), data.message]);
-          } else if (event === "done") {
-            setTsInstalled(true);
-            setTsInstalling(false);
-            return;
-          } else if (event === "error") {
-            setTsStatus({ type: "error", message: data.error || "Install failed" });
-          }
-        }
-      }
-    } catch (e) {
-      setTsStatus({ type: "error", message: (e as Error).message });
-    } finally {
-      setTsInstalling(false);
-    }
-  };
-
-  // Ping Tailscale health until reachable
-  const pingTsHealth = async (url: string): Promise<boolean> => {
-    setTsProgress("Waiting for Tailscale ready...");
-    const healthUrl = `${url}/api/health`;
-    const start = Date.now();
-    while (Date.now() - start < TUNNEL_PING_MAX_MS) {
-      await new Promise((r) => setTimeout(r, TUNNEL_PING_INTERVAL_MS));
-      try {
-        const ping = await fetch(healthUrl, { mode: "no-cors", cache: "no-store" });
-        if (ping.ok || ping.type === "opaque") return true;
-      } catch { /* not ready yet */ }
-    }
-    return false;
-  };
-
-  const handleConnectTailscale = async (preOpenedTab: Window | null): Promise<void> => {
-    const tab = preOpenedTab || null;
-    setShowTsModal(false);
-    setTsConnecting(true);
-    setTsLoading(true);
-    setTsStatus(null);
-    setTsProgress("Connecting...");
-    try {
-      const res = await fetch("/api/tunnel/tailscale-enable", { method: "POST" });
-      const data = await res.json();
-
-      if (res.ok && data.success) {
-        if (tab) tab.close();
-        setTsUrl(data.tunnelUrl || "");
-        const reachable = await pingTsHealth(data.tunnelUrl);
-        if (reachable) {
-          setTsEnabled(true);
-          setTsStatus(null);
-        } else {
-          setTsEnabled(true);
-          setTsStatus({ type: "warning", message: "Connected but not reachable yet." });
-        }
-        return;
-      }
-
-      // Needs login: redirect pre-opened tab or open new
-      if (data.needsLogin && data.authUrl) {
-        setTsAuthUrl(data.authUrl);
-        if (tab) tab.location.href = data.authUrl;
-        else window.open(data.authUrl, "tailscale_auth", "width=600,height=700");
-        setTsProgress("Waiting for login...");
-        for (let i = 0; i < 40; i++) {
-          await new Promise((r) => setTimeout(r, 3000));
-          try {
-            const r2 = await fetch("/api/tunnel/tailscale-check");
-            if (r2.ok) {
-              const check = await r2.json();
-              if (check.loggedIn) {
-                setTsProgress("Starting funnel...");
-                const res2 = await fetch("/api/tunnel/tailscale-enable", { method: "POST" });
-                const data2 = await res2.json();
-                if (res2.ok && data2.success) {
-                  if (tab) tab.close();
-                  setTsUrl(data2.tunnelUrl || "");
-                  const ok2 = await pingTsHealth(data2.tunnelUrl);
-                  if (ok2) {
-                    setTsEnabled(true);
-                    setTsStatus(null);
-                  } else {
-                    setTsEnabled(true);
-                    setTsStatus({ type: "warning", message: "Connected but not reachable yet." });
-                  }
-                } else if (data2.funnelNotEnabled && data2.enableUrl) {
-                  await pollFunnelEnable(data2.enableUrl, tab);
-                } else {
-                  setTsStatus({ type: "error", message: data2.error || "Failed to start funnel" });
-                }
-                return;
-              }
-            }
-          } catch { /* retry */ }
-        }
-        setTsStatus({ type: "error", message: "Login timed out. Please try again." });
-        return;
-      }
-
-      // Funnel not enabled: redirect pre-opened tab
-      if (data.funnelNotEnabled && data.enableUrl) {
-        setTsAuthUrl(data.enableUrl);
-        await pollFunnelEnable(data.enableUrl, tab);
-        return;
-      }
-
-      if (tab) tab.close();
-      setTsStatus({ type: "error", message: data.error || "Failed to connect" });
-    } catch (error) {
-      if (tab) tab.close();
-      setTsStatus({ type: "error", message: (error as Error).message });
-    } finally {
-      setTsLoading(false);
-      setTsConnecting(false);
-      if (!tsAuthUrl) setTsProgress("");
-    }
-  };
-
-  const pollFunnelEnable = async (enableUrl: string, tab: Window | null): Promise<void> => {
-    setTsAuthUrl(enableUrl);
-    if (tab) tab.location.href = enableUrl;
-    else window.open(enableUrl, "tailscale_auth", "width=600,height=700");
-    setTsProgress("Enable Funnel in browser, waiting...");
-    for (let i = 0; i < 40; i++) {
-      await new Promise((r) => setTimeout(r, 3000));
-      try {
-        const res = await fetch("/api/tunnel/tailscale-enable", { method: "POST" });
-        const data = await res.json();
-        if (res.ok && data.success) {
-          if (tab) tab.close();
-          setTsUrl(data.tunnelUrl || "");
-          const ok3 = await pingTsHealth(data.tunnelUrl);
-          if (ok3) {
-            setTsEnabled(true);
-            setTsStatus(null);
-          } else {
-            setTsEnabled(true);
-            setTsStatus({ type: "warning", message: "Connected but not reachable yet." });
-          }
-          return;
-        }
-        if (data.funnelNotEnabled) continue;
-        if (data.error) {
-          setTsStatus({ type: "error", message: data.error });
-          return;
-        }
-      } catch { /* retry */ }
-    }
-    setTsStatus({ type: "error", message: "Timed out waiting for Funnel to be enabled." });
-  };
-
-  const handleDisableTailscale = async (): Promise<void> => {
-    setTsLoading(true);
-    setTsStatus(null);
-    try {
-      const res = await fetch("/api/tunnel/tailscale-disable", { method: "POST" });
-      const data = await res.json();
-      if (res.ok) {
-        setTsEnabled(false);
-        setTsUrl("");
-        setShowDisableTsModal(false);
-        setTsStatus({ type: "success", message: "Tailscale disabled" });
-      } else {
-        setTsStatus({ type: "error", message: data.error || "Failed to disable Tailscale" });
-      }
-    } catch (e) {
-      setTsStatus({ type: "error", message: (e as Error).message });
-    } finally {
-      setTsLoading(false);
-    }
-  };
-
   const isLoginUnsafe = !requireLogin || !hasPassword;
-
-  const handleOpenTsModal = async (): Promise<void> => {
-    if (isLoginUnsafe) {
-      setTsStatus({
-        type: "error",
-        message:
-          "Security required: enable Require Login and set a strong password in Settings before exposing Tailscale/Funnel.",
-      });
-      return;
-    }
-    if (!requireApiKey) {
-      setTsStatus({
-        type: "error",
-        message: 'Security required: Enable "Require API key" before activating Tailscale.',
-      });
-      return;
-    }
-    setTsStatus(null);
-    setTsInstallLog([]);
-    setShowTsModal(true);
-    await checkTailscaleInstalled();
-  };
 
   const handleCreateKey = async (): Promise<void> => {
     if (!newKeyName.trim()) return;
@@ -914,193 +266,17 @@ export default function APIPageClient({ machineId }: APIPageClientProps) {
             copied={copied}
             onCopy={copy}
           />
-          {/* Cloudflare Tunnel */}
-          <div className="flex items-center gap-2">
-            <span className={`text-xs font-mono px-1.5 py-0.5 rounded shrink-0 min-w-[88px] text-center ${
-              tunnelEnabled ? "bg-primary/10 text-primary" : "bg-surface-2 text-text-muted"
-            }`}>Tunnel</span>
-            {tunnelEnabled && !tunnelLoading && tunnelReachable ? (
-              <>
-                <Input value={`${tunnelPublicUrl || tunnelUrl}/v1`} readOnly className="flex-1 font-mono text-sm" />
-                <button
-                  onClick={() => copy(`${tunnelPublicUrl || tunnelUrl}/v1`, "tunnel_url")}
-                  className="p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded text-text-muted hover:text-primary transition-colors shrink-0"
-                >
-                  <span className="material-symbols-outlined text-[18px]">{copied === "tunnel_url" ? "check" : "content_copy"}</span>
-                </button>
-                <button
-                  onClick={() => setShowDisableTunnelModal(true)}
-                  className="p-2 hover:bg-red-500/10 rounded text-red-500 transition-colors shrink-0"
-                  title="Disable Tunnel"
-                >
-                  <span className="material-symbols-outlined text-[18px]">power_settings_new</span>
-                </button>
-              </>
-            ) : tunnelEnabled && !tunnelLoading && !tunnelReachable ? (
-              <>
-                <div className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded border border-amber-300/60 dark:border-amber-700/50 bg-amber-500/5 text-sm text-amber-700 dark:text-amber-400">
-                  <span className="material-symbols-outlined animate-spin text-sm">progress_activity</span>
-                  {tunnelEverReachable ? "Tunnel reconnecting..." : "Checking tunnel..."}
-                </div>
-                <button
-                  onClick={() => setShowDisableTunnelModal(true)}
-                  className="p-2 hover:bg-red-500/10 rounded text-red-500 transition-colors shrink-0"
-                  title="Disable Tunnel"
-                >
-                  <span className="material-symbols-outlined text-[18px]">power_settings_new</span>
-                </button>
-              </>
-            ) : tunnelLoading ? (
-              <>
-                <div className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded border border-border bg-input text-sm text-text-muted">
-                  <span className="material-symbols-outlined animate-spin text-sm">progress_activity</span>
-                  {tunnelProgress || "Creating tunnel..."}
-                </div>
-                <button
-                  onClick={() => { setTunnelLoading(false); setTunnelProgress(""); }}
-                  className="p-2 hover:bg-red-500/10 rounded text-red-500 transition-colors shrink-0"
-                  title="Stop"
-                >
-                  <span className="material-symbols-outlined text-[18px]">power_settings_new</span>
-                </button>
-              </>
-            ) : tunnelStatus?.type === "error" ? (
-              <>
-                <div className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded border border-red-300 dark:border-red-800 bg-red-500/5 text-sm text-red-600 dark:text-red-400">
-                  <span className="material-symbols-outlined text-sm">error</span>
-                  {tunnelStatus.message}
-                </div>
-                <Button size="sm" icon="cloud_upload" onClick={() => setShowEnableTunnelModal(true)}>Enable</Button>
-              </>
-            ) : tunnelChecking ? (
-              <>
-                <div className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded border border-border bg-input text-sm text-text-muted">
-                  <span className="material-symbols-outlined animate-spin text-sm">progress_activity</span>
-                  Checking...
-                </div>
-                <button
-                  onClick={() => setTunnelChecking(false)}
-                  className="p-2 hover:bg-red-500/10 rounded text-red-500 transition-colors shrink-0"
-                  title="Stop"
-                >
-                  <span className="material-symbols-outlined text-[18px]">power_settings_new</span>
-                </button>
-              </>
-            ) : (
-              <Button
-                size="sm"
-                icon="cloud_upload"
-                onClick={() => {
-                  if (isLoginUnsafe) {
-                    setTunnelStatus({
-                      type: "error",
-                      message:
-                        "Security required: enable Require Login and set a strong password in Settings before activating the tunnel.",
-                    });
-                    return;
-                  }
-                  if (!requireApiKey) {
-                    setTunnelStatus({ type: "error", message: "Security required: Enable \"Require API key\" before activating the tunnel." });
-                    return;
-                  }
-                  setShowEnableTunnelModal(true);
-                }}
-              >
-                Enable
-              </Button>
-            )}
-          </div>
-          {/* Tailscale */}
-          <div className="flex items-center gap-2">
-            <span className={`text-xs font-mono px-1.5 py-0.5 rounded shrink-0 min-w-[88px] text-center ${
-              tsEnabled ? "bg-primary/10 text-primary" : "bg-surface-2 text-text-muted"
-            }`}>Tailscale</span>
-            {tsEnabled && !tsLoading && !tsConnecting && tsReachable ? (
-              <>
-                <Input value={`${tsUrl}/v1`} readOnly className="flex-1 font-mono text-sm" />
-                <button
-                  onClick={() => copy(`${tsUrl}/v1`, "ts_url")}
-                  className="p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded text-text-muted hover:text-primary transition-colors shrink-0"
-                >
-                  <span className="material-symbols-outlined text-[18px]">{copied === "ts_url" ? "check" : "content_copy"}</span>
-                </button>
-                <button
-                  onClick={() => setShowDisableTsModal(true)}
-                  className="p-2 hover:bg-red-500/10 rounded text-red-500 transition-colors shrink-0"
-                  title="Disable Tailscale"
-                >
-                  <span className="material-symbols-outlined text-[18px]">power_settings_new</span>
-                </button>
-              </>
-            ) : tsEnabled && !tsLoading && !tsConnecting && !tsReachable ? (
-              <>
-                <div className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded border border-amber-300/60 dark:border-amber-700/50 bg-amber-500/5 text-sm text-amber-700 dark:text-amber-400">
-                  <span className="material-symbols-outlined animate-spin text-sm">progress_activity</span>
-                  {tsEverReachable ? "Tailscale reconnecting..." : "Checking Tailscale..."}
-                </div>
-                {tsAuthUrl && (tsEverReachable || tsEnabled) && (
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    icon="open_in_new"
-                    onClick={() => window.open(tsAuthUrl, "tailscale_auth", "width=600,height=700")}
-                    title="Re-open auth window"
-                  >
-                    Re-auth
-                  </Button>
-                )}
-                <button
-                  onClick={() => { setShowDisableTsModal(true); setTsAuthUrl(""); }}
-                  className="p-2 hover:bg-red-500/10 rounded text-red-500 transition-colors shrink-0"
-                  title="Disable Tailscale"
-                >
-                  <span className="material-symbols-outlined text-[18px]">power_settings_new</span>
-                </button>
-              </>
-            ) : (tsLoading || tsConnecting) ? (
-              <>
-                <div className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded border border-border bg-input text-sm text-text-muted">
-                  <span className="material-symbols-outlined animate-spin text-sm">progress_activity</span>
-                  {tsProgress || "Connecting..."}
-                </div>
-                <button
-                  onClick={() => { setTsLoading(false); setTsConnecting(false); setTsProgress(""); setTsAuthUrl(""); }}
-                  className="p-2 hover:bg-red-500/10 rounded text-red-500 transition-colors shrink-0"
-                  title="Stop"
-                >
-                  <span className="material-symbols-outlined text-[18px]">power_settings_new</span>
-                </button>
-              </>
-            ) : tsStatus?.type === "error" ? (
-              <>
-                <div className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded border border-red-300 dark:border-red-800 bg-red-500/5 text-sm text-red-600 dark:text-red-400">
-                  <span className="material-symbols-outlined text-sm">error</span>
-                  {tsStatus.message}
-                </div>
-                <Button size="sm" icon="vpn_lock" onClick={handleOpenTsModal}>Enable</Button>
-              </>
-            ) : (
-              <Button
-                size="sm"
-                icon="vpn_lock"
-                onClick={handleOpenTsModal}
-                className="bg-linear-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white!"
-              >
-                Enable
-              </Button>
-            )}
-          </div>
         </div>
 
-        {/* Security warnings: pre-enable login unsafe, remote host, active tunnel/ts */}
-        {(isLoginUnsafe || isRemoteHost || tunnelEnabled || tsEnabled) && (
+        {/* Security warnings: missing login/password, exposed endpoint without key */}
+        {(isLoginUnsafe || !requireApiKey) && (
           <div className="mt-4 flex flex-col gap-2">
-            {isLoginUnsafe && !tunnelEnabled && !tsEnabled && (
+            {isLoginUnsafe && (
               <SecurityWarning
                 message={
                   !requireLogin
-                    ? "Require login is disabled — enable it and set a password before exposing a tunnel or Tailscale Funnel."
-                    : "Dashboard password is not set — set a strong password in Settings before exposing a public endpoint."
+                    ? "Require login is disabled — enable it and set a password to protect your dashboard."
+                    : "Dashboard password is not set — set a strong password in Settings."
                 }
                 action={{ label: "Open Settings", href: "/dashboard/profile" }}
               />
@@ -1111,36 +287,12 @@ export default function APIPageClient({ machineId }: APIPageClientProps) {
                 action={{ label: "Enable", href: "#require-api-key" }}
               />
             )}
-            {(tunnelEnabled || tsEnabled) && !requireApiKey && !isRemoteHost && (
+            {!requireApiKey && !isRemoteHost && (
               <SecurityWarning
-                message="Require API key is disabled — your endpoint is publicly accessible without authentication."
+                message="Require API key is disabled — your endpoint is accessible without authentication."
                 action={{ label: "Enable", href: "#require-api-key" }}
               />
             )}
-            {(tunnelEnabled || tsEnabled) && isLoginUnsafe && (
-              <SecurityWarning
-                message={
-                  !requireLogin
-                    ? "Require login is disabled — anyone can access your dashboard via tunnel."
-                    : "Dashboard uses the default password — set a strong one in Settings."
-                }
-                action={{ label: "Open Settings", href: "/dashboard/profile" }}
-              />
-            )}
-          </div>
-        )}
-
-        {/* Tunnel dashboard access option */}
-        {(tunnelEnabled || tsEnabled) && (
-          <div className="mt-4 pt-4 border-t border-border flex items-center gap-3">
-            <Toggle
-              checked={tunnelDashboardAccess}
-              onChange={() => handleTunnelDashboardAccess(!tunnelDashboardAccess)}
-            />
-            <div className="flex items-center gap-1.5">
-              <p className="font-medium text-sm">Allow dashboard access via tunnel</p>
-              <Tooltip text="When enabled, the dashboard can be accessed through your tunnel or Tailscale URL (login still required). When disabled, dashboard access via tunnel/Tailscale is completely blocked." />
-            </div>
           </div>
         )}
       </Card>
@@ -1330,156 +482,6 @@ export default function APIPageClient({ machineId }: APIPageClientProps) {
         </div>
       </Modal>
 
-      {/* Enable Tunnel Modal */}
-      <Modal
-        isOpen={showEnableTunnelModal}
-        title="Enable Tunnel"
-        onClose={() => setShowEnableTunnelModal(false)}
-      >
-        <div className="flex flex-col gap-4">
-          <div className="bg-surface-2 border border-border-subtle rounded-lg p-4">
-            <div className="flex items-start gap-3">
-              <span className="material-symbols-outlined text-primary">cloud_upload</span>
-              <div>
-                <p className="text-sm text-text-main font-medium mb-1">
-                  Cloudflare Tunnel
-                </p>
-                <p className="text-sm text-text-muted">
-                  Expose your local OpenProxy to the internet. No port forwarding, no static IP needed. Share endpoint URL with your team or use it in Cursor, Cline, and other AI tools from anywhere.
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            {TUNNEL_BENEFITS.map((benefit) => (
-              <div key={benefit.title} className="flex flex-col items-center text-center p-3 rounded-lg bg-sidebar/50">
-                <span className="material-symbols-outlined text-xl text-primary mb-1">{benefit.icon}</span>
-                <p className="text-xs font-semibold">{benefit.title}</p>
-                <p className="text-xs text-text-muted">{benefit.desc}</p>
-              </div>
-            ))}
-          </div>
-
-          <p className="text-xs text-text-muted">
-            Requires outbound port 7844 (TCP/UDP). Connection may take 10-30s.
-          </p>
-
-          <div className="flex gap-2">
-            <Button onClick={handleEnableTunnel} fullWidth>
-              Start Tunnel
-            </Button>
-            <Button onClick={() => setShowEnableTunnelModal(false)} variant="ghost" fullWidth>Cancel</Button>
-          </div>
-        </div>
-      </Modal>
-
-      {/* Disable Cloudflare Tunnel Modal */}
-      <Modal
-        isOpen={showDisableTunnelModal}
-        title="Disable Tunnel"
-        onClose={() => !tunnelLoading && setShowDisableTunnelModal(false)}
-      >
-        <div className="flex flex-col gap-4">
-          <p className="text-sm text-text-muted">The Cloudflare tunnel will be disconnected. Remote access via tunnel URL will stop working.</p>
-          <div className="flex gap-2">
-            <Button onClick={handleDisableTunnel} fullWidth disabled={tunnelLoading} variant="danger">
-              {tunnelLoading ? "Disabling..." : "Disable"}
-            </Button>
-            <Button onClick={() => setShowDisableTunnelModal(false)} variant="ghost" fullWidth disabled={tunnelLoading}>Cancel</Button>
-          </div>
-        </div>
-      </Modal>
-
-      {/* Tailscale Modal */}
-      <Modal
-        isOpen={showTsModal}
-        title="Tailscale Funnel"
-        onClose={() => { if (!tsInstalling) { setShowTsModal(false); setTsSudoPassword(""); setTsStatus(null); } }}
-      >
-        <div className="flex flex-col gap-4">
-          {/* Checking state */}
-          {tsInstalled === null && (
-            <p className="text-sm text-text-muted flex items-center gap-2">
-              <span className="material-symbols-outlined animate-spin text-sm">progress_activity</span>
-              Checking...
-            </p>
-          )}
-
-          {/* Not installed */}
-          {tsInstalled === false && !tsInstalling && (
-            <div className="flex flex-col gap-3">
-              <p className="text-sm text-text-muted">Tailscale is not installed. Install it to enable Funnel.</p>
-              <div className="flex gap-2">
-                <Button onClick={handleInstallTailscale} fullWidth>
-                  Install Tailscale
-                </Button>
-                <Button onClick={() => setShowTsModal(false)} variant="ghost" fullWidth>Cancel</Button>
-              </div>
-            </div>
-          )}
-
-          {/* Installing with progress log */}
-          {tsInstalling && (
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center gap-2 text-sm text-text-muted">
-                <span className="material-symbols-outlined animate-spin text-sm">progress_activity</span>
-                Installing Tailscale...
-              </div>
-              {tsInstallLog.length > 0 && (
-                <div ref={tsLogRef} className="bg-black/5 dark:bg-white/5 rounded p-2 max-h-40 overflow-y-auto font-mono text-xs text-text-muted">
-                  {tsInstallLog.map((line, i) => (
-                    <div key={i}>{line}</div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Installed: show Connect button */}
-          {tsInstalled === true && !tsInstalling && (
-            <div className="flex flex-col gap-3">
-              <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
-                <span className="material-symbols-outlined text-[16px]">check_circle</span>
-                Tailscale installed
-              </div>
-              <div className="flex gap-2">
-                <Button
-                  onClick={() => {
-                    const tab = window.open("", "tailscale_auth", "width=600,height=700");
-                    if (tab) tab.document.write("<p style='font-family:sans-serif;text-align:center;margin-top:40px'>Connecting to Tailscale...</p>");
-                    handleConnectTailscale(tab);
-                  }}
-                  fullWidth
-                >
-                  Connect
-                </Button>
-                <Button onClick={() => setShowTsModal(false)} variant="ghost" fullWidth>Cancel</Button>
-              </div>
-            </div>
-          )}
-
-          {tsStatus && <StatusAlert status={tsStatus} />}
-        </div>
-      </Modal>
-
-      {/* Disable Tailscale Modal */}
-      <Modal
-        isOpen={showDisableTsModal}
-        title="Disable Tailscale"
-        onClose={() => !tsLoading && setShowDisableTsModal(false)}
-      >
-        <div className="flex flex-col gap-4">
-          <p className="text-sm text-text-muted">Tailscale Funnel will be stopped. Remote access via Tailscale URL will stop working.</p>
-          <div className="flex gap-2">
-            <Button onClick={handleDisableTailscale} fullWidth disabled={tsLoading} variant="danger">
-              {tsLoading ? "Disabling..." : "Disable"}
-            </Button>
-            <Button onClick={() => setShowDisableTsModal(false)} variant="ghost" fullWidth disabled={tsLoading}>Cancel</Button>
-          </div>
-        </div>
-      </Modal>
-
       <ConfirmModal
         isOpen={!!deleteKeyTarget}
         onClose={() => setDeleteKeyTarget(null)}
@@ -1527,41 +529,6 @@ function EndpointRow({ label, url, copyId, copied, onCopy, badge, actions }: End
       </button>
       {actions}
     </div>
-  );
-}
-
-/** Reusable status alert */
-function StatusAlert({ status, className = "" }: StatusAlertProps): ReactNode {
-  // Render URLs in message as clickable links
-  const renderMessage = (msg: string): ReactNode => {
-    const parts = msg.split(/(https?:\/\/[^\s]+)/g);
-    return parts.map((part, i) =>
-      /^https?:\/\//.test(part)
-        ? <a key={i} href={part} target="_blank" rel="noreferrer" className="underline font-medium">{part}</a>
-        : part
-    );
-  };
-
-  return (
-    <div className={`p-2 rounded text-sm ${className} ${status.type === "success" ? "bg-green-500/10 text-green-600 dark:text-green-400" :
-        status.type === "warning" ? "bg-yellow-500/10 text-yellow-600 dark:text-yellow-400" :
-        status.type === "info" ? "bg-blue-500/10 text-blue-600 dark:text-blue-400" :
-          "bg-red-500/10 text-red-600 dark:text-red-400"
-      }`}>
-      {renderMessage(status.message)}
-    </div>
-  );
-}
-
-/** Inline tooltip, Claude Code CLI style */
-function Tooltip({ text }: TooltipProps): ReactNode {
-  return (
-    <span className="relative group inline-flex items-center">
-      <span className="material-symbols-outlined text-[14px] text-text-muted cursor-help">help</span>
-      <span className="pointer-events-none absolute left-5 top-1/2 -translate-y-1/2 z-50 w-64 rounded bg-gray-900 dark:bg-gray-800 text-white text-xs px-2.5 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity shadow-lg">
-        {text}
-      </span>
-    </span>
   );
 }
 

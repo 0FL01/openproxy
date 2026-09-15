@@ -56,10 +56,6 @@ interface GrokBuildToolCardProps {
   apiKeys: ApiKey[];
   activeProviders: string[];
   cloudEnabled: boolean;
-  tunnelEnabled?: boolean;
-  tunnelPublicUrl?: string;
-  tailscaleEnabled?: boolean;
-  tailscaleUrl?: string;
   cloudUrl?: string;
   initialStatus?: GrokStatus | null;
 }
@@ -73,10 +69,6 @@ export default function GrokBuildToolCard({
   apiKeys,
   activeProviders,
   cloudEnabled,
-  tunnelEnabled = false,
-  tunnelPublicUrl = "",
-  tailscaleEnabled = false,
-  tailscaleUrl = "",
   cloudUrl = "",
   initialStatus,
 }: GrokBuildToolCardProps): React.ReactNode {
@@ -99,8 +91,6 @@ export default function GrokBuildToolCard({
     if (!cfg?.base_url) return "not_configured";
     if (
       matchKnownEndpoint(cfg.base_url, {
-        tunnelPublicUrl,
-        tailscaleUrl,
         cloudUrl,
       })
     ) {
@@ -412,10 +402,6 @@ api_key = "${keyToUse}"
                   <BaseUrlSelect
                     value={customBaseUrl || getDisplayUrl()}
                     onChange={setCustomBaseUrl}
-                    tunnelEnabled={tunnelEnabled}
-                    tunnelPublicUrl={tunnelPublicUrl}
-                    tailscaleEnabled={tailscaleEnabled}
-                    tailscaleUrl={tailscaleUrl}
                     cloudEnabled={cloudEnabled}
                     cloudUrl={cloudUrl}
                   />

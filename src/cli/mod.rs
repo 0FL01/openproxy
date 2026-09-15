@@ -17,8 +17,6 @@ use crate::core::proxy::resolve_proxy_target;
 use crate::db::Db;
 use crate::types::{ApiKey, AppDb, ProviderConnection, ProxyPool};
 
-use crate::core::tunnel::{TunnelManager, TunnelProvider};
-
 pub mod apply;
 pub mod auth;
 pub mod chat;
@@ -45,7 +43,6 @@ pub mod settings;
 pub mod sync;
 pub mod tool;
 pub mod translator;
-pub mod tunnel_rt;
 pub mod usage;
 
 #[cfg(test)]
@@ -196,10 +193,6 @@ pub enum Command {
     Models {
         #[command(subcommand)]
         cmd: models::ModelsCmd,
-    },
-    Tunnel {
-        #[command(subcommand)]
-        cmd: TunnelCmd,
     },
     /// Manage the in-process MITM router (PLAN v3 §4.10).
     Mitm {
@@ -571,34 +564,6 @@ pub enum PoolCmd {
     },
 }
 
-#[derive(Debug, Clone, Subcommand)]
-pub enum TunnelCmd {
-    /// Local-in-process tunnel start (M1 stub).
-    Start {
-        #[arg(long, default_value = "cloudflare")]
-        provider: String,
-        #[arg(long, default_value_t = 4623)]
-        port: u16,
-    },
-    /// Local-in-process tunnel stop (M1 stub).
-    Stop,
-    /// Local-in-process tunnel status (M1 stub).
-    Status,
-    /// Enable a tunnel provider via the running server's `/api/tunnel/*`.
-    Enable {
-        provider: String,
-        #[arg(long)]
-        port: Option<u16>,
-    },
-    /// Disable a tunnel provider via the running server's `/api/tunnel/*`.
-    Disable { provider: String },
-    /// Tailscale-specific helpers (install / login / check / enable / disable).
-    Tailscale {
-        #[command(subcommand)]
-        cmd: tunnel_rt::TailscaleCmd,
-    },
-}
-
 impl Cli {
     pub fn run(self) -> anyhow::Result<()> {
         let rt = tokio::runtime::Runtime::new()?;
@@ -645,53 +610,6 @@ impl Cli {
                     let rt = tokio::runtime::Runtime::new()?;
                     rt.block_on(models::run(cmd, &db, ctx))
                 }
-                Command::Tunnel { cmd } => match cmd {
-                    TunnelCmd::Start { .. } | TunnelCmd::Stop | TunnelCmd::Status => {
-                        let db = rt.block_on(Db::load())?;
-                        let db = std::sync::Arc::new(db);
-                        let rt = tokio::runtime::Runtime::new()?;
-                        rt.block_on(run_tunnel(cmd, db.clone(), ctx))
-                    }
-                    TunnelCmd::Enable { provider, port } => {
-                        let resolved = config::ResolvedConfig::resolve(overrides)?;
-                        let rt = tokio::runtime::Runtime::new()?;
-                        let exit = rt.block_on(tunnel_rt::run(
-                            tunnel_rt::TunnelRtCmd::Enable { provider, port },
-                            &resolved,
-                            ctx,
-                        ))?;
-                        if exit != 0 {
-                            std::process::exit(exit);
-                        }
-                        Ok(())
-                    }
-                    TunnelCmd::Disable { provider } => {
-                        let resolved = config::ResolvedConfig::resolve(overrides)?;
-                        let rt = tokio::runtime::Runtime::new()?;
-                        let exit = rt.block_on(tunnel_rt::run(
-                            tunnel_rt::TunnelRtCmd::Disable { provider },
-                            &resolved,
-                            ctx,
-                        ))?;
-                        if exit != 0 {
-                            std::process::exit(exit);
-                        }
-                        Ok(())
-                    }
-                    TunnelCmd::Tailscale { cmd } => {
-                        let resolved = config::ResolvedConfig::resolve(overrides)?;
-                        let rt = tokio::runtime::Runtime::new()?;
-                        let exit = rt.block_on(tunnel_rt::run(
-                            tunnel_rt::TunnelRtCmd::Tailscale { cmd },
-                            &resolved,
-                            ctx,
-                        ))?;
-                        if exit != 0 {
-                            std::process::exit(exit);
-                        }
-                        Ok(())
-                    }
-                },
                 Command::Route {
                     model,
                     combo,
@@ -1193,101 +1111,6 @@ pub async fn run_provider(cmd: ProviderCmd, db: &Db, ctx: output::OutputCtx) -> 
                 ctx,
             )
             .await?
-        }
-    }
-    Ok(())
-}
-pub async fn run_tunnel(
-    cmd: TunnelCmd,
-    db: std::sync::Arc<Db>,
-    ctx: output::OutputCtx,
-) -> anyhow::Result<()> {
-    let tunnel_manager = TunnelManager::new((db).clone());
-
-    match cmd {
-        TunnelCmd::Start { provider, port } => {
-            let provider = provider
-                .parse::<TunnelProvider>()
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
-
-            output::humanln(
-                ctx,
-                format!("Starting {} tunnel on port {}...", provider, port),
-            );
-            tunnel_manager.start(provider, port).await?;
-
-            // Wait a bit for URL to appear
-            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-
-            let status = tunnel_manager.status().await;
-            if ctx.is_robot() {
-                output::emit_robot(
-                    "openproxy.v1.tunnel.start",
-                    serde_json::json!({
-                        "running": status.running,
-                        "provider": status.provider,
-                        "url": status.url,
-                        "pid": status.pid,
-                    }),
-                )?;
-                if !status.running {
-                    std::process::exit(1);
-                }
-            } else if status.running {
-                output::humanln(ctx, "Tunnel started successfully");
-                if let Some(url) = status.url {
-                    output::humanln(ctx, format!("  URL: {}", url));
-                }
-                if let Some(pid) = status.pid {
-                    output::humanln(ctx, format!("  PID: {}", pid));
-                }
-            } else {
-                let exit = output::emit_error(ctx, "other", "tunnel failed to start")?;
-                std::process::exit(exit);
-            }
-        }
-        TunnelCmd::Stop => {
-            output::humanln(ctx, "Stopping tunnel...");
-            tunnel_manager.stop().await?;
-            if ctx.is_robot() {
-                output::emit_robot(
-                    "openproxy.v1.tunnel.stop",
-                    serde_json::json!({"stopped": true}),
-                )?;
-            } else {
-                output::humanln(ctx, "Tunnel stopped");
-            }
-        }
-        TunnelCmd::Status => {
-            let status = tunnel_manager.status().await;
-            if ctx.is_robot() {
-                output::emit_robot(
-                    "openproxy.v1.tunnel.status",
-                    serde_json::json!({
-                        "running": status.running,
-                        "provider": status.provider,
-                        "url": status.url,
-                        "pid": status.pid,
-                    }),
-                )?;
-            } else if status.running {
-                output::humanln(ctx, "Tunnel is running");
-                if let Some(p) = status.provider {
-                    output::humanln(ctx, format!("  Provider: {}", p));
-                }
-                if let Some(url) = status.url {
-                    output::humanln(ctx, format!("  URL: {}", url));
-                }
-                if let Some(pid) = status.pid {
-                    output::humanln(ctx, format!("  PID: {}", pid));
-                }
-            } else {
-                output::humanln(ctx, "Tunnel is stopped");
-            }
-        }
-        TunnelCmd::Enable { .. } | TunnelCmd::Disable { .. } | TunnelCmd::Tailscale { .. } => {
-            // Routed via `tunnel_rt` in `Cli::run`; unreachable here.
-            unreachable!("runtime tunnel commands dispatched separately");
         }
     }
     Ok(())

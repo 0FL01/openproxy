@@ -463,19 +463,6 @@ pub struct Settings {
     pub cloud_enabled: bool,
     #[serde(default, deserialize_with = "deserialize_null_default")]
     pub cloud_url: String,
-    #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub tunnel_enabled: bool,
-    #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub tunnel_url: String,
-    #[serde(
-        default = "default_tunnel_provider",
-        deserialize_with = "deserialize_null_default"
-    )]
-    pub tunnel_provider: String,
-    #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub tailscale_enabled: bool,
-    #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub tailscale_url: String,
     /// Sticky limit for account round-robin (9router `stickyRoundRobinLimit`).
     #[serde(
         default = "default_sticky_round_robin_limit",
@@ -506,11 +493,6 @@ pub struct Settings {
         deserialize_with = "deserialize_null_default"
     )]
     pub require_login: bool,
-    #[serde(
-        default = "default_true",
-        deserialize_with = "deserialize_null_default"
-    )]
-    pub tunnel_dashboard_access: bool,
     #[serde(
         default = "default_true",
         deserialize_with = "deserialize_null_default"
@@ -588,11 +570,6 @@ impl Default for Settings {
         Self {
             cloud_enabled: false,
             cloud_url: String::new(),
-            tunnel_enabled: false,
-            tunnel_url: String::new(),
-            tunnel_provider: default_tunnel_provider(),
-            tailscale_enabled: false,
-            tailscale_url: String::new(),
             sticky_round_robin_limit: default_sticky_round_robin_limit(),
             provider_strategies: BTreeMap::new(),
             combo_strategy: default_combo_strategy(),
@@ -601,7 +578,6 @@ impl Default for Settings {
             require_api_key: true,
             // Dashboard login is independent from inference API-key auth.
             require_login: true,
-            tunnel_dashboard_access: true,
             observability_enabled: true,
             observability_max_records: default_observability_max_records(),
             observability_batch_size: default_observability_batch_size(),
@@ -627,6 +603,18 @@ impl Default for Settings {
 
 impl Settings {
     pub fn normalize(&mut self) {
+        // Drop stale tunnel/tailscale keys from pre-removal databases so they
+        // don't round-trip forever via the flattened `extra` map.
+        for key in [
+            "tunnelEnabled",
+            "tunnelUrl",
+            "tunnelProvider",
+            "tailscaleEnabled",
+            "tailscaleUrl",
+            "tunnelDashboardAccess",
+        ] {
+            self.extra.remove(key);
+        }
         if !self.outbound_proxy_enabled && !self.outbound_proxy_url.trim().is_empty() {
             self.outbound_proxy_enabled = true;
         }
@@ -845,10 +833,6 @@ fn default_proxy_type() -> String {
 
 fn default_model_type() -> String {
     "llm".into()
-}
-
-fn default_tunnel_provider() -> String {
-    "cloudflare".into()
 }
 
 fn default_sticky_round_robin_limit() -> u32 {

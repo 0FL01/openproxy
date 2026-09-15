@@ -1,8 +1,4 @@
 import {
-  getSettings,
-  enableTunnel,
-  getTunnelStatus,
-  enableTailscale,
   getMitmConfig,
   startMitm,
   runQuotaAutoPingTick,
@@ -14,11 +10,11 @@ import {
  * 9router ran this as a Next.js server singleton (watchdog, network monitor,
  * quota auto-ping scheduler). OpenProxy owns process supervision in Rust, so
  * this client path only:
- *   1. Resumes tunnel / tailscale / MITM when settings say they should be on
+ *   1. Resumes MITM when settings say it should be on
  *   2. Kicks a best-effort quota auto-ping tick while the dashboard is open
  *
- * Full long-running watchdog + auto-ping scheduler belong in the Rust server
- * (see spawn_boot_resume / residual notes). Do not reintroduce Node globals.
+ * Full long-running watchdog + auto-ping scheduler belong in the Rust server.
+ * Do not reintroduce Node globals.
  */
 
 const STARTUP_DEFER_MS = 1500;
@@ -60,22 +56,6 @@ export async function initializeApp(): Promise<void> {
 
 async function runClientStartup(): Promise<void> {
   try {
-    const settings = await getSettings();
-
-    if (settings.tunnelEnabled) {
-      console.log("[InitApp] Tunnel was enabled, auto-resuming...");
-      safeRestartTunnel("startup").catch((e) =>
-        console.log("[InitApp] Tunnel resume failed:", (e as Error).message),
-      );
-    }
-
-    if (settings.tailscaleEnabled) {
-      console.log("[InitApp] Tailscale was enabled, auto-resuming...");
-      safeRestartTailscale("startup").catch((e) =>
-        console.log("[InitApp] Tailscale resume failed:", (e as Error).message),
-      );
-    }
-
     autoStartMitm().catch((e) =>
       console.log("[InitApp] MITM auto-start failed:", (e as Error).message),
     );
@@ -105,42 +85,6 @@ async function autoStartMitm(): Promise<void> {
     console.log("[InitApp] MITM auto-start failed:", (err as Error).message);
   } finally {
     g.mitmStartInProgress = false;
-  }
-}
-
-async function safeRestartTunnel(reason: string): Promise<void> {
-  const settings = await getSettings();
-  if (!settings.tunnelEnabled) return;
-
-  const tunnelStatus = await getTunnelStatus();
-  const running =
-    (tunnelStatus as { tunnel?: { running?: boolean } }).tunnel?.running === true;
-  if (running) return;
-
-  console.log(`[Tunnel] safeRestart (${reason})`);
-  try {
-    await enableTunnel();
-    console.log("[Tunnel] restart success");
-  } catch (err) {
-    console.log("[Tunnel] restart failed:", (err as Error).message);
-  }
-}
-
-async function safeRestartTailscale(reason: string): Promise<void> {
-  const settings = await getSettings();
-  if (!settings.tailscaleEnabled) return;
-
-  const tunnelStatus = await getTunnelStatus();
-  const running =
-    (tunnelStatus as { tailscale?: { running?: boolean } }).tailscale?.running === true;
-  if (running) return;
-
-  console.log(`[Tailscale] safeRestart (${reason})`);
-  try {
-    await enableTailscale();
-    console.log("[Tailscale] restart success");
-  } catch (err) {
-    console.log("[Tailscale] restart failed:", (err as Error).message);
   }
 }
 

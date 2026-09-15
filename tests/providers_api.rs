@@ -835,53 +835,9 @@ async fn test_client_info_returns_info() {
     assert!(json["clientId"].is_string());
     assert!(json["clientName"].is_string());
     assert!(json["version"].is_string());
-    assert!(json["provider"].is_string());
 
     // Version should match the crate version
     assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
-}
-
-#[tokio::test]
-async fn test_client_info_provider_from_settings() {
-    let temp = tempdir().expect("tempdir");
-    let db = Arc::new(Db::load_from(temp.path()).await.expect("db"));
-    db.update(|state| {
-        state.settings.tunnel_provider = "cloudflare".to_string();
-        state.api_keys = vec![ApiKey {
-            id: "test-key-id".into(),
-            name: "test".into(),
-            key: TEST_KEY.into(),
-            machine_id: None,
-            is_active: Some(true),
-            created_at: None,
-            extra: BTreeMap::new(),
-            monthly_budget_usd: None,
-        }];
-    })
-    .await
-    .expect("seed db");
-    let state = AppState::new(db);
-
-    let app = providers::routes().with_state(state);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/api/providers/client")
-                .header("Authorization", format!("Bearer {TEST_KEY}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    let body = axum::body::to_bytes(response.into_body(), 2048)
-        .await
-        .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-
-    assert_eq!(json["provider"], "cloudflare");
 }
 
 // ============================================================

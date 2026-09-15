@@ -52,7 +52,6 @@ interface DefaultToolCardProps {
   apiKeys: ApiKey[];
   activeProviders?: string[];
   cloudEnabled?: boolean;
-  tunnelEnabled?: boolean;
 }
 
 export default function DefaultToolCard({ 
@@ -63,8 +62,7 @@ export default function DefaultToolCard({
   baseUrl, 
   apiKeys, 
   activeProviders = [], 
-  cloudEnabled = false, 
-  tunnelEnabled = false 
+  cloudEnabled = false
 }: DefaultToolCardProps): React.ReactNode {
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [showModelModal, setShowModelModal] = useState<boolean>(false);
@@ -188,13 +186,13 @@ export default function DefaultToolCard({
     return (
       <div className="flex flex-col gap-2 mb-4">
         {tool.notes.map((note, index) => {
-          // Skip cloudCheck note if tunnel or cloud is enabled
-          if (note.type === "cloudCheck" && (cloudEnabled || tunnelEnabled)) return null;
+          // Skip cloudCheck note if cloud is enabled
+          if (note.type === "cloudCheck" && cloudEnabled) return null;
           
           const isWarning = note.type === "warning";
           const isError =
             note.type === "error" ||
-            (note.type === "cloudCheck" && !cloudEnabled && !tunnelEnabled);
+            (note.type === "cloudCheck" && !cloudEnabled);
           
           let bgClass = "bg-blue-500/10 border-blue-500/30";
           let textClass = "text-blue-600 dark:text-blue-400";
@@ -225,7 +223,7 @@ export default function DefaultToolCard({
   };
 
   const canShowGuide = (): boolean => {
-    if (tool.requiresExternalUrl && !cloudEnabled && !tunnelEnabled) return false;
+    if (tool.requiresExternalUrl && !cloudEnabled) return false;
     if (tool.requiresCloud && !cloudEnabled) return false;
     return true;
   };

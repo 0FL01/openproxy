@@ -11,8 +11,8 @@ use openproxy::cli::config::ResolvedConfig;
 use openproxy::cli::{
     chat as cli_chat, db as cli_db, logs as cli_logs, media as cli_media, mitm as cli_mitm,
     provider_oauth, quota as cli_quota, settings as cli_settings, tool as cli_tool,
-    translator as cli_translator, tunnel_rt as cli_tunnel_rt, usage as cli_usage, AuthCmd, Cli,
-    Command, ProviderCmd, SchemaCmd, ServerCmd, TunnelCmd,
+    translator as cli_translator, usage as cli_usage, AuthCmd, Cli, Command, ProviderCmd,
+    SchemaCmd, ServerCmd,
 };
 use openproxy::db::watcher::spawn_watcher;
 use openproxy::db::Db;
@@ -79,57 +79,6 @@ async fn main() -> anyhow::Result<()> {
                 openproxy::cli::models::run(cmd.clone(), &db, ctx).await?;
                 return Ok(());
             }
-            Command::Tunnel { cmd } => match cmd {
-                TunnelCmd::Start { .. } | TunnelCmd::Stop | TunnelCmd::Status => {
-                    let db = Db::load().await?;
-                    let db = Arc::new(db);
-                    openproxy::cli::run_tunnel(cmd.clone(), db, ctx).await?;
-                    return Ok(());
-                }
-                TunnelCmd::Enable { provider, port } => {
-                    let exit = cli_tunnel_rt::run(
-                        cli_tunnel_rt::TunnelRtCmd::Enable {
-                            provider: provider.clone(),
-                            port: *port,
-                        },
-                        &resolved,
-                        ctx,
-                    )
-                    .await?;
-                    if exit != 0 {
-                        std::process::exit(exit);
-                    }
-                    return Ok(());
-                }
-                TunnelCmd::Disable { provider } => {
-                    let exit = cli_tunnel_rt::run(
-                        cli_tunnel_rt::TunnelRtCmd::Disable {
-                            provider: provider.clone(),
-                        },
-                        &resolved,
-                        ctx,
-                    )
-                    .await?;
-                    if exit != 0 {
-                        std::process::exit(exit);
-                    }
-                    return Ok(());
-                }
-                TunnelCmd::Tailscale { cmd: ts_cmd } => {
-                    let exit = cli_tunnel_rt::run(
-                        cli_tunnel_rt::TunnelRtCmd::Tailscale {
-                            cmd: ts_cmd.clone(),
-                        },
-                        &resolved,
-                        ctx,
-                    )
-                    .await?;
-                    if exit != 0 {
-                        std::process::exit(exit);
-                    }
-                    return Ok(());
-                }
-            },
             Command::Route {
                 model,
                 combo,
@@ -421,11 +370,6 @@ async fn main() -> anyhow::Result<()> {
     info!("Starting openproxy on {}", addr);
     let listener = TcpListener::bind(&addr).await?;
     let bound = listener.local_addr().ok();
-    let bound_port = bound.map(|a| a.port()).unwrap_or(cli.port);
-
-    // Resume tunnel/tailscale if settings say they were enabled last session.
-    // Process supervision lives in Rust — not the browser tab.
-    openproxy::server::api::quota_auto_ping::spawn_boot_resume(state.clone(), bound_port);
 
     // Print startup banner to stderr so the user sees it even when
     // stdout is captured (containers, CI, …). The tracing subscriber

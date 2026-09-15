@@ -64,14 +64,6 @@ pub async fn login(
     Json(req): Json<PasswordLoginRequest>,
 ) -> Response {
     let snapshot = state.db.snapshot();
-    if is_tunnel_request(&headers, &snapshot.settings) && !snapshot.settings.tunnel_dashboard_access
-    {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "Dashboard access via tunnel is disabled" })),
-        )
-            .into_response();
-    }
 
     let client_ip = client_ip_from_headers(&headers);
 
@@ -528,36 +520,6 @@ pub(crate) fn verify_dashboard_password(password: Option<&str>, settings: &Setti
         return verify(password, hash).unwrap_or(false);
     }
     crate::core::auth::timing_safe_eq(password, &crate::core::auth::dashboard_initial_password())
-}
-
-fn is_tunnel_request(headers: &HeaderMap, settings: &Settings) -> bool {
-    let host = headers
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| {
-            value
-                .split(':')
-                .next()
-                .unwrap_or(value)
-                .to_ascii_lowercase()
-        })
-        .unwrap_or_default();
-    if host.is_empty() {
-        return false;
-    }
-
-    tunnel_host(&settings.tunnel_url).is_some_and(|tunnel_host| tunnel_host == host)
-        || tunnel_host(&settings.tailscale_url).is_some_and(|tailscale_host| tailscale_host == host)
-}
-
-fn tunnel_host(url: &str) -> Option<String> {
-    let trimmed = url.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    url::Url::parse(trimmed)
-        .ok()
-        .and_then(|parsed| parsed.host_str().map(|host| host.to_ascii_lowercase()))
 }
 
 fn build_auth_cookie(token: &str, max_age_seconds: i64, secure: bool) -> String {

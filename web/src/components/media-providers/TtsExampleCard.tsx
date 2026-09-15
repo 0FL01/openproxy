@@ -55,9 +55,7 @@ export function TtsExampleCard({ providerId }: { providerId: string }) {
 
   const [input, setInput] = useState("Hello, this is a text to speech test.");
   const [apiKey, setApiKey] = useState("");
-  const [useTunnel, setUseTunnel] = useState(false);
   const [localEndpoint, setLocalEndpoint] = useState("");
-  const [tunnelEndpoint, setTunnelEndpoint] = useState("");
   const [responseFormat, setResponseFormat] = useState("mp3");
   const [audioUrl, setAudioUrl] = useState("");
   const [jsonResponse, setJsonResponse] = useState<any>(null);
@@ -79,12 +77,6 @@ export function TtsExampleCard({ providerId }: { providerId: string }) {
       .then((r) => r.json())
       .then((d: any) => {
         setApiKey((d.keys || []).find((k: any) => k.isActive !== false)?.key || "");
-      })
-      .catch(() => {});
-    fetch("/api/tunnel/status")
-      .then((r) => r.json())
-      .then((d: any) => {
-        if (d.publicUrl) setTunnelEndpoint(d.publicUrl);
       })
       .catch(() => {});
 
@@ -193,7 +185,7 @@ export function TtsExampleCard({ providerId }: { providerId: string }) {
       )
     : languages;
 
-  const endpoint = useTunnel ? tunnelEndpoint : localEndpoint;
+  const endpoint = localEndpoint;
   const activeVoiceId = config.hasVoiceIdInput ? voiceId || selectedVoice : selectedVoice;
   const modelFull = (() => {
     if (hasModelSelector && selectedModel && activeVoiceId) {
@@ -263,20 +255,6 @@ export function TtsExampleCard({ providerId }: { providerId: string }) {
               <span className="w-full min-w-0 flex-1 px-3 py-1.5 text-sm font-mono text-ink bg-surface-card border border-hairline-soft rounded-mini-md truncate">
                 {endpoint}/v1/audio/speech
               </span>
-              {tunnelEndpoint && (
-                <button
-                  onClick={() => setUseTunnel((v) => !v)}
-                  title={useTunnel ? "Using tunnel" : "Using local"}
-                  className={`flex items-center gap-1 text-xs px-2 py-1.5 rounded-mini-md border shrink-0 transition-colors ${
-                    useTunnel
-                      ? "border-brand-coral/40 bg-brand-coral/10 text-brand-coral"
-                      : "border-hairline text-text-muted hover:text-brand-coral"
-                  }`}
-                >
-                  <span className="material-symbols-outlined text-[14px]">wifi_tethering</span>
-                  Tunnel
-                </button>
-              )}
             </div>
           </Row>
 

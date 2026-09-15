@@ -16,10 +16,6 @@ interface BaseUrlSelectProps {
   value: string;
   onChange: (value: string) => void;
   requiresExternalUrl?: boolean;
-  tunnelEnabled?: boolean;
-  tunnelPublicUrl?: string;
-  tailscaleEnabled?: boolean;
-  tailscaleUrl?: string;
   cloudEnabled?: boolean;
   cloudUrl?: string;
   withV1?: boolean;
@@ -51,10 +47,6 @@ function writeSavedPresets(presets: Preset[]): void {
 
 interface BuildOptionsArgs {
   requiresExternalUrl: boolean;
-  tunnelEnabled: boolean;
-  tunnelPublicUrl: string;
-  tailscaleEnabled: boolean;
-  tailscaleUrl: string;
   cloudEnabled: boolean;
   cloudUrl: string;
   savedPresets: Preset[];
@@ -70,10 +62,6 @@ interface Option {
 
 function buildOptions({
   requiresExternalUrl,
-  tunnelEnabled,
-  tunnelPublicUrl,
-  tailscaleEnabled,
-  tailscaleUrl,
   cloudEnabled,
   cloudUrl,
   savedPresets,
@@ -84,14 +72,6 @@ function buildOptions({
   if (!requiresExternalUrl) {
     const localUrl = wrap(`http://127.0.0.1:${UPDATER_CONFIG.appPort}`);
     opts.push({ value: "local", label: localUrl, url: localUrl });
-  }
-  if (tunnelEnabled && tunnelPublicUrl) {
-    const u = wrap(tunnelPublicUrl);
-    opts.push({ value: "tunnel", label: u, url: u });
-  }
-  if (tailscaleEnabled && tailscaleUrl) {
-    const u = wrap(tailscaleUrl);
-    opts.push({ value: "tailscale", label: u, url: u });
   }
   if (cloudEnabled && cloudUrl) {
     const u = wrap(cloudUrl);
@@ -108,10 +88,6 @@ export default function BaseUrlSelect({
   value,
   onChange,
   requiresExternalUrl = false,
-  tunnelEnabled = false,
-  tunnelPublicUrl = "",
-  tailscaleEnabled = false,
-  tailscaleUrl = "",
   cloudEnabled = false,
   cloudUrl = "",
   withV1 = true,
@@ -126,8 +102,8 @@ export default function BaseUrlSelect({
   }, []);
 
   const options = useMemo(
-    () => buildOptions({ requiresExternalUrl, tunnelEnabled, tunnelPublicUrl, tailscaleEnabled, tailscaleUrl, cloudEnabled, cloudUrl, savedPresets, withV1 }),
-    [requiresExternalUrl, tunnelEnabled, tunnelPublicUrl, tailscaleEnabled, tailscaleUrl, cloudEnabled, cloudUrl, savedPresets, withV1]
+    () => buildOptions({ requiresExternalUrl, cloudEnabled, cloudUrl, savedPresets, withV1 }),
+    [requiresExternalUrl, cloudEnabled, cloudUrl, savedPresets, withV1]
   );
 
   // Always default to first option (127.0.0.1) on mount, ignore persisted value

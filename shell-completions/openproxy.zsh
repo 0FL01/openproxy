@@ -240,76 +240,6 @@ esac
     ;;
 esac
 ;;
-(tunnel)
-_arguments "${_arguments_options[@]}" : \
-'-h[Print help]' \
-'--help[Print help]' \
-":: :_openproxy__subcmd__tunnel_commands" \
-"*::: :->tunnel" \
-&& ret=0
-
-    case $state in
-    (tunnel)
-        words=($line[1] "${words[@]}")
-        (( CURRENT += 1 ))
-        curcontext="${curcontext%:*:*}:openproxy-tunnel-command-$line[1]:"
-        case $line[1] in
-            (start)
-_arguments "${_arguments_options[@]}" : \
-'--provider=[]:PROVIDER:_default' \
-'--port=[]:PORT:_default' \
-'-h[Print help]' \
-'--help[Print help]' \
-&& ret=0
-;;
-(stop)
-_arguments "${_arguments_options[@]}" : \
-'-h[Print help]' \
-'--help[Print help]' \
-&& ret=0
-;;
-(status)
-_arguments "${_arguments_options[@]}" : \
-'-h[Print help]' \
-'--help[Print help]' \
-&& ret=0
-;;
-(help)
-_arguments "${_arguments_options[@]}" : \
-":: :_openproxy__subcmd__tunnel__subcmd__help_commands" \
-"*::: :->help" \
-&& ret=0
-
-    case $state in
-    (help)
-        words=($line[1] "${words[@]}")
-        (( CURRENT += 1 ))
-        curcontext="${curcontext%:*:*}:openproxy-tunnel-help-command-$line[1]:"
-        case $line[1] in
-            (start)
-_arguments "${_arguments_options[@]}" : \
-&& ret=0
-;;
-(stop)
-_arguments "${_arguments_options[@]}" : \
-&& ret=0
-;;
-(status)
-_arguments "${_arguments_options[@]}" : \
-&& ret=0
-;;
-(help)
-_arguments "${_arguments_options[@]}" : \
-&& ret=0
-;;
-        esac
-    ;;
-esac
-;;
-        esac
-    ;;
-esac
-;;
 (route)
 _arguments "${_arguments_options[@]}" : \
 '--model=[Model ID (e.g. openai/gpt-4o-mini)]:MODEL:_default' \
@@ -420,34 +350,6 @@ _arguments "${_arguments_options[@]}" : \
     ;;
 esac
 ;;
-(tunnel)
-_arguments "${_arguments_options[@]}" : \
-":: :_openproxy__subcmd__help__subcmd__tunnel_commands" \
-"*::: :->tunnel" \
-&& ret=0
-
-    case $state in
-    (tunnel)
-        words=($line[1] "${words[@]}")
-        (( CURRENT += 1 ))
-        curcontext="${curcontext%:*:*}:openproxy-help-tunnel-command-$line[1]:"
-        case $line[1] in
-            (start)
-_arguments "${_arguments_options[@]}" : \
-&& ret=0
-;;
-(stop)
-_arguments "${_arguments_options[@]}" : \
-&& ret=0
-;;
-(status)
-_arguments "${_arguments_options[@]}" : \
-&& ret=0
-;;
-        esac
-    ;;
-esac
-;;
 (route)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
@@ -475,7 +377,6 @@ _openproxy_commands() {
 'provider:' \
 'key:' \
 'pool:' \
-'tunnel:' \
 'route:' \
 'completion:' \
 'help:Print this message or the help of the given subcommand(s)' \
@@ -493,7 +394,6 @@ _openproxy__subcmd__help_commands() {
 'provider:' \
 'key:' \
 'pool:' \
-'tunnel:' \
 'route:' \
 'completion:' \
 'help:Print this message or the help of the given subcommand(s)' \
@@ -580,30 +480,6 @@ _openproxy__subcmd__help__subcmd__provider__subcmd__list_commands() {
 _openproxy__subcmd__help__subcmd__route_commands() {
     local commands; commands=()
     _describe -t commands 'openproxy help route commands' commands "$@"
-}
-(( $+functions[_openproxy__subcmd__help__subcmd__tunnel_commands] )) ||
-_openproxy__subcmd__help__subcmd__tunnel_commands() {
-    local commands; commands=(
-'start:' \
-'stop:' \
-'status:' \
-    )
-    _describe -t commands 'openproxy help tunnel commands' commands "$@"
-}
-(( $+functions[_openproxy__subcmd__help__subcmd__tunnel__subcmd__start_commands] )) ||
-_openproxy__subcmd__help__subcmd__tunnel__subcmd__start_commands() {
-    local commands; commands=()
-    _describe -t commands 'openproxy help tunnel start commands' commands "$@"
-}
-(( $+functions[_openproxy__subcmd__help__subcmd__tunnel__subcmd__status_commands] )) ||
-_openproxy__subcmd__help__subcmd__tunnel__subcmd__status_commands() {
-    local commands; commands=()
-    _describe -t commands 'openproxy help tunnel status commands' commands "$@"
-}
-(( $+functions[_openproxy__subcmd__help__subcmd__tunnel__subcmd__stop_commands] )) ||
-_openproxy__subcmd__help__subcmd__tunnel__subcmd__stop_commands() {
-    local commands; commands=()
-    _describe -t commands 'openproxy help tunnel stop commands' commands "$@"
 }
 (( $+functions[_openproxy__subcmd__key_commands] )) ||
 _openproxy__subcmd__key_commands() {
@@ -762,61 +638,6 @@ _openproxy__subcmd__provider__subcmd__list_commands() {
 _openproxy__subcmd__route_commands() {
     local commands; commands=()
     _describe -t commands 'openproxy route commands' commands "$@"
-}
-(( $+functions[_openproxy__subcmd__tunnel_commands] )) ||
-_openproxy__subcmd__tunnel_commands() {
-    local commands; commands=(
-'start:' \
-'stop:' \
-'status:' \
-'help:Print this message or the help of the given subcommand(s)' \
-    )
-    _describe -t commands 'openproxy tunnel commands' commands "$@"
-}
-(( $+functions[_openproxy__subcmd__tunnel__subcmd__help_commands] )) ||
-_openproxy__subcmd__tunnel__subcmd__help_commands() {
-    local commands; commands=(
-'start:' \
-'stop:' \
-'status:' \
-'help:Print this message or the help of the given subcommand(s)' \
-    )
-    _describe -t commands 'openproxy tunnel help commands' commands "$@"
-}
-(( $+functions[_openproxy__subcmd__tunnel__subcmd__help__subcmd__help_commands] )) ||
-_openproxy__subcmd__tunnel__subcmd__help__subcmd__help_commands() {
-    local commands; commands=()
-    _describe -t commands 'openproxy tunnel help help commands' commands "$@"
-}
-(( $+functions[_openproxy__subcmd__tunnel__subcmd__help__subcmd__start_commands] )) ||
-_openproxy__subcmd__tunnel__subcmd__help__subcmd__start_commands() {
-    local commands; commands=()
-    _describe -t commands 'openproxy tunnel help start commands' commands "$@"
-}
-(( $+functions[_openproxy__subcmd__tunnel__subcmd__help__subcmd__status_commands] )) ||
-_openproxy__subcmd__tunnel__subcmd__help__subcmd__status_commands() {
-    local commands; commands=()
-    _describe -t commands 'openproxy tunnel help status commands' commands "$@"
-}
-(( $+functions[_openproxy__subcmd__tunnel__subcmd__help__subcmd__stop_commands] )) ||
-_openproxy__subcmd__tunnel__subcmd__help__subcmd__stop_commands() {
-    local commands; commands=()
-    _describe -t commands 'openproxy tunnel help stop commands' commands "$@"
-}
-(( $+functions[_openproxy__subcmd__tunnel__subcmd__start_commands] )) ||
-_openproxy__subcmd__tunnel__subcmd__start_commands() {
-    local commands; commands=()
-    _describe -t commands 'openproxy tunnel start commands' commands "$@"
-}
-(( $+functions[_openproxy__subcmd__tunnel__subcmd__status_commands] )) ||
-_openproxy__subcmd__tunnel__subcmd__status_commands() {
-    local commands; commands=()
-    _describe -t commands 'openproxy tunnel status commands' commands "$@"
-}
-(( $+functions[_openproxy__subcmd__tunnel__subcmd__stop_commands] )) ||
-_openproxy__subcmd__tunnel__subcmd__stop_commands() {
-    local commands; commands=()
-    _describe -t commands 'openproxy tunnel stop commands' commands "$@"
 }
 
 if [ "$funcstack[1]" = "_openproxy" ]; then

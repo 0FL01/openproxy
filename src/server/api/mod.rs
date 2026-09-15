@@ -37,7 +37,6 @@ pub mod shutdown;
 pub mod stt;
 pub mod tags;
 pub mod translator;
-pub mod tunnel;
 pub mod usage;
 pub mod v1_api_chat;
 pub mod v1_models;
@@ -313,7 +312,6 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .merge(provider_nodes::routes())
         .merge(providers::routes())
         .merge(settings_payload_rules::routes())
-        .merge(tunnel::routes())
         .merge(usage::routes())
         .merge(admin_items::routes())
         .merge(pricing::routes())
@@ -2070,7 +2068,6 @@ async fn get_settings_api(State(state): State<AppState>, headers: HeaderMap) -> 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UpdateSettingsRequest {
-    tunnel_provider: Option<String>,
     sticky_round_robin_limit: Option<u32>,
     provider_strategies: Option<BTreeMap<String, crate::types::ProviderStrategyEntry>>,
     combo_strategy: Option<String>,
@@ -2081,11 +2078,6 @@ struct UpdateSettingsRequest {
     observability_enabled: Option<bool>,
     cloud_enabled: Option<bool>,
     cloud_url: Option<String>,
-    tunnel_enabled: Option<bool>,
-    tunnel_url: Option<String>,
-    tailscale_enabled: Option<bool>,
-    tailscale_url: Option<String>,
-    tunnel_dashboard_access: Option<bool>,
     outbound_proxy_enabled: Option<bool>,
     outbound_proxy_url: Option<String>,
     outbound_no_proxy: Option<String>,
@@ -2142,9 +2134,6 @@ async fn update_settings_api(
     let result = state
         .db
         .update(|db| {
-            if let Some(v) = req.tunnel_provider {
-                db.settings.tunnel_provider = v;
-            }
             if let Some(v) = req.sticky_round_robin_limit {
                 db.settings.sticky_round_robin_limit = v.max(1);
             }
@@ -2174,21 +2163,6 @@ async fn update_settings_api(
             }
             if let Some(v) = req.cloud_url {
                 db.settings.cloud_url = v;
-            }
-            if let Some(v) = req.tunnel_enabled {
-                db.settings.tunnel_enabled = v;
-            }
-            if let Some(v) = req.tunnel_url {
-                db.settings.tunnel_url = v;
-            }
-            if let Some(v) = req.tailscale_enabled {
-                db.settings.tailscale_enabled = v;
-            }
-            if let Some(v) = req.tailscale_url {
-                db.settings.tailscale_url = v;
-            }
-            if let Some(v) = req.tunnel_dashboard_access {
-                db.settings.tunnel_dashboard_access = v;
             }
             if let Some(v) = req.outbound_proxy_enabled {
                 db.settings.outbound_proxy_enabled = v;
@@ -2370,26 +2344,8 @@ fn merge_settings(target: &mut crate::types::Settings, source: &crate::types::Se
     if source.cloud_url != target.cloud_url {
         target.cloud_url = source.cloud_url.clone();
     }
-    if source.tunnel_enabled != target.tunnel_enabled {
-        target.tunnel_enabled = source.tunnel_enabled;
-    }
-    if source.tunnel_url != target.tunnel_url {
-        target.tunnel_url = source.tunnel_url.clone();
-    }
-    if source.tunnel_provider != target.tunnel_provider {
-        target.tunnel_provider = source.tunnel_provider.clone();
-    }
-    if source.tailscale_enabled != target.tailscale_enabled {
-        target.tailscale_enabled = source.tailscale_enabled;
-    }
-    if source.tailscale_url != target.tailscale_url {
-        target.tailscale_url = source.tailscale_url.clone();
-    }
     if source.require_login != target.require_login {
         target.require_login = source.require_login;
-    }
-    if source.tunnel_dashboard_access != target.tunnel_dashboard_access {
-        target.tunnel_dashboard_access = source.tunnel_dashboard_access;
     }
     if source.provider_strategies != target.provider_strategies {
         target.provider_strategies = source.provider_strategies.clone();
@@ -2441,9 +2397,6 @@ async fn get_require_login_api(State(state): State<AppState>, headers: HeaderMap
     let snapshot = state.db.snapshot();
     Json(json!({
         "requireLogin": snapshot.settings.require_login,
-        "tunnelDashboardAccess": snapshot.settings.tunnel_dashboard_access,
-        "tunnelUrl": snapshot.settings.tunnel_url,
-        "tailscaleUrl": snapshot.settings.tailscale_url,
     }))
     .into_response()
 }

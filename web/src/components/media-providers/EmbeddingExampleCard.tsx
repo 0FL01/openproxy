@@ -28,9 +28,7 @@ export function EmbeddingExampleCard({ providerId, customAlias }: { providerId: 
   const [input, setInput] = useState("The quick brown fox jumps over the lazy dog");
   const [dimensions, setDimensions] = useState("");
   const [apiKey, setApiKey] = useState("");
-  const [useTunnel, setUseTunnel] = useState(false);
   const [localEndpoint, setLocalEndpoint] = useState("");
-  const [tunnelEndpoint, setTunnelEndpoint] = useState("");
   const [result, setResult] = useState<{ data: any; latencyMs: number } | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
@@ -43,13 +41,9 @@ export function EmbeddingExampleCard({ providerId, customAlias }: { providerId: 
       .then((r) => r.json())
       .then((d: any) => { setApiKey((d.keys || []).find((k: any) => k.isActive !== false)?.key || ""); })
       .catch(() => {});
-    fetch("/api/tunnel/status")
-      .then((r) => r.json())
-      .then((d: any) => { if (d.publicUrl) setTunnelEndpoint(d.publicUrl); })
-      .catch(() => {});
   }, []);
 
-  const endpoint = useTunnel ? tunnelEndpoint : localEndpoint;
+  const endpoint = localEndpoint;
   const modelFull = selectedModel ? `${providerAlias}/${selectedModel}` : "";
 
   const buildBody = () => {
@@ -128,22 +122,10 @@ export function EmbeddingExampleCard({ providerId, customAlias }: { providerId: 
           <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
             <input
               value={endpoint}
-              onChange={(e) => useTunnel ? setTunnelEndpoint(e.target.value) : setLocalEndpoint(e.target.value)}
+              onChange={(e) => setLocalEndpoint(e.target.value)}
               className="w-full min-w-0 flex-1 px-3 py-1.5 text-sm border border-hairline rounded-mini-md bg-canvas focus:outline-none focus:border-brand-coral font-mono"
               placeholder="http://localhost:3000"
             />
-            {tunnelEndpoint && (
-              <button
-                onClick={() => setUseTunnel((v) => !v)}
-                title={useTunnel ? "Using tunnel" : "Using local"}
-                className={`flex items-center gap-1 text-xs px-2 py-1.5 rounded-mini-md border shrink-0 transition-colors ${
-                  useTunnel ? "border-brand-coral/40 bg-brand-coral/10 text-brand-coral" : "border-hairline text-text-muted hover:text-brand-coral"
-                }`}
-              >
-                <span className="material-symbols-outlined text-[14px]">wifi_tethering</span>
-                Tunnel
-              </button>
-            )}
           </div>
         </Row>
 

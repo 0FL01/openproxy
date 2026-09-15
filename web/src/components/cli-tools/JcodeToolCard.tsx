@@ -43,10 +43,6 @@ interface JcodeToolCardProps {
   apiKeys: ApiKey[];
   activeProviders: string[];
   cloudEnabled: boolean;
-  tunnelEnabled?: boolean;
-  tunnelPublicUrl?: string;
-  tailscaleEnabled?: boolean;
-  tailscaleUrl?: string;
   cloudUrl?: string;
   initialStatus?: JcodeStatus | null;
 }
@@ -60,10 +56,6 @@ export default function JcodeToolCard({
   apiKeys,
   activeProviders,
   cloudEnabled,
-  tunnelEnabled = false,
-  tunnelPublicUrl = "",
-  tailscaleEnabled = false,
-  tailscaleUrl = "",
   cloudUrl = "",
   initialStatus,
 }: JcodeToolCardProps): React.ReactNode {
@@ -86,8 +78,6 @@ export default function JcodeToolCard({
     const currentProvider = jcodeStatus.config?.providers?.["openproxy"];
     if (!currentProvider) return "not_configured";
     const matched = matchKnownEndpoint(currentProvider.base_url, {
-      tunnelPublicUrl,
-      tailscaleUrl,
       cloudUrl,
     });
     return matched ? "configured" : "other";
@@ -354,10 +344,6 @@ export default function JcodeToolCard({
                     value={getDisplayUrl()}
                     onChange={(url: string) => setCustomBaseUrl(url)}
                     requiresExternalUrl={false}
-                    tunnelEnabled={tunnelEnabled}
-                    tunnelPublicUrl={tunnelPublicUrl}
-                    tailscaleEnabled={tailscaleEnabled}
-                    tailscaleUrl={tailscaleUrl}
                     cloudEnabled={cloudEnabled}
                     cloudUrl={cloudUrl}
                   />

@@ -219,7 +219,7 @@ export const CLI_TOOLS: Record<string, CLITool> = {
     requiresExternalUrl: true,
     notes: [
       { type: "warning", text: "Requires Cursor Pro account to use this feature." },
-      { type: "cloudCheck", text: "Cursor routes requests through its own server, so local endpoint is not supported. Please enable Tunnel or Cloud Endpoint in Settings." },
+      { type: "cloudCheck", text: "Cursor routes requests through its own server, so local endpoint is not supported. Please enable Cloud Endpoint in Settings." },
     ],
     guideSteps: [
       { step: 1, title: "Open Settings", desc: "Go to Settings → Models" },

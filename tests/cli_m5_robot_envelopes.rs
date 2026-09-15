@@ -1,4 +1,4 @@
-//! M5 CLI integration tests — mitm / tunnel (runtime) / tool / translator / media.
+//! M5 CLI integration tests — mitm / tool / translator / media.
 //!
 //! Exercises the `openproxy` binary against a wiremock server and asserts the
 //! `--robot` JSON envelopes. We hit one happy-path per subcommand group; the
@@ -166,53 +166,6 @@ async fn mitm_config_apply_reads_stdin() {
     );
     let env = parse_robot(&out.stdout);
     assert_eq!(env["schema"], "openproxy.v1.mitm.config.apply");
-}
-
-// ─── tunnel (runtime) ───────────────────────────────────────────────────────
-
-#[tokio::test(flavor = "multi_thread")]
-async fn tunnel_enable_emits_envelope() {
-    let server = boot_server().await;
-    Mock::given(method("POST"))
-        .and(path("/api/tunnel/enable"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"enabled": true})))
-        .mount(&server)
-        .await;
-
-    let out = op(&server, &["--robot", "tunnel", "enable", "cloudflare"]);
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let env = parse_robot(&out.stdout);
-    assert_eq!(env["schema"], "openproxy.v1.tunnel.enable");
-    assert_eq!(env["data"]["enabled"], true);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn tunnel_tailscale_check_emits_envelope() {
-    let server = boot_server().await;
-    Mock::given(method("GET"))
-        .and(path("/api/tunnel/tailscale-check"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "installed": true,
-            "loggedIn": false,
-            "daemonRunning": true,
-        })))
-        .mount(&server)
-        .await;
-
-    let out = op(&server, &["--robot", "tunnel", "tailscale", "check"]);
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let env = parse_robot(&out.stdout);
-    assert_eq!(env["schema"], "openproxy.v1.tunnel.tailscale.check");
-    assert_eq!(env["data"]["installed"], true);
-    assert_eq!(env["data"]["loggedIn"], false);
 }
 
 // ─── tool ───────────────────────────────────────────────────────────────────

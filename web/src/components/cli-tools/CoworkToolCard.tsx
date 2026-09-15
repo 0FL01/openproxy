@@ -89,10 +89,6 @@ interface CoworkToolCardProps {
   hasActiveProviders: boolean;
   cloudEnabled: boolean;
   cloudUrl?: string;
-  tunnelEnabled: boolean;
-  tunnelPublicUrl?: string;
-  tailscaleEnabled: boolean;
-  tailscaleUrl?: string;
   initialStatus?: CoworkStatus | null;
 }
 
@@ -106,10 +102,6 @@ export default function CoworkToolCard({
   hasActiveProviders,
   cloudEnabled,
   cloudUrl,
-  tunnelEnabled,
-  tunnelPublicUrl,
-  tailscaleEnabled,
-  tailscaleUrl,
   initialStatus,
 }: CoworkToolCardProps): React.ReactNode {
   const [status, setStatus] = useState<CoworkStatus | null>(initialStatus || null);
@@ -136,20 +128,6 @@ export default function CoworkToolCard({
 
   const endpointOptions = useMemo(() => {
     const opts: Array<{ value: string; label: string; url: string }> = [];
-    if (tunnelEnabled && tunnelPublicUrl) {
-      opts.push({
-        value: "tunnel",
-        label: `Tunnel - ${tunnelPublicUrl}`,
-        url: ensureV1(tunnelPublicUrl),
-      });
-    }
-    if (tailscaleEnabled && tailscaleUrl) {
-      opts.push({
-        value: "tailscale",
-        label: `Tailscale - ${tailscaleUrl}`,
-        url: ensureV1(tailscaleUrl),
-      });
-    }
     if (cloudEnabled && cloudUrl) {
       opts.push({
         value: "cloud",
@@ -160,10 +138,6 @@ export default function CoworkToolCard({
     opts.push({ value: "custom", label: "Custom URL (VPS / public host)", url: "" });
     return opts;
   }, [
-    tunnelEnabled,
-    tunnelPublicUrl,
-    tailscaleEnabled,
-    tailscaleUrl,
     cloudEnabled,
     cloudUrl,
   ]);
@@ -291,7 +265,7 @@ export default function CoworkToolCard({
     if (isLocalhostUrl(effectiveUrl)) {
       setMessage({
         type: "error",
-        text: "Localhost is not allowed. Enable Tunnel/Tailscale or use VPS.",
+        text: "Localhost is not allowed. Use a public URL (Cloud Endpoint or VPS).",
       });
       return;
     }
@@ -442,8 +416,8 @@ export default function CoworkToolCard({
           <div className="flex items-start gap-2 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg text-xs text-blue-700 dark:text-blue-300">
             <span className="material-symbols-outlined text-[16px] mt-0.5">info</span>
             <span>
-              Claude Cowork runs in a sandboxed VM and <b>cannot reach localhost</b>. Use Tunnel,
-              Tailscale, or VPS public URL.
+              Claude Cowork runs in a sandboxed VM and <b>cannot reach localhost</b>. Use a
+              Cloud Endpoint or VPS public URL.
             </span>
           </div>
 

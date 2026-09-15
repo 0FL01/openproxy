@@ -206,9 +206,7 @@ fn schema_for(resource: &str) -> Option<Value> {
                 "requireLogin": {"type": "boolean"},
                 "observabilityEnabled": {"type": "boolean"},
                 "outboundProxyEnabled": {"type": "boolean"},
-                "outboundProxyUrl": {"type": "string"},
-                "tunnelEnabled": {"type": "boolean"},
-                "tunnelProvider": {"type": "string"}
+                "outboundProxyUrl": {"type": "string"}
             }
         }),
         "custom-model" => json!({

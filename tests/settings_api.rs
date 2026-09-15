@@ -107,9 +107,6 @@ async fn patch_settings_updates_values_and_rejects_password_fields() {
                         "rtkEnabled": false,
                         "cavemanEnabled": true,
                         "cavemanLevel": "ultra",
-                        "tunnelDashboardAccess": false,
-                        "tunnelUrl": "https://demo.example",
-                        "tailscaleUrl": "https://tail.example",
                         "requireApiKey": false,
                         "codexWebSearchContextSize": "low",
                     })
@@ -128,9 +125,6 @@ async fn patch_settings_updates_values_and_rejects_password_fields() {
     assert_eq!(json["requireLogin"], false);
     assert_eq!(json["providerStrategies"]["openai"], "latency");
     assert_eq!(json["comboStrategies"]["writer"], "cost");
-    assert_eq!(json["tunnelDashboardAccess"], false);
-    assert_eq!(json["tunnelUrl"], "https://demo.example");
-    assert_eq!(json["tailscaleUrl"], "https://tail.example");
     assert_eq!(json["requireApiKey"], false);
     assert_eq!(json["codexWebSearchContextSize"], "low");
     assert_eq!(json["hasPassword"], true);
@@ -214,9 +208,6 @@ async fn settings_database_import_and_require_login_round_trip() {
                         "settings": {
                             "password": "hashed-secret",
                             "requireLogin": false,
-                            "tunnelDashboardAccess": false,
-                            "tunnelUrl": "https://demo.example",
-                            "tailscaleUrl": "https://tail.example",
                             "comboStrategy": "latency"
                         }
                     })
@@ -266,7 +257,4 @@ async fn settings_database_import_and_require_login_round_trip() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["requireLogin"], false);
-    assert_eq!(json["tunnelDashboardAccess"], false);
-    assert_eq!(json["tunnelUrl"], "https://demo.example");
-    assert_eq!(json["tailscaleUrl"], "https://tail.example");
 }

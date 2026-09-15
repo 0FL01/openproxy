@@ -35,8 +35,6 @@ async function apiFetch(path: string, init: RequestInit = {}): Promise<Response>
 }
 
 export interface Settings {
-  tunnelEnabled?: boolean;
-  tailscaleEnabled?: boolean;
   cloudEnabled?: boolean;
   mitmEnabled?: boolean;
   claudeAutoPing?: AutoPingConfig;
@@ -54,14 +52,6 @@ interface ApiKey {
   name: string;
   key: string;
   createdAt: string;
-  [key: string]: unknown;
-}
-
-interface TunnelStatus {
-  enabled?: boolean;
-  url?: string;
-  tunnel?: { running?: boolean; enabled?: boolean; tunnelUrl?: string };
-  tailscale?: { running?: boolean; enabled?: boolean; tunnelUrl?: string };
   [key: string]: unknown;
 }
 
@@ -113,65 +103,6 @@ export async function getApiKeys(): Promise<ApiKey[]> {
   }
   const data = await response.json();
   return data.keys || [];
-}
-
-/**
- * Enable tunnel
- */
-export async function enableTunnel(): Promise<Record<string, unknown>> {
-  const response = await apiFetch("/api/tunnel/enable", { method: "POST" });
-  if (!response.ok) {
-    throw new Error(`Failed to enable tunnel: ${response.statusText}`);
-  }
-  return await response.json();
-}
-
-/**
- * Disable tunnel
- */
-export async function disableTunnel(): Promise<Record<string, unknown>> {
-  const response = await apiFetch("/api/tunnel/disable", { method: "POST" });
-  if (!response.ok) {
-    throw new Error(`Failed to disable tunnel: ${response.statusText}`);
-  }
-  return await response.json();
-}
-
-/**
- * Get tunnel status
- */
-export async function getTunnelStatus(): Promise<TunnelStatus> {
-  const response = await apiFetch("/api/tunnel/status");
-  if (!response.ok) {
-    throw new Error(`Failed to get tunnel status: ${response.statusText}`);
-  }
-  return await response.json();
-}
-
-/**
- * Enable Tailscale
- */
-export async function enableTailscale(): Promise<Record<string, unknown>> {
-  const response = await apiFetch("/api/tunnel/tailscale-enable", {
-    method: "POST",
-  });
-  if (!response.ok) {
-    throw new Error(`Failed to enable Tailscale: ${response.statusText}`);
-  }
-  return await response.json();
-}
-
-/**
- * Disable Tailscale
- */
-export async function disableTailscale(): Promise<Record<string, unknown>> {
-  const response = await apiFetch("/api/tunnel/tailscale-disable", {
-    method: "POST",
-  });
-  if (!response.ok) {
-    throw new Error(`Failed to disable Tailscale: ${response.statusText}`);
-  }
-  return await response.json();
 }
 
 /**

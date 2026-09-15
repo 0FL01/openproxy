@@ -433,13 +433,13 @@ mod tests {
         let db = open();
         let mut old = AppDb::default();
         let mut new = AppDb::default();
-        new.settings.tunnel_enabled = true;
+        new.settings.cloud_enabled = true;
         db.with_transaction(|tx| apply_app_db_diff(tx, &old, &new))
             .unwrap();
         assert_eq!(count_rows(&db, "settings"), 1);
 
         old = new.clone();
-        new.settings.tunnel_enabled = false;
+        new.settings.cloud_enabled = false;
         db.with_transaction(|tx| apply_app_db_diff(tx, &old, &new))
             .unwrap();
         assert_eq!(count_rows(&db, "settings"), 1);
@@ -576,7 +576,7 @@ mod tests {
         // A settings-only update must NOT wipe usageHistory.
         let mut old = AppDb::default();
         let mut new = AppDb::default();
-        new.settings.tunnel_enabled = true;
+        new.settings.cloud_enabled = true;
         db.with_transaction(|tx| apply_app_db_diff(tx, &old, &new))
             .unwrap();
         assert_eq!(count_rows(&db, "usageHistory"), 1);
@@ -588,7 +588,7 @@ mod tests {
         let mut old = AppDb::default();
         let mut new = AppDb::default();
         // Simulate a closure touching settings + mitm_alias together.
-        new.settings.tunnel_enabled = true;
+        new.settings.cloud_enabled = true;
         new.mitm_alias
             .insert("router".into(), BTreeMap::from([("a".into(), "b".into())]));
         db.with_transaction(|tx| apply_app_db_diff(tx, &old, &new))
@@ -639,7 +639,7 @@ mod tests {
                 }
                 2 => {
                     // Toggle settings.
-                    next.settings.tunnel_enabled = rng() % 2 == 0;
+                    next.settings.cloud_enabled = rng() % 2 == 0;
                     next.settings.combo_strategy = format!("strat{}", rng() % 3);
                 }
                 3 => {

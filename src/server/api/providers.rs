@@ -1133,18 +1133,12 @@ pub struct ClientInfoResponse {
     pub client_id: String,
     pub client_name: String,
     pub version: String,
-    pub provider: String,
 }
 
 async fn get_client_info(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Err(response) = require_management_access(&headers, &state) {
         return response;
     }
-
-    let snapshot = state.db.snapshot();
-
-    // Get settings for provider info
-    let settings = &snapshot.settings;
 
     // Get client identity - prefer hostname, fallback to os username
     // (whoami 2.x returns Result from hostname()/username()).
@@ -1155,7 +1149,6 @@ async fn get_client_info(State(state): State<AppState>, headers: HeaderMap) -> R
         client_id,
         client_name,
         version: env!("CARGO_PKG_VERSION").to_string(),
-        provider: settings.tunnel_provider.clone(),
     })
     .into_response()
 }
