@@ -60,6 +60,8 @@ The router determines which IDs exist. On success the plugin replaces the
 in-memory list, excluding removed/disabled models even if locally configured.
 Local `models` entries override metadata for matching IDs (limits are merged
 field by field); other provider options and other providers are untouched.
+After merging, context and input limits above 500,000 tokens are capped at
+500,000; lower upstream limits are preserved.
 When neither the proxy nor a local override supplies a useful name, the plugin
 removes the router prefix for display and formats the slug (for example,
 `cx/gpt-5.6-luna` becomes `GPT-5.6 Luna`). The canonical source provider is

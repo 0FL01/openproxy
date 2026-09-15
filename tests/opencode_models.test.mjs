@@ -13,7 +13,7 @@ test("discovery authenticates, refreshes inventory, preserves options and valida
       opencode: {
         name: "New Model",
         source: "codex",
-        limit: { context: 628000, input: 500000, output: 128000 },
+        limit: { context: 628000, input: 600000, output: 128000 },
         modalities: { input: ["text", "image"], output: ["text"] },
         attachment: true,
         reasoning: true,
@@ -45,7 +45,7 @@ test("discovery authenticates, refreshes inventory, preserves options and valida
   }
   const config = { provider: {
     ludka2: { npm: "@ai-sdk/openai", options, models: {
-      "cx/new/model": { name: "Local name", limit: { input: 480000 } },
+      "cx/new/model": { name: "Local name", limit: { context: 900000 } },
       "cx/disabled": { name: "Disabled upstream" },
     } },
     untouched: { models: { "keep-me": {} } },
@@ -56,7 +56,7 @@ test("discovery authenticates, refreshes inventory, preserves options and valida
   assert.deepEqual(Object.keys(models), ["cx/new/model"])
   assert.deepEqual(models["cx/new/model"], {
     name: "Local name · codex",
-    limit: { context: 628000, input: 480000, output: 128000 },
+    limit: { context: 500000, input: 500000, output: 128000 },
     modalities: { input: ["text", "image"], output: ["text"] },
     attachment: true,
     reasoning: true,
@@ -87,10 +87,10 @@ test("discovery authenticates, refreshes inventory, preserves options and valida
   assert.strictEqual(config.provider.ludka2.models, models)
   assert.match(warnings.at(-1), /invalid models response/)
 
-  body = { object: "list", data: [{ id: "opencode-go/added", context_length: 500000, max_completion_tokens: 128000 }] }
+  body = { object: "list", data: [{ id: "opencode-go/added", context_length: 272000, max_completion_tokens: 128000 }] }
   await plugin.config(config)
   assert.deepEqual(config.provider.ludka2.models, {
-    "opencode-go/added": { name: "Added", limit: { context: 500000, output: 128000 } },
+    "opencode-go/added": { name: "Added", limit: { context: 272000, output: 128000 } },
   })
   config.disabled_providers = ["ludka2"]
   await plugin.config(config)

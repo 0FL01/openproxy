@@ -80,7 +80,7 @@ test("OpenCode auto-loads the plugin and refresh discovers new IDs without rewri
   assert.equal(model.api.id, "cx/added")
   assert.equal(model.api.npm, "@ai-sdk/openai")
   assert.equal(model.name, "Fixture model · codex")
-  assert.deepEqual(model.limit, { context: 628000, input: 500000, output: 128000 })
+  assert.deepEqual(model.limit, { context: 500000, input: 500000, output: 128000 })
   assert.equal(model.capabilities.attachment, true)
   assert.equal(model.capabilities.input.image, true)
   assert.equal(model.variants.high.reasoningEffort, "high")

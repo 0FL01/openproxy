@@ -1,6 +1,7 @@
 // Auto-loaded from ~/.config/opencode/plugins/. The key stays in provider.options.
 const PROVIDER_ID = "ludka2"
 const DISCOVERY_TIMEOUT_MS = 10000
+const MAX_CONTEXT_TOKENS = 500000
 const STANDARD_REASONING_VARIANTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 
 function record(value) {
@@ -146,6 +147,12 @@ export default async function OpenProxyModels() {
           if (typeof merged.name === "string") merged.name = normalizeModelName(merged.name)
           if (source && typeof merged.name === "string") merged.name = sourceModelName(merged.name, source)
           if (remote.limit || local.limit) merged.limit = { ...remote.limit, ...local.limit }
+          if (positiveInteger(merged.limit?.context)) {
+            merged.limit.context = Math.min(merged.limit.context, MAX_CONTEXT_TOKENS)
+          }
+          if (positiveInteger(merged.limit?.input)) {
+            merged.limit.input = Math.min(merged.limit.input, MAX_CONTEXT_TOKENS)
+          }
           // OpenCode allows omitting limit, but requires context AND output
           // when present. Check after local overrides have filled any gaps.
           if (!positiveInteger(merged.limit?.context) || !positiveInteger(merged.limit?.output)) {
