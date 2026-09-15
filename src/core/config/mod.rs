@@ -6,7 +6,6 @@
 //! (e.g. `kiro_constants::resolve_kiro_model`) are plain Rust functions.
 
 pub mod app_constants;
-pub mod codex_instructions;
 pub mod default_thinking_signature;
 pub mod error_config;
 pub mod kiro_constants;

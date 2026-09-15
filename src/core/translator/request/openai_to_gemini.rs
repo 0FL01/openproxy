@@ -5,8 +5,6 @@
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
-use crate::core::config::app_constants::ANTIGRAVITY_DEFAULT_SYSTEM;
-
 /// Sanitize function names for Gemini API.
 /// Gemini requires: starts with [a-zA-Z_], followed by [a-zA-Z0-9_.:\-], max 64 chars.
 fn sanitize_gemini_function_name(name: &str) -> String {
@@ -1020,9 +1018,7 @@ pub fn openai_to_gemini_cli_request(
 ///
 /// Unlike plain Gemini translation, this function:
 /// 1. Wraps the Gemini-shaped body in a Cloud Code envelope (`{"request": body}`).
-/// 2. Injects the Antigravity default system prompt into `systemInstruction`
-///    using a double-prompt pattern (Cloud Code system + Antigravity system).
-/// 3. Sets `toolConfig.functionCallingConfig.mode = "VALIDATED"` when tools
+/// 2. Sets `toolConfig.functionCallingConfig.mode = "VALIDATED"` when tools
 ///    are present (Gemini 3+ requirement for validated function calling).
 pub fn openai_to_antigravity_request(
     model: &str,
@@ -1068,34 +1064,6 @@ pub fn openai_to_antigravity_request(
                     if let Some(params) = fn_decl.get_mut("parameters") {
                         let cleaned = clean_json_schema(params);
                         *params = cleaned;
-                    }
-                }
-            }
-        }
-    }
-
-    // Inject Antigravity default system prompt into systemInstruction.
-    // Use the double-prompt pattern: the Cloud Code system prompt is inserted
-    // as a separate part at the beginning, followed by the user's own system
-    // instruction. This mirrors how the Antigravity executor expects it.
-    let ag_system_text = ANTIGRAVITY_DEFAULT_SYSTEM;
-    let existing_system = gemini.get("systemInstruction").cloned();
-    gemini["systemInstruction"] = serde_json::json!({
-        "role": "user",
-        "parts": [
-            {"text": ag_system_text},
-            {"text": "\n\n---\n\n"}
-        ]
-    });
-    if let Some(si) = existing_system {
-        if let Some(parts) = si.get("parts").and_then(|v| v.as_array()) {
-            for part in parts {
-                if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                    if !text.is_empty() {
-                        gemini["systemInstruction"]["parts"]
-                            .as_array_mut()
-                            .unwrap()
-                            .push(serde_json::json!({"text": text}));
                     }
                 }
             }

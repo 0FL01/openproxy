@@ -19,10 +19,6 @@ expression: result
   "stream": false,
   "system": [
     {
-      "text": "You are Claude Code, Anthropic's official CLI for Claude.",
-      "type": "text"
-    },
-    {
       "cache_control": {
         "ttl": "1h",
         "type": "ephemeral"

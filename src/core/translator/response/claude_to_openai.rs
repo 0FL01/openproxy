@@ -71,8 +71,7 @@ pub fn claude_to_openai_response(chunk: &Value, state: &mut Map<String, Value>) 
                         .pointer("/content_block/name")
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
-                    // Honour the optional tool-name remap stored by
-                    // claude_cloaking on the request side.
+                    // Honour an optional tool-name remap from request translation.
                     let mapped = state
                         .get("toolNameMap")
                         .and_then(|m| m.get(raw_name))

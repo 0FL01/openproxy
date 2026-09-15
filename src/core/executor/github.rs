@@ -462,10 +462,6 @@ impl GithubExecutor {
                     request.stream,
                     None,
                 );
-                // Internal bookkeeping — Anthropic rejects unknown fields.
-                if let Some(obj) = body.as_object_mut() {
-                    obj.remove("_toolNameMap");
-                }
             }
             if let Some(obj) = body.as_object_mut() {
                 obj.insert("model".into(), json!(request.model));

@@ -2,7 +2,7 @@
 //!
 //! Claude-specific request normalisation:
 //!   - `prepare_claude_request` — normalise system prompt, thinking config,
-//!     max_tokens handling, cache_control, tool dedup, and cloaking.
+//!     max_tokens handling, cache_control, and tool normalization.
 //!   - `normalize_claude_passthrough` — strip unsupported fields, align
 //!     message format for Claude passthrough mode.
 
@@ -11,8 +11,6 @@ use serde_json::{json, Value};
 use base64::Engine as _;
 
 use crate::core::config::runtime_config::DEFAULT_MAX_TOKENS;
-use crate::core::utils::claude_cloaking::apply_cloaking;
-use crate::core::utils::claude_header_cache::get_cached_claude_headers;
 
 /// Default thinking signature injected when an `anthropic-compatible`
 /// provider serves a thinking block without a valid signature.
@@ -658,8 +656,7 @@ pub fn anchor_claude_cache(body: &mut Value) {
 /// - Filter empty messages; fix tool_use / tool_result ordering.
 /// - Handle thinking blocks (signature validation for native Claude,
 ///   default-signature injection for `anthropic-compatible`).
-/// - Apply cloaking for OAuth tokens.
-pub fn prepare_claude_request(body: &mut Value, provider: &str, api_key: Option<&str>) {
+pub fn prepare_claude_request(body: &mut Value, provider: &str) {
     let Some(obj) = body.as_object_mut() else {
         return;
     };
@@ -936,22 +933,6 @@ pub fn prepare_claude_request(body: &mut Value, provider: &str, api_key: Option<
         if tools.is_empty() {
             obj.remove("tools");
             obj.remove("tool_choice");
-        }
-    }
-
-    // ── 4. Cloaking for OAuth tokens ──
-    if let Some(api_key) = api_key {
-        if (provider == "claude"
-            || provider == "anthropic"
-            || provider.starts_with("anthropic-compatible"))
-            && !api_key.is_empty()
-        {
-            let session_id = get_cached_claude_headers()
-                .and_then(|h| h.get("x-claude-code-session-id").cloned());
-            // apply_cloaking takes &Value, returns Value — we need to rebuild
-            let cloned = body.clone();
-            let cloaked = apply_cloaking(&cloned, api_key, session_id.as_deref());
-            *body = cloaked;
         }
     }
 }
@@ -1253,7 +1234,7 @@ mod tests {
             "output_config": {"effort": "high"},
             "messages": []
         });
-        prepare_claude_request(&mut body, "minimax", None);
+        prepare_claude_request(&mut body, "minimax");
         assert!(body.get("output_config").is_none(), "output_config dropped");
     }
 
@@ -1263,7 +1244,7 @@ mod tests {
             "max_tokens": 999999,
             "messages": [{"role": "user", "content": "hi"}]
         });
-        prepare_claude_request(&mut body, "claude", None);
+        prepare_claude_request(&mut body, "claude");
         assert_eq!(body["max_tokens"], DEFAULT_MAX_TOKENS);
     }
 
@@ -1275,7 +1256,7 @@ mod tests {
             "thinking": {"type": "enabled", "budget_tokens": 128000},
             "messages": [{"role": "user", "content": "hi"}]
         });
-        prepare_claude_request(&mut body, "claude", None);
+        prepare_claude_request(&mut body, "claude");
         // budget + 1024 capped at the sonnet ceiling (128000)
         assert_eq!(body["max_tokens"], 128000);
         // budget shrunk to max_tokens - 1024
@@ -1288,7 +1269,7 @@ mod tests {
             "max_tokens": 32000,
             "messages": [{"role": "user", "content": "hi"}]
         });
-        prepare_claude_request(&mut body, "claude", None);
+        prepare_claude_request(&mut body, "claude");
         assert_eq!(body["max_tokens"], 32000);
     }
 
@@ -1301,7 +1282,7 @@ mod tests {
             ],
             "messages": [{"role": "user", "content": "hi"}]
         });
-        prepare_claude_request(&mut body, "claude", None);
+        prepare_claude_request(&mut body, "claude");
         let sys = body["system"].as_array().unwrap();
         assert!(
             sys[0].get("cache_control").is_none(),
@@ -1323,7 +1304,7 @@ mod tests {
                 {"role": "assistant", "content": []}
             ]
         });
-        prepare_claude_request(&mut body, "claude", None);
+        prepare_claude_request(&mut body, "claude");
         let msgs = body["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 2, "empty user removed, final assistant kept");
         assert_eq!(msgs[0]["role"], "user");
@@ -1340,7 +1321,7 @@ mod tests {
                 ]
             }]
         });
-        prepare_claude_request(&mut body, "claude", None);
+        prepare_claude_request(&mut body, "claude");
         assert!(body["messages"][0]["content"][0]
             .get("cache_control")
             .is_none());
@@ -1358,7 +1339,7 @@ mod tests {
                 ]}
             ]
         });
-        prepare_claude_request(&mut body, "claude", None);
+        prepare_claude_request(&mut body, "claude");
         let content = body["messages"][1]["content"].as_array().unwrap();
         // The non-thinking (text) block should have cache_control
         let text_block = content.iter().find(|b| b["type"] == "text").unwrap();
@@ -1377,7 +1358,7 @@ mod tests {
             ],
             "messages": [{"role": "user", "content": "hi"}]
         });
-        prepare_claude_request(&mut body, "minimax", None);
+        prepare_claude_request(&mut body, "minimax");
         let tools = body["tools"].as_array().unwrap();
         assert_eq!(tools.len(), 1, "built-in tool should be filtered");
         assert_eq!(tools[0]["name"], "my_custom_tool");
@@ -1392,7 +1373,7 @@ mod tests {
             ],
             "messages": [{"role": "user", "content": "hi"}]
         });
-        prepare_claude_request(&mut body, "claude", None);
+        prepare_claude_request(&mut body, "claude");
         let tools = body["tools"].as_array().unwrap();
         assert!(tools[0].get("cache_control").is_none());
         assert!(tools[1].get("cache_control").is_some());
@@ -1405,7 +1386,7 @@ mod tests {
             "tool_choice": {"type": "auto"},
             "messages": [{"role": "user", "content": "hi"}]
         });
-        prepare_claude_request(&mut body, "minimax", None);
+        prepare_claude_request(&mut body, "minimax");
         assert!(body.get("tools").is_none(), "empty tools removed");
         assert!(body.get("tool_choice").is_none(), "tool_choice removed");
     }
@@ -1497,7 +1478,7 @@ mod tests {
             ],
             "messages": [{"role": "user", "content": "hi"}]
         });
-        prepare_claude_request(&mut body, "claude", None);
+        prepare_claude_request(&mut body, "claude");
         let tools = body["tools"].as_array().unwrap();
         // tool "a" (index 0) is last cacheable → gets cache_control
         assert!(

@@ -43,11 +43,6 @@ const CHROME_USER_AGENTS: &[&str] = &[
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 ];
 
-/// The exact MiMoCode anti-abuse system marker 9router sends (byte-for-byte —
-/// upstream 403s unless the EXACT substring appears).
-pub const MIMO_SYSTEM_MARKER: &str =
-    "You are MiMoCode, an interactive CLI tool that helps users with software engineering tasks.";
-
 /// JWT expiry buffer: treat the token as expired 300s before its real exp.
 const JWT_EXPIRY_BUFFER_MS: u64 = 300_000;
 
@@ -393,39 +388,6 @@ impl MimoFreeExecutor {
         tracing::debug!("mimo-free: invalidated JWT cache for fingerprint");
     }
 
-    // ── System marker injection ─────────────────────────────────────────────
-
-    /// Idempotent 9router injectSystemMarker: if ANY system message's string
-    /// content already contains the exact marker, no-op; else prepend
-    /// `{role:"system",content:MIMO_SYSTEM_MARKER}`.
-    fn inject_mimo_code(body: &mut Value) {
-        let messages = match body.get_mut("messages").and_then(|v| v.as_array_mut()) {
-            Some(arr) => arr,
-            None => return,
-        };
-
-        let already_injected = messages.iter().any(|m| {
-            m.get("role").and_then(|r| r.as_str()) == Some("system")
-                && m.get("content")
-                    .and_then(|c| c.as_str())
-                    .map(|s| s.contains(MIMO_SYSTEM_MARKER))
-                    .unwrap_or(false)
-        });
-
-        if already_injected {
-            return;
-        }
-
-        // Prepend the system marker.
-        messages.insert(
-            0,
-            serde_json::json!({
-                "role": "system",
-                "content": MIMO_SYSTEM_MARKER,
-            }),
-        );
-    }
-
     // ── Headers ─────────────────────────────────────────────────────────────
 
     fn build_headers(
@@ -461,7 +423,7 @@ impl MimoFreeExecutor {
 
     pub async fn execute_request(
         &self,
-        mut request: MimoFreeExecutionRequest,
+        request: MimoFreeExecutionRequest,
     ) -> Result<MimoFreeExecutorResponse, MimoFreeExecutorError> {
         // Derive device fingerprint.
         let fingerprint = Self::derive_fingerprint(&request.credentials);
@@ -471,9 +433,6 @@ impl MimoFreeExecutor {
 
         // Generate a session affinity ID.
         let session_id = Self::generate_session_id();
-
-        // Inject MiMoCode system message.
-        Self::inject_mimo_code(&mut request.body);
 
         // Pick a Chrome UA for this request.
         let user_agent = self.next_user_agent();
@@ -599,14 +558,6 @@ mod tests {
     }
 
     #[test]
-    fn test_marker_exact_string() {
-        assert_eq!(
-            MIMO_SYSTEM_MARKER,
-            "You are MiMoCode, an interactive CLI tool that helps users with software engineering tasks."
-        );
-    }
-
-    #[test]
     fn test_next_user_agent_rotation() {
         let executor = MimoFreeExecutor::new(Arc::new(crate::core::executor::ClientPool::new()));
         let ua1 = executor.next_user_agent();
@@ -620,71 +571,6 @@ mod tests {
         assert!(CHROME_USER_AGENTS.contains(&ua3));
         // After wrapping around, ua4 should equal ua1 again.
         assert_eq!(ua1, ua4, "round-robin should wrap after 3 UAs");
-    }
-
-    #[test]
-    fn test_inject_mimo_code_fresh() {
-        let mut body = serde_json::json!({
-            "messages": [
-                {"role": "user", "content": "hello"}
-            ]
-        });
-        MimoFreeExecutor::inject_mimo_code(&mut body);
-        let messages = body["messages"].as_array().unwrap();
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0]["role"], "system");
-        assert!(messages[0]["content"]
-            .as_str()
-            .unwrap()
-            .contains("MiMoCode"));
-        assert_eq!(messages[1]["role"], "user");
-    }
-
-    #[test]
-    fn test_inject_mimo_code_already_present() {
-        // Exact marker present on the FIRST system message → no-op.
-        let mut body = serde_json::json!({
-            "messages": [
-                {"role": "system", "content": MIMO_SYSTEM_MARKER},
-                {"role": "user", "content": "hello"}
-            ]
-        });
-        MimoFreeExecutor::inject_mimo_code(&mut body);
-        assert_eq!(body["messages"].as_array().unwrap().len(), 2);
-
-        // Marker present on a LATER system message → no-op (guard test:
-        // scans ALL system messages, not just the first).
-        let mut body = serde_json::json!({
-            "messages": [
-                {"role": "system", "content": "Some other system prompt."},
-                {"role": "user", "content": "hello"},
-                {"role": "system", "content": format!("Prefix {}", MIMO_SYSTEM_MARKER)}
-            ]
-        });
-        MimoFreeExecutor::inject_mimo_code(&mut body);
-        let messages = body["messages"].as_array().unwrap();
-        assert_eq!(
-            messages.len(),
-            3,
-            "marker on a later system message must suppress injection"
-        );
-        assert_eq!(messages[0]["content"], "Some other system prompt.");
-    }
-
-    #[test]
-    fn test_inject_mimo_code_partial_containment_still_injects() {
-        // Content that merely contains "MiMoCode" but NOT the exact marker
-        // must still be neutralized by prepending the exact marker.
-        let mut body = serde_json::json!({
-            "messages": [
-                {"role": "system", "content": "You are MiMoCode, a helpful..."},
-                {"role": "user", "content": "hello"}
-            ]
-        });
-        MimoFreeExecutor::inject_mimo_code(&mut body);
-        let messages = body["messages"].as_array().unwrap();
-        assert_eq!(messages.len(), 3, "exact marker absent → inject");
-        assert_eq!(messages[0]["content"], MIMO_SYSTEM_MARKER);
     }
 
     #[test]

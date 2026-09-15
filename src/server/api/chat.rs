@@ -30,7 +30,6 @@ use crate::core::translator::helpers::modality_helper::{
 };
 use crate::core::translator::registry::{self, Format};
 use crate::core::translator::response_transform::{transform_sse_stream, transformer_for_provider};
-use crate::core::utils::claude_cloaking::{cloak_claude_tools, CloakedRequest};
 use crate::core::utils::client_detector::{detect_client_tool, is_native_passthrough, ClientTool};
 use crate::core::utils::stream_flags::resolve_stream_flags;
 use crate::server::application_logs::{AttemptLog, RequestLogContext};
@@ -930,13 +929,6 @@ async fn forward_with_provider_fallback(
     } else {
         None
     };
-
-    // Extract tool name map from body (set by Claude cloaking).
-    // Remove from body before dispatch to avoid serializing it upstream.
-    let tool_name_map: Option<std::collections::BTreeMap<String, String>> = request_body
-        .as_object_mut()
-        .and_then(|obj| obj.remove("_toolNameMap"))
-        .and_then(|v| serde_json::from_value(v).ok());
 
     // Extract custom-tool names (OpenAI Responses translator metadata).
     // Kept for the streaming response path; stripped from the body below.
@@ -1916,14 +1908,8 @@ async fn forward_with_provider_fallback(
                         return Ok(response);
                     }
                     if !stream {
-                        let response = proxy_response(
-                            result.response,
-                            provider,
-                            plan,
-                            tool_name_map.as_ref(),
-                            attempt_log,
-                        )
-                        .await;
+                        let response =
+                            proxy_response(result.response, provider, plan, attempt_log).await;
                         let response =
                             mark_codex_web_search_injected(response, codex_web_search_injected);
                         return Ok(response);
@@ -1936,7 +1922,6 @@ async fn forward_with_provider_fallback(
                         model.to_string(),
                         normalize_for_dashboard,
                         plan,
-                        tool_name_map.as_ref(),
                         custom_tool_names.clone(),
                         attempt_log,
                     )
@@ -2543,7 +2528,6 @@ async fn proxy_response(
     response: UpstreamResponse,
     provider: &str,
     plan: &RequestPlan,
-    tool_name_map: Option<&std::collections::BTreeMap<String, String>>,
     attempt_log: Option<AttemptLog>,
 ) -> Response {
     let status = response.status();
@@ -2557,28 +2541,8 @@ async fn proxy_response(
     // in via transport.quirks.clineEnvelope (cline/clinepass).
     let unenveloped_body = unwrap_cline_envelope(&body_bytes, provider);
 
-    // 9router parity: decloak tool names when Claude cloaking was applied.
-    let decloaked_body = if let Some(map) = tool_name_map {
-        if !map.is_empty() {
-            let body_val: serde_json::Value =
-                serde_json::from_slice(&unenveloped_body).unwrap_or(serde_json::Value::Null);
-            if !body_val.is_null() {
-                let decloaked =
-                    crate::core::utils::claude_cloaking::decloak_tool_names(&body_val, map);
-                serde_json::to_vec(&decloaked)
-                    .map(Bytes::from)
-                    .unwrap_or_else(|_| unenveloped_body.clone())
-            } else {
-                unenveloped_body.clone()
-            }
-        } else {
-            unenveloped_body.clone()
-        }
-    } else {
-        unenveloped_body.clone()
-    };
     let token_usage = body_complete
-        .then(|| extract_token_usage_from_bytes(decloaked_body.as_ref()))
+        .then(|| extract_token_usage_from_bytes(unenveloped_body.as_ref()))
         .flatten();
 
     let final_body = if body_complete {
@@ -2592,23 +2556,23 @@ async fn proxy_response(
             {
                 // The Codex/Responses API returns a response.completed JSON body for non-streaming.
                 // Parse out the text content and build a proper chat.completion response.
-                translate_codex_non_streaming(decloaked_body.as_ref())
-                    .unwrap_or_else(|| decloaked_body.clone())
+                translate_codex_non_streaming(unenveloped_body.as_ref())
+                    .unwrap_or_else(|| unenveloped_body.clone())
             } else if plan.target_format == registry::Format::Claude
                 && plan.source_format == registry::Format::OpenAi
             {
                 // GitHub Copilot Claude /v1/messages (and other Claude-upstream
                 // non-stream paths): full Messages JSON → chat.completion.
-                match serde_json::from_slice::<Value>(decloaked_body.as_ref()) {
+                match serde_json::from_slice::<Value>(unenveloped_body.as_ref()) {
                     Ok(mut val) => {
                         crate::core::translator::response::non_streaming::claude_to_openai_non_streaming(
                             &mut val,
                         );
                         Bytes::from(
-                            serde_json::to_vec(&val).unwrap_or_else(|_| decloaked_body.to_vec()),
+                            serde_json::to_vec(&val).unwrap_or_else(|_| unenveloped_body.to_vec()),
                         )
                     }
-                    Err(_) => decloaked_body.clone(),
+                    Err(_) => unenveloped_body.clone(),
                 }
             } else {
                 use crate::core::translator::registry::ResponseTransformState;
@@ -2616,7 +2580,7 @@ async fn proxy_response(
                 let chunks = registry::global_registry().translate_response(
                     plan.target_format,
                     plan.source_format,
-                    decloaked_body.as_ref(),
+                    unenveloped_body.as_ref(),
                     &mut state,
                 );
                 if !chunks.is_empty() {
@@ -2630,21 +2594,21 @@ async fn proxy_response(
                         }
                     }
                     if result.is_empty() {
-                        decloaked_body.clone()
+                        unenveloped_body.clone()
                     } else {
                         Bytes::from(result)
                     }
                 } else {
-                    decloaked_body.clone()
+                    unenveloped_body.clone()
                 }
             }
         } else {
-            decloaked_body.clone()
+            unenveloped_body.clone()
         };
 
         Body::from(translated_body)
     } else {
-        Body::from(decloaked_body)
+        Body::from(unenveloped_body)
     };
 
     if let Some(attempt_log) = attempt_log {
@@ -2757,7 +2721,6 @@ async fn proxy_response_with_pending_tracking(
     model: String,
     normalize_for_dashboard: bool,
     plan: &RequestPlan,
-    tool_name_map: Option<&std::collections::BTreeMap<String, String>>,
     custom_tool_names: Option<String>,
     mut attempt_log: Option<AttemptLog>,
 ) -> Response {

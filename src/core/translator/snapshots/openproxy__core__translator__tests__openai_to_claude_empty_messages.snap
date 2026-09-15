@@ -6,11 +6,5 @@ expression: b
   "max_tokens": 64000,
   "messages": [],
   "model": "test-model",
-  "stream": false,
-  "system": [
-    {
-      "text": "You are Claude Code, Anthropic's official CLI for Claude.",
-      "type": "text"
-    }
-  ]
+  "stream": false
 }

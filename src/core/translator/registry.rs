@@ -522,19 +522,10 @@ impl TranslationRegistry {
             filter_to_openai_format(body, preserve);
         }
         if target == Format::Claude {
-            let api_key = credentials.and_then(|c| {
-                c.get("accessToken")
-                    .or_else(|| c.get("access_token"))
-                    .or_else(|| c.get("apiKey"))
-                    .or_else(|| c.get("api_key"))
-                    .and_then(Value::as_str)
-            });
             let provider = credentials
                 .and_then(|c| c.get("provider").and_then(Value::as_str))
                 .unwrap_or("claude");
-            crate::core::translator::request::claude_format::prepare_claude_request(
-                body, provider, api_key,
-            );
+            crate::core::translator::request::claude_format::prepare_claude_request(body, provider);
         }
 
         true

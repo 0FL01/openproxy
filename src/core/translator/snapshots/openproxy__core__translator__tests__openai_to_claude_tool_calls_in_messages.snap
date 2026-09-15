@@ -49,12 +49,6 @@ expression: result
   ],
   "model": "test-model",
   "stream": false,
-  "system": [
-    {
-      "text": "You are Claude Code, Anthropic's official CLI for Claude.",
-      "type": "text"
-    }
-  ],
   "tools": [
     {
       "cache_control": {

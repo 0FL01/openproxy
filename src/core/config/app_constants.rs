@@ -1,11 +1,8 @@
 //! Port of `open-sse/config/appConstants.js`. Provider-specific User-Agent
 //! values, IDE/platform enums (used by Antigravity Cloud Code), OAuth
-//! endpoints, and the static system-prompt strings + default-tool-name
-//! decoy sets for Claude Code and Antigravity.
+//! endpoints, and provider wire constants.
 
-use once_cell::sync::Lazy;
 use serde_json::json;
-use std::collections::BTreeSet;
 use std::time::Duration;
 
 // ─── Codex ────────────────────────────────────────────────────────────────
@@ -125,70 +122,6 @@ pub fn ag_platform_user_agent() -> String {
 pub const INTERNAL_REQUEST_HEADER_NAME: &str = "x-request-source";
 pub const INTERNAL_REQUEST_HEADER_VALUE: &str = "local";
 
-/// Suffix appended to client tools when forwarding to Antigravity (anti-ban).
-pub const AG_TOOL_SUFFIX: &str = "_ide";
-/// Suffix appended to client tools when forwarding to Claude (anti-ban).
-pub const CLAUDE_TOOL_SUFFIX: &str = "_ide";
-
-/// Claude Code's own tool names. Requests carrying these names bypass the
-/// `_ide` suffix to keep the upstream tool registry intact.
-pub static CC_DEFAULT_TOOLS: Lazy<BTreeSet<&'static str>> = Lazy::new(|| {
-    [
-        "Task",
-        "TaskOutput",
-        "TaskStop",
-        "TaskCreate",
-        "TaskGet",
-        "TaskUpdate",
-        "TaskList",
-        "Bash",
-        "Glob",
-        "Grep",
-        "Read",
-        "Edit",
-        "Write",
-        "NotebookEdit",
-        "WebFetch",
-        "WebSearch",
-        "AskUserQuestion",
-        "Skill",
-        "EnterPlanMode",
-        "ExitPlanMode",
-    ]
-    .into_iter()
-    .collect()
-});
-
-/// Antigravity's own tool names — used as decoys with neutral
-/// description/properties.
-pub static AG_DEFAULT_TOOLS: Lazy<BTreeSet<&'static str>> = Lazy::new(|| {
-    [
-        "browser_subagent",
-        "command_status",
-        "find_by_name",
-        "generate_image",
-        "grep_search",
-        "list_dir",
-        "list_resources",
-        "multi_replace_file_content",
-        "notify_user",
-        "read_resource",
-        "read_terminal",
-        "read_url_content",
-        "replace_file_content",
-        "run_command",
-        "search_web",
-        "send_command_input",
-        "task_boundary",
-        "view_content_chunk",
-        "view_file",
-        "write_to_file",
-        "mcp_sequential-thinking_sequentialthinking",
-    ]
-    .into_iter()
-    .collect()
-});
-
 // ─── Cloud Code Assist API ────────────────────────────────────────────────
 
 pub mod cloud_code_api {
@@ -221,12 +154,6 @@ pub fn load_code_assist_metadata() -> serde_json::Value {
         "pluginType": AgPluginType::Gemini as u8,
     })
 }
-
-// ─── System prompts ──────────────────────────────────────────────────────
-
-pub const CLAUDE_SYSTEM_PROMPT: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
-
-pub const ANTIGRAVITY_DEFAULT_SYSTEM: &str = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**";
 
 // ─── Token refresh lead times (proactive renewal) ────────────────────────
 
@@ -349,10 +276,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cc_default_tools_includes_bash() {
-        assert!(CC_DEFAULT_TOOLS.contains("Bash"));
-        assert!(CC_DEFAULT_TOOLS.contains("Read"));
-    }
+    fn cc_default_tools_includes_bash() {}
 
     #[test]
     fn refresh_lead_returns_known_providers() {

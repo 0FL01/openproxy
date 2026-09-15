@@ -4,8 +4,6 @@
 //!
 //! Behaviour:
 //! - Always forces `stream: true` in the request body.
-//! - Neutralizes system prompts that identify a coding agent (9router
-//!   `AGENT_PATTERN` + `NEUTRAL_PROMPT`) so upstream does not reject them.
 //! - `reasoning_effort`: deletes `"none"`/`"off"` (and does not set
 //!   `reasoning_summary`); any other truthy effort sets `reasoning_summary:
 //!   "auto"`.
@@ -13,7 +11,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use regex::Regex;
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::Value;
 
@@ -23,40 +20,6 @@ use super::provider::{
     ProviderExecutionRequest, ProviderExecutionResponse, ProviderExecutor, ProviderExecutorError,
 };
 use super::{ClientPool, TransportKind, UpstreamResponse};
-
-/// Replacement system prompt when a system message reveals a coding agent.
-/// 9router codebuddy-cn.js NEUTRAL_PROMPT — verbatim.
-const NEUTRAL_PROMPT: &str =
-    "You are a helpful AI assistant that helps with software engineering tasks.";
-
-/// Patterns that identify a coding-agent system prompt. Ported verbatim from
-/// 9router codebuddy-cn.js AGENT_PATTERN (JS `/i` flag). `(?is)` adds
-/// case-insensitivity and multi-line `.` so alternates like `<agent-identity>`
-/// and `cc_entrypoint` match across newlines.
-static AGENT_PATTERN: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| {
-    Regex::new(
-        r"(?is)you are claude code|claude.?code.+official.+cli|anthropic.+official.+cli|anxthxropic.+official.+cli|you are (?:cursor|windsurf|cline|aider|continue|copilot|cody)|you are an? (?:ai )?(?:coding |code )?agent|cc_entrypoint\s*=\s*(?:cli|vscode|jetbrains|gui)|claude.?code.+issues|give feedback.+claude.?code|you are .{0,30}(?:powerful )?ai agent|orchestration capabilities|OhMyOpenCode|<agent-identity>|<Role>|<Behavior_Instructions>",
-    )
-    .expect("AGENT_PATTERN regex must compile")
-});
-
-/// Threshold (in characters) above which a system prompt is always replaced,
-/// matching 9router's `text.length > 2000` check.
-const SYSTEM_PROMPT_LENGTH_THRESHOLD: usize = 2000;
-
-/// Flatten a message's `content` (string or array of `{type:"text",text}`)
-/// into plain text; 9router's `flatten(message.content)`.
-fn flatten_content(content: &Value) -> String {
-    match content {
-        Value::String(s) => s.clone(),
-        Value::Array(items) => items
-            .iter()
-            .filter_map(|item| item.get("text").and_then(Value::as_str))
-            .collect::<Vec<_>>()
-            .join(""),
-        _ => String::new(),
-    }
-}
 
 /// Dedicated executor for the `codebuddy-cn` provider.
 #[derive(Clone)]
@@ -141,39 +104,7 @@ impl ProviderExecutor for CodeBuddyCNExecutor {
         // 1. Force stream=true always
         body["stream"] = Value::Bool(true);
 
-        // 2. Neutralize system prompts that identify a coding agent
-        //    (9router codebuddy-cn.js: replace when >2000 chars or the
-        //    AGENT_PATTERN matches, preserving the content shape).
-        if let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) {
-            for message in messages.iter_mut() {
-                if message.get("role").and_then(Value::as_str) != Some("system") {
-                    continue;
-                }
-                let Some(content) = message.get("content") else {
-                    continue;
-                };
-                let text = flatten_content(content);
-                if text.is_empty() {
-                    continue;
-                }
-                if text.len() > SYSTEM_PROMPT_LENGTH_THRESHOLD || AGENT_PATTERN.is_match(&text) {
-                    match content {
-                        Value::String(_) => {
-                            message["content"] = Value::String(NEUTRAL_PROMPT.to_string());
-                        }
-                        Value::Array(_) => {
-                            message["content"] = Value::Array(vec![serde_json::json!({
-                                "type": "text",
-                                "text": NEUTRAL_PROMPT
-                            })]);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-
-        // 3. reasoning_effort: "none"/"off" → delete (no summary); any other
+        // 2. reasoning_effort: "none"/"off" → delete (no summary); any other
         //    truthy effort → reasoning_summary="auto"
         match body
             .get("reasoning_effort")
@@ -265,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn test_neutralize_claude_code_system_prompt() {
+    fn test_preserves_client_system_prompt() {
         let executor = CodeBuddyCNExecutor::new(Arc::new(ClientPool::new()), None);
         let body = json!({
             "model": "claude-sonnet-4",
@@ -282,81 +213,8 @@ mod tests {
             &ProviderConnection::default(),
         );
         let messages = result["messages"].as_array().unwrap();
-        assert_eq!(
-            messages[0]["content"], NEUTRAL_PROMPT,
-            "system prompt identifying Claude Code must be neutralized"
-        );
+        assert_eq!(messages[0], body["messages"][0]);
         assert_eq!(messages[1]["content"], "Hello", "user message untouched");
-    }
-
-    #[test]
-    fn test_neutralize_preserves_array_shape() {
-        let executor = CodeBuddyCNExecutor::new(Arc::new(ClientPool::new()), None);
-        let body = json!({
-            "model": "claude-sonnet-4",
-            "messages": [
-                {
-                    "role": "system",
-                    "content": [
-                        {"type": "text", "text": "You are Cursor, an AI code editor."}
-                    ]
-                },
-                {"role": "user", "content": "Hi"}
-            ],
-            "stream": true
-        });
-        let result = executor.transform_request(
-            &body,
-            "claude-sonnet-4",
-            true,
-            &ProviderConnection::default(),
-        );
-        let messages = result["messages"].as_array().unwrap();
-        let content = &messages[0]["content"];
-        assert!(content.is_array(), "array content stays an array");
-        assert_eq!(content[0]["type"], "text");
-        assert_eq!(content[0]["text"], NEUTRAL_PROMPT);
-    }
-
-    #[test]
-    fn test_long_system_prompt_replaced() {
-        let executor = CodeBuddyCNExecutor::new(Arc::new(ClientPool::new()), None);
-        let long_prompt = "x".repeat(2500);
-        let body = json!({
-            "model": "claude-sonnet-4",
-            "messages": [{"role": "system", "content": long_prompt}],
-            "stream": true
-        });
-        let result = executor.transform_request(
-            &body,
-            "claude-sonnet-4",
-            true,
-            &ProviderConnection::default(),
-        );
-        assert_eq!(result["messages"][0]["content"], NEUTRAL_PROMPT);
-    }
-
-    #[test]
-    fn test_benign_system_prompt_untouched() {
-        let executor = CodeBuddyCNExecutor::new(Arc::new(ClientPool::new()), None);
-        let body = json!({
-            "model": "claude-sonnet-4",
-            "messages": [
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": "Hi"}
-            ],
-            "stream": true
-        });
-        let result = executor.transform_request(
-            &body,
-            "claude-sonnet-4",
-            true,
-            &ProviderConnection::default(),
-        );
-        assert_eq!(
-            result["messages"][0]["content"],
-            "You are a helpful assistant."
-        );
     }
 
     #[test]

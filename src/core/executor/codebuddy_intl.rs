@@ -6,10 +6,7 @@
 //! 1. Force `stream = true` (registry forceStream).
 //! 2. `reasoning_effort` "none"/"off" → delete; any other effort →
 //!    `reasoning_summary = "auto"`.
-//! 3. CodeBuddy upstream rejects the plain OpenAI shape with code 11101:
-//!    rebuild messages with a LEADING system prompt ("You are CodeBuddy
-//!    Code."), drop system/developer roles, and convert bare-string user
-//!    content into typed text blocks.
+//! 3. Converts bare-string user content into typed text blocks.
 //!
 //! Wire URL/headers come from the default.rs registry entry
 //! (https://www.codebuddy.ai/v2/chat/completions + IDE UA headers).
@@ -25,9 +22,6 @@ use super::{
     ProviderExecutorError,
 };
 use crate::types::{ProviderConnection, ProviderNode};
-
-/// JS codebuddy-intl.js:24 — injected leading system prompt.
-const INTL_SYSTEM_PROMPT: &str = "You are CodeBuddy Code.";
 
 pub struct CodeBuddyIntlExecutor {
     inner: DefaultExecutor,
@@ -138,19 +132,15 @@ impl CodeBuddyIntlExecutor {
             _ => {}
         }
 
-        // 3. Message reshape: leading system prompt, drop system/developer,
-        // typed text blocks for bare-string user content (11101 fix).
+        // 3. Convert bare-string user content to the provider's typed shape.
         let source = body
             .get("messages")
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        let mut messages = vec![json!({"role": "system", "content": INTL_SYSTEM_PROMPT})];
+        let mut messages = Vec::with_capacity(source.len());
         for message in source {
             let role = message.get("role").and_then(Value::as_str).unwrap_or("");
-            if role == "system" || role == "developer" {
-                continue;
-            }
             if role == "user"
                 && message
                     .get("content")
@@ -179,7 +169,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn intl_transform_leads_with_system_and_types_user_strings() {
+    fn intl_transform_preserves_instructions_and_types_user_strings() {
         let body = json!({
             "model": "glm-5",
             "stream": false,
@@ -194,15 +184,16 @@ mod tests {
         assert_eq!(out["stream"], true);
 
         let messages = out["messages"].as_array().unwrap();
-        // Leading injected system; system/developer dropped.
-        assert_eq!(messages.len(), 3);
+        assert_eq!(messages.len(), 4);
         assert_eq!(messages[0]["role"], "system");
-        assert_eq!(messages[0]["content"], "You are CodeBuddy Code.");
+        assert_eq!(messages[0]["content"], "you are claude code");
+        assert_eq!(messages[1]["role"], "developer");
+        assert_eq!(messages[1]["content"], "dev note");
         // Bare-string user content becomes a typed text block (11101 fix).
-        assert_eq!(messages[1]["content"][0]["type"], "text");
-        assert_eq!(messages[1]["content"][0]["text"], "plain string prompt");
+        assert_eq!(messages[2]["content"][0]["type"], "text");
+        assert_eq!(messages[2]["content"][0]["text"], "plain string prompt");
         // Assistant array content passes through untouched.
-        assert_eq!(messages[2]["role"], "assistant");
+        assert_eq!(messages[3]["role"], "assistant");
     }
 
     #[test]

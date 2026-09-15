@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-const CLAUDE_SYSTEM_PROMPT: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
 const DEFAULT_MAX_TOKENS: u32 = 64000;
 const DEFAULT_MIN_TOKENS: u32 = 32000;
 
@@ -619,10 +618,7 @@ pub fn openai_to_claude_request(
         }
     }
 
-    let mut result_system: Vec<ClaudeSystemBlock> = vec![ClaudeSystemBlock::Text {
-        text: CLAUDE_SYSTEM_PROMPT.to_string(),
-        cache_control: None,
-    }];
+    let mut result_system: Vec<ClaudeSystemBlock> = Vec::new();
 
     if !system_parts.is_empty() {
         let system_text = system_parts.join("\n");
@@ -782,10 +778,12 @@ pub fn openai_to_claude_request(
         "messages".into(),
         serde_json::to_value(&result_messages).unwrap(),
     );
-    result_obj.insert(
-        "system".into(),
-        serde_json::to_value(&result_system).unwrap(),
-    );
+    if !result_system.is_empty() {
+        result_obj.insert(
+            "system".into(),
+            serde_json::to_value(&result_system).unwrap(),
+        );
+    }
 
     if !result_tools.is_empty() {
         result_obj.insert("tools".into(), serde_json::to_value(&result_tools).unwrap());
@@ -837,34 +835,14 @@ pub fn openai_to_claude_request(
 
 /// OpenAi-to-Claude translator variant for Antigravity.
 ///
-/// Delegates to the regular `openai_to_claude_request` then strips
-/// the Claude Code system prompt from the system array, because
-/// Antigravity's own pipeline injects its own system prompt.
+/// Antigravity uses the regular Claude request representation.
 pub fn openai_to_claude_request_for_antigravity(
     model: &str,
     body: &mut Value,
     stream: bool,
     _credentials: Option<&Value>,
 ) -> bool {
-    let Some(body_obj) = body.as_object_mut() else {
-        return false;
-    };
-
-    // Delegate to the regular translator.
-    // After it returns, remove the CLAUDE_SYSTEM_PROMPT from the system array.
-    let result = openai_to_claude_request(model, body, stream, _credentials);
-
-    if let Some(system_arr) = body.get_mut("system").and_then(|v| v.as_array_mut()) {
-        system_arr.retain(|block| {
-            if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-                !text.contains("Claude Code")
-            } else {
-                true
-            }
-        });
-    }
-
-    result
+    openai_to_claude_request(model, body, stream, _credentials)
 }
 
 #[cfg(test)]
@@ -906,13 +884,8 @@ mod tests {
         openai_to_claude_request("claude-3", &mut body, false, None);
 
         let system = body.get("system").unwrap().as_array().unwrap();
-        assert!(!system.is_empty());
-        assert!(system[0]
-            .get("text")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .contains("Claude Code"));
+        assert_eq!(system.len(), 1);
+        assert_eq!(system[0]["text"], "You are helpful");
     }
 
     #[test]

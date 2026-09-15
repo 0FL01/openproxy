@@ -407,19 +407,11 @@ pub fn openai_to_kiro_request(
         }
     }
 
-    // Build system / volatile prefixes (9router openai-to-kiro + applyKiroSessionReplay).
-    // System-stable content goes into content_prefix (frozen on msg0); volatile
-    // current-time only goes into current_content_prefix (current turn only).
+    // Build protocol-required thinking prefixes for session replay.
     let mut system_prompt_parts: Vec<String> = Vec::new();
 
     // Check for -agentic suffix
     let is_agentic = model.ends_with("-agentic");
-    if is_agentic {
-        system_prompt_parts.push(
-            "[Agentic mode enabled: Use chunked file writes for large operations.]".to_string(),
-        );
-    }
-
     let upstream_model = if is_agentic {
         model.trim_end_matches("-agentic")
     } else {
@@ -440,14 +432,7 @@ pub fn openai_to_kiro_request(
     }
 
     let system_prompt = system_prompt_parts.join("\n\n");
-    let timestamp = chrono::Utc::now().to_rfc3339();
-    let current_time_context = format!("[Context: Current time is {timestamp}]");
-    let content_prefix = [system_prompt.as_str(), current_time_context.as_str()]
-        .iter()
-        .filter(|s| !s.is_empty())
-        .copied()
-        .collect::<Vec<_>>()
-        .join("\n\n");
+    let content_prefix = system_prompt.clone();
 
     // Resolve conversation-stable session identity (client header / body field,
     // or ephemeral one-shot for Kiro when no client id is present).
@@ -482,7 +467,6 @@ pub fn openai_to_kiro_request(
         upstream_model,
         &system_prompt,
         &content_prefix,
-        &current_time_context,
         &merged_history,
         &base_current,
     );

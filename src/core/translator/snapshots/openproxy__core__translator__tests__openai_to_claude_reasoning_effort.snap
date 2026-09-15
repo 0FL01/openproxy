@@ -1,6 +1,5 @@
 ---
 source: src/core/translator/tests.rs
-assertion_line: 255
 expression: result
 ---
 {
@@ -18,12 +17,6 @@ expression: result
   ],
   "model": "test-model",
   "stream": false,
-  "system": [
-    {
-      "text": "You are Claude Code, Anthropic's official CLI for Claude.",
-      "type": "text"
-    }
-  ],
   "thinking": {
     "budget_tokens": 24576,
     "type": "enabled"

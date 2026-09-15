@@ -124,15 +124,13 @@ fn maybe_run_cleanup() {
 /// - First turn for a `(connection_id, conversation_id)` pair freezes `msg0`
 ///   (the first history user message, or the current message when history is empty).
 /// - Later turns with the same model + system prompt replace the first history
-///   user message with the frozen `msg0` and only stamp volatile time onto the
-///   current turn via `current_content_prefix`.
+///   user message with the frozen `msg0`.
 pub fn apply_kiro_session_replay(
     conversation_id: Option<&str>,
     connection_id: Option<&str>,
     model_id: &str,
     system_prompt: &str,
     content_prefix: &str,
-    current_content_prefix: &str,
     history: &[Value],
     current_message: &Value,
 ) -> KiroSessionReplayResult {
@@ -169,11 +167,7 @@ pub fn apply_kiro_session_replay(
             ensure_history_model_ids(&mut base_history, model_id);
             return KiroSessionReplayResult {
                 history: base_history,
-                current_message: prefix_user_message(
-                    &base_current,
-                    current_content_prefix,
-                    model_id,
-                ),
+                current_message: prefix_user_message(&base_current, "", model_id),
                 replayed: true,
             };
         }
@@ -183,7 +177,7 @@ pub fn apply_kiro_session_replay(
     let (session_start, next_current) = if let Some(idx) = first_user_index {
         let session_start = prefix_user_message(&base_history[idx], content_prefix, model_id);
         base_history[idx] = session_start.clone();
-        let next_current = prefix_user_message(&base_current, current_content_prefix, model_id);
+        let next_current = prefix_user_message(&base_current, "", model_id);
         (session_start, next_current)
     } else {
         let session_start = prefix_user_message(&base_current, content_prefix, model_id);
@@ -250,8 +244,7 @@ mod tests {
             Some("conn-1"),
             model,
             "",
-            "[Context: Current time is T1]",
-            "[Context: Current time is T1]",
+            "prefix",
             &[],
             &first_current,
         );
@@ -263,7 +256,7 @@ mod tests {
         assert!(first.current_message["userInputMessage"]["content"]
             .as_str()
             .unwrap()
-            .contains("Current time is T1"));
+            .contains("prefix"));
 
         // Second turn: history has the frozen first message as prior user turn.
         let history = vec![first.current_message.clone()];
@@ -273,8 +266,7 @@ mod tests {
             Some("conn-1"),
             model,
             "",
-            "[Context: Current time is T1]",
-            "[Context: Current time is T2]",
+            "prefix",
             &history,
             &second_current,
         );
@@ -286,10 +278,8 @@ mod tests {
         let cur = second.current_message["userInputMessage"]["content"]
             .as_str()
             .unwrap();
-        assert!(cur.contains("Current time is T2"));
         assert!(cur.contains("second turn"));
-        // Volatile time for turn 1 must not leak into current turn content.
-        assert!(!cur.contains("Current time is T1"));
+        assert!(!cur.contains("prefix"));
     }
 
     #[test]
@@ -303,7 +293,6 @@ mod tests {
             model,
             "",
             "prefix",
-            "cur",
             &[],
             &user_msg("hi", model),
         );

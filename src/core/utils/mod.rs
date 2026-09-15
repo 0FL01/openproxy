@@ -3,7 +3,6 @@
 //! that depend on Node-specific abstractions are reimplemented inline by
 //! the relevant executor instead.
 
-pub mod claude_cloaking;
 pub mod claude_header_cache;
 pub mod client_detector;
 pub mod cursor_checksum;

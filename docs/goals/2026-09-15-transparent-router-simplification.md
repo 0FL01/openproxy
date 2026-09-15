@@ -27,8 +27,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: “Обрезание истории и серверную политику промптов — удалить” and “Прокси меняет модель и необходимое представление протокола. Содержание задачи и поведение агента определяет клиент.”
   - Acceptance: Combo history stripping/capacity adaptation, payload rules/system-prompt rewriting, guardrail prompt-injection/PII rewriting, synthetic bypass/naming replies, and provider thinking overrides are absent from chat handling.
   - Primary evidence: Repository search and focused chat/combo tests proving requests still reach normal dispatch.
-  - Status: in_progress
-  - Evidence: Payload/system-prompt rules, guardrails, synthetic bypass/naming responses, provider thinking overrides, capacity augmentation, and history stripping are absent. Explicit reasoning suffix handling remains. A closure search later found executor-specific Antigravity competitive-prompt stripping and reachable Claude cloaking mutations that still need removal.
+  - Status: verified
+  - Evidence: Payload/system-prompt rules, guardrails, synthetic bypass/naming responses, provider thinking overrides, capacity augmentation, history stripping, Claude cloaking, executor-owned branding/neutralization prompts, Antigravity competitive-prompt rewriting, and proxy-authored Kiro time/agentic prefixes are absent. Client system/developer messages, tool declarations, and explicit reasoning translation remain. Clippy and all 1,343 library tests passed.
 
 - R3: Remove Codex behavioral defaults but retain required Codex wire compatibility.
   - Source: “выкинул ... DEFAULT_CODEX_INSTRUCTIONS” and separate necessary wire constraints from the default `reasoning.effort = "low"` policy.
@@ -107,17 +107,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R2
-- Smallest next action: Remove the remaining reachable Antigravity competitive-system-prompt rewrite and Claude cloaking content/tool mutation while preserving protocol-required request translation.
-- Expected evidence: Focused executor/chat tests show client prompts and tool declarations pass without server-authored behavioral content.
-- Stop or replan if: The behavior is wire-required rather than server-owned prompt/tool policy.
+- Closes: R9
+- Smallest next action: Run the final closure check, mark this goal complete, commit it, push `main`, rebuild production with Docker Compose, and verify `/health`.
+- Expected evidence: Clean repository gate and goal closure, successful push/deploy output, healthy Compose service, and HTTP 200 health response.
+- Stop or replan if: A required gate fails from the current changes, push is rejected, or deployment cannot preserve the production volume.
 
 ## Current State
 
-- Resolved: R1 and R3-R8. R2 is reopened for confirmed executor-specific policy remnants.
-- Last relevant evidence: MITM core/API/CLI/state/certificate/dashboard surfaces and the special DNS resolver are absent; dashboard build, Rust check/clippy, 1,358 library tests, and 16 focused CLI/database tests passed.
+- Resolved: R1-R8.
+- Last relevant evidence: Server-owned executor/translator prompts and Claude cloaking are absent; client instructions, tools, images, prompt caching, and explicit reasoning translation remain. Rust format/diff checks, clippy, and all 1,343 library tests passed.
 - Blocker: None.
-- Next: Commit the MITM removal, then remove the confirmed remaining R2 policy mutations in a separate commit.
+- Next: Commit the final R2 policy removal, then perform R9 closure, push, and production deployment.
 
 ## Material Decisions
 
@@ -269,6 +269,8 @@ Tool calling при этом остаётся. Прокси должен пер�
 
 ## Checkpoint History
 
+- 2026-09-16: R2 follow-up passed. Removed Claude OAuth prompt/tool cloaking, Antigravity competitive-brand rewriting and default prompt injection, OpenAI-to-Claude default branding, CodeBuddy prompt replacement, MiMo marker injection, Kiro current-time/agentic prefixes, and stale Codex prompt files while retaining wire translation and explicit reasoning. Format/diff checks, clippy, and all 1,343 library tests passed. Next is R9 closure/push/deploy.
+- 2026-09-16: R8 passed. Removed MITM certificates/listener/capture/hosts infrastructure, API/CLI/state/settings/dashboard surfaces, certificate dependencies, and the MITM-specific DNS resolver while retaining SSRF private-address checks. Dashboard build, Rust check/clippy, 1,358 library tests, and 16 focused CLI/database tests passed. Next is the deferred R2 policy follow-up.
 - 2026-09-16: R7 passed. Removed built-in MCP bridge/server, A2A lifecycle and state, evaluation library, related routes and CoWork MCP management UI/configuration, plus tool-declaration deduplication policy. CoWork endpoint/model configuration and protocol-level tool translation remain. Dashboard build, clippy, 1,397 library tests, 328 translator tests, and 4 CoWork API tests passed. Next is R8 MITM/DNS removal.
 - 2026-09-16: R6 passed. Removed standalone media/STT/embeddings/image/audio/video/search implementations, routes, CLI, provider/dashboard configuration, and tests; moved retained SSE-to-JSON chat handling under `core::chat`. Chat image input translation and Codex image prefetch remain. Dashboard build, clippy, 1,434 library tests, focused multimodal tests, affected integration tests, and OpenCode model tests passed. Next is R7 MCP/A2A/evaluation removal.
 - 2026-09-15: R4 partial — removed internal request usage history, live aggregation, usage dashboard/CLI/export, and budget accounting; retained a 30-day metadata-only request journal and provider-native quota fetching. Dashboard build, clippy, 1,657 library tests, request-log integration, and 12 chat integration tests passed. Next: remove pricing and its combo ordering consumers.
