@@ -263,8 +263,8 @@ async fn models_custom_delete_query_removes_matching_model_only() {
             db.custom_models.push(CustomModel {
                 provider_alias: "oa".into(),
                 id: "gpt-custom".into(),
-                r#type: "embedding".into(),
-                name: Some("Embedding".into()),
+                r#type: "chat".into(),
+                name: Some("Chat".into()),
                 extra: BTreeMap::new(),
             });
         })
@@ -287,5 +287,5 @@ async fn models_custom_delete_query_removes_matching_model_only() {
 
     let snapshot = state.db.snapshot();
     assert_eq!(snapshot.custom_models.len(), 1);
-    assert_eq!(snapshot.custom_models[0].r#type, "embedding");
+    assert_eq!(snapshot.custom_models[0].r#type, "chat");
 }

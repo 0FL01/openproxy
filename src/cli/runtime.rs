@@ -198,31 +198,6 @@ impl Runtime {
         decode_json(res).await
     }
 
-    /// POST a JSON body and return the raw response bytes + content-type.
-    /// Used by `media tts speak`, which writes audio bytes to stdout.
-    pub async fn post_json_bytes(
-        &self,
-        path: &str,
-        body: &Value,
-    ) -> Result<(Bytes, Option<String>), RuntimeError> {
-        let res = self
-            .request(Method::POST, path)
-            .json(body)
-            .send()
-            .await
-            .map_err(map_err)?;
-        if !res.status().is_success() {
-            return Err(map_http_status(res).await);
-        }
-        let ct = res
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string);
-        let bytes = res.bytes().await.map_err(map_err)?;
-        Ok((bytes, ct))
-    }
-
     /// Open an SSE / NDJSON stream against `path`. Each `data: ...` chunk is
     /// yielded as raw bytes; comment / ping lines (`: ...`) are skipped.
     /// The stream runs until the server closes or the caller drops it.

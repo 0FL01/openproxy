@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
@@ -28,10 +28,6 @@ static UPSTREAM_CONNECTION_RE: Lazy<Regex> =
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/v1/models", get(list_default_models).options(cors_options))
-        .route(
-            "/v1/models/{kind}",
-            get(list_models_by_kind).options(cors_options),
-        )
         .route("/v1/models/info", get(models_info).options(cors_options))
 }
 
@@ -41,36 +37,6 @@ pub async fn cors_options() -> Response {
 
 pub async fn list_default_models(State(state): State<AppState>, headers: HeaderMap) -> Response {
     list_models_for_kinds(state, headers, &[LLM_KIND]).await
-}
-
-pub async fn list_models_by_kind(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(kind): Path<String>,
-) -> Response {
-    let kind_filter = match kind.as_str() {
-        "image" => vec!["image"],
-        "tts" => vec!["tts"],
-        "stt" => vec!["stt"],
-        "embedding" => vec!["embedding"],
-        "image-to-text" => vec!["imageToText"],
-        "web" => vec!["webSearch", "webFetch"],
-        _ => {
-            return with_cors_json(
-                StatusCode::NOT_FOUND,
-                json!({
-                    "error": {
-                        "message": format!(
-                            "Unknown model kind: {kind}. Supported: image, tts, stt, embedding, image-to-text, web"
-                        ),
-                        "type": "invalid_request_error"
-                    }
-                }),
-            );
-        }
-    };
-
-    list_models_for_kinds(state, headers, &kind_filter).await
 }
 
 async fn list_models_for_kinds(
@@ -344,56 +310,6 @@ async fn build_models_list(
                     ctx_len,
                     None,
                 ));
-            }
-
-            if let Some(provider_info) = catalog.provider_info(provider_id) {
-                if kind_filter.contains(&"tts") {
-                    for model_id in &provider_info.tts_models {
-                        models.push(model_card(
-                            format!("{output_alias}/{model_id}"),
-                            output_alias.clone(),
-                            created,
-                            None,
-                            None,
-                            None,
-                        ));
-                    }
-                }
-
-                if kind_filter.contains(&"embedding") {
-                    for model_id in &provider_info.embedding_models {
-                        models.push(model_card(
-                            format!("{output_alias}/{model_id}"),
-                            output_alias.clone(),
-                            created,
-                            None,
-                            None,
-                            None,
-                        ));
-                    }
-                }
-
-                if kind_filter.contains(&"webSearch") && provider_info.has_search {
-                    models.push(model_card(
-                        format!("{output_alias}/search"),
-                        output_alias.clone(),
-                        created,
-                        Some("webSearch".to_string()),
-                        None,
-                        None,
-                    ));
-                }
-
-                if kind_filter.contains(&"webFetch") && provider_info.has_fetch {
-                    models.push(model_card(
-                        format!("{output_alias}/fetch"),
-                        output_alias.clone(),
-                        created,
-                        Some("webFetch".to_string()),
-                        None,
-                        None,
-                    ));
-                }
             }
         }
     }
@@ -1136,7 +1052,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn codex_dynamic_llm_and_static_image_are_kind_aware() {
+    async fn codex_dynamic_llm_preserves_image_input_metadata() {
         let connection = ProviderConnection {
             id: "conn-codex".into(),
             provider: "codex".into(),
@@ -1204,14 +1120,6 @@ mod tests {
         assert!(!llm
             .iter()
             .any(|model| model.id == "custom-cx/gpt-5.5-image"));
-
-        let image = build_models_list(&state, &snapshot, &["image"]).await;
-        assert!(image
-            .iter()
-            .any(|model| model.id == "custom-cx/gpt-5.5-image"));
-        assert!(!image
-            .iter()
-            .any(|model| model.id == "custom-cx/gpt-5.6-luna"));
     }
 
     #[tokio::test]

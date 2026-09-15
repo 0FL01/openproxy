@@ -12,6 +12,8 @@
 //!   6. Translate response (target -> OpenAI intermediate -> source)
 //!   7. Stream or return JSON
 
+pub mod stream_to_json;
+
 use serde_json::Value;
 
 use crate::core::model::catalog::provider_catalog;

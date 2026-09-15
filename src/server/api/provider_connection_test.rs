@@ -700,37 +700,6 @@ async fn test_api_key_connection(
             .await
         }
         "ollama-local" => test_ollama_local_connection(state, connection, effective_proxy).await,
-        "deepgram" => {
-            simple_get_token_test(
-                state,
-                connection,
-                effective_proxy,
-                "https://api.deepgram.com/v1/projects",
-                "Token",
-                "Invalid API key",
-            )
-            .await
-        }
-        "assemblyai" => {
-            simple_get_bearer_test(
-                state,
-                connection,
-                effective_proxy,
-                "https://api.assemblyai.com/v1/account",
-                "Invalid API key",
-            )
-            .await
-        }
-        "nanobanana" => {
-            simple_get_bearer_test(
-                state,
-                connection,
-                effective_proxy,
-                "https://api.nanobananaapi.ai/v1/models",
-                "Invalid API key",
-            )
-            .await
-        }
         "chutes" => {
             simple_get_bearer_test(
                 state,

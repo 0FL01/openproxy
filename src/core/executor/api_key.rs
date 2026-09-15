@@ -262,10 +262,6 @@ static API_KEY_PROVIDERS: Lazy<BTreeMap<&'static str, (&'static str, &'static st
             ("xai", ("https://api.x.ai/v1", "Authorization")),
             ("ai21", ("https://api.ai21.com/v1", "Authorization")),
             (
-                "stability-ai",
-                ("https://api.stability.ai/v1", "Authorization"),
-            ),
-            (
                 "replicate",
                 ("https://api.replicate.com/v1", "Authorization"),
             ),
@@ -300,10 +296,6 @@ static API_KEY_PROVIDERS: Lazy<BTreeMap<&'static str, (&'static str, &'static st
                 ("https://api.hyperbolic.xyz/v1", "Authorization"),
             ),
             ("chutes", ("https://llm.chutes.ai/v1", "Authorization")),
-            (
-                "nanobanana",
-                ("https://api.nanobananaapi.ai/v1", "Authorization"),
-            ),
             (
                 "nvidia",
                 ("https://integrate.api.nvidia.com/v1", "Authorization"),

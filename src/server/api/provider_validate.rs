@@ -30,14 +30,7 @@ async fn validate_provider(
     let api_key = req.api_key.as_deref().unwrap_or("").trim().to_string();
 
     // No-auth providers
-    let no_auth = [
-        "edge-tts",
-        "local-device",
-        "sdwebui",
-        "comfyui",
-        "ollama-local",
-        "opencode-zen",
-    ];
+    let no_auth = ["ollama-local", "opencode-zen"];
     if no_auth.contains(&provider.as_str()) {
         return Json(json!({ "valid": true })).into_response();
     }
@@ -93,8 +86,6 @@ async fn validate_provider(
             };
             validate_bearer(&client, &format!("{base}/models"), &api_key).await
         }
-        "nanobanana" => validate_bearer(&client, "https://api.nanobananaapi.ai/v1/models", &api_key).await,
-        "assemblyai" => validate_bearer(&client, "https://api.assemblyai.com/v1/account", &api_key).await,
         "ollama" => validate_bearer(&client, "https://ollama.com/api/tags", &api_key).await,
         "aimlapi" => validate_bearer(&client, "https://api.aimlapi.com/v1/models", &api_key).await,
         "modal" => validate_bearer(&client, "https://api.modal.com/v1/models", &api_key).await,
@@ -163,13 +154,6 @@ async fn validate_provider(
                 .send().await
             {
                 Ok(resp) => (resp.status().as_u16() != 401, None),
-                Err(e) => (false, Some(e.to_string())),
-            }
-        }
-
-        "deepgram" => {
-            match client.get("https://api.deepgram.com/v1/projects").header("Authorization", format!("Token {api_key}")).send().await {
-                Ok(resp) => (resp.status().is_success(), None),
                 Err(e) => (false, Some(e.to_string())),
             }
         }
@@ -360,7 +344,6 @@ fn is_openai_compatible(provider: &str) -> bool {
     matches!(
         provider,
         "custom-openai"
-            | "custom-embedding"
             | "volcengine-ark"
             | "byteplus"
             | "glm-cn"

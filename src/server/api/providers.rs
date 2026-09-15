@@ -201,7 +201,6 @@ pub struct ValidateNodeResponse {
     pub valid: bool,
     pub error: Option<String>,
     pub method: Option<String>,
-    pub dimensions: Option<u32>,
 }
 
 async fn validate_provider_node(
@@ -218,100 +217,60 @@ async fn validate_provider_node(
     let node_type = req.r#type.as_deref().unwrap_or("openai-compatible");
     let model_id = req.model_id.as_deref();
 
-    // Custom embedding validation
-    if node_type == "custom-embedding" {
-        if model_id.is_none() || model_id.unwrap().trim().is_empty() {
-            return Json(ValidateNodeResponse {
-                valid: false,
-                error: Some("Model ID required for embedding validation".to_string()),
-                method: None,
-                dimensions: None,
-            })
-            .into_response();
-        }
+    // OpenAI compatible or Anthropic compatible
+    let is_anthropic = node_type == "anthropic-compatible";
 
-        let embed_url = format!("{}/embeddings", base_url);
+    let models_url = if is_anthropic {
+        // Strip /messages suffix if present
+        let base = base_url.trim_end_matches("/messages");
+        format!("{}/models", base)
+    } else {
+        format!("{}/models", base_url)
+    };
 
-        match test_url(&embed_url, api_key, Some("embedding"), model_id).await {
-            Ok(_) => {
-                // Try to get dimensions
-                let dims = None; // Would need to parse response body
+    match test_url(
+        &models_url,
+        api_key,
+        if is_anthropic {
+            Some("anthropic")
+        } else {
+            None
+        },
+        model_id,
+    )
+    .await
+    {
+        Ok(_) => Json(ValidateNodeResponse {
+            valid: true,
+            error: None,
+            method: Some("models".to_string()),
+        })
+        .into_response(),
+        Err(_) => {
+            // Fallback to chat endpoint if model_id provided
+            if model_id.is_some() {
+                let chat_url = format!("{}/chat/completions", base_url);
+                match test_chat_url(&chat_url, api_key, model_id, is_anthropic).await {
+                    Ok(_) => Json(ValidateNodeResponse {
+                        valid: true,
+                        error: None,
+                        method: Some("chat".to_string()),
+                    })
+                    .into_response(),
+                    Err(e) => Json(ValidateNodeResponse {
+                        valid: false,
+                        error: Some(e),
+                        method: Some("chat".to_string()),
+                    })
+                    .into_response(),
+                }
+            } else {
                 Json(ValidateNodeResponse {
-                    valid: true,
-                    error: None,
-                    method: Some("embeddings".to_string()),
-                    dimensions: dims,
+                    valid: false,
+                    error: Some("Models endpoint not available".to_string()),
+                    method: None,
                 })
                 .into_response()
-            }
-            Err(e) => Json(ValidateNodeResponse {
-                valid: false,
-                error: Some(e),
-                method: Some("embeddings".to_string()),
-                dimensions: None,
-            })
-            .into_response(),
-        }
-    } else {
-        // OpenAI compatible or Anthropic compatible
-        let is_anthropic = node_type == "anthropic-compatible";
-
-        let models_url = if is_anthropic {
-            // Strip /messages suffix if present
-            let base = base_url.trim_end_matches("/messages");
-            format!("{}/models", base)
-        } else {
-            format!("{}/models", base_url)
-        };
-
-        match test_url(
-            &models_url,
-            api_key,
-            if is_anthropic {
-                Some("anthropic")
-            } else {
-                None
-            },
-            model_id,
-        )
-        .await
-        {
-            Ok(_) => Json(ValidateNodeResponse {
-                valid: true,
-                error: None,
-                method: Some("models".to_string()),
-                dimensions: None,
-            })
-            .into_response(),
-            Err(_) => {
-                // Fallback to chat endpoint if model_id provided
-                if model_id.is_some() {
-                    let chat_url = format!("{}/chat/completions", base_url);
-                    match test_chat_url(&chat_url, api_key, model_id, is_anthropic).await {
-                        Ok(_) => Json(ValidateNodeResponse {
-                            valid: true,
-                            error: None,
-                            method: Some("chat".to_string()),
-                            dimensions: None,
-                        })
-                        .into_response(),
-                        Err(e) => Json(ValidateNodeResponse {
-                            valid: false,
-                            error: Some(e),
-                            method: Some("chat".to_string()),
-                            dimensions: None,
-                        })
-                        .into_response(),
-                    }
-                } else {
-                    Json(ValidateNodeResponse {
-                        valid: false,
-                        error: Some("Models endpoint not available".to_string()),
-                        method: None,
-                        dimensions: None,
-                    })
-                    .into_response()
-                }
             }
         }
     }
@@ -325,7 +284,6 @@ async fn validate_provider_node(
 #[serde(rename_all = "camelCase")]
 pub struct TestModelRequest {
     model: Option<String>,
-    kind: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -366,32 +324,16 @@ async fn test_model(
         )
             .into_response();
     };
-    let kind = req.kind.as_deref().unwrap_or("chat");
-
-    // Route to appropriate internal endpoint
-    let internal_path = if kind == "embedding" {
-        "/v1/embeddings"
-    } else {
-        "/v1/chat/completions"
-    };
-
-    let body = if kind == "embedding" {
-        serde_json::json!({
-            "model": model,
-            "input": "test"
-        })
-    } else {
-        serde_json::json!({
-            "model": model,
-            "max_tokens": 1,
-            "stream": false,
-            "messages": [{ "role": "user", "content": "hi" }]
-        })
-    };
+    let body = serde_json::json!({
+        "model": model,
+        "max_tokens": 1,
+        "stream": false,
+        "messages": [{ "role": "user", "content": "hi" }]
+    });
 
     let base_url = internal_base_url(&headers);
     let client = reqwest::Client::new();
-    let url = format!("{}{}", base_url, internal_path);
+    let url = format!("{base_url}/v1/chat/completions");
 
     let start = Instant::now();
 
@@ -434,66 +376,33 @@ async fn test_model(
             let parsed: Option<Value> = serde_json::from_str(&raw_text).ok();
 
             if !ok_status {
-                let detail = if kind == "embedding" {
-                    parsed
-                        .as_ref()
-                        .and_then(|value| value.get("error"))
-                        .and_then(|value| {
-                            value
-                                .get("message")
-                                .and_then(Value::as_str)
-                                .or_else(|| value.as_str())
-                        })
-                        .or_else(|| (!raw_text.is_empty()).then_some(raw_text.as_str()))
-                } else {
-                    parsed
-                        .as_ref()
-                        .and_then(|value| value.get("error"))
-                        .and_then(|value| {
-                            value
-                                .get("message")
-                                .and_then(Value::as_str)
-                                .or_else(|| value.as_str())
-                        })
-                        .or_else(|| {
-                            parsed
-                                .as_ref()
-                                .and_then(|value| value.get("msg"))
-                                .and_then(Value::as_str)
-                        })
-                        .or_else(|| {
-                            parsed
-                                .as_ref()
-                                .and_then(|value| value.get("message"))
-                                .and_then(Value::as_str)
-                        })
-                        .or_else(|| (!raw_text.is_empty()).then_some(raw_text.as_str()))
-                };
+                let detail = parsed
+                    .as_ref()
+                    .and_then(|value| value.get("error"))
+                    .and_then(|value| {
+                        value
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .or_else(|| value.as_str())
+                    })
+                    .or_else(|| {
+                        parsed
+                            .as_ref()
+                            .and_then(|value| value.get("msg"))
+                            .and_then(Value::as_str)
+                    })
+                    .or_else(|| {
+                        parsed
+                            .as_ref()
+                            .and_then(|value| value.get("message"))
+                            .and_then(Value::as_str)
+                    })
+                    .or_else(|| (!raw_text.is_empty()).then_some(raw_text.as_str()));
 
                 return Json(TestModelResponse {
                     ok: false,
                     latency_ms: Some(latency_ms),
                     error: Some(format_test_model_http_error(status, detail)),
-                    status: Some(status),
-                })
-                .into_response();
-            }
-
-            if kind == "embedding" {
-                let has_embedding = parsed
-                    .as_ref()
-                    .and_then(|value| value.get("data"))
-                    .and_then(Value::as_array)
-                    .and_then(|data| data.first())
-                    .and_then(|item| item.get("embedding"))
-                    .and_then(Value::as_array)
-                    .is_some();
-
-                return Json(TestModelResponse {
-                    ok: has_embedding,
-                    latency_ms: Some(latency_ms),
-                    error: (!has_embedding)
-                        .then(|| "Provider returned no embedding data".to_string()),
                     status: Some(status),
                 })
                 .into_response();

@@ -339,10 +339,8 @@ pub(super) fn supports_models_discovery(provider: &str) -> bool {
                 | "siliconflow"
                 | "hyperbolic"
                 | "ollama"
-                | "nanobanana"
                 | "chutes"
                 | "nvidia"
-                | "assemblyai"
                 | "xiaomi-mimo"
                 | "xiaomi-tokenplan"
                 | "aimlapi"
@@ -583,13 +581,6 @@ async fn fetch_provider_models_response(
             .await
         }
         "ollama" => fetch_ollama_cloud_models(connection).await,
-        "nanobanana" => {
-            fetch_first_party_openai_style_models(
-                connection,
-                "https://api.nanobananaapi.ai/v1/models",
-            )
-            .await
-        }
         "chutes" => {
             fetch_first_party_openai_style_models(connection, "https://llm.chutes.ai/v1/models")
                 .await
@@ -598,13 +589,6 @@ async fn fetch_provider_models_response(
             fetch_first_party_openai_style_models(
                 connection,
                 "https://integrate.api.nvidia.com/v1/models",
-            )
-            .await
-        }
-        "assemblyai" => {
-            fetch_first_party_openai_style_models(
-                connection,
-                "https://api.assemblyai.com/v1/models",
             )
             .await
         }

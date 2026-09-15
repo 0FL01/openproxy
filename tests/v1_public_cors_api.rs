@@ -40,10 +40,6 @@ async fn public_v1_endpoints_expose_cors_preflight() {
         // JS OPTIONS handlers use `new Response(null, {headers})` — the
         // default status is 200, not 204 (v1/chat/completions/route.js:19-26).
         ("/v1/chat/completions", "GET, POST, OPTIONS", StatusCode::OK),
-        ("/v1/audio/speech", "POST, OPTIONS", StatusCode::OK),
-        ("/v1/embeddings", "POST, OPTIONS", StatusCode::OK),
-        ("/v1/images/generations", "POST, OPTIONS", StatusCode::OK),
-        ("/v1/search", "POST, OPTIONS", StatusCode::OK),
         ("/v1/web/fetch", "POST, OPTIONS", StatusCode::OK),
     ] {
         let response = app
@@ -85,13 +81,7 @@ async fn public_v1_endpoints_expose_cors_preflight() {
 async fn missing_model_errors_keep_cors_headers_on_public_v1_routes() {
     let app = openproxy::build_app(seeded_state().await);
 
-    for path in [
-        "/v1/chat/completions",
-        "/v1/audio/speech",
-        "/v1/embeddings",
-        "/v1/images/generations",
-        "/v1/search",
-    ] {
+    for path in ["/v1/chat/completions"] {
         let response = app
             .clone()
             .oneshot(

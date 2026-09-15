@@ -497,7 +497,7 @@ async fn chat_completions_impl(
                     combo_plan.passthrough =
                         is_native_passthrough(client_tool_for_combo, &combo_provider_str);
                     // Accept header not available inside combo closure — use body only
-                    apply_stream_plan(&mut combo_plan, &body, None, client_tool_for_combo, None);
+                    apply_stream_plan(&mut combo_plan, &body, None, client_tool_for_combo);
                     let plan_for_combo = combo_plan.clone();
                     async move {
                         execute_single_model(
@@ -542,13 +542,7 @@ async fn chat_completions_impl(
                 &resolved.model,
             );
             plan.passthrough = is_native_passthrough(client_tool, &plan.provider);
-            apply_stream_plan(
-                &mut plan,
-                &body,
-                accept_header.as_deref(),
-                client_tool,
-                None,
-            );
+            apply_stream_plan(&mut plan, &body, accept_header.as_deref(), client_tool);
             match execute_single_model(
                 &state,
                 &body,
@@ -627,17 +621,14 @@ fn apply_stream_plan(
     body: &Value,
     accept: Option<&str>,
     client_tool: Option<ClientTool>,
-    model_type: Option<&str>,
 ) {
     let body_stream = body.get("stream").and_then(Value::as_bool);
     let sp = resolve_stream_flags(
         body_stream,
         accept,
         &plan.provider,
-        &plan.model,
         plan.source_format,
         client_tool,
-        model_type,
     );
     plan.stream = sp.stream;
     plan.sse_to_json = sp.sse_to_json;
@@ -891,20 +882,6 @@ async fn execute_single_model(
         crate::core::translator::request::claude_format::anchor_claude_cache(&mut body);
     }
 
-    // 8. TTS models: strip tool messages + tools (9router chatCore.js:185-189)
-    let model_lower = plan.model.to_lowercase();
-    if model_lower.contains("tts")
-        || model_lower.contains("speech")
-        || model_lower.starts_with("tts-")
-    {
-        if let Some(msgs) = body.get_mut("messages").and_then(|m| m.as_array_mut()) {
-            msgs.retain(|m| m.get("role").and_then(|r| r.as_str()) != Some("tool"));
-        }
-        if let Some(obj) = body.as_object_mut() {
-            obj.remove("tools");
-        }
-    }
-
     // Sync stream flag onto body for executors that read body.stream
     if let Some(obj) = body.as_object_mut() {
         obj.insert("stream".into(), Value::Bool(plan.stream));
@@ -1144,7 +1121,7 @@ async fn forward_with_provider_fallback(
         }
 
         // Stream flag already resolved on plan via resolve_stream_flags
-        // (DeepSeek-TUI, forceStream, Accept, imageGen — 9router parity).
+        // (DeepSeek-TUI, forceStream, and Accept preference).
         let stream = plan.stream;
         if let Some(obj) = request_body.as_object_mut() {
             obj.insert("stream".into(), Value::Bool(stream));
@@ -2220,8 +2197,7 @@ fn select_connection_with_supporters(
 
     if candidates.is_empty() {
         // No stored connection. Inject a virtual one for noAuth free providers
-        // (matches 9router's getProviderCredentials behavior). Lets OpenCode Free,
-        // edge-tts, google-tts, etc. route requests without manual setup.
+        // (matches 9router's getProviderCredentials behavior).
         if is_no_auth_provider(provider) && !excluded.contains("noauth") {
             return Some(virtual_no_auth_connection(provider));
         }
@@ -2307,16 +2283,7 @@ fn select_connection_with_supporters(
 fn is_no_auth_provider(provider: &str) -> bool {
     matches!(
         provider,
-        "opencode"
-            | "opencode-zen"
-            | "edge-tts"
-            | "google-tts"
-            | "local-device"
-            | "ollama-local"
-            | "sdwebui"
-            | "comfyui"
-            | "grok-web"
-            | "perplexity-web"
+        "opencode" | "opencode-zen" | "ollama-local" | "grok-web" | "perplexity-web"
     )
 }
 
@@ -2540,20 +2507,19 @@ async fn proxy_sse_to_json_response(
     let status = response.status();
     let (body_bytes, body_complete) = collect_upstream_response_bytes(response).await;
 
-    let json_body =
-        crate::core::media::responses::stream_to_json::sse_stream_to_json(&body_bytes, Some(model))
-            .unwrap_or_else(|| {
-                // Fallback: try parse as JSON already, else wrap error
-                serde_json::from_slice(&body_bytes).unwrap_or_else(|_| {
-                    json!({
-                        "error": {
-                            "message": "Failed to convert forced SSE stream to JSON",
-                            "type": "server_error",
-                            "code": "sse_to_json_failed"
-                        }
-                    })
+    let json_body = crate::core::chat::stream_to_json::sse_stream_to_json(&body_bytes, Some(model))
+        .unwrap_or_else(|| {
+            // Fallback: try parse as JSON already, else wrap error
+            serde_json::from_slice(&body_bytes).unwrap_or_else(|_| {
+                json!({
+                    "error": {
+                        "message": "Failed to convert forced SSE stream to JSON",
+                        "type": "server_error",
+                        "code": "sse_to_json_failed"
+                    }
                 })
-            });
+            })
+        });
 
     let out = Bytes::from(serde_json::to_vec(&json_body).unwrap_or_default());
 

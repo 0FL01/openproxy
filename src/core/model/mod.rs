@@ -23,7 +23,6 @@ static ALIAS_TO_PROVIDER_ID: Lazy<HashMap<&'static str, &'static str>> = Lazy::n
         ("cl", "cline"),
         ("oc", "opencode"),
         ("ocg", "opencode-go"),
-        ("el", "elevenlabs"),
         ("openai", "openai"),
         ("anthropic", "anthropic"),
         ("gemini", "gemini"),
@@ -48,12 +47,6 @@ static ALIAS_TO_PROVIDER_ID: Lazy<HashMap<&'static str, &'static str>> = Lazy::n
         ("siliconflow", "siliconflow"),
         ("hyp", "hyperbolic"),
         ("hyperbolic", "hyperbolic"),
-        ("dg", "deepgram"),
-        ("deepgram", "deepgram"),
-        ("aai", "assemblyai"),
-        ("assemblyai", "assemblyai"),
-        ("nb", "nanobanana"),
-        ("nanobanana", "nanobanana"),
         ("ch", "chutes"),
         ("chutes", "chutes"),
         ("ark", "volcengine-ark"),
@@ -232,11 +225,7 @@ pub fn get_model_info(model_str: &str, db: &AppDb) -> ResolvedModel {
             parsed.model.clone(),
         ) {
             if provider == provider_alias {
-                for node_type in [
-                    "openai-compatible",
-                    "anthropic-compatible",
-                    "custom-embedding",
-                ] {
+                for node_type in ["openai-compatible", "anthropic-compatible"] {
                     if let Some(node) = db.provider_nodes.iter().find(|node| {
                         node.r#type == node_type
                             && node.prefix.as_deref() == Some(provider_alias.as_str())

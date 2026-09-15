@@ -62,7 +62,7 @@ export default function CombosPage() {
       const combosData = await combosRes.json();
       const providersData = await providersRes.json();
       
-      // Only LLM combos here — webSearch/webFetch combos belong to media-providers/web
+      // Only LLM fallback combos are shown on this page.
       if (combosRes.ok) setCombos((combosData.combos || []).filter(c => !c.kind || c.kind === "llm"));
       if (providersRes.ok) {
         setActiveProviders(providersData.connections || []);
@@ -548,10 +548,9 @@ interface ComboFormModalProps {
   onClose: () => void;
   onSave: (data: { name: string; models: string[]; disabledModels?: string[] }) => void;
   activeProviders: Provider[];
-  kindFilter?: string | null;
 }
 
-function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindFilter = null }: ComboFormModalProps) {
+function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders }: ComboFormModalProps) {
   // Initialize state with combo values - key prop on parent handles reset on remount
   const [name, setName] = useState<string>(combo?.name || "");
   const [models, setModels] = useState<string[]>(combo?.models || []);
@@ -800,7 +799,6 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
         activeProviders={activeProviders}
         modelAliases={modelAliases}
         title="Add Models to Combo"
-        kindFilter={kindFilter}
       />
     </>
   );

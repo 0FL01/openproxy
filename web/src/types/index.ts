@@ -35,15 +35,9 @@ export interface Provider {
     type: string;
   };
   serviceKinds?: ServiceKind[];
-  ttsConfig?: TTSConfig;
-  sttConfig?: STTConfig;
-  embeddingConfig?: EmbeddingConfig;
   thinkingConfig?: ThinkingConfig;
-  kindNotice?: Record<string, string>;
   hasProviderSpecificData?: boolean;
-  searchViaChat?: SearchViaChatConfig;
   hidden?: boolean;
-  hiddenKinds?: ServiceKind[];
   /** Display sort weight (lower first). Mirrors 9router registry priority. */
   priority?: number;
   authType?: "oauth" | "apikey" | "cookie";
@@ -69,10 +63,6 @@ export interface Provider {
    * configuring a connection. Data sourced from awesome-freellm-apis / freellmapi.
    */
   freeTierInfo?: FreeTierInfo;
-  searchConfig?: SearchConfig;
-  fetchConfig?: FetchConfig;
-  imageConfig?: ImageConfig;
-  videoConfig?: VideoConfig;
 }
 
 // Free-tier provider limitations shown on the provider page. Data is sourced
@@ -100,116 +90,12 @@ export interface FreeTierInfo {
   source?: string;
 }
 
-export type ServiceKind = "llm" | "tts" | "stt" | "embedding" | "image" | "imageToText" | "webSearch" | "webFetch" | "video" | "music";
-
-export interface TTSConfig {
-  baseUrl: string;
-  authType: "none" | "apikey";
-  authHeader: string;
-  format: string;
-  models: TTSModel[];
-}
-
-export interface TTSModel {
-  id: string;
-  name: string;
-}
-
-export type STTFormat =
-  | "openai"
-  | "deepgram"
-  | "assemblyai"
-  | "nvidia-asr"
-  | "huggingface-asr"
-  | "gemini-stt";
-
-export interface STTConfig {
-  baseUrl: string;
-  authType: "none" | "apikey";
-  authHeader: "bearer" | "token" | "x-api-key" | "key" | "none";
-  format: STTFormat;
-  models: STTModel[];
-  /** True for providers that require an async upload+poll flow (AssemblyAI). */
-  async?: boolean;
-}
-
-export interface STTModel {
-  id: string;
-  name: string;
-}
-
-export interface EmbeddingConfig {
-  baseUrl: string;
-  authType: "apikey";
-  authHeader: string;
-  models: EmbeddingModel[];
-}
-
-export interface EmbeddingModel {
-  id: string;
-  name: string;
-  dimensions: number;
-}
+export type ServiceKind = "llm" | "imageToText";
 
 export interface ThinkingConfig {
   options: string[];
   defaultMode: string;
   defaultBudgetTokens?: number;
-}
-
-export interface SearchViaChatConfig {
-  defaultModel: string;
-  pricingUrl: string;
-  freeTier?: string;
-}
-
-export interface SearchConfig {
-  baseUrl: string;
-  method: "GET" | "POST";
-  authType: "apikey" | "none";
-  authHeader: string;
-  costPerQuery: number;
-  freeMonthlyQuota: number;
-  searchTypes: string[];
-  defaultMaxResults: number;
-  maxMaxResults: number;
-  timeoutMs: number;
-  cacheTTLMs: number;
-}
-
-export interface FetchConfig {
-  baseUrl: string;
-  method: "GET" | "POST";
-  authType: "apikey" | "none";
-  authHeader: string;
-  costPerQuery: number;
-  freeMonthlyQuota: number;
-  formats: string[];
-  maxCharacters: number;
-  timeoutMs: number;
-}
-
-export interface ImageConfig {
-  baseUrl: string;
-  method: "GET" | "POST";
-  authType: "apikey";
-  authHeader: string;
-  extraHeaders?: Record<string, string>;
-}
-
-/** Async video job config (xAI Grok Imagine shape: POST create / GET poll). */
-export interface VideoConfig {
-  baseUrl: string;
-}
-
-export interface MediaProviderKind {
-  id: ServiceKind;
-  label: string;
-  icon: string;
-  endpoint: {
-    method: "GET" | "POST";
-    path: string;
-  };
 }
 
 export interface AuthMethod {

@@ -59,7 +59,7 @@ pub const TABLES_SQL: &[&str] = &[
         ON providerConnections(provider, priority)
     "#,
     // User-defined provider nodes (openai-compatible, anthropic-compatible,
-    // custom-embedding). `data` is a JSON blob of node-specific config.
+    // custom provider nodes). `data` is a JSON blob of node-specific config.
     r#"
     CREATE TABLE IF NOT EXISTS providerNodes (
         id          TEXT PRIMARY KEY,

@@ -9,9 +9,9 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use openproxy::cli::config::ResolvedConfig;
 use openproxy::cli::{
-    chat as cli_chat, db as cli_db, logs as cli_logs, media as cli_media, mitm as cli_mitm,
-    provider_oauth, settings as cli_settings, tool as cli_tool, translator as cli_translator,
-    AuthCmd, Cli, Command, ProviderCmd, SchemaCmd, ServerCmd,
+    chat as cli_chat, db as cli_db, logs as cli_logs, mitm as cli_mitm, provider_oauth,
+    settings as cli_settings, tool as cli_tool, translator as cli_translator, AuthCmd, Cli,
+    Command, ProviderCmd, SchemaCmd, ServerCmd,
 };
 use openproxy::db::watcher::spawn_watcher;
 use openproxy::db::Db;
@@ -266,13 +266,6 @@ async fn main() -> anyhow::Result<()> {
             }
             Command::Translator { cmd } => {
                 let exit = cli_translator::run(cmd.clone(), &resolved, ctx).await?;
-                if exit != 0 {
-                    std::process::exit(exit);
-                }
-                return Ok(());
-            }
-            Command::Media { cmd } => {
-                let exit = cli_media::run(cmd.clone(), &resolved, ctx).await?;
                 if exit != 0 {
                     std::process::exit(exit);
                 }

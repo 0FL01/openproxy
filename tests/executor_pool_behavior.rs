@@ -237,10 +237,6 @@ fn default_executor_supports_current_passthrough_provider_matrix() {
             "https://api.hyperbolic.xyz/v1/chat/completions",
         ),
         ("perplexity", "https://api.perplexity.ai/chat/completions"),
-        (
-            "nanobanana",
-            "https://api.nanobananaapi.ai/v1/chat/completions",
-        ),
         ("chutes", "https://llm.chutes.ai/v1/chat/completions"),
         ("gitlab", "https://gitlab.com/api/v4/chat/completions"),
         (
@@ -589,11 +585,10 @@ fn tencent_hunyuan_endpoint() {
 }
 
 /// Guard: tokenrouter must route through DefaultExecutor with the chat
-/// endpoint (NOT embedding/image). 9router parity:
+/// endpoint. 9router parity:
 /// `open-sse/providers/registry/tokenrouter.js` transport.baseUrl =
 /// `https://api.tokenrouter.com/v1/chat/completions`. The 120-model list and
-/// embedding/image baseUrls belong to the catalog/media layers — the chat
-/// ProviderConfig must carry ONLY the chat endpoint.
+/// The chat ProviderConfig must carry only the chat endpoint.
 #[test]
 fn tokenrouter_chat_endpoint() {
     let pool = Arc::new(ClientPool::new());
@@ -610,7 +605,7 @@ fn tokenrouter_chat_endpoint() {
 /// endpoint (double path, NOT /v1). 9router parity:
 /// `open-sse/providers/registry/venice.js` transport.baseUrl =
 /// `https://api.venice.ai/api/v1/chat/completions`. Chat must NOT route
-/// through the imageConfig base.
+/// through any non-chat endpoint.
 #[test]
 fn venice_api_v1_chat_endpoint() {
     let pool = Arc::new(ClientPool::new());
@@ -1927,12 +1922,12 @@ fn all_enabled_providers_reachable() {
     }
 }
 
-/// Guard (bead pnc.44): media baseUrl resolution must read the LIVE map —
+/// Guard (bead pnc.44): provider baseUrl resolution must read the LIVE map —
 /// kilo-gateway/venice/featherless resolve via `provider_config_base_url`,
 /// NOT the dead-registry fallback `format!("https://api.{}.com/v1", p)`,
 /// which was wrong for these three providers.
 #[test]
-fn media_base_url_resolves_from_live_map() {
+fn provider_base_url_resolves_from_live_map() {
     for (provider, expected) in [
         (
             "kilo-gateway",

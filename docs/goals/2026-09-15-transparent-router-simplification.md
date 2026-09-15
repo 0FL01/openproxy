@@ -55,8 +55,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: “Media, embeddings ... Под удаление идут `src/core/media/`, media/STT-модули API, маршруты embeddings, генерации изображений, аудио и видео, соответствующие CLI-команды и настройки” and “поддержку изображений внутри сообщений не вырезай”.
   - Acceptance: Standalone image/audio/video/STT/embedding routes, implementations, CLI commands, and settings are absent; multimodal image inputs in chat/Codex continue to compile and pass focused tests.
   - Primary evidence: Server/CLI route search plus focused multimodal chat/Codex tests.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: Removed `src/core/media/`, standalone media/STT/search APIs and routes, media CLI, custom embedding behavior, media-only provider registrations, dashboard media-provider pages/settings, and focused standalone tests. Chat stream collapsing moved under `core::chat`; chat/Codex image prefetch and protocol translation remain. Dashboard build, clippy, all 1,434 library tests, 65 focused Codex tests, 328 translator tests, 5 stream-flag tests, 99 affected integration tests, and OpenCode model discovery tests passed.
 
 - R7: Remove built-in MCP, A2A, and evaluation services while preserving proxied tool calling.
   - Source: “Также я бы удалил: `src/core/mcp/`, `src/core/a2a.rs`, `src/core/eval/` ... Tool calling при этом остаётся.”
@@ -107,17 +107,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R6
-- Smallest next action: Remove standalone media/STT/embeddings/image/audio/video runtime routes, implementations, CLI commands, settings, and dashboard surfaces while retaining chat image-input translation.
-- Expected evidence: Removed service routes/modules are absent; focused chat/Codex multimodal tests still pass.
-- Stop or replan if: Chat message image attachments or their protocol translation would be removed.
+- Closes: R7
+- Smallest next action: Remove built-in MCP, A2A, and evaluation runtime modules, state, routes, CLI, and dashboard surfaces while retaining chat tool declarations/calls/results.
+- Expected evidence: Removed service modules/routes are absent; focused tool-call translation tests still pass.
+- Stop or replan if: Ordinary proxied tool calling would be removed.
 
 ## Current State
 
-- Resolved: R1-R5. R6 is the next unresolved outcome.
-- Last relevant evidence: Dashboard build, Rust clippy, 1,594 library tests, 12 chat integration tests, and focused combo/API/settings tests passed after ordered-fallback simplification.
+- Resolved: R1-R6. R7 is the next unresolved outcome.
+- Last relevant evidence: Standalone media services are absent; dashboard build, Rust clippy, 1,434 library tests, focused Codex/translator/stream tests, affected API/CLI/provider tests, and OpenCode model discovery tests passed.
 - Blocker: None.
-- Next: Commit combo simplification, then inventory and remove the standalone media and embeddings runtime path without touching chat images.
+- Next: Commit the media removal, then inventory and remove built-in MCP/A2A/evaluation without touching proxied tool calling.
 
 ## Material Decisions
 
@@ -125,6 +125,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-09-15: Retain only ordered, explicitly configured combo fallback. Automatic model selection and orchestration are removed.
 - 2026-09-15: Treat the user's listed whole-subsystem removals as intentional API/CLI product removals; do not preserve compatibility shims for deleted services.
 - 2026-09-15: Split delivery into atomic subsystem-removal commits, each verified before commit, as explicitly requested.
+- 2026-09-16: Retain `/v1/web/fetch`: it is a separate URL-fetch utility, not one of the requested standalone media/STT/embeddings/image/audio/video services. Remove the hosted search path that depended on `src/core/media/`.
 
 ## Agreed Implementation Plan (source copy)
 
@@ -267,6 +268,7 @@ Tool calling при этом остаётся. Прокси должен пер�
 
 ## Checkpoint History
 
+- 2026-09-16: R6 passed. Removed standalone media/STT/embeddings/image/audio/video/search implementations, routes, CLI, provider/dashboard configuration, and tests; moved retained SSE-to-JSON chat handling under `core::chat`. Chat image input translation and Codex image prefetch remain. Dashboard build, clippy, 1,434 library tests, focused multimodal tests, affected integration tests, and OpenCode model tests passed. Next is R7 MCP/A2A/evaluation removal.
 - 2026-09-15: R4 partial — removed internal request usage history, live aggregation, usage dashboard/CLI/export, and budget accounting; retained a 30-day metadata-only request journal and provider-native quota fetching. Dashboard build, clippy, 1,657 library tests, request-log integration, and 12 chat integration tests passed. Next: remove pricing and its combo ordering consumers.
 
 - 2026-09-15: Contract frozen from the user-supplied plan. The source plan is copied above. First implementation checkpoint is the completed-response cache removal.

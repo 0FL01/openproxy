@@ -3,7 +3,6 @@
 import { useState, useEffect } from "react";
 import { cn } from "@/shared/utils/cn";
 import { APP_CONFIG, UPDATER_CONFIG } from "@/shared/constants/config";
-import { MEDIA_PROVIDER_KINDS } from "@/shared/constants/providers";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import Button from "./Button";
 import AnthropicSpike from "./AnthropicSpike";
@@ -23,15 +22,6 @@ const NAV_ITEM_BASE =
 const NAV_ITEM_ACTIVE =
   "bg-surface-card text-ink font-medium before:content-[''] before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[3px] before:rounded-r-full before:bg-brand-coral";
 const NAV_ITEM_INACTIVE = "text-body hover:bg-surface-soft hover:text-ink";
-
-const NAV_ITEM_NESTED_BASE =
-  "relative flex items-center gap-3 pl-6 pr-3 py-1.5 rounded-mini-md transition-colors group";
-const NAV_ITEM_NESTED_ACTIVE =
-  "bg-surface-card text-ink font-medium before:content-[''] before:absolute before:left-2 before:top-1.5 before:bottom-1.5 before:w-[2px] before:rounded-r-full before:bg-brand-coral";
-
-const VISIBLE_MEDIA_KINDS = ["embedding", "image", "tts", "stt"];
-// Combined entry: webSearch + webFetch share one page at /dashboard/media-providers/web
-const COMBINED_WEB_ITEM = { id: "web", label: "Web Fetch & Search", icon: "travel_explore", href: "/dashboard/media-providers/web" };
 
 interface NavItem {
   href: string;
@@ -95,7 +85,6 @@ export default function Sidebar({ onClose }: SidebarProps) {
     setPathname(window.location.pathname);
   }, []);
 
-  const [mediaOpen, setMediaOpen] = useState(false);
   const [showRemoteModal, setShowRemoteModal] = useState(false);
   const [showShutdownModal, setShowShutdownModal] = useState(false);
   const [isShuttingDown, setIsShuttingDown] = useState(false);
@@ -261,58 +250,6 @@ export default function Sidebar({ onClose }: SidebarProps) {
             <p className="px-4 type-caption-uppercase text-muted-soft mb-2">
               System
             </p>
-
-            {/* Media Providers accordion */}
-            <button
-              onClick={() => setMediaOpen((v) => !v)}
-              className={cn(
-                NAV_ITEM_BASE,
-                "w-full text-left",
-                pathname.startsWith("/dashboard/media-providers")
-                  ? NAV_ITEM_ACTIVE
-                  : NAV_ITEM_INACTIVE,
-              )}
-            >
-              <span className="material-symbols-outlined text-[18px]">perm_media</span>
-              <span className="text-[13px] flex-1 text-left">Media Providers</span>
-              <span className="material-symbols-outlined text-[14px] transition-transform" style={{ transform: mediaOpen ? "rotate(180deg)" : "rotate(0deg)" }}>
-                expand_more
-              </span>
-            </button>
-            {mediaOpen && (
-              <div className="pl-4">
-                {MEDIA_PROVIDER_KINDS.filter((k) => VISIBLE_MEDIA_KINDS.includes(k.id)).map((kind) => (
-                  <a
-                    key={kind.id}
-                    href={`/dashboard/media-providers/${kind.id}`}
-                    onClick={onClose}
-                    className={cn(
-                      NAV_ITEM_NESTED_BASE,
-                      pathname.startsWith(`/dashboard/media-providers/${kind.id}`)
-                        ? NAV_ITEM_NESTED_ACTIVE
-                        : NAV_ITEM_INACTIVE,
-                    )}
-                  >
-                    <span className="material-symbols-outlined text-[16px]">{kind.icon}</span>
-                    <span className="text-[13px]">{kind.label}</span>
-                  </a>
-                ))}
-                <a
-                  key={COMBINED_WEB_ITEM.id}
-                  href={COMBINED_WEB_ITEM.href}
-                  onClick={onClose}
-                  className={cn(
-                    NAV_ITEM_NESTED_BASE,
-                    pathname.startsWith(COMBINED_WEB_ITEM.href)
-                      ? NAV_ITEM_NESTED_ACTIVE
-                      : NAV_ITEM_INACTIVE,
-                  )}
-                >
-                  <span className="material-symbols-outlined text-[16px]">{COMBINED_WEB_ITEM.icon}</span>
-                  <span className="text-[13px]">{COMBINED_WEB_ITEM.label}</span>
-                </a>
-              </div>
-            )}
 
             {systemItems.map((item) => (
               <a

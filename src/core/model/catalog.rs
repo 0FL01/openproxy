@@ -47,10 +47,6 @@ pub struct ProviderCatalogProvider {
     pub id: String,
     pub alias: String,
     pub service_kinds: Vec<String>,
-    pub tts_models: Vec<String>,
-    pub embedding_models: Vec<String>,
-    pub has_search: bool,
-    pub has_fetch: bool,
     #[serde(default)]
     pub vision: Option<bool>,
     #[serde(default)]
@@ -243,93 +239,6 @@ mod tests {
         assert_eq!(m.context_window, Some(1_000_000));
     }
 
-    // Media kinds and service metadata for the parity providers must match the
-    // JS registry files (bead .46).
-    #[test]
-    fn catalog_media_kinds_match_registry() {
-        let catalog = provider_catalog();
-
-        // venice: embedding models present, image models carry kind image.
-        let venice = catalog.models_for_alias("venice").expect("venice models");
-        let emb: Vec<&str> = venice
-            .iter()
-            .filter(|m| m.kind == "embedding")
-            .map(|m| m.id.as_str())
-            .collect();
-        assert_eq!(
-            emb,
-            vec![
-                "text-embedding-3-large",
-                "text-embedding-bge-m3",
-                "text-embedding-qwen3-8b"
-            ]
-        );
-        assert!(venice
-            .iter()
-            .any(|m| m.id == "venice-sd35" && m.kind == "image"));
-
-        // tokenrouter: video/image/audio kinds preserved from the seed snapshot.
-        let tr = catalog
-            .models_for_alias("tokenrouter")
-            .expect("tokenrouter models");
-        assert!(tr
-            .iter()
-            .any(|m| m.id == "MiniMax-Hailuo-2.3" && m.kind == "video"));
-        assert!(tr
-            .iter()
-            .any(|m| m.id == "bytedance-seed/seedream-5.0-pro" && m.kind == "image"));
-        assert!(tr
-            .iter()
-            .any(|m| m.id == "openai/gpt-audio" && m.kind == "audio"));
-        assert!(tr
-            .iter()
-            .any(|m| m.id == "openai/gpt-5.4" && m.kind == "llm"));
-        // The embedding service model is declared on the provider entry, not as
-        // a kind on the model (JS leaves its kind implicit).
-        let tr_provider = catalog
-            .provider_info("tokenrouter")
-            .expect("tokenrouter provider");
-        assert_eq!(
-            tr_provider.embedding_models,
-            vec!["google/gemini-embedding-2"]
-        );
-        assert_eq!(tr_provider.service_kinds, vec!["llm", "embedding", "image"]);
-
-        // perplexity-agent: webSearch kind + hasSearch.
-        let pa = catalog
-            .provider_info("perplexity-agent")
-            .expect("perplexity-agent provider");
-        assert!(pa.has_search);
-        assert_eq!(pa.service_kinds, vec!["llm", "webSearch"]);
-
-        // selfhosted-*: single placeholder models, correct kinds and lists.
-        let se = catalog
-            .provider_info("selfhosted-embedding")
-            .expect("selfhosted-embedding");
-        assert_eq!(se.service_kinds, vec!["embedding"]);
-        assert_eq!(se.embedding_models, vec!["embedding"]);
-        assert!(catalog
-            .models_for_alias("selfhosted-embedding")
-            .is_some_and(|ms| {
-                ms.len() == 1 && ms[0].id == "embedding" && ms[0].kind == "embedding"
-            }));
-        let stt = catalog
-            .provider_info("selfhosted-stt")
-            .expect("selfhosted-stt");
-        assert_eq!(stt.service_kinds, vec!["stt"]);
-        assert!(catalog
-            .models_for_alias("selfhosted-stt")
-            .is_some_and(|ms| { ms.len() == 1 && ms[0].id == "whisper-1" && ms[0].kind == "stt" }));
-        let tts = catalog
-            .provider_info("selfhosted-tts")
-            .expect("selfhosted-tts");
-        assert_eq!(tts.service_kinds, vec!["tts"]);
-        assert_eq!(tts.tts_models, vec!["kokoro"]);
-        assert!(catalog
-            .models_for_alias("selfhosted-tts")
-            .is_some_and(|ms| { ms.len() == 1 && ms[0].id == "kokoro" && ms[0].kind == "tts" }));
-    }
-
     // providerIdToAlias must resolve provider ids to the JS aliases, and
     // find_model must reach models through them (bead .46).
     #[test]
@@ -410,16 +319,5 @@ mod tests {
                 "{id} should have upstreamModelId containing tiered, got: {upstream}"
             );
         }
-    }
-
-    #[test]
-    fn codex_static_catalog_contains_only_virtual_media_models() {
-        let catalog = provider_catalog();
-        assert!(catalog.find_model("codex", "gpt-5.5-image").is_some());
-        assert!(catalog
-            .models_for_alias("cx")
-            .unwrap_or(&[])
-            .iter()
-            .all(|model| model.kind != "llm"));
     }
 }

@@ -84,6 +84,9 @@ async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> Respo
             .and_then(|pid| catalog.provider_info(pid));
 
         for model in &entry.models {
+            if model.kind != "llm" && model.kind != "chat" {
+                continue;
+            }
             if disabled_ids.contains(&model.id.as_str()) {
                 continue;
             }

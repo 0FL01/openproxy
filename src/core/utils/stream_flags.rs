@@ -1,7 +1,7 @@
 //! Stream decision helpers — 9router `chatCore.js` stream flag parity.
 //!
 //! Single pure function used by chat so DeepSeek-TUI, Accept preference,
-//! forceStream, and imageGen rules cannot drift from each other.
+//! forceStream and Accept rules cannot drift from each other.
 
 use crate::core::translator::registry::Format;
 use crate::core::utils::client_detector::ClientTool;
@@ -40,17 +40,14 @@ pub struct StreamPlan {
 /// Resolve stream flags matching 9router chatCore.js order:
 /// 1. forceStream provider → stream true
 /// 2. else body.stream !== false (default true)
-/// 3. imageGen + antigravity|gemini-cli → stream false
-/// 4. deepseek-tui && stream !== true → stream false
-/// 5. Accept json && !sse && stream !== true && !forceStream → stream false
+/// 3. deepseek-tui && stream !== true → stream false
+/// 4. Accept json && !sse && stream !== true && !forceStream → stream false
 pub fn resolve_stream_flags(
     body_stream: Option<bool>,
     accept: Option<&str>,
     provider: &str,
-    model: &str,
     source_format: Format,
     client_tool: Option<ClientTool>,
-    model_type: Option<&str>,
 ) -> StreamPlan {
     let provider_forced = provider_requires_streaming(provider);
 
@@ -66,15 +63,6 @@ pub fn resolve_stream_flags(
     } else {
         body_stream != Some(false)
     };
-
-    // Image generation models require non-streaming (Google generateContent)
-    let is_image_gen = model_type == Some("imageGen") || model_type == Some("image") || {
-        let m = model.to_lowercase();
-        m.contains("image") || m.contains("imagen") || m.contains("image-generation")
-    };
-    if is_image_gen && (provider == "antigravity" || provider == "gemini-cli") {
-        stream = false;
-    }
 
     // DeepSeek-TUI: only force non-stream when client did NOT set stream:true
     if client_tool == Some(ClientTool::DeepseekTui) && body_stream != Some(true) {
@@ -117,10 +105,8 @@ mod tests {
             Some(true),
             None,
             "openai",
-            "gpt-4",
             Format::OpenAi,
             Some(ClientTool::DeepseekTui),
-            None,
         );
         assert!(p.stream);
         assert!(p.client_requested_streaming);
@@ -134,10 +120,8 @@ mod tests {
             None,
             None,
             "claude",
-            "claude-sonnet-4",
             Format::Claude,
             Some(ClientTool::DeepseekTui),
-            None,
         );
         assert!(!p.stream);
         assert!(!p.sse_to_json);
@@ -149,10 +133,8 @@ mod tests {
             None,
             None,
             "openai",
-            "gpt-4",
             Format::OpenAi,
             Some(ClientTool::DeepseekTui),
-            None,
         );
         // Upstream streams; client gets aggregated JSON (cannot parse SSE in -p mode)
         assert!(p.stream);
@@ -165,9 +147,7 @@ mod tests {
             Some(true),
             Some("application/json"),
             "openai",
-            "gpt-4",
             Format::OpenAi,
-            None,
             None,
         );
         // forceStream openai → stream true + sse_to_json false (client requested)
@@ -182,27 +162,11 @@ mod tests {
             Some(false),
             Some("application/json"),
             "codex",
-            "o3",
             Format::OpenAi,
-            None,
             None,
         );
         assert!(p.stream); // upstream streams
         assert!(p.sse_to_json);
         assert!(!p.client_requested_streaming);
-    }
-
-    #[test]
-    fn image_gen_antigravity_non_stream() {
-        let p = resolve_stream_flags(
-            Some(true),
-            None,
-            "antigravity",
-            "imagen-3",
-            Format::Antigravity,
-            None,
-            Some("imageGen"),
-        );
-        assert!(!p.stream);
     }
 }

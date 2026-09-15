@@ -8,7 +8,6 @@ pub mod dns;
 pub mod executor;
 pub mod h2c;
 pub mod mcp;
-pub mod media;
 pub mod mitm;
 pub mod model;
 pub mod proxy;

@@ -23,7 +23,6 @@ pub mod db;
 pub mod doctor;
 pub mod key_ext;
 pub mod logs;
-pub mod media;
 pub mod mitm;
 pub mod models;
 pub mod output;
@@ -203,11 +202,6 @@ pub enum Command {
     Translator {
         #[command(subcommand)]
         cmd: translator::TranslatorCmd,
-    },
-    /// Media providers + TTS / STT / embed / image / web helpers.
-    Media {
-        #[command(subcommand)]
-        cmd: media::MediaCmd,
     },
     Route {
         /// Model ID (e.g. openai/gpt-4o-mini)
@@ -738,14 +732,6 @@ impl Cli {
                 Command::Translator { cmd } => {
                     let resolved = config::ResolvedConfig::resolve(overrides)?;
                     let exit = rt.block_on(translator::run(cmd, &resolved, ctx))?;
-                    if exit != 0 {
-                        std::process::exit(exit);
-                    }
-                    Ok(())
-                }
-                Command::Media { cmd } => {
-                    let resolved = config::ResolvedConfig::resolve(overrides)?;
-                    let exit = rt.block_on(media::run(cmd, &resolved, ctx))?;
                     if exit != 0 {
                         std::process::exit(exit);
                     }

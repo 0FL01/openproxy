@@ -61,14 +61,13 @@ pub enum NodeCmd {
         #[arg(long)]
         strict: bool,
     },
-    /// Probe `<baseUrl>/models` (or `/embeddings` for embedding nodes) to
-    /// confirm the node is reachable. Does NOT touch DB.
+    /// Probe `<baseUrl>/models` to confirm the node is reachable. Does NOT touch DB.
     Validate {
         id_or_name: String,
         /// Bearer token to send (defaults to "test" for unauthenticated probes).
         #[arg(long)]
         api_key: Option<String>,
-        /// Model id for embedding-style probes.
+        /// Optional model id query parameter.
         #[arg(long)]
         model_id: Option<String>,
     },
@@ -339,11 +338,7 @@ async fn run_validate(
         std::process::exit(exit);
     };
 
-    let probe_url = if node.r#type == "custom-embedding" {
-        format!("{}/embeddings", base_url.trim_end_matches('/'))
-    } else {
-        format!("{}/models", base_url.trim_end_matches('/'))
-    };
+    let probe_url = format!("{}/models", base_url.trim_end_matches('/'));
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))

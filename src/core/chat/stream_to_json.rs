@@ -1,4 +1,4 @@
-//! Stream-to-JSON converter (#306).
+//! Stream-to-JSON converter for chat responses (#306).
 //!
 //! When a provider forces streaming but the client requested non-streaming,
 //! this module converts the SSE stream back to a single `chat.completion`

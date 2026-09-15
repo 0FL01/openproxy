@@ -2,7 +2,6 @@ pub mod a2a;
 pub mod admin_items;
 mod auth;
 pub mod chat;
-pub mod chat_search;
 pub mod cli_tools;
 pub mod cloud_credentials;
 pub mod cloud_sync;
@@ -13,8 +12,6 @@ pub mod guard;
 pub mod locale;
 pub mod mcp;
 pub mod mcp_server;
-pub mod media;
-pub mod media_providers;
 pub mod mitm_config;
 pub mod models_alias;
 pub mod models_availability;
@@ -32,7 +29,6 @@ mod provider_validate;
 pub mod providers;
 pub mod quota_auto_ping;
 pub mod shutdown;
-pub mod stt;
 pub mod tags;
 pub mod translator;
 pub mod usage;
@@ -161,136 +157,9 @@ pub fn routes(state: AppState) -> Router<AppState> {
                 .route(
                     "/info",
                     get(v1_models::models_info).options(v1_models::cors_options),
-                )
-                .route(
-                    "/{kind}",
-                    get(v1_models::list_models_by_kind).options(v1_models::cors_options),
                 ),
         )
-        .merge(chat_search::routes())
-        .merge(web_fetch::routes())
-        .route(
-            "/v1/audio/transcriptions",
-            post(stt::audio_transcriptions).options(stt::cors_options),
-        )
-        .route(
-            "/v1/v1/audio/transcriptions",
-            post(stt::audio_transcriptions).options(stt::cors_options),
-        )
-        .route(
-            "/v1/audio/speech",
-            post(media::audio_speech).options(media::cors_options),
-        )
-        .route(
-            "/v1/v1/audio/speech",
-            post(media::audio_speech).options(media::cors_options),
-        )
-        .route(
-            "/v1/embeddings",
-            post(media::embeddings).options(media::cors_options),
-        )
-        .route(
-            "/v1/v1/embeddings",
-            post(media::embeddings).options(media::cors_options),
-        )
-        .route(
-            "/v1/images/generations",
-            post(media::images_generations).options(media::cors_options),
-        )
-        .route(
-            "/v1/v1/images/generations",
-            post(media::images_generations).options(media::cors_options),
-        )
-        .route(
-            "/v1/images/edits",
-            post(media::images_edits).options(media::cors_options),
-        )
-        .route(
-            "/v1/v1/images/edits",
-            post(media::images_edits).options(media::cors_options),
-        )
-        // Legacy singular path retained for older clients.
-        .route(
-            "/v1/video/generations",
-            post(media::video_generations).options(media::cors_options),
-        )
-        .route(
-            "/v1/v1/video/generations",
-            post(media::video_generations).options(media::cors_options),
-        )
-        // xAI Grok Imagine async video jobs (POST create / GET poll).
-        .route(
-            "/v1/videos/generations",
-            post(media::video_generations).options(media::cors_options),
-        )
-        .route(
-            "/v1/v1/videos/generations",
-            post(media::video_generations).options(media::cors_options),
-        )
-        .route(
-            "/v1/videos/edits",
-            post(media::video_edits).options(media::cors_options),
-        )
-        .route(
-            "/v1/v1/videos/edits",
-            post(media::video_edits).options(media::cors_options),
-        )
-        .route(
-            "/v1/videos/extensions",
-            post(media::video_extensions).options(media::cors_options),
-        )
-        .route(
-            "/v1/v1/videos/extensions",
-            post(media::video_extensions).options(media::cors_options),
-        )
-        .route(
-            "/v1/videos/{id}",
-            get(media::video_get).options(media::cors_options_get),
-        )
-        .route(
-            "/v1/v1/videos/{id}",
-            get(media::video_get).options(media::cors_options_get),
-        )
-        .route(
-            "/v1/audio/music",
-            post(media::audio_music).options(media::cors_options),
-        )
-        .route(
-            "/v1/v1/audio/music",
-            post(media::audio_music).options(media::cors_options),
-        )
-        .route(
-            "/v1/rerank",
-            post(media::rerank).options(media::cors_options),
-        )
-        .route(
-            "/v1/v1/rerank",
-            post(media::rerank).options(media::cors_options),
-        )
-        .route(
-            "/v1/moderations",
-            post(media::moderations).options(media::cors_options),
-        )
-        .route(
-            "/v1/v1/moderations",
-            post(media::moderations).options(media::cors_options),
-        )
-        .route(
-            "/v1/search",
-            post(media::search).options(media::cors_options),
-        )
-        .route(
-            "/v1/v1/search",
-            post(media::search).options(media::cors_options),
-        )
-        .route(
-            "/v1/audio/voices",
-            get(media::audio_voices).options(media::cors_options),
-        )
-        .route(
-            "/v1/v1/audio/voices",
-            get(media::audio_voices).options(media::cors_options),
-        );
+        .merge(web_fetch::routes());
     // JS parity: /v1/* LLM routes have NO route-level auth — free
     // (noAuth) providers must work without any key. Per-provider
     // credential checks happen inside handlers/executors instead
@@ -373,7 +242,6 @@ pub fn routes(state: AppState) -> Router<AppState> {
         // "Bearer-like" parity) — must not inherit the admin middleware,
         // whose dashboard error message differs from the handler contract.
         .merge(cloud_credentials::routes())
-        .merge(media_providers::routes())
         .merge(observability::routes())
         .merge(mitm_config::routes())
         .merge(mcp::routes())
@@ -395,11 +263,6 @@ async fn v1_root() -> Response {
             "/v1/messages/count_tokens",
             "/v1/responses",
             "/v1/responses/compact",
-            "/v1/embeddings",
-            "/v1/images/generations",
-            "/v1/audio/speech",
-            "/v1/audio/transcriptions",
-            "/v1/search",
             "/v1/web/fetch",
             "/v1/models",
         ]

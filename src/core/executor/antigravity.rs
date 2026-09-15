@@ -136,44 +136,6 @@ fn build_ide_request_id(
     format!("agent/{conversation_id}/{now_ms}/{trajectory_id}/{step}")
 }
 
-/// Parse the aspect-ratio config for an image model from its name suffix.
-/// Mirrors JS `parseImageConfig` (antigravity.js:62-88): `16x9` → "16:9",
-/// `1024x768` → gcd-reduced "4:3", default "1:1".
-fn parse_image_config(model: &str) -> Value {
-    let mut aspect_ratio = "1:1".to_string();
-    if let Some(pos) = model.rfind('-') {
-        let suffix = &model[pos + 1..];
-        let parts: Vec<&str> = suffix.splitn(2, 'x').collect();
-        if parts.len() == 2
-            && !parts[0].is_empty()
-            && !parts[1].is_empty()
-            && parts[0].chars().all(|c| c.is_ascii_digit())
-            && parts[1].chars().all(|c| c.is_ascii_digit())
-        {
-            let w: u64 = parts[0].parse().unwrap_or(0);
-            let h: u64 = parts[1].parse().unwrap_or(0);
-            if w > 0 && h > 0 {
-                if w <= 16 && h <= 16 {
-                    aspect_ratio = format!("{w}:{h}");
-                } else {
-                    let d = gcd(w, h);
-                    aspect_ratio = format!("{}:{}", w / d, h / d);
-                }
-            }
-        }
-    }
-    json!({ "aspectRatio": aspect_ratio })
-}
-
-fn gcd(mut a: u64, mut b: u64) -> u64 {
-    while b != 0 {
-        let t = b;
-        b = a % b;
-        a = t;
-    }
-    a
-}
-
 #[derive(Clone)]
 pub struct AntigravityExecutor {
     pool: Arc<ClientPool>,
@@ -738,39 +700,6 @@ impl AntigravityExecutor {
         None
     }
 
-    /// Check whether a model ID refers to an image-generation model (Imagen).
-    fn is_image_model(model: &str) -> bool {
-        let base = model.rsplit('/').next().unwrap_or(model);
-        base.starts_with("imagen")
-    }
-
-    /// Parse a dash-separated aspect-ratio/resolution suffix from the end of a
-    /// model name.  The suffix must match `DIGITSxDIGITS` (one `x` separator).
-    ///
-    /// Returns `(&model[..last_hyphen], Some(suffix))` on a match, or
-    /// `(model, None)` when no suffix is found.
-    ///
-    /// Examples:
-    ///   `imagen-3.0-generate-002-16x9`     -> (`imagen-3.0-generate-002`, Some("16x9"))
-    ///   `imagen-3.0-generate-002-1024x768` -> (`imagen-3.0-generate-002`, Some("1024x768"))
-    ///   `imagen-3.0-generate-002`           -> (`imagen-3.0-generate-002`, None)
-    fn parse_image_model_suffix(model: &str) -> (&str, Option<&str>) {
-        if let Some(pos) = model.rfind('-') {
-            let suffix = &model[pos + 1..];
-            let parts: Vec<&str> = suffix.splitn(2, 'x').collect();
-            if parts.len() == 2
-                && !parts[0].is_empty()
-                && !parts[1].is_empty()
-                && parts[0].chars().all(|c| c.is_ascii_digit())
-                && parts[1].chars().all(|c| c.is_ascii_digit())
-                && suffix.chars().filter(|&c| c == 'x').count() == 1
-            {
-                return (&model[..pos], Some(suffix));
-            }
-        }
-        (model, None)
-    }
-
     /// Check if an error response body suggests a transient error that should
     /// be automatically retried.  Looks for common rate-limit and quota-exhausted
     /// signals in the response text.
@@ -824,82 +753,18 @@ impl AntigravityExecutor {
             });
         }
 
-        // --- Image model support ---
-        // Detect image-generation models (Imagen). JS uses a completely
-        // different request shape for these (antigravity.js:144-188): text-only
-        // contents, generationConfig with imageConfig, sessionId, and the
-        // requestType "image_gen". No tools / systemInstruction / safetySettings.
-        let is_image = Self::is_image_model(&request.model);
-        let clean_model = if is_image {
-            Self::parse_image_model_suffix(&request.model).0.to_string()
-        } else {
-            request.model.clone()
-        };
-
-        if is_image {
-            // Capture the existing session id before the mutable borrow.
-            let image_session_id = request
-                .body
-                .get("request")
-                .and_then(|r| r.get("sessionId"))
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let body = &mut request.body;
-            // Build text-only contents: keep only parts with `text`, merge all.
-            let src_contents = body
-                .get("request")
-                .and_then(|r| r.get("contents"))
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            let mut contents = Vec::new();
-            for c in &src_contents {
-                let role = c.get("role").and_then(Value::as_str).unwrap_or("user");
-                let text_parts: Vec<Value> = c
-                    .get("parts")
-                    .and_then(Value::as_array)
-                    .unwrap_or(&vec![])
-                    .iter()
-                    .filter(|p| p.get("text").is_some())
-                    .map(|p| json!({ "text": p.get("text").and_then(Value::as_str).unwrap_or("") }))
-                    .collect();
-                if !text_parts.is_empty() {
-                    contents.push(json!({ "role": role, "parts": text_parts }));
-                }
-            }
-            let image_config = parse_image_config(&clean_model);
-            let image_request = json!({
-                "contents": contents,
-                "generationConfig": {
-                    "temperature": 1.0,
-                    "topP": 0.95,
-                    "topK": 40,
-                    "maxOutputTokens": 8192,
-                    "imageConfig": image_config,
-                },
-                "sessionId": image_session_id,
-            });
-            // Replace the whole body with the image request envelope.
-            body["request"] = image_request;
-        }
-
         let session_id = Self::transform_request(&mut request.body, &request.credentials)?;
 
         // Add the top-level request envelope (JS transformRequest return,
         // antigravity.js:268-276): project, model, userAgent, requestType,
         // requestId around the `request` sub-object.
-        let request_type = if is_image { "image_gen" } else { "agent" };
-        let model_for_envelope = if is_image {
-            clean_model.clone()
-        } else {
-            request
-                .body
-                .get("model")
-                .and_then(Value::as_str)
-                .unwrap_or(&request.model)
-                .to_string()
-        };
+        let request_type = "agent";
+        let model_for_envelope = request
+            .body
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or(&request.model)
+            .to_string();
         let request_ref = request.body.get("request").cloned().unwrap_or(Value::Null);
         let request_id = build_ide_request_id(
             &request.body,
@@ -919,12 +784,7 @@ impl AntigravityExecutor {
             obj.insert("requestId".into(), Value::String(request_id));
         }
 
-        let url = if is_image {
-            // Image models always use the non-streaming path.
-            Self::build_url(false)
-        } else {
-            Self::build_url(request.stream)
-        };
+        let url = Self::build_url(request.stream);
 
         // Retry up to 3 times with exponential backoff, Retry-After header,
         // and error-body-text transient detection.
@@ -1293,61 +1153,6 @@ mod tests {
         );
     }
 
-    // ---- image model helper tests ----
-
-    #[test]
-    fn is_image_model_detects_imagen_prefix() {
-        assert!(AntigravityExecutor::is_image_model(
-            "google/imagen-3.0-generate-002"
-        ));
-        assert!(AntigravityExecutor::is_image_model(
-            "imagen-3.0-generate-002"
-        ));
-        assert!(AntigravityExecutor::is_image_model("imagen"));
-        assert!(!AntigravityExecutor::is_image_model("gemini-2.5-flash"));
-        assert!(!AntigravityExecutor::is_image_model("gemini-2.5-pro"));
-        assert!(!AntigravityExecutor::is_image_model(""));
-    }
-
-    #[test]
-    fn parse_image_model_suffix_handles_aspect_ratio() {
-        let (base, suffix) =
-            AntigravityExecutor::parse_image_model_suffix("imagen-3.0-generate-002-16x9");
-        assert_eq!(base, "imagen-3.0-generate-002");
-        assert_eq!(suffix, Some("16x9"));
-    }
-
-    #[test]
-    fn parse_image_model_suffix_handles_resolution() {
-        let (base, suffix) =
-            AntigravityExecutor::parse_image_model_suffix("imagen-3.0-generate-002-1024x768");
-        assert_eq!(base, "imagen-3.0-generate-002");
-        assert_eq!(suffix, Some("1024x768"));
-    }
-
-    #[test]
-    fn parse_image_model_suffix_returns_none_when_no_suffix() {
-        let (base, suffix) =
-            AntigravityExecutor::parse_image_model_suffix("imagen-3.0-generate-002");
-        assert_eq!(base, "imagen-3.0-generate-002");
-        assert_eq!(suffix, None);
-    }
-
-    #[test]
-    fn parse_image_model_suffix_returns_none_for_non_model_suffix() {
-        let (base, suffix) = AntigravityExecutor::parse_image_model_suffix("gemini-2.5-flash");
-        assert_eq!(base, "gemini-2.5-flash");
-        assert_eq!(suffix, None);
-    }
-
-    #[test]
-    fn parse_image_model_suffix_multiple_x_not_matched() {
-        // Multiple 'x' chars should not be parsed as a valid WxH suffix.
-        let (base, suffix) = AntigravityExecutor::parse_image_model_suffix("model-16x9x2");
-        assert_eq!(base, "model-16x9x2");
-        assert_eq!(suffix, None);
-    }
-
     // ---- transient error body-text detection tests ----
 
     #[test]
@@ -1448,26 +1253,6 @@ mod tests {
         assert!(
             parts[2].chars().all(|c| c.is_ascii_digit()),
             "timestamp part must be numeric"
-        );
-    }
-
-    #[test]
-    fn test_parse_image_config_aspect_ratio() {
-        assert_eq!(
-            parse_image_config("imagen-3.0-generate-002-16x9")["aspectRatio"],
-            "16:9"
-        );
-        assert_eq!(
-            parse_image_config("imagen-3.0-generate-002-1024x768")["aspectRatio"],
-            "4:3"
-        );
-        assert_eq!(
-            parse_image_config("imagen-3.0-generate-002")["aspectRatio"],
-            "1:1"
-        );
-        assert_eq!(
-            parse_image_config("gemini-2.5-flash-image")["aspectRatio"],
-            "1:1"
         );
     }
 
