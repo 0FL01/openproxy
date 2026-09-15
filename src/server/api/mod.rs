@@ -2140,8 +2140,6 @@ struct UpdateSettingsRequest {
     codex_auto_ping: Option<Value>,
     /// Depth for header-driven Codex hosted search, stored in settings.extra.
     codex_web_search_context_size: Option<String>,
-    /// Per-capability model pools for the capacity adapter.
-    capacity_adapter: Option<Value>,
 }
 
 async fn update_settings_api(
@@ -2263,9 +2261,6 @@ async fn update_settings_api(
                 db.settings
                     .extra
                     .insert("codexWebSearchContextSize".into(), Value::String(v));
-            }
-            if let Some(v) = req.capacity_adapter {
-                db.settings.capacity_adapter = v;
             }
             db.settings.normalize();
         })

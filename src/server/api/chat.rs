@@ -19,10 +19,6 @@ use crate::core::account_fallback::{
 use crate::core::chat::RequestPlan;
 use crate::core::combo::fusion::{handle_fusion_chat, handle_fusion_chat_deferred};
 use crate::core::combo::{
-    capacity_adapter::{
-        augment_models_with_capacity_adapter, get_active_adapter_strategy,
-        strip_history_for_context,
-    },
     check_fallback_error, detect_required_capabilities, execute_combo_strategy_full,
     get_combo_models_from_data, get_disabled_members_for_combo, mark_combo_member_quarantined,
     strategy_for_combo, ComboAttemptError, ComboExecutionError, ComboStrategy, FusionConfig,
@@ -438,25 +434,13 @@ async fn chat_completions_impl(
                 return json_error_response(StatusCode::BAD_REQUEST, "Unknown combo model");
             };
 
-            // Capability auto-switch is applied AFTER round-robin rotation
-            // inside execute_combo_strategy_with_capacity (9router order:
-            // rotate first, then reorderByCapabilities).
             let required_caps = detect_required_capabilities(&body);
             let disabled_members = get_disabled_members_for_combo(&combo_name, &snapshot.combos);
 
-            // 9router parity (chat.js): augment the combo member list with
-            // capacity-adapter pool models when no member satisfies the
-            // request's hard capabilities, and remember which models were
-            // added so history stripping only ever applies to them.
-            let augmented_models = augment_models_with_capacity_adapter(
-                &combo_models,
-                &required_caps,
-                &snapshot.settings.capacity_adapter,
-            );
             let estimated_tokens = crate::core::context_limit::estimate_input_tokens(&body);
-            let mut context_allowed_models = Vec::with_capacity(augmented_models.len());
+            let mut context_allowed_models = Vec::with_capacity(combo_models.len());
             let mut first_context_error = None;
-            for combo_model in &augmented_models {
+            for combo_model in &combo_models {
                 let combo_resolved = get_model_info(combo_model, &snapshot);
                 let provider = combo_resolved.provider.as_deref().unwrap_or("unknown");
                 match context_limit_error(
@@ -474,28 +458,12 @@ async fn chat_completions_impl(
                     None => context_allowed_models.push(combo_model.clone()),
                 }
             }
-            if !augmented_models.is_empty() && context_allowed_models.is_empty() {
+            if !combo_models.is_empty() && context_allowed_models.is_empty() {
                 return attempt_error_response(
                     first_context_error.expect("a filtered combo member has a context error"),
                 );
             }
-            let adapter_added: HashSet<String> = augmented_models
-                .iter()
-                .filter(|m| !combo_models.contains(m))
-                .cloned()
-                .collect();
-            let mut strategy = strategy_for_combo(&snapshot, &combo_name);
-            // Solo-augmented path: an adapter model was prepended to a
-            // single-member combo — use the adapter pool's strategy.
-            if !adapter_added.is_empty() && combo_models.len() == 1 {
-                strategy = match get_active_adapter_strategy(
-                    &required_caps,
-                    &snapshot.settings.capacity_adapter,
-                ) {
-                    "round-robin" => ComboStrategy::RoundRobin,
-                    _ => ComboStrategy::Fallback,
-                };
-            }
+            let strategy = strategy_for_combo(&snapshot, &combo_name);
             let sticky_limit = snapshot.settings.combo_sticky_round_robin_limit.max(1);
             let combo_body = body.clone();
             let combo_state = state.clone();
@@ -686,23 +654,11 @@ async fn chat_completions_impl(
                     capacity_check,
                     move |combo_model| {
                         let state = combo_state.clone();
-                        let mut body = combo_body.clone();
+                        let body = combo_body.clone();
                         let combo_model = combo_model.to_string();
                         let api_key = combo_api_key.clone();
                         let headers = combo_headers.clone();
                         let log_context = combo_log_context.clone();
-                        // 9router parity: history stripping applies ONLY to
-                        // models the capacity adapter added — never to the
-                        // original combo members.
-                        if adapter_added.contains(&combo_model) {
-                            let context_window = crate::core::model::catalog::provider_catalog()
-                                .find_model(
-                                    combo_model.split('/').next().unwrap_or(""),
-                                    combo_model.split('/').nth(1).unwrap_or(""),
-                                )
-                                .and_then(|m| m.context_window.map(u64::from));
-                            strip_history_for_context(&mut body, context_window);
-                        }
                         attempted_members.lock().push(combo_model.clone());
                         // Re-resolve provider/model for this combo entry so each
                         // iteration dispatches against the correct provider node

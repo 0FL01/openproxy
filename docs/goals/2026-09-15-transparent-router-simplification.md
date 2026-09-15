@@ -27,8 +27,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: “Обрезание истории и серверную политику промптов — удалить” and “Прокси меняет модель и необходимое представление протокола. Содержание задачи и поведение агента определяет клиент.”
   - Acceptance: Combo history stripping/capacity adaptation, payload rules/system-prompt rewriting, guardrail prompt-injection/PII rewriting, synthetic bypass/naming replies, and provider thinking overrides are absent from chat handling.
   - Primary evidence: Repository search and focused chat/combo tests proving requests still reach normal dispatch.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: Payload/system-prompt rules, guardrails, synthetic bypass/naming responses, provider thinking overrides, capacity augmentation, and history stripping are absent. Explicit reasoning suffix handling remains. Final checkpoint passed clippy, 1,680 library tests, and 12 chat integration tests.
 
 - R3: Remove Codex behavioral defaults but retain required Codex wire compatibility.
   - Source: “выкинул ... DEFAULT_CODEX_INSTRUCTIONS” and separate necessary wire constraints from the default `reasoning.effort = "low"` policy.
@@ -107,17 +107,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R2
-- Smallest next action: Remove payload rules, guardrails, synthetic bypass/naming responses, provider thinking overrides, and combo capacity/history adaptation with only their direct consumers.
-- Expected evidence: No listed request-policy runtime references; focused chat/combo checks pass.
-- Stop or replan if: A candidate edit is required for wire-format translation rather than server-owned behavior policy.
+- Closes: R3
+- Smallest next action: Remove Codex default behavioral instructions and invented default reasoning effort while retaining wire-required fields and explicit client values.
+- Expected evidence: Focused Codex executor tests pass and no behavioral fallback constant remains.
+- Stop or replan if: Codex rejects the smallest neutral wire value required when the client omits instructions.
 
 ## Current State
 
-- Resolved: R1. R2 is in progress: payload rewriting, system-prompt overrides, guardrails, synthetic replies, and provider-owned thinking overrides are removed.
-- Last relevant evidence: Rust clippy, 1,687 library tests, and the Astro production build passed after provider-thinking removal.
+- Resolved: R1-R2. Request caching and server-owned content/history/thinking policy are removed; explicit client reasoning and protocol translation remain.
+- Last relevant evidence: Rust clippy, 1,680 library tests, and 12 chat integration tests passed after capacity/history adaptation removal.
 - Blocker: None.
-- Next: Commit R1, then execute R2.
+- Next: Commit the final R2 checkpoint, then execute R3.
 
 ## Material Decisions
 
@@ -273,6 +273,7 @@ Tool calling при этом остаётся. Прокси должен пер�
 - 2026-09-15: R2 checkpoint: removed the unused guardrail registry and its prompt-injection/PII mutation implementation. Clippy and 1,694 library tests passed. Synthetic bypass and thinking policy remain.
 - 2026-09-15: R2 checkpoint: removed Claude request bypass/naming heuristics, synthetic responses, the stale setting, and its CLI-tool toggle. Clippy, 1,687 library tests, and the dashboard build passed. Thinking and capacity policy remain.
 - 2026-09-15: R2 checkpoint: removed persisted `providerThinking` policy and source-body injection. The provider-page selector remains client-explicit by only appending a reasoning suffix to copied model IDs. Clippy, 1,687 library tests, and the dashboard build passed. Capacity/history adaptation remains.
+- 2026-09-15: R2 passed: removed capacity-adapter model injection, history stripping, and the stale setting while retaining explicit combo members and context-limit rejection. Clippy, 1,680 library tests, and 12 chat integration tests passed. Next is Codex policy.
 
 ## Completion
 

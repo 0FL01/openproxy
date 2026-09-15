@@ -556,11 +556,6 @@ pub struct Settings {
     pub client_ping_url: String,
     #[serde(default, deserialize_with = "deserialize_null_default")]
     pub client_ping_any: bool,
-    /// Per-capability model pools for the capacity adapter
-    /// (9router settingsRepo.js capacityAdapter defaults). Read at dispatch
-    /// time; PATCHed by the dashboard via `update_settings_api`.
-    #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub capacity_adapter: Value,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -594,7 +589,6 @@ impl Default for Settings {
             combo_sticky_round_robin_limit: default_combo_sticky_round_robin_limit(),
             client_ping_url: String::new(),
             client_ping_any: false,
-            capacity_adapter: json!({}),
             extra: BTreeMap::new(),
         }
     }
@@ -625,6 +619,7 @@ impl Settings {
             "systemPrompt",
             "ccFilterNaming",
             "providerThinking",
+            "capacityAdapter",
         ] {
             self.extra.remove(key);
         }

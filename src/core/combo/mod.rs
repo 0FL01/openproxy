@@ -15,7 +15,6 @@ use crate::types::{AppDb, Combo, PricingTable};
 
 pub mod auto_combo;
 pub mod capabilities;
-pub mod capacity_adapter;
 pub mod fusion;
 pub mod hedging;
 pub mod ordering;
