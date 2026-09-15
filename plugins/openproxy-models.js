@@ -10,10 +10,29 @@ function positiveInteger(value) {
   return Number.isSafeInteger(value) && value > 0
 }
 
+function prettyModelName(id) {
+  const modelId = id.includes("/") ? id.slice(id.indexOf("/") + 1) : id
+  const words = modelId.split(/[-_]+/).filter(Boolean).map((word) => {
+    const lower = word.toLowerCase()
+    if (lower === "gpt") return "GPT"
+    return lower[0].toUpperCase() + lower.slice(1)
+  })
+  if (words[0] === "GPT" && /^\d/.test(words[1] ?? "")) {
+    words.splice(0, 2, `${words[0]}-${words[1]}`)
+  }
+  return words.join(" ") || id
+}
+
+function explicitModelName(name, id) {
+  if (typeof name !== "string" || !name.trim()) return undefined
+  const withoutPrefix = id.includes("/") ? id.slice(id.indexOf("/") + 1) : id
+  return [id, withoutPrefix].includes(name.trim()) ? undefined : name.trim()
+}
+
 // Only accept model metadata, never remote SDK/URL/header/options overrides.
 function modelConfig(row) {
   if (!record(row) || typeof row.id !== "string" || !row.id.trim()) throw new Error()
-  const result = { name: row.id }
+  const result = { name: prettyModelName(row.id) }
   const limit = {}
   for (const [source, target] of [["context_length", "context"], ["max_completion_tokens", "output"]]) {
     if (row[source] !== undefined) {
@@ -25,7 +44,7 @@ function modelConfig(row) {
   if (!record(metadata)) throw new Error()
   if (metadata.name !== undefined) {
     if (typeof metadata.name !== "string") throw new Error()
-    result.name = metadata.name
+    result.name = explicitModelName(metadata.name, row.id) ?? result.name
   }
   if (metadata.limit !== undefined) {
     if (!record(metadata.limit)) throw new Error()

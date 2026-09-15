@@ -79,7 +79,7 @@ test("discovery authenticates, refreshes inventory, preserves options and valida
   body = { object: "list", data: [{ id: "opencode-go/added", context_length: 500000, max_completion_tokens: 128000 }] }
   await plugin.config(config)
   assert.deepEqual(config.provider.ludka2.models, {
-    "opencode-go/added": { name: "opencode-go/added", limit: { context: 500000, output: 128000 } },
+    "opencode-go/added": { name: "Added", limit: { context: 500000, output: 128000 } },
   })
   config.disabled_providers = ["ludka2"]
   await plugin.config(config)
@@ -97,4 +97,31 @@ test("discovery has its own timeout and preserves local models on network failur
   const config = { provider: { ludka2: { options: { baseURL: "https://example.invalid/v1", apiKey: "fixture-key", timeout: false }, models } } }
   await (await OpenProxyModels()).config(config)
   assert.strictEqual(config.provider.ludka2.models, models)
+})
+
+test("discovery generates readable names without changing model IDs", async (t) => {
+  t.mock.method(console, "warn", () => {})
+  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({
+    object: "list",
+    data: [
+      { id: "cx/gpt-5.6-luna" },
+      { id: "cx/gpt-5.6-sol-fast" },
+      { id: "cx/explicit", opencode: { name: "Public Luna" } },
+      { id: "cx/same", opencode: { name: "cx/same" } },
+      { id: "cx/local" },
+    ],
+  }), { headers: { "Content-Type": "application/json" } }))
+  const config = { provider: { ludka2: {
+    options: { baseURL: "https://example.invalid/v1", apiKey: "fixture-key" },
+    models: { "cx/local": { name: "User chosen name" } },
+  } } }
+  await (await OpenProxyModels()).config(config)
+  assert.deepEqual(Object.keys(config.provider.ludka2.models), [
+    "cx/gpt-5.6-luna", "cx/gpt-5.6-sol-fast", "cx/explicit", "cx/same", "cx/local",
+  ])
+  assert.equal(config.provider.ludka2.models["cx/gpt-5.6-luna"].name, "GPT-5.6 Luna")
+  assert.equal(config.provider.ludka2.models["cx/gpt-5.6-sol-fast"].name, "GPT-5.6 Sol Fast")
+  assert.equal(config.provider.ludka2.models["cx/explicit"].name, "Public Luna")
+  assert.equal(config.provider.ludka2.models["cx/same"].name, "Same")
+  assert.equal(config.provider.ludka2.models["cx/local"].name, "User chosen name")
 })

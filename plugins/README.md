@@ -60,6 +60,10 @@ The router determines which IDs exist. On success the plugin replaces the
 in-memory list, excluding removed/disabled models even if locally configured.
 Local `models` entries override metadata for matching IDs (limits are merged
 field by field); other provider options and other providers are untouched.
+When neither the proxy nor a local override supplies a useful name, the plugin
+removes the router prefix for display and formats the slug (for example,
+`cx/gpt-5.6-luna` becomes `GPT-5.6 Luna`). The model ID used for requests is
+unchanged. Explicit proxy and local names retain priority.
 
 The updated router supplies an additive `opencode` object on `/v1/models` rows:
 name, limits, modalities, reasoning/tool support, and reasoning-effort variants.
