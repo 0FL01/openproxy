@@ -8,16 +8,10 @@
 //!
 //! Pattern semantics match JS matchPattern: case-insensitive, `*` = wildcard,
 //! anchored to the full model id.
-//!
-//! Used by combo reordering: hard capabilities (vision/pdf/audioInput/
-//! videoInput) MUST be satisfied; soft ones only rank.
 
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::LazyLock;
-
-/// Capability keys that gate model selection (JS HARD_CAPS).
-pub const HARD_CAPS: &[&str] = &["vision", "pdf", "audioInput", "videoInput"];
 
 /// The safe floor every resolved result is merged over (JS DEFAULT_CAPABILITIES).
 #[derive(Debug, Clone)]
@@ -791,19 +785,5 @@ mod tests {
             None
         );
         assert_eq!(known_max_output_for_model("", "glm-4.6v"), None);
-    }
-
-    #[test]
-    fn reorder_floats_capable_models_to_front() {
-        use super::super::reorder_by_capabilities;
-        let models = vec![
-            "openai/gpt-3.5-turbo".to_string(), // text-only per pattern
-            "google/gemini-3-pro".to_string(),  // full multimodal
-            "anthropic/claude-3-haiku".to_string(),
-        ];
-        let mut required = std::collections::HashSet::new();
-        required.insert("vision".to_string());
-        let ordered = reorder_by_capabilities(&models, &required);
-        assert_eq!(ordered[0], "google/gemini-3-pro");
     }
 }

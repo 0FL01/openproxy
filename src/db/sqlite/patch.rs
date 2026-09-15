@@ -625,7 +625,11 @@ mod tests {
                 2 => {
                     // Toggle settings.
                     next.settings.cloud_enabled = rng() % 2 == 0;
-                    next.settings.combo_strategy = format!("strat{}", rng() % 3);
+                    next.settings.fallback_strategy = if rng() % 2 == 0 {
+                        "fill-first".into()
+                    } else {
+                        "round-robin".into()
+                    };
                 }
                 3 => {
                     // Mutate model aliases.

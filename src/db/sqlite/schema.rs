@@ -109,7 +109,7 @@ pub const TABLES_SQL: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_ak_key
         ON apiKeys(key)
     "#,
-    // Combos: named fallback/round-robin/fusion chains over models.
+    // Combos: named ordered fallback chains over models.
     r#"
     CREATE TABLE IF NOT EXISTS combos (
         id          TEXT PRIMARY KEY,

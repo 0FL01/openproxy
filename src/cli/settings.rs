@@ -31,7 +31,7 @@ pub enum SettingsCmd {
     /// single field's value (string in human mode, `{key, value}` envelope
     /// in robot mode).
     Get {
-        /// Dotted path inside the settings document (e.g. `comboStrategy`).
+        /// Dotted path inside the settings document (e.g. `outboundProxyUrl`).
         #[arg(long)]
         key: Option<String>,
     },
@@ -40,7 +40,7 @@ pub enum SettingsCmd {
     /// otherwise pass-through as a string.
     Set {
         /// camelCase field name on the settings document
-        /// (e.g. `comboStrategy`, `rtkEnabled`, `outboundProxyUrl`).
+        /// (e.g. `requireApiKey`, `observabilityEnabled`, `outboundProxyUrl`).
         #[arg(long)]
         key: String,
         /// Value to write. Use `--value-json` for arrays/objects.

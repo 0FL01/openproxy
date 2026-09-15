@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Card, Button, Input, Toggle, ModelSelectModal } from "@/shared/components";
+import { Card, Button, Input, ModelSelectModal } from "@/shared/components";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import { AI_PROVIDERS, MEDIA_PROVIDER_KINDS } from "@/shared/constants/providers";
 import React from "react";
@@ -48,7 +48,6 @@ export default function MediaProvidersComboIdPageClient() {
   const [name, setName] = useState("");
   const [nameError, setNameError] = useState("");
   const [providers, setProviders] = useState<string[]>([]);
-  const [roundRobin, setRoundRobin] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{
@@ -71,9 +70,8 @@ export default function MediaProvidersComboIdPageClient() {
   const fetchAll = async () => {
     if (!id) return;
     try {
-      const [comboRes, settingsRes, keysRes, connsRes, aliasesRes] = await Promise.all([
+      const [comboRes, keysRes, connsRes, aliasesRes] = await Promise.all([
         fetch(`/api/combos/${id}`, { cache: "no-store" }),
-        fetch("/api/settings", { cache: "no-store" }),
         fetch("/api/keys", { cache: "no-store" }),
         fetch("/api/providers", { cache: "no-store" }),
         fetch("/api/models/alias", { cache: "no-store" }),
@@ -89,8 +87,6 @@ export default function MediaProvidersComboIdPageClient() {
       setCombo(c);
       setName(c.name);
       setProviders(c.models || []);
-      const s = settingsRes.ok ? await settingsRes.json() : {};
-      setRoundRobin(s.comboStrategies?.[c.name]?.fallbackStrategy === "round-robin");
     } catch { /* noop */ }
     setLoading(false);
   };
@@ -150,20 +146,6 @@ export default function MediaProvidersComboIdPageClient() {
     [next[idx], next[swap]] = [next[swap], next[idx]];
     setProviders(next);
     await saveCombo({ models: next });
-  };
-
-  const handleToggleRoundRobin = async (enabled: boolean) => {
-    setRoundRobin(enabled);
-    const settingsRes = await fetch("/api/settings", { cache: "no-store" });
-    const s = settingsRes.ok ? await settingsRes.json() : {};
-    const updated = { ...(s.comboStrategies || {}) };
-    if (enabled) updated[combo.name] = { fallbackStrategy: "round-robin" };
-    else delete updated[combo.name];
-    await fetch("/api/settings", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ comboStrategies: updated }),
-    });
   };
 
   const handleDelete = async () => {
@@ -275,13 +257,6 @@ export default function MediaProvidersComboIdPageClient() {
             <Input label="Combo Name" value={name} onChange={(e: any) => { setName(e.target.value); validateName(e.target.value); }} onBlur={handleSaveName} error={nameError} />
             <p className="text-[10px] text-text-muted mt-0.5">Only letters, numbers, -, _ and .</p>
           </div>
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium">Round Robin</p>
-              <p className="text-xs text-text-muted">Rotate providers across requests instead of strict fallback order.</p>
-            </div>
-            <Toggle checked={roundRobin} onChange={handleToggleRoundRobin} />
-          </div>
         </div>
       </Card>
 
@@ -289,7 +264,7 @@ export default function MediaProvidersComboIdPageClient() {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-3">
           <div>
             <h2 className="text-lg font-semibold">Providers</h2>
-            <p className="text-xs text-text-muted">Tried in order (top-down) or rotated when round-robin is on.</p>
+            <p className="text-xs text-text-muted">Tried in order from top to bottom.</p>
           </div>
           <Button size="sm" icon="add" onClick={() => setShowPicker(true)}>Add Provider</Button>
         </div>

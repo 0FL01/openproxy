@@ -2103,8 +2103,6 @@ struct UpdateSettingsRequest {
     sticky_round_robin_limit: Option<u32>,
     provider_strategies: Option<BTreeMap<String, crate::types::ProviderStrategyEntry>>,
     provider_context_limits: Option<BTreeMap<String, u32>>,
-    combo_strategy: Option<String>,
-    combo_strategies: Option<BTreeMap<String, crate::types::ComboStrategyEntry>>,
     mitm_router_base_url: Option<String>,
     require_api_key: Option<bool>,
     require_login: Option<bool>,
@@ -2117,7 +2115,6 @@ struct UpdateSettingsRequest {
     new_password: Option<String>,
     current_password: Option<String>,
     fallback_strategy: Option<String>,
-    combo_sticky_round_robin_limit: Option<u32>,
     client_ping_url: Option<String>,
     client_ping_any: Option<bool>,
     /// Stored in settings.extra so provider-detail UI can PATCH it.
@@ -2190,12 +2187,6 @@ async fn update_settings_api(
             if let Some(v) = req.provider_context_limits {
                 db.settings.provider_context_limits = v;
             }
-            if let Some(v) = req.combo_strategy {
-                db.settings.combo_strategy = v;
-            }
-            if let Some(v) = req.combo_strategies {
-                db.settings.combo_strategies = v;
-            }
             if let Some(v) = req.mitm_router_base_url {
                 db.settings.mitm_router_base_url = v;
             }
@@ -2225,9 +2216,6 @@ async fn update_settings_api(
             }
             if let Some(v) = req.fallback_strategy {
                 db.settings.fallback_strategy = v;
-            }
-            if let Some(v) = req.combo_sticky_round_robin_limit {
-                db.settings.combo_sticky_round_robin_limit = v.max(1);
             }
             if let Some(v) = req.client_ping_url {
                 db.settings.client_ping_url = v;
@@ -2394,12 +2382,6 @@ fn merge_settings(target: &mut crate::types::Settings, source: &crate::types::Se
     if source.provider_context_limits != target.provider_context_limits {
         target.provider_context_limits = source.provider_context_limits.clone();
     }
-    if source.combo_strategy != target.combo_strategy {
-        target.combo_strategy = source.combo_strategy.clone();
-    }
-    if source.combo_strategies != target.combo_strategies {
-        target.combo_strategies = source.combo_strategies.clone();
-    }
     if source.observability_enabled != target.observability_enabled {
         target.observability_enabled = source.observability_enabled;
     }
@@ -2417,9 +2399,6 @@ fn merge_settings(target: &mut crate::types::Settings, source: &crate::types::Se
     }
     if source.fallback_strategy != target.fallback_strategy {
         target.fallback_strategy = source.fallback_strategy.clone();
-    }
-    if source.combo_sticky_round_robin_limit != target.combo_sticky_round_robin_limit {
-        target.combo_sticky_round_robin_limit = source.combo_sticky_round_robin_limit;
     }
     if source.client_ping_url != target.client_ping_url {
         target.client_ping_url = source.client_ping_url.clone();

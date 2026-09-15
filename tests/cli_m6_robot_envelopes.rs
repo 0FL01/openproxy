@@ -57,7 +57,7 @@ async fn settings_get_emits_envelope() {
     Mock::given(method("GET"))
         .and(path("/api/settings"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "comboStrategy": "fallback",
+            "requireApiKey": true,
             "rtkEnabled": true,
         })))
         .mount(&server)
@@ -71,7 +71,7 @@ async fn settings_get_emits_envelope() {
     );
     let v = parse_robot(&out.stdout);
     assert_eq!(v["schema"], "openproxy.v1.settings.get");
-    assert_eq!(v["data"]["comboStrategy"], "fallback");
+    assert_eq!(v["data"]["requireApiKey"], true);
     assert_eq!(v["data"]["rtkEnabled"], true);
 }
 
@@ -81,7 +81,7 @@ async fn settings_get_with_key_extracts_dotted_field() {
     Mock::given(method("GET"))
         .and(path("/api/settings"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "comboStrategy": "fallback",
+            "requireApiKey": true,
             "outboundProxy": {"url": "http://proxy.example.com"},
         })))
         .mount(&server)
@@ -104,7 +104,7 @@ async fn settings_set_patches_and_emits_envelope() {
     Mock::given(method("PATCH"))
         .and(path("/api/settings"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "comboStrategy": "round-robin",
+            "outboundNoProxy": "localhost",
         })))
         .mount(&server)
         .await;
@@ -116,9 +116,9 @@ async fn settings_set_patches_and_emits_envelope() {
             "settings",
             "set",
             "--key",
-            "comboStrategy",
+            "outboundNoProxy",
             "--value",
-            "round-robin",
+            "localhost",
         ],
     );
     assert!(
@@ -128,8 +128,8 @@ async fn settings_set_patches_and_emits_envelope() {
     );
     let v = parse_robot(&out.stdout);
     assert_eq!(v["schema"], "openproxy.v1.settings.set");
-    assert_eq!(v["data"]["updated"][0], "comboStrategy");
-    assert_eq!(v["data"]["settings"]["comboStrategy"], "round-robin");
+    assert_eq!(v["data"]["updated"][0], "outboundNoProxy");
+    assert_eq!(v["data"]["settings"]["outboundNoProxy"], "localhost");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -248,7 +248,7 @@ async fn db_export_emits_full_snapshot() {
         .and(path("/api/db/export"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "providerConnections": [{"name": "openai-main"}],
-            "settings": {"comboStrategy": "fallback"},
+            "settings": {"requireApiKey": true},
         })))
         .mount(&server)
         .await;
@@ -306,7 +306,7 @@ async fn db_dump_extracts_single_resource() {
         .and(path("/api/db/export"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "providerConnections": [{"name": "openai-main"}, {"name": "anthropic"}],
-            "settings": {"comboStrategy": "fallback"},
+            "settings": {"requireApiKey": true},
         })))
         .mount(&server)
         .await;

@@ -17,12 +17,9 @@ interface Settings {
   outboundProxyEnabled?: boolean;
   outboundProxyUrl?: string;
   outboundNoProxy?: string;
-  comboStrategy?: string;
   stickyRoundRobinLimit?: number;
   /** Account-level fallback strategy: "fill-first" | "round-robin" */
   fallbackStrategy?: string;
-  /** Sticky limit for combo round-robin (separate from account RR) */
-  comboStickyRoundRobinLimit?: number;
   /** Concrete DB path from the API */
   databasePath?: string;
   /** Data directory path from the API (fallback display) */
@@ -90,7 +87,6 @@ export default function ProfilePageClient() {
   const [proxyTestLoading, setProxyTestLoading] = useState(false);
 
   const [accountStickyLimitInput, setAccountStickyLimitInput] = useState("3");
-  const [comboStickyLimitInput, setComboStickyLimitInput] = useState("1");
 
   const importFileRef = useRef<HTMLInputElement>(null);
 
@@ -114,7 +110,6 @@ export default function ProfilePageClient() {
         outboundNoProxy: data.outboundNoProxy ?? "",
       });
       setAccountStickyLimitInput(String(data.stickyRoundRobinLimit ?? 3));
-      setComboStickyLimitInput(String(data.comboStickyRoundRobinLimit ?? 1));
     } catch (err) {
       console.error("Failed to fetch settings:", err);
     } finally {
@@ -239,29 +234,6 @@ export default function ProfilePageClient() {
       }
     } catch (err) {
       console.error("Failed to update sticky limit:", err);
-    }
-  };
-
-  const updateComboStrategy = async (strategy: string) => {
-    try {
-      const data = await patchSettings({ comboStrategy: strategy });
-      if (data) setSettings((prev) => ({ ...prev, ...data }));
-    } catch (err) {
-      console.error("Failed to update combo strategy:", err);
-    }
-  };
-
-  const updateComboStickyLimit = async (raw: string) => {
-    const num = parseInt(raw, 10);
-    if (isNaN(num) || num < 1) return;
-    try {
-      const data = await patchSettings({ comboStickyRoundRobinLimit: num });
-      if (data) {
-        setSettings((prev) => ({ ...prev, ...data }));
-        setComboStickyLimitInput(String(num));
-      }
-    } catch (err) {
-      console.error("Failed to update combo sticky limit:", err);
     }
   };
 
@@ -460,10 +432,8 @@ export default function ProfilePageClient() {
   const hasPassword = settings.hasPassword === true;
   const observabilityEnabled = settings.observabilityEnabled === true;
   const outboundProxyEnabled = settings.outboundProxyEnabled === true;
-  const comboRoundRobin = settings.comboStrategy === "round-robin";
   const accountRoundRobin = settings.fallbackStrategy === "round-robin";
   const accountStickyLimit = settings.stickyRoundRobinLimit ?? 3;
-  const comboStickyLimit = settings.comboStickyRoundRobinLimit ?? 1;
   const dbPath =
     (typeof settings.databasePath === "string" && settings.databasePath) ||
     (typeof settings.dataDir === "string" && settings.dataDir) ||
@@ -659,47 +629,11 @@ export default function ProfilePageClient() {
               </div>
             )}
 
-            {/* Combo Round Robin */}
-            <div className="flex items-start sm:items-center justify-between gap-4 pt-4 border-t border-hairline-soft">
-              <div className="flex-1 min-w-0">
-                <p className="font-medium text-sm">Combo Round Robin</p>
-                <p className="text-xs text-muted-soft">
-                  Cycle through providers in combos instead of always starting with the first
-                </p>
-              </div>
-              <Toggle
-                checked={comboRoundRobin}
-                onChange={() => updateComboStrategy(comboRoundRobin ? "fallback" : "round-robin")}
-                disabled={loading}
-              />
-            </div>
-
-            {comboRoundRobin && (
-              <div className="flex items-start sm:items-center justify-between gap-4 pt-2 border-t border-hairline-soft">
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium text-sm">Combo Sticky Limit</p>
-                  <p className="text-xs text-muted-soft">Requests per combo model before switching</p>
-                </div>
-                <Input
-                  type="number"
-                  min="1"
-                  max="100"
-                  value={comboStickyLimitInput}
-                  onChange={(e) => setComboStickyLimitInput(e.target.value)}
-                  onBlur={() => updateComboStickyLimit(comboStickyLimitInput)}
-                  disabled={loading}
-                  className="w-16 sm:w-20 text-center shrink-0"
-                />
-              </div>
-            )}
-
             <p className="text-xs text-muted-soft italic pt-2 border-t border-hairline-soft">
               {accountRoundRobin
                 ? `Accounts use round-robin with up to ${accountStickyLimit} request${accountStickyLimit === 1 ? "" : "s"} per account.`
                 : "Accounts use fill-first (priority order)."}{" "}
-              {comboRoundRobin
-                ? `Combos rotate after ${comboStickyLimit} call${comboStickyLimit === 1 ? "" : "s"} per model.`
-                : "Combos always start with their first model."}
+              Combos always try their explicitly configured models in order.
             </p>
           </div>
         </Card>

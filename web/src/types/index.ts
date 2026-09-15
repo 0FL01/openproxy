@@ -233,28 +233,6 @@ export interface ModelPricing {
   unit?: string;
 }
 
-// Combo routing types — mirrors backend `core::combo::ComboStrategy`.
-export type ComboStrategyName =
-  | "fallback"
-  | "round-robin"
-  | "fusion"
-  | "cheapest"
-  | "fastest"
-  | "quality";
-
-/** Mirrors backend `ComboStrategyConfig` (camelCase over the wire). */
-export interface ComboStrategyConfig {
-  fallbackStrategy?: ComboStrategyName | string;
-  judgeModel?: string;
-  fusionTuning?: Record<string, unknown>;
-  [key: string]: unknown;
-}
-
-export interface ComboStrategyOption {
-  value: ComboStrategyName;
-  label: string;
-}
-
 // Store types
 export interface ThemeStore {
   theme: Theme;

@@ -17,12 +17,9 @@ use crate::core::account_fallback::{
     build_model_lock_update, filter_available_accounts, StrategyType,
 };
 use crate::core::chat::RequestPlan;
-use crate::core::combo::fusion::{handle_fusion_chat, handle_fusion_chat_deferred};
 use crate::core::combo::{
-    check_fallback_error, detect_required_capabilities, execute_combo_strategy_full,
-    get_combo_models_from_data, get_disabled_members_for_combo, mark_combo_member_quarantined,
-    strategy_for_combo, ComboAttemptError, ComboExecutionError, ComboStrategy, FusionConfig,
-    ModelCapacity,
+    check_fallback_error, execute_combo, get_combo_models_from_data,
+    get_disabled_members_for_combo, ComboAttemptError, ComboExecutionError,
 };
 use crate::core::executor::UpstreamResponse;
 use crate::core::model::{get_model_info, ModelRouteKind};
@@ -434,7 +431,6 @@ async fn chat_completions_impl(
                 return json_error_response(StatusCode::BAD_REQUEST, "Unknown combo model");
             };
 
-            let required_caps = detect_required_capabilities(&body);
             let disabled_members = get_disabled_members_for_combo(&combo_name, &snapshot.combos);
 
             let estimated_tokens = crate::core::context_limit::estimate_input_tokens(&body);
@@ -463,273 +459,67 @@ async fn chat_completions_impl(
                     first_context_error.expect("a filtered combo member has a context error"),
                 );
             }
-            let strategy = strategy_for_combo(&snapshot, &combo_name);
-            let sticky_limit = snapshot.settings.combo_sticky_round_robin_limit.max(1);
             let combo_body = body.clone();
             let combo_state = state.clone();
             let combo_api_key = presented_api_key.clone();
-            let capacity_snapshot = snapshot.clone();
-            let capacity_registry = state.account_registry.clone();
-            let capacity_check = move |combo_model: &str| -> ModelCapacity {
-                model_capacity(&capacity_snapshot, &capacity_registry, combo_model)
-            };
-            // Track every member we attempted so that on a full combo
-            // failure (the closure returned `Err` for every member) we
-            // can register them in the auto-quarantine map. Anything in
-            // this list bubbled up an error, so quarantining them stops
-            // the very next request from immediately re-attempting the
-            // same broken member and making the CLI agent hang.
-            let attempted_members: std::sync::Arc<parking_lot::Mutex<Vec<String>>> =
-                std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
-            let combo_name_for_quarantine = combo_name.clone();
             let client_tool_for_combo = client_tool;
-            let result = if strategy == ComboStrategy::Fusion {
-                let f_state = state.clone();
-                let f_body = body.clone();
-                let f_api_key = presented_api_key.clone();
-                let f_client_tool = client_tool;
-                let f_headers = headers_map.clone();
-                let f_log_context = request_log_context.clone();
-
-                let panel_count = context_allowed_models.len();
-                let fusion_cfg = fusion_config_for(&snapshot, &combo_name, panel_count);
-                // 9router combo.js: the judge (and single-survivor) leg runs
-                // with the ORIGINAL client stream flag — a streaming client
-                // must get SSE, not a buffered JSON blob. The buffered-Value
-                // callback below cannot carry an SSE body, so when the client
-                // asked to stream we defer the final dispatch and run it
-                // ourselves after panel collection.
-                let client_wants_stream =
-                    body.get("stream").and_then(Value::as_bool).unwrap_or(true);
-                let fusion_result = if client_wants_stream {
-                    handle_fusion_chat_deferred(
-                        &mut body.clone(),
-                        &context_allowed_models,
-                        &fusion_cfg,
-                        None,
-                        move |model: String, panel_body: Value| {
-                            let state = f_state.clone();
-                            let body = f_body.clone();
-                            let api_key = f_api_key.clone();
-                            let client_tool = f_client_tool;
-                            let headers = f_headers.clone();
-                            let log_context = f_log_context.clone();
-                            async move {
-                                let response = dispatch_fusion_leg(
-                                    &state,
-                                    &body,
-                                    &panel_body,
-                                    &model,
-                                    api_key.as_deref(),
-                                    log_context.as_ref(),
-                                    endpoint,
-                                    client_tool,
-                                    &headers,
-                                    Some(false),
-                                )
-                                .await
-                                .map_err(|e| {
-                                    anyhow::anyhow!("Fusion panel failed: {}", e.message)
-                                })?;
-                                let body_bytes =
-                                    axum::body::to_bytes(response.into_body(), 10 * 1024 * 1024)
-                                        .await
-                                        .map_err(|e| {
-                                            anyhow::anyhow!("Failed to read panel body: {}", e)
-                                        })?;
-                                serde_json::from_slice(&body_bytes)
-                                    .map_err(|e| anyhow::anyhow!("Failed to parse panel body: {e}"))
-                            }
-                        },
-                    )
-                    .await
-                } else {
-                    handle_fusion_chat(
-                        &mut body.clone(),
-                        &context_allowed_models,
-                        &fusion_cfg,
-                        None,
-                        move |model: String, panel_body: Value| {
-                            let state = f_state.clone();
-                            let body = f_body.clone();
-                            let api_key = f_api_key.clone();
-                            let client_tool = f_client_tool;
-                            let headers = f_headers.clone();
-                            let log_context = f_log_context.clone();
-                            async move {
-                                let response = dispatch_fusion_leg(
-                                    &state,
-                                    &body,
-                                    &panel_body,
-                                    &model,
-                                    api_key.as_deref(),
-                                    log_context.as_ref(),
-                                    endpoint,
-                                    client_tool,
-                                    &headers,
-                                    Some(false),
-                                )
-                                .await
-                                .map_err(|e| {
-                                    anyhow::anyhow!("Fusion panel failed: {}", e.message)
-                                })?;
-                                let body_bytes =
-                                    axum::body::to_bytes(response.into_body(), 10 * 1024 * 1024)
-                                        .await
-                                        .map_err(|e| {
-                                            anyhow::anyhow!("Failed to read panel body: {}", e)
-                                        })?;
-                                serde_json::from_slice(&body_bytes)
-                                    .map_err(|e| anyhow::anyhow!("Failed to parse panel body: {e}"))
-                            }
-                        },
-                    )
-                    .await
-                };
-
-                match fusion_result {
-                    Ok(value) => {
-                        // Deferred dispatch: the fusion pipeline decided which
-                        // model runs the final leg (judge or single survivor) —
-                        // run it with full stream semantics so SSE clients see
-                        // a live stream (COMBO-1 / 9router combo.js parity).
-                        if let Some(dispatch) = value.get("__openproxy_fusion_dispatch") {
-                            let model = dispatch
-                                .get("model")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_string();
-                            let empty = Value::Object(Default::default());
-                            let dispatch_body = dispatch
-                                .get("body")
-                                .cloned()
-                                .unwrap_or_else(|| empty.clone());
-                            let dispatched = dispatch_fusion_leg(
-                                &state,
-                                &body,
-                                &dispatch_body,
-                                &model,
-                                presented_api_key.as_deref(),
-                                request_log_context.as_ref(),
-                                endpoint,
-                                client_tool,
-                                &headers_map,
-                                None,
-                            )
-                            .await;
-                            return match dispatched {
-                                Ok(response) => response,
-                                Err(error) => combo_error_response(ComboExecutionError {
-                                    status: error.status,
-                                    message: error.message,
-                                    earliest_retry_after: None,
-                                    upstream_body: None,
-                                }),
-                            };
-                        }
-                        let json_str = serde_json::to_string(&value).unwrap_or_default();
-                        Ok(axum::response::Response::new(axum::body::Body::from(
-                            json_str,
-                        )))
-                    }
-                    Err(e) => Err(ComboExecutionError {
-                        status: e.status,
-                        message: e.message,
-                        earliest_retry_after: None,
-                        upstream_body: None,
-                    }),
-                }
-            } else {
-                let attempted_members = attempted_members.clone();
-                let combo_headers = headers_map.clone();
-                let combo_log_context = request_log_context.clone();
-                execute_combo_strategy_full(
-                    &context_allowed_models,
-                    Some(&combo_name),
-                    strategy,
-                    &disabled_members,
-                    sticky_limit,
-                    Some(&required_caps),
-                    capacity_check,
-                    move |combo_model| {
-                        let state = combo_state.clone();
-                        let body = combo_body.clone();
-                        let combo_model = combo_model.to_string();
-                        let api_key = combo_api_key.clone();
-                        let headers = combo_headers.clone();
-                        let log_context = combo_log_context.clone();
-                        attempted_members.lock().push(combo_model.clone());
-                        // Re-resolve provider/model for this combo entry so each
-                        // iteration dispatches against the correct provider node
-                        // (e.g. "custom/gpt-fail" -> provider "node-openai", model "gpt-fail").
-                        let inner_snapshot = state.db.snapshot();
-                        let combo_resolved = get_model_info(&combo_model, &inner_snapshot);
-                        tracing::warn!(
-                            "COMBO model={} provider={:?} model_resolved={:?}",
-                            combo_model,
-                            combo_resolved.provider,
-                            combo_resolved.model,
-                        );
-                        let combo_provider_str = combo_resolved
-                            .provider
-                            .as_deref()
-                            .unwrap_or("unknown")
-                            .to_string();
-                        let resolved_model = combo_resolved.model.clone();
-                        let mut combo_plan =
-                            RequestPlan::new(endpoint, &body, &combo_provider_str, &resolved_model);
-                        combo_plan.passthrough =
-                            is_native_passthrough(client_tool_for_combo, &combo_provider_str);
-                        // Accept header not available inside combo closure — use body only
-                        apply_stream_plan(
-                            &mut combo_plan,
+            let combo_headers = headers_map.clone();
+            let combo_log_context = request_log_context.clone();
+            let result = execute_combo(
+                &context_allowed_models,
+                &disabled_members,
+                move |combo_model| {
+                    let state = combo_state.clone();
+                    let body = combo_body.clone();
+                    let combo_model = combo_model.to_string();
+                    let api_key = combo_api_key.clone();
+                    let headers = combo_headers.clone();
+                    let log_context = combo_log_context.clone();
+                    // Re-resolve provider/model for this combo entry so each
+                    // iteration dispatches against the correct provider node
+                    // (e.g. "custom/gpt-fail" -> provider "node-openai", model "gpt-fail").
+                    let inner_snapshot = state.db.snapshot();
+                    let combo_resolved = get_model_info(&combo_model, &inner_snapshot);
+                    tracing::warn!(
+                        "COMBO model={} provider={:?} model_resolved={:?}",
+                        combo_model,
+                        combo_resolved.provider,
+                        combo_resolved.model,
+                    );
+                    let combo_provider_str = combo_resolved
+                        .provider
+                        .as_deref()
+                        .unwrap_or("unknown")
+                        .to_string();
+                    let resolved_model = combo_resolved.model.clone();
+                    let mut combo_plan =
+                        RequestPlan::new(endpoint, &body, &combo_provider_str, &resolved_model);
+                    combo_plan.passthrough =
+                        is_native_passthrough(client_tool_for_combo, &combo_provider_str);
+                    // Accept header not available inside combo closure — use body only
+                    apply_stream_plan(&mut combo_plan, &body, None, client_tool_for_combo, None);
+                    let plan_for_combo = combo_plan.clone();
+                    async move {
+                        execute_single_model(
+                            &state,
                             &body,
-                            None,
+                            &resolved_model,
+                            api_key.as_deref(),
+                            log_context.as_ref(),
+                            endpoint,
+                            &plan_for_combo,
                             client_tool_for_combo,
-                            None,
-                        );
-                        let plan_for_combo = combo_plan.clone();
-                        async move {
-                            execute_single_model(
-                                &state,
-                                &body,
-                                &resolved_model,
-                                api_key.as_deref(),
-                                log_context.as_ref(),
-                                endpoint,
-                                &plan_for_combo,
-                                client_tool_for_combo,
-                                Some(&headers),
-                                false,
-                            )
-                            .await
-                        }
-                    },
-                )
-                .await
-            };
+                            Some(&headers),
+                            false,
+                        )
+                        .await
+                    }
+                },
+            )
+            .await;
             match result {
                 Ok(response) => response,
-                Err(error) => {
-                    // Auto-quarantine every combo member we just tried so
-                    // the next request doesn't immediately reroll the same
-                    // failure. We reuse `check_fallback_error`'s cooldown
-                    // so the TTL matches the per-account lock that
-                    // `forward_with_provider_fallback` just applied — this
-                    // is the "hook / pre-gate" that stops the CLI agent
-                    // from appearing to hang on a known-broken combo
-                    // member.
-                    let cooldown = check_fallback_error(error.status, &error.message, 0).cooldown;
-                    let attempted = attempted_members.lock().clone();
-                    for member in attempted {
-                        mark_combo_member_quarantined(
-                            &combo_name_for_quarantine,
-                            &member,
-                            cooldown,
-                        );
-                    }
-                    combo_error_response(error)
-                }
+                Err(error) => combo_error_response(error),
             }
         }
         ModelRouteKind::Direct => {
@@ -860,55 +650,6 @@ fn apply_stream_plan(
         sp.provider_forced,
         sp.sse_to_json,
     );
-}
-
-/// Dispatch one fusion leg (panel, judge, or deferred final leg).
-///
-/// - Panel legs pass `force_stream = Some(false)` (createPanelBody parity).
-/// - The deferred judge/survivor leg passes `force_stream = None`, so the
-///   ORIGINAL client stream flag drives the plan — SSE flows untouched.
-async fn dispatch_fusion_leg(
-    state: &AppState,
-    original_body: &Value,
-    leg_body: &Value,
-    model: &str,
-    api_key: Option<&str>,
-    log_context: Option<&RequestLogContext>,
-    endpoint: Option<&'static str>,
-    client_tool: Option<ClientTool>,
-    headers: &std::collections::HashMap<String, String>,
-    force_stream: Option<bool>,
-) -> Result<Response, ComboAttemptError> {
-    let snapshot = state.db.snapshot();
-    let resolved = get_model_info(model, &snapshot);
-    let provider = resolved
-        .provider
-        .as_deref()
-        .unwrap_or("unknown")
-        .to_string();
-    let resolved_model = resolved.model.clone();
-    let mut plan = RequestPlan::new(endpoint, original_body, &provider, &resolved_model);
-    plan.passthrough = is_native_passthrough(client_tool, &provider);
-    plan.stream = force_stream.unwrap_or_else(|| {
-        original_body
-            .get("stream")
-            .and_then(Value::as_bool)
-            .unwrap_or(true)
-    });
-    plan.sse_to_json = false;
-    execute_single_model(
-        state,
-        leg_body,
-        &resolved_model,
-        api_key,
-        log_context,
-        endpoint,
-        &plan,
-        client_tool,
-        Some(headers),
-        false,
-    )
-    .await
 }
 
 async fn native_context_window(state: &AppState, provider: &str, model: &str) -> Option<u32> {
@@ -2436,49 +2177,6 @@ async fn proxy_dashboard_sse(
     build_dashboard_sse_response(status, &headers, sse_body)
 }
 
-/// Peek-only capacity check for a single combo member model.
-///
-/// Mirrors the filtering in [`select_connection`] but does NOT acquire a slot:
-/// it just asks whether at least one eligible provider account has a free
-/// in-flight slot under [`MAX_IN_FLIGHT_PER_ACCOUNT`]. Used by the round-robin
-/// strategy to skip combo members whose backing providers are currently
-/// saturated, so we don't pin a coding agent's request on a provider that
-/// would either fail fast through the inner per-account fallback or block
-/// other repos' requests.
-///
-/// Returns `Available` for combo models we can't statically resolve to a
-/// specific provider (e.g. alias-only lookups that depend on runtime
-/// resolution) so we don't accidentally exclude them - the existing
-/// per-account fallback inside [`forward_with_provider_fallback`] still
-/// applies once we actually attempt the request.
-fn model_capacity(
-    snapshot: &AppDb,
-    registry: &crate::core::account_fallback::AccountRegistry,
-    combo_model: &str,
-) -> ModelCapacity {
-    let resolved = get_model_info(combo_model, snapshot);
-    let Some(provider) = resolved.provider.as_deref() else {
-        return ModelCapacity::Available;
-    };
-
-    let now = Utc::now();
-    let has_capacity = snapshot.provider_connections.iter().any(|connection| {
-        connection.provider == provider
-            && connection.is_active()
-            && connection_has_credentials(connection)
-            && connection_supports_model(connection, &resolved.model)
-            && !is_connection_rate_limited(connection, now)
-            && !is_model_locked(connection, &resolved.model, now)
-            && registry.in_flight_count(&connection.id) < MAX_IN_FLIGHT_PER_ACCOUNT
-    });
-
-    if has_capacity {
-        ModelCapacity::Available
-    } else {
-        ModelCapacity::Busy
-    }
-}
-
 fn select_connection(
     snapshot: &AppDb,
     provider: &str,
@@ -2738,48 +2436,6 @@ fn earliest_retry_after(
         })
         .filter(|until| *until > now)
         .min()
-}
-
-/// Merge 9router nested comboStrategies[name] (judgeModel / fusionTuning) into FusionConfig.
-fn fusion_config_for(snapshot: &AppDb, combo_name: &str, panel_count: usize) -> FusionConfig {
-    let mut extra: serde_json::Map<String, Value> = snapshot
-        .combos
-        .iter()
-        .find(|c| c.name == combo_name)
-        .map(|c| {
-            c.extra
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    if let Some(entry) = snapshot.settings.combo_strategies.get(combo_name) {
-        if let Some(judge) = entry.judge_model() {
-            extra.insert("judgeModel".into(), Value::String(judge.to_string()));
-            // Also nest under fusionConfig for from_extra
-            let mut fc = extra
-                .get("fusionConfig")
-                .and_then(|v| v.as_object().cloned())
-                .unwrap_or_default();
-            fc.insert("judgeModel".into(), Value::String(judge.to_string()));
-            extra.insert("fusionConfig".into(), Value::Object(fc));
-        }
-        if let Some(tuning) = entry.fusion_tuning() {
-            if let Some(obj) = tuning.as_object() {
-                let mut fc = extra
-                    .get("fusionConfig")
-                    .and_then(|v| v.as_object().cloned())
-                    .unwrap_or_default();
-                for (k, v) in obj {
-                    fc.insert(k.clone(), v.clone());
-                }
-                extra.insert("fusionConfig".into(), Value::Object(fc));
-            }
-        }
-    }
-
-    FusionConfig::from_extra(&extra, panel_count)
 }
 
 async fn mark_connection_unavailable(

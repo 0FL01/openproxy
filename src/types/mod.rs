@@ -55,6 +55,29 @@ impl AppDb {
             api_key.extra.remove("monthly_budget_usd");
         }
 
+        for combo in &mut self.combos {
+            for key in ["strategy", "fusionConfig", "judgeModel", "fusionTuning"] {
+                combo.extra.remove(key);
+            }
+            if combo.kind.as_deref().is_some_and(|kind| {
+                matches!(
+                    kind,
+                    "fallback"
+                        | "round-robin"
+                        | "sticky-round-robin"
+                        | "fusion"
+                        | "auto-combo"
+                        | "hedging"
+                        | "shadow"
+                        | "cheapest"
+                        | "fastest"
+                        | "quality"
+                )
+            }) {
+                combo.kind = None;
+            }
+        }
+
         // Strip empty providerFilters/favoriteModels from extra so that
         // export → from_json_value round-trips stay equal (empty scopes are
         // stored as 0 KV rows and should not appear as `"providerFilters": {}`
@@ -273,19 +296,6 @@ pub struct CustomModel {
     pub extra: BTreeMap<String, Value>,
 }
 
-/// Per-combo strategy entry — 9router `settings.comboStrategies[name]`.
-///
-/// Accepts either a bare strategy string (`"fusion"`) for backward compatibility
-/// or a nested object with `fallbackStrategy`, `judgeModel`, and `fusionTuning`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum ComboStrategyEntry {
-    /// Legacy flat form: `"round-robin"` / `"fusion"` / `"fallback"`.
-    Name(String),
-    /// Nested form matching 9router dashboard + chat handlers.
-    Config(ComboStrategyConfig),
-}
-
 /// Per-provider account-fallback strategy entry — 9router
 /// `settings.providerStrategies[providerId]`.
 ///
@@ -347,43 +357,6 @@ pub struct ProviderStrategyConfig {
     pub rotate_strategy: Option<String>,
     #[serde(default)]
     pub proxy_pool_id: Option<String>,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
-}
-
-impl ComboStrategyEntry {
-    /// Strategy name used by the dispatcher (`fallback` | `round-robin` | `fusion` | …).
-    pub fn strategy_name(&self) -> &str {
-        match self {
-            Self::Name(s) => s.as_str(),
-            Self::Config(c) => c.fallback_strategy.as_deref().unwrap_or("fallback"),
-        }
-    }
-
-    pub fn judge_model(&self) -> Option<&str> {
-        match self {
-            Self::Config(c) => c.judge_model.as_deref().filter(|s| !s.is_empty()),
-            Self::Name(_) => None,
-        }
-    }
-
-    pub fn fusion_tuning(&self) -> Option<&Value> {
-        match self {
-            Self::Config(c) => c.fusion_tuning.as_ref(),
-            Self::Name(_) => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct ComboStrategyConfig {
-    #[serde(default)]
-    pub fallback_strategy: Option<String>,
-    #[serde(default)]
-    pub judge_model: Option<String>,
-    #[serde(default)]
-    pub fusion_tuning: Option<Value>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -459,15 +432,6 @@ pub struct Settings {
     )]
     pub provider_context_limits: BTreeMap<String, u32>,
     #[serde(
-        default = "default_combo_strategy",
-        deserialize_with = "deserialize_null_default"
-    )]
-    pub combo_strategy: String,
-    /// Per-combo strategy overrides. Accepts legacy string (`"fusion"`) or
-    /// 9router nested object (`{ fallbackStrategy, judgeModel, fusionTuning }`).
-    #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub combo_strategies: BTreeMap<String, ComboStrategyEntry>,
-    #[serde(
         default = "default_true",
         deserialize_with = "deserialize_null_default"
     )]
@@ -526,12 +490,6 @@ pub struct Settings {
         deserialize_with = "deserialize_null_default"
     )]
     pub fallback_strategy: String,
-    /// Sticky limit for combo round-robin (separate from account sticky).
-    #[serde(
-        default = "default_combo_sticky_round_robin_limit",
-        deserialize_with = "deserialize_null_default"
-    )]
-    pub combo_sticky_round_robin_limit: u32,
     #[serde(default, deserialize_with = "deserialize_null_default")]
     pub client_ping_url: String,
     #[serde(default, deserialize_with = "deserialize_null_default")]
@@ -548,8 +506,6 @@ impl Default for Settings {
             sticky_round_robin_limit: default_sticky_round_robin_limit(),
             provider_strategies: BTreeMap::new(),
             provider_context_limits: crate::core::context_limit::default_provider_context_limits(),
-            combo_strategy: default_combo_strategy(),
-            combo_strategies: BTreeMap::new(),
             // A fresh install must never expose inference routes without a key.
             require_api_key: true,
             // Dashboard login is independent from inference API-key auth.
@@ -566,7 +522,6 @@ impl Default for Settings {
             mitm_port: default_mitm_port(),
             password: None,
             fallback_strategy: default_fallback_strategy(),
-            combo_sticky_round_robin_limit: default_combo_sticky_round_robin_limit(),
             client_ping_url: String::new(),
             client_ping_any: false,
             extra: BTreeMap::new(),
@@ -600,6 +555,9 @@ impl Settings {
             "ccFilterNaming",
             "providerThinking",
             "capacityAdapter",
+            "comboStrategy",
+            "comboStrategies",
+            "comboStickyRoundRobinLimit",
         ] {
             self.extra.remove(key);
         }
@@ -608,9 +566,6 @@ impl Settings {
         }
 
         self.fallback_strategy = normalize_fallback_strategy(&self.fallback_strategy);
-        if self.combo_sticky_round_robin_limit == 0 {
-            self.combo_sticky_round_robin_limit = default_combo_sticky_round_robin_limit();
-        }
     }
 }
 
@@ -686,16 +641,8 @@ fn default_sticky_round_robin_limit() -> u32 {
     3
 }
 
-fn default_combo_strategy() -> String {
-    "fallback".into()
-}
-
 fn default_fallback_strategy() -> String {
     "fill-first".into()
-}
-
-fn default_combo_sticky_round_robin_limit() -> u32 {
-    1
 }
 
 fn normalize_fallback_strategy(value: &str) -> String {

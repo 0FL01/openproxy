@@ -1,8 +1,8 @@
-//! `openproxy combo *` — fallback chains and round-robin combos.
+//! `openproxy combo *` — ordered fallback chains.
 //!
 //! Combos are one of OpenProxy's two core concepts: a named list of models
-//! the router walks through on failure (or rotates across, depending on
-//! strategy). They are stored in `db.json` as the `combos` Vec.
+//! the router walks through on failure. They are stored in `db.json` as the
+//! `combos` Vec.
 
 use std::collections::BTreeMap;
 use std::collections::HashSet;
@@ -31,17 +31,12 @@ pub enum ComboCmd {
         /// Models in priority order, comma-separated (e.g. `openai/gpt-4o,anthropic/claude-3-5-sonnet`).
         #[arg(long, value_delimiter = ',')]
         models: Vec<String>,
-        /// Strategy: `fallback` (default), `round-robin`, or `sticky-round-robin`.
-        #[arg(long, default_value = "fallback")]
-        strategy: String,
     },
     /// Edit an existing combo. Any flag omitted is left unchanged.
     Edit {
         name: String,
         #[arg(long, value_delimiter = ',')]
         models: Option<Vec<String>>,
-        #[arg(long)]
-        strategy: Option<String>,
     },
     /// Delete a combo. Exit 0 if it does not exist (use `--strict` to fail).
     Delete {
@@ -78,8 +73,6 @@ struct ComboInput {
     #[serde(default)]
     models: Vec<String>,
     #[serde(default)]
-    strategy: Option<String>,
-    #[serde(default)]
     kind: Option<String>,
     #[serde(default)]
     is_active: Option<bool>,
@@ -89,16 +82,8 @@ pub async fn run(cmd: ComboCmd, db: &Db, ctx: OutputCtx) -> anyhow::Result<()> {
     match cmd {
         ComboCmd::List => run_list(db, ctx).await,
         ComboCmd::Get { name } => run_get(db, ctx, &name).await,
-        ComboCmd::Create {
-            name,
-            models,
-            strategy,
-        } => run_create(db, ctx, name, models, strategy).await,
-        ComboCmd::Edit {
-            name,
-            models,
-            strategy,
-        } => run_edit(db, ctx, &name, models, strategy).await,
+        ComboCmd::Create { name, models } => run_create(db, ctx, name, models).await,
+        ComboCmd::Edit { name, models } => run_edit(db, ctx, &name, models).await,
         ComboCmd::Delete { name, strict } => run_delete(db, ctx, &name, strict).await,
         ComboCmd::Enable { name } => run_set_active(db, ctx, &name, true).await,
         ComboCmd::Disable { name } => run_set_active(db, ctx, &name, false).await,
@@ -123,7 +108,7 @@ async fn run_list(db: &Db, ctx: OutputCtx) -> anyhow::Result<()> {
                 format!(
                     "  {}  [{}]  {} model(s)",
                     combo.name,
-                    combo.kind.as_deref().unwrap_or("fallback"),
+                    combo.kind.as_deref().unwrap_or("llm"),
                     combo.models.len()
                 ),
             );
@@ -143,7 +128,7 @@ async fn run_get(db: &Db, ctx: OutputCtx, name: &str) -> anyhow::Result<()> {
         humanln(ctx, format!("Combo: {}", combo.name));
         humanln(
             ctx,
-            format!("  kind: {}", combo.kind.as_deref().unwrap_or("fallback")),
+            format!("  kind: {}", combo.kind.as_deref().unwrap_or("llm")),
         );
         humanln(ctx, format!("  models ({}):", combo.models.len()));
         for m in &combo.models {
@@ -158,7 +143,6 @@ async fn run_create(
     ctx: OutputCtx,
     name: String,
     models: Vec<String>,
-    strategy: String,
 ) -> anyhow::Result<()> {
     if !is_valid_combo_name(&name) {
         let exit = emit_error(
@@ -187,7 +171,7 @@ async fn run_create(
         name: name.clone(),
         models,
         disabled_models: Vec::new(),
-        kind: normalize_strategy(&strategy),
+        kind: None,
         created_at: Some(now.clone()),
         updated_at: Some(now),
         extra: BTreeMap::new(),
@@ -208,7 +192,6 @@ async fn run_edit(
     ctx: OutputCtx,
     name: &str,
     models: Option<Vec<String>>,
-    strategy: Option<String>,
 ) -> anyhow::Result<()> {
     if db.combo_by_name(name).is_none() {
         let exit = emit_error(ctx, "not_found", &format!("combo '{name}' not found"))?;
@@ -219,9 +202,6 @@ async fn run_edit(
         if let Some(combo) = db.combos.iter_mut().find(|c| c.name == name) {
             if let Some(m) = &models {
                 combo.models = m.clone();
-            }
-            if let Some(s) = &strategy {
-                combo.kind = normalize_strategy(s);
             }
             combo.updated_at = Some(chrono::Utc::now().to_rfc3339());
             updated = Some(combo.clone());
@@ -343,7 +323,7 @@ async fn run_test(
 
     let payload = json!({
         "name": combo.name,
-        "kind": combo.kind.clone().unwrap_or_else(|| "fallback".into()),
+        "kind": combo.kind.clone().unwrap_or_else(|| "llm".into()),
         "members": members,
         "reachable": members.iter().all(|m| m.get("resolved") == Some(&Value::Bool(true))),
     });
@@ -401,10 +381,7 @@ async fn run_apply(db: &Db, ctx: OutputCtx, from_file: &str, prune: bool) -> any
 
     db.update(|app| {
         for item in &items {
-            let target_kind = item
-                .kind
-                .clone()
-                .or_else(|| item.strategy.as_ref().and_then(|s| normalize_strategy(s)));
+            let target_kind = item.kind.clone();
             if let Some(existing) = app.combos.iter_mut().find(|c| c.name == item.name) {
                 let mut changed = false;
                 if existing.models != item.models {
@@ -487,20 +464,6 @@ fn is_valid_combo_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
 }
 
-fn normalize_strategy(s: &str) -> Option<String> {
-    let trimmed = s.trim().to_ascii_lowercase();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let canonical = match trimmed.as_str() {
-        "fallback" | "fallback-chain" => "fallback",
-        "rr" | "round-robin" | "round_robin" | "roundrobin" => "round-robin",
-        "sticky-rr" | "sticky-round-robin" | "sticky_round_robin" => "sticky-round-robin",
-        other => return Some(other.to_string()),
-    };
-    Some(canonical.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -512,18 +475,5 @@ mod tests {
         assert!(!is_valid_combo_name(""));
         assert!(!is_valid_combo_name("combo name"));
         assert!(!is_valid_combo_name("café"));
-    }
-
-    #[test]
-    fn normalizes_strategy_aliases() {
-        assert_eq!(normalize_strategy("FALLBACK").as_deref(), Some("fallback"));
-        assert_eq!(normalize_strategy("rr").as_deref(), Some("round-robin"));
-        assert_eq!(
-            normalize_strategy("sticky-rr").as_deref(),
-            Some("sticky-round-robin")
-        );
-        assert_eq!(normalize_strategy("").as_deref(), None);
-        // Unknown values pass through (lowercased).
-        assert_eq!(normalize_strategy("custom").as_deref(), Some("custom"));
     }
 }

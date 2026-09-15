@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
@@ -9,10 +9,6 @@ use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::core::combo::{
-    clear_combo_member_quarantine, clear_combo_quarantine, combo_quarantine_for,
-    reset_combo_rotation,
-};
 use crate::server::state::AppState;
 use crate::types::ProxyPool;
 
@@ -35,10 +31,6 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/api/combos/{id}",
             get(get_combo).put(update_combo).delete(delete_combo),
-        )
-        .route(
-            "/api/combos/{id}/health",
-            get(get_combo_health).delete(clear_combo_health),
         )
         .route("/api/keys/{id}", get(get_key))
         .route("/api/proxy-pools/{id}", get(get_proxy_pool))
@@ -356,17 +348,6 @@ async fn update_combo(
                 return not_found("Combo not found");
             };
 
-            // Anything that changes the rotation order or member set
-            // invalidates the cached rotation index and any active
-            // quarantine entries. Reset both under the old and new
-            // names so a rename doesn't leave stale state behind.
-            reset_combo_rotation(Some(existing.name.as_str()));
-            clear_combo_quarantine(existing.name.as_str());
-            if combo.name != existing.name {
-                reset_combo_rotation(Some(combo.name.as_str()));
-                clear_combo_quarantine(combo.name.as_str());
-            }
-
             Json(combo).into_response()
         }
         Err(error) => internal_error(error),
@@ -383,9 +364,9 @@ async fn delete_combo(
     }
 
     let snapshot = state.db.snapshot();
-    let Some(existing) = snapshot.combos.iter().find(|combo| combo.id == id).cloned() else {
+    if !snapshot.combos.iter().any(|combo| combo.id == id) {
         return not_found("Combo not found");
-    };
+    }
 
     match state
         .db
@@ -394,88 +375,9 @@ async fn delete_combo(
         })
         .await
     {
-        Ok(_) => {
-            reset_combo_rotation(Some(existing.name.as_str()));
-            clear_combo_quarantine(existing.name.as_str());
-            Json(json!({ "success": true })).into_response()
-        }
+        Ok(_) => Json(json!({ "success": true })).into_response(),
         Err(error) => internal_error(error),
     }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClearComboHealthQuery {
-    /// Optional `?model=<prefix>/<id>` to clear quarantine for a single
-    /// combo member. Omit to clear every quarantined member for the combo.
-    #[serde(default)]
-    model: Option<String>,
-}
-
-/// `GET /api/combos/{id}/health` — returns the current auto-quarantine
-/// state for a combo so the dashboard can render a "cooling down" badge
-/// next to each member without having to keep the test-icon results
-/// in client state forever.
-async fn get_combo_health(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-) -> Response {
-    if let Err(response) = require_management_access(&headers, &state) {
-        return response;
-    }
-
-    let snapshot = state.db.snapshot();
-    let Some(combo) = snapshot.combos.iter().find(|combo| combo.id == id).cloned() else {
-        return not_found("Combo not found");
-    };
-
-    let quarantined = combo_quarantine_for(combo.name.as_str());
-    let now = std::time::Instant::now();
-    let members: Vec<Value> = quarantined
-        .into_iter()
-        .map(|(model, until)| {
-            let remaining = until.saturating_duration_since(now);
-            json!({
-                "model": model,
-                "remainingSeconds": remaining.as_secs(),
-            })
-        })
-        .collect();
-
-    Json(json!({
-        "comboId": combo.id,
-        "comboName": combo.name,
-        "disabledModels": combo.disabled_models,
-        "quarantined": members,
-    }))
-    .into_response()
-}
-
-/// `DELETE /api/combos/{id}/health[?model=…]` — clear auto-quarantine
-/// for one or all members of a combo. The chat dispatcher repopulates
-/// the map on the next failure so this is purely advisory.
-async fn clear_combo_health(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-    Query(query): Query<ClearComboHealthQuery>,
-) -> Response {
-    if let Err(response) = require_management_access(&headers, &state) {
-        return response;
-    }
-
-    let snapshot = state.db.snapshot();
-    let Some(combo) = snapshot.combos.iter().find(|combo| combo.id == id).cloned() else {
-        return not_found("Combo not found");
-    };
-
-    match query.model {
-        Some(model) => clear_combo_member_quarantine(combo.name.as_str(), model.as_str()),
-        None => clear_combo_quarantine(combo.name.as_str()),
-    }
-
-    Json(json!({ "success": true })).into_response()
 }
 
 async fn get_key(
@@ -929,16 +831,8 @@ async fn batch_delete_combos(
         return bad_request("ids array must not be empty");
     }
 
-    // Collect combo names before deleting (for quarantine/rotation cleanup)
     let ids = req.ids;
     let count = ids.len();
-    let snapshot = state.db.snapshot();
-    let names_to_clean: Vec<String> = snapshot
-        .combos
-        .iter()
-        .filter(|c| ids.contains(&c.id))
-        .map(|c| c.name.clone())
-        .collect();
 
     match state
         .db
@@ -947,14 +841,7 @@ async fn batch_delete_combos(
         })
         .await
     {
-        Ok(_) => {
-            // Clean up rotation/quarantine state for deleted combos
-            for name in &names_to_clean {
-                reset_combo_rotation(Some(name));
-                clear_combo_quarantine(name);
-            }
-            Json(json!({ "deleted": count })).into_response()
-        }
+        Ok(_) => Json(json!({ "deleted": count })).into_response(),
         Err(error) => internal_error(error),
     }
 }

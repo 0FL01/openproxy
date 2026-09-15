@@ -103,9 +103,6 @@ async fn patch_settings_updates_values_and_rejects_password_fields() {
                         "providerStrategies": {
                             "openai": "latency"
                         },
-                        "comboStrategies": {
-                            "writer": "cost"
-                        },
                         "rtkEnabled": false,
                         "cavemanEnabled": true,
                         "cavemanLevel": "ultra",
@@ -132,7 +129,6 @@ async fn patch_settings_updates_values_and_rejects_password_fields() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["requireLogin"], false);
     assert_eq!(json["providerStrategies"]["openai"], "latency");
-    assert_eq!(json["comboStrategies"]["writer"], "cost");
     assert_eq!(json["requireApiKey"], false);
     assert_eq!(json["codexWebSearchContextSize"], "low");
     assert_eq!(json["providerContextLimits"]["opencode-zen"], 450000);
@@ -235,7 +231,7 @@ async fn settings_database_import_and_require_login_round_trip() {
                         "settings": {
                             "password": "hashed-secret",
                             "requireLogin": false,
-                            "comboStrategy": "latency"
+                            "outboundNoProxy": "localhost"
                         }
                     })
                     .to_string(),
@@ -264,7 +260,7 @@ async fn settings_database_import_and_require_login_round_trip() {
         .await
         .unwrap();
     let settings_json: serde_json::Value = serde_json::from_slice(&settings_body).unwrap();
-    assert_eq!(settings_json["comboStrategy"], "latency");
+    assert_eq!(settings_json["outboundNoProxy"], "localhost");
     assert_eq!(settings_json["hasPassword"], true);
 
     let require_login = app

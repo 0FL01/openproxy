@@ -1,25 +1,15 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { Card, Button, Modal, Input, CardSkeleton, ModelSelectModal, Select, CapacityBadges } from "@/shared/components";
+import { useState, useEffect } from "react";
+import { Card, Button, Modal, Input, CardSkeleton, ModelSelectModal, CapacityBadges } from "@/shared/components";
 import { ConfirmModal } from "@/shared/components/Modal";
 import { useNotificationStore } from "@/store/notificationStore";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
-import type { ComboStrategyConfig, ComboStrategyOption } from "@/types";
 
 // Validate combo name: only a-z, A-Z, 0-9, -, _
 const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/;
-
-const STRATEGY_OPTIONS: ComboStrategyOption[] = [
-  { value: "fallback", label: "Fallback — try in order" },
-  { value: "round-robin", label: "Round Robin — rotate" },
-  { value: "fusion", label: "Fusion — panel + judge" },
-  { value: "cheapest", label: "Cheapest — free/lowest cost first" },
-  { value: "fastest", label: "Fastest — lowest latency first" },
-  { value: "quality", label: "Quality — capability tier first" },
-];
 
 interface Combo {
   id: string;
@@ -35,14 +25,6 @@ interface Provider {
   isActive?: boolean;
 }
 
-/** Normalize settings.comboStrategies[name] which may be a bare string or nested object. */
-function normalizeStrategy(entry: unknown): ComboStrategyConfig {
-  if (!entry) return {};
-  if (typeof entry === "string") return { fallbackStrategy: entry };
-  if (typeof entry === "object") return entry as ComboStrategyConfig;
-  return {};
-}
-
 // Per-row result of the `/api/combos/test-model` ping. We keep it in the
 // edit modal's local state only; the backend doesn't persist it because
 // "did this model just respond?" is meaningful for ~seconds, not across
@@ -55,21 +37,12 @@ interface ModelTestResult {
   error?: string;
 }
 
-// Snapshot of `GET /api/combos/{id}/health` — purely UI surface so the
-// operator can see which members are currently auto-quarantined after a
-// recent failure and how long until they get retried.
-interface ComboHealthEntry {
-  model: string;
-  remainingSeconds: number;
-}
-
 export default function CombosPage() {
   const [combos, setCombos] = useState<Combo[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [showCreateModal, setShowCreateModal] = useState<boolean>(false);
   const [editingCombo, setEditingCombo] = useState<Combo | null>(null);
   const [activeProviders, setActiveProviders] = useState<Provider[]>([]);
-  const [comboStrategies, setComboStrategies] = useState<Record<string, any>>({});
   const [deleteTarget, setDeleteTarget] = useState<Combo | null>(null);
   const [deleting, setDeleting] = useState<boolean>(false);
   const notify = useNotificationStore();
@@ -82,21 +55,18 @@ export default function CombosPage() {
 
   const fetchData = async () => {
     try {
-      const [combosRes, providersRes, settingsRes] = await Promise.all([
+      const [combosRes, providersRes] = await Promise.all([
         fetch("/api/combos"),
         fetch("/api/providers"),
-        fetch("/api/settings"),
       ]);
       const combosData = await combosRes.json();
       const providersData = await providersRes.json();
-      const settingsData = settingsRes.ok ? await settingsRes.json() : {};
       
       // Only LLM combos here — webSearch/webFetch combos belong to media-providers/web
       if (combosRes.ok) setCombos((combosData.combos || []).filter(c => !c.kind || c.kind === "llm"));
       if (providersRes.ok) {
         setActiveProviders(providersData.connections || []);
       }
-      setComboStrategies(settingsData.comboStrategies || {});
     } catch (error) {
       console.log("Error fetching data:", error);
     } finally {
@@ -170,36 +140,6 @@ export default function CombosPage() {
     }
   };
 
-  // Merge a per-combo strategy patch into settings.comboStrategies.
-  // Default fallback with no extras drops the entry (keeps settings clean).
-  const handleSetComboStrategy = async (
-    comboName: string,
-    patch: Partial<ComboStrategyConfig>,
-  ) => {
-    try {
-      const updated = { ...comboStrategies };
-      const next: ComboStrategyConfig = {
-        ...normalizeStrategy(updated[comboName]),
-        ...patch,
-      };
-      if (!next.fallbackStrategy || next.fallbackStrategy === "fallback") {
-        delete updated[comboName];
-      } else {
-        updated[comboName] = next;
-      }
-
-      await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ comboStrategies: updated }),
-      });
-
-      setComboStrategies(updated);
-    } catch (error) {
-      console.log("Error updating combo strategy:", error);
-    }
-  };
-
   if (loading) {
     return (
       <div className="flex flex-col gap-6">
@@ -216,21 +156,12 @@ export default function CombosPage() {
         <div className="min-w-0">
           <h1 className="text-2xl font-semibold">Combos</h1>
           <p className="text-sm text-text-muted mt-1">
-            Group models under one name, then pick a strategy per combo:
+            Group models under one name and try them in the configured order.
           </p>
           <ul className="text-sm text-text-muted mt-2 flex flex-col gap-1">
             <li>
               <span className="font-medium text-text-main">Fallback</span> — tries models in order
               (next on failure)
-            </li>
-            <li>
-              <span className="font-medium text-text-main">Round Robin</span> — rotates models across
-              requests to spread load
-            </li>
-            <li>
-              <span className="font-medium text-text-main">Fusion</span> — queries all models in
-              parallel, then a judge synthesizes one answer. Best quality, but costs the most: every
-              request bills all panel models + the judge (N+1 calls)
             </li>
           </ul>
         </div>
@@ -264,8 +195,6 @@ export default function CombosPage() {
               onCopy={copy}
               onEdit={() => setEditingCombo(combo)}
               onDelete={() => handleDelete(combo)}
-              strategy={normalizeStrategy(comboStrategies[combo.name])}
-              onSetStrategy={(patch) => handleSetComboStrategy(combo.name, patch)}
               getCaps={getCaps}
             />
           ))}
@@ -316,8 +245,6 @@ interface ComboCardProps {
   onCopy: (name: string, id: string) => void;
   onEdit: () => void;
   onDelete: () => void;
-  strategy: ComboStrategyConfig;
-  onSetStrategy: (patch: Partial<ComboStrategyConfig>) => void;
   getCaps?: (model: string) => import("@/shared/constants/models").ModelCaps | null | undefined;
 }
 
@@ -328,42 +255,9 @@ function ComboCard({
   onCopy,
   onEdit,
   onDelete,
-  strategy,
-  onSetStrategy,
   getCaps,
 }: ComboCardProps) {
-  const [health, setHealth] = useState<ComboHealthEntry[]>([]);
-  const [showJudgeSelect, setShowJudgeSelect] = useState(false);
-
-  const current = strategy.fallbackStrategy || "fallback";
-  const judge = strategy.judgeModel || "";
-  const isFusion = current === "fusion";
-
-  // Poll the combo's quarantine state so the "cooling down" pill on the
-  // card reflects the backend without having to open the edit modal.
-  // Cheap call (in-memory map lookup) so 15s is plenty.
-  useEffect(() => {
-    let cancelled = false;
-    const fetchHealth = async () => {
-      try {
-        const res = await fetch(`/api/combos/${combo.id}/health`);
-        if (!res.ok) return;
-        const data = await res.json();
-        if (!cancelled) setHealth(data.quarantined || []);
-      } catch {
-        // silent — re-tried by interval
-      }
-    };
-    fetchHealth();
-    const interval = setInterval(fetchHealth, 15000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [combo.id]);
-
   const disabled = combo.disabledModels || [];
-  const quarantined = health;
 
   return (
     <Card padding="sm" className="group">
@@ -380,23 +274,18 @@ function ComboCard({
               ) : (
                 combo.models.slice(0, 3).map((model, index) => {
                   const isDisabled = disabled.includes(model);
-                  const isQuarantined = quarantined.some((q) => q.model === model);
                   return (
                     <code
                       key={index}
                       className={`inline-flex max-w-full items-center gap-1 truncate rounded px-1.5 py-0.5 font-mono text-[10px] sm:max-w-[220px] ${
                         isDisabled
                           ? "bg-red-500/10 text-red-500 line-through"
-                          : isQuarantined
-                            ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
-                            : "bg-black/5 text-text-muted dark:bg-white/5"
+                          : "bg-black/5 text-text-muted dark:bg-white/5"
                       }`}
                       title={
                         isDisabled
                           ? "Disabled — never dispatched"
-                          : isQuarantined
-                            ? "Cooling down after recent failure"
-                            : undefined
+                          : undefined
                       }
                     >
                       <span className="truncate">{model}</span>
@@ -408,7 +297,7 @@ function ComboCard({
               {combo.models.length > 3 && (
                 <span className="text-[10px] text-text-muted">+{combo.models.length - 3} more</span>
               )}
-              {(disabled.length > 0 || quarantined.length > 0) && (
+              {disabled.length > 0 && (
                 <div className="ml-1 flex items-center gap-1">
                   {disabled.length > 0 && (
                     <span
@@ -419,60 +308,14 @@ function ComboCard({
                       {disabled.length}
                     </span>
                   )}
-                  {quarantined.length > 0 && (
-                    <span
-                      className="inline-flex items-center gap-0.5 rounded bg-amber-500/10 px-1 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400"
-                      title={`${quarantined.length} model(s) cooling down after recent failure`}
-                    >
-                      <span className="material-symbols-outlined text-[10px]">schedule</span>
-                      {quarantined.length}
-                    </span>
-                  )}
                 </div>
               )}
             </div>
-            {/* Fusion: judge picker (Auto = first model) */}
-            {isFusion && (
-              <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5">
-                <span className="text-[11px] font-medium text-text-muted">Judge</span>
-                <button
-                  type="button"
-                  onClick={() => setShowJudgeSelect(true)}
-                  className="inline-flex max-w-full items-center gap-1 rounded border border-dashed border-primary/40 px-1.5 py-0.5 font-mono text-[11px] text-primary hover:border-primary hover:bg-primary/5 transition-colors"
-                  title="Pick the model that fuses panel answers"
-                >
-                  <span className="material-symbols-outlined text-[13px]">gavel</span>
-                  <span className="truncate">
-                    {judge || `Auto — ${combo.models[0] || "first model"}`}
-                  </span>
-                </button>
-                {judge && (
-                  <button
-                    type="button"
-                    onClick={() => onSetStrategy({ judgeModel: "" })}
-                    className="p-0.5 rounded text-text-muted hover:text-red-500 hover:bg-red-500/10 transition-colors"
-                    title="Reset judge to Auto"
-                  >
-                    <span className="material-symbols-outlined text-[13px]">close</span>
-                  </button>
-                )}
-              </div>
-            )}
           </div>
         </div>
 
         {/* Actions */}
         <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center sm:gap-3 sm:shrink-0">
-          {/* Strategy selector — always visible */}
-          <div className="w-full sm:w-[200px]">
-            <Select
-              options={STRATEGY_OPTIONS}
-              value={current}
-              onChange={(e) => onSetStrategy({ fallbackStrategy: e.target.value })}
-              selectClassName="py-1.5 text-xs"
-            />
-          </div>
-
           <div className="grid grid-cols-3 gap-1 sm:flex">
             <button
               onClick={(e) => { e.stopPropagation(); onCopy(combo.name, `combo-${combo.id}`); }}
@@ -504,19 +347,6 @@ function ComboCard({
         </div>
       </div>
 
-      {/* Judge model picker */}
-      <ModelSelectModal
-        isOpen={showJudgeSelect}
-        onClose={() => setShowJudgeSelect(false)}
-        onSelect={(m) => {
-          onSetStrategy({ judgeModel: m?.value || "" });
-          setShowJudgeSelect(false);
-        }}
-        selectedModel={judge || undefined}
-        activeProviders={activeProviders}
-        title="Select Judge Model"
-        closeOnSelect={true}
-      />
     </Card>
   );
 }
@@ -529,11 +359,9 @@ interface ModelItemProps {
   isDragOver: boolean;
   // Per-combo-member health state. `disabled` is the persisted manual
   // mute that the dispatcher enforces; `testResult` is transient state
-  // from clicking the test icon; `quarantineSeconds` is how long the
-  // server says the model is auto-quarantined after a recent failure.
+  // from clicking the test icon.
   disabled: boolean;
   testResult: ModelTestResult;
-  quarantineSeconds?: number;
   onEdit: (newVal: string) => void;
   onToggleDisabled: () => void;
   onTest: () => void;
@@ -551,7 +379,6 @@ function ModelItem({
   isDragOver,
   disabled,
   testResult,
-  quarantineSeconds,
   onEdit,
   onToggleDisabled,
   onTest,
@@ -662,17 +489,6 @@ function ModelItem({
         </span>
       )}
 
-      {/* Auto-quarantine indicator (server-driven) */}
-      {!disabled && quarantineSeconds !== undefined && quarantineSeconds > 0 && (
-        <span
-          className="inline-flex items-center gap-0.5 rounded bg-amber-500/10 px-1 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400 shrink-0"
-          title={`Auto-quarantined after recent failure. Retries unlock in ${quarantineSeconds}s.`}
-        >
-          <span className="material-symbols-outlined text-[10px]">schedule</span>
-          {quarantineSeconds}s
-        </span>
-      )}
-
       {/* Test */}
       <button
         onClick={(e) => {
@@ -748,8 +564,6 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   // Map of `<model>` → last test result; local to this modal lifecycle.
   const [testResults, setTestResults] = useState<Record<string, ModelTestResult>>({});
-  // Map of `<model>` → remaining auto-quarantine seconds (server-driven).
-  const [quarantine, setQuarantine] = useState<Record<string, number>>({});
 
   const fetchModalData = async () => {
     try {
@@ -762,31 +576,11 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
     }
   };
 
-  // Refresh combo health (auto-quarantine map) so the modal mirrors what
-  // the dispatcher would do on the next request. We only do this in edit
-  // mode — the create flow doesn't have an id to look up yet.
-  const fetchHealth = useCallback(async () => {
-    if (!combo?.id) return;
-    try {
-      const res = await fetch(`/api/combos/${combo.id}/health`);
-      if (!res.ok) return;
-      const data = await res.json();
-      const next: Record<string, number> = {};
-      for (const entry of data.quarantined || []) {
-        next[entry.model] = entry.remainingSeconds;
-      }
-      setQuarantine(next);
-    } catch {
-      // silent
-    }
-  }, [combo?.id]);
-
   useEffect(() => {
     if (isOpen) {
       fetchModalData();
-      fetchHealth();
     }
-  }, [isOpen, fetchHealth]);
+  }, [isOpen]);
 
   const runTest = async (model: string) => {
     setTestResults((prev) => ({ ...prev, [model]: { status: "testing" } }));
@@ -818,16 +612,6 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
 
   const runTestAll = async () => {
     await Promise.all(models.map((model) => runTest(model)));
-  };
-
-  const clearQuarantine = async () => {
-    if (!combo?.id) return;
-    try {
-      await fetch(`/api/combos/${combo.id}/health`, { method: "DELETE" });
-      await fetchHealth();
-    } catch (error) {
-      console.error("Error clearing quarantine:", error);
-    }
   };
 
   const toggleDisabled = (model: string) => {
@@ -890,7 +674,6 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
   };
 
   const isEdit = !!combo;
-  const hasQuarantine = Object.keys(quarantine).length > 0;
 
   return (
     <>
@@ -921,17 +704,6 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
               <label className="text-sm font-medium block">Models</label>
               {models.length > 0 && (
                 <div className="flex items-center gap-1">
-                  {hasQuarantine && isEdit && (
-                    <button
-                      type="button"
-                      onClick={clearQuarantine}
-                      className="inline-flex items-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1 text-[11px] font-medium text-amber-700 hover:bg-amber-500/10 dark:text-amber-400"
-                      title="Clear the auto-quarantine cooldowns so the dispatcher retries those members on the next request."
-                    >
-                      <span className="material-symbols-outlined text-[12px]">refresh</span>
-                      Clear cooldowns
-                    </button>
-                  )}
                   <button
                     type="button"
                     onClick={runTestAll}
@@ -961,7 +733,6 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
                     isDragOver={dragOverIndex === index}
                     disabled={disabledModels.includes(model)}
                     testResult={testResults[model] || { status: "idle" }}
-                    quarantineSeconds={quarantine[model]}
                     onEdit={(newVal) => {
                       const updated = [...models];
                       updated[index] = newVal;

@@ -14,9 +14,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::core::combo::{
-    check_fallback_error, get_combo_models_from_data, strategy_for_combo, ComboStrategy,
-};
+use crate::core::combo::{check_fallback_error, execute_combo, get_combo_models_from_data};
 use crate::server::state::AppState;
 use crate::types::ProviderConnection;
 
@@ -113,23 +111,12 @@ async fn handle_web_fetch(
 
     // ── 4. Combo detection (baseline parity) ────────────────────────────────
     if let Some(combo_models) = get_combo_models_from_data(&provider_input, &snapshot.combos) {
-        let strategy = strategy_for_combo(&snapshot, &provider_input);
         let fetch_state = state.clone();
         let req_url = url.clone();
         let req_format = format.to_string();
         let req_max = max_chars;
 
-        match execute_combo_fetch(
-            &combo_models,
-            Some(&provider_input),
-            strategy,
-            req_url,
-            req_format,
-            req_max,
-            &fetch_state,
-        )
-        .await
-        {
+        match execute_combo_fetch(&combo_models, req_url, req_format, req_max, &fetch_state).await {
             Ok(resp) => return resp,
             Err(e) => {
                 return fetch_error(
@@ -154,8 +141,6 @@ async fn handle_web_fetch(
 
 async fn execute_combo_fetch(
     models: &[String],
-    combo_name: Option<&str>,
-    strategy: ComboStrategy,
     url: String,
     format: String,
     max_chars: usize,
@@ -165,7 +150,7 @@ async fn execute_combo_fetch(
     let format = format.to_string();
     let state = state.clone();
 
-    crate::core::combo::execute_combo_strategy(models, combo_name, strategy, move |model: &str| {
+    execute_combo(models, &[], move |model: &str| {
         let model_owned = model.to_string();
         let url = url.clone();
         let format = format.clone();
@@ -872,11 +857,5 @@ mod tests {
         let text = result["content"]["text"].as_str().unwrap();
         assert_eq!(text.len(), 20);
         assert_eq!(result["content"]["length"], 20);
-    }
-
-    #[test]
-    fn combo_strategy_fallback_default() {
-        // verify the combo_strategy_for function uses settings correctly
-        // (integration tested via web_fetch_api tests)
     }
 }

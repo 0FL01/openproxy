@@ -2,7 +2,7 @@
 
 Status: active
 Source: User instruction on 2026-09-15 to remove request intervention, retained accounting data, model orchestration, non-chat services, and MITM; commit after each removal; then push and deploy.
-Last updated: 2026-09-15
+Last updated: 2026-09-16
 
 ## Objective
 
@@ -48,8 +48,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: “Combo превратить в простой маршрут, а не оркестратор моделей”.
   - Acceptance: Fusion, hedging, shadow, auto-combo, price/speed/quality ordering, round-robin state, quarantine, and capacity adaptation are removed. A combo alias resolves only its explicitly configured ordered model/account routes and may fall back to the next explicit entry after failure.
   - Primary evidence: Focused combo/chat tests and repository search for removed strategies/modules.
-  - Status: in_progress
-  - Evidence: Capacity adaptation and cost/latency-based ordering are removed; the remaining orchestration strategies and state are the current checkpoint.
+  - Status: verified
+  - Evidence: Combo dispatch now walks only enabled, explicitly configured members in declared order and stops at the first success. Fusion, hedging, shadow, auto-combo, cost/speed/quality ordering, combo round-robin state, quarantine/health API, capacity pre-gating, capability reordering, strategy settings, CLI flags, and dashboard controls are absent. Account-level fallback remains separate. Dashboard build, clippy, 1,594 library tests, 12 chat integration tests, and 7 focused combo tests passed.
 
 - R6: Remove standalone media generation/transcription and embeddings while preserving images attached to chat messages.
   - Source: “Media, embeddings ... Под удаление идут `src/core/media/`, media/STT-модули API, маршруты embeddings, генерации изображений, аудио и видео, соответствующие CLI-команды и настройки” and “поддержку изображений внутри сообщений не вырезай”.
@@ -107,17 +107,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R5
-- Smallest next action: Remove non-fallback combo strategies, orchestration modules, rotation/quarantine/capability reordering state, and strategy settings/UI so dispatch only walks explicitly configured members in order.
-- Expected evidence: Repository search finds only ordered fallback behavior and focused combo/chat tests prove declared order and failover.
-- Stop or replan if: Explicit combo members or account-level fallback would no longer be preserved.
+- Closes: R6
+- Smallest next action: Remove standalone media/STT/embeddings/image/audio/video runtime routes, implementations, CLI commands, settings, and dashboard surfaces while retaining chat image-input translation.
+- Expected evidence: Removed service routes/modules are absent; focused chat/Codex multimodal tests still pass.
+- Stop or replan if: Chat message image attachments or their protocol translation would be removed.
 
 ## Current State
 
-- Resolved: R1-R4. R5 is in progress; pricing-driven combo ordering is already removed.
-- Last relevant evidence: Dashboard build, Rust clippy, 1,638 library tests, 53 focused combo tests, and 11 focused database tests passed after pricing removal.
+- Resolved: R1-R5. R6 is the next unresolved outcome.
+- Last relevant evidence: Dashboard build, Rust clippy, 1,594 library tests, 12 chat integration tests, and focused combo/API/settings tests passed after ordered-fallback simplification.
 - Blocker: None.
-- Next: Commit pricing removal, then simplify the remaining combo runtime to ordered fallback only.
+- Next: Commit combo simplification, then inventory and remove the standalone media and embeddings runtime path without touching chat images.
 
 ## Material Decisions
 

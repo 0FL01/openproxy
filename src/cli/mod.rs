@@ -179,7 +179,7 @@ pub enum Command {
         #[command(subcommand)]
         cmd: PoolCmd,
     },
-    /// Combo (fallback / round-robin chain) management.
+    /// Ordered combo fallback-chain management.
     Combo {
         #[command(subcommand)]
         cmd: combo::ComboCmd,

@@ -3,9 +3,6 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use openproxy::core::combo::{
-    get_rotated_models, reset_combo_rotation, rotation_index, ComboStrategy,
-};
 use openproxy::db::Db;
 use openproxy::server::state::AppState;
 use openproxy::types::{ApiKey, Combo};
@@ -143,18 +140,9 @@ async fn create_combo_rejects_duplicate_name() {
 }
 
 #[tokio::test]
-async fn update_combo_resets_rotation_state() {
-    let original_name = "writer-update-reset";
-    let renamed_name = "writer-update-reset-renamed";
-    reset_combo_rotation(Some(original_name));
-    reset_combo_rotation(Some(renamed_name));
-
-    let models = vec![
-        "openai/gpt-4o-mini".to_string(),
-        "claude/sonnet".to_string(),
-    ];
-    let _ = get_rotated_models(&models, Some(original_name), ComboStrategy::RoundRobin, 0);
-    assert_eq!(rotation_index(original_name), Some(1));
+async fn update_combo_renames_combo() {
+    let original_name = "writer-update";
+    let renamed_name = "writer-update-renamed";
 
     let app = openproxy::build_app(app_state(vec![combo("combo-1", original_name)]).await);
     let response = app
@@ -176,21 +164,11 @@ async fn update_combo_resets_rotation_state() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["name"], renamed_name);
-    assert_eq!(rotation_index(original_name), None);
-    assert_eq!(rotation_index(renamed_name), None);
 }
 
 #[tokio::test]
-async fn delete_combo_resets_rotation_state() {
-    let combo_name = "writer-delete-reset";
-    reset_combo_rotation(Some(combo_name));
-
-    let models = vec![
-        "openai/gpt-4o-mini".to_string(),
-        "claude/sonnet".to_string(),
-    ];
-    let _ = get_rotated_models(&models, Some(combo_name), ComboStrategy::RoundRobin, 0);
-    assert_eq!(rotation_index(combo_name), Some(1));
+async fn delete_combo_removes_combo() {
+    let combo_name = "writer-delete";
 
     let app = openproxy::build_app(app_state(vec![combo("combo-1", combo_name)]).await);
     let response = app
@@ -211,5 +189,4 @@ async fn delete_combo_resets_rotation_state() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["success"], true);
-    assert_eq!(rotation_index(combo_name), None);
 }

@@ -165,7 +165,6 @@ fn schema_for(resource: &str) -> Option<Value> {
             "properties": {
                 "id": {"type": "string"},
                 "name": {"type": "string"},
-                "strategy": {"type": "string", "enum": ["fallback", "round-robin", "sticky-round-robin", "fusion", "auto-combo", "hedging", "shadow"], "default": "fallback"},
                 "models": {"type": "array", "items": {"type": "string"}},
                 "isActive": {"type": "boolean", "default": true}
             }
@@ -201,7 +200,6 @@ fn schema_for(resource: &str) -> Option<Value> {
             "title": "Settings",
             "type": "object",
             "properties": {
-                "comboStrategy": {"type": "string"},
                 "requireApiKey": {"type": "boolean", "default": true},
                 "requireLogin": {"type": "boolean"},
                 "observabilityEnabled": {"type": "boolean"},
