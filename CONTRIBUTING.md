@@ -93,18 +93,14 @@ The Rust binary embeds `web/dist` via `rust-embed` at compile time — if you ch
 
 ## Development Workflow
 
-1. **Create a branch** — see [`docs/git-conventions.md`](docs/git-conventions.md) for naming:
-   ```bash
-   git checkout -b feat/my-feature   # or fix/provider-scope
-   ```
-2. **Code** — follow [Coding Standards](#coding-standards). Keep changes focused; one logical change per commit.
-3. **Build + test + run** — always via `scripts/dev.sh`:
+1. **Code** — follow [Coding Standards](#coding-standards). Keep changes focused; one logical change per commit.
+2. **Build + test + run** — always via `scripts/dev.sh`:
    ```bash
    ./scripts/dev.sh --no-run   # fast feedback before starting server
    ./scripts/dev.sh            # full quick cycle + detached server
    ```
-4. **Verify** — `curl /health`, `openproxy --robot doctor`, smoke `cargo test -p openproxy --lib parity_tests`.
-5. **Push & open PR** — use the PR template; CI must be green (`web` → `rust` with `cargo fmt --check` + `cargo clippy --all-targets --all-features` + tests).
+3. **Verify** — `curl /health`, `openproxy --robot doctor`, smoke `cargo test -p openproxy --lib parity_tests`.
+4. **Push to main** — work directly on `main`; create a branch only when explicitly requested.
 
 If dashboard changes appear "missing" at runtime, you forgot `pnpm --dir web run build` — `scripts/dev.sh` does it for you.
 
