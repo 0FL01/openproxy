@@ -148,6 +148,89 @@ async fn models_custom_post_returns_added_true_then_false_for_duplicate() {
 }
 
 #[tokio::test]
+async fn custom_model_discovery_preserves_metadata_and_hides_disabled_rows() {
+    let state = app_state().await;
+    let app = openproxy::build_app(state.clone());
+    let metadata = json!({
+        "limit": {"context": 628000, "input": 500000, "output": 128000},
+        "modalities": {"input": ["text", "image"], "output": ["text"]},
+        "reasoning": true,
+        "tool_call": true,
+        "variants": {"high": {"reasoningEffort": "high"}}
+    });
+    let response = app.clone().oneshot(authorized_request(
+        Method::POST, "/api/models/custom",
+        Body::from(json!({"providerAlias": "proxy", "id": "new/model", "name": "New Model", "opencode": metadata}).to_string()),
+    )).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        state.db.snapshot().custom_models[0].extra["opencode"],
+        metadata
+    );
+
+    let response = app
+        .clone()
+        .oneshot(authorized_request(Method::GET, "/v1/models", Body::empty()))
+        .await
+        .unwrap();
+    let (_, body) = response_json(response).await;
+    let model = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["id"] == "proxy/new/model")
+        .unwrap();
+    let mut expected = metadata.clone();
+    expected["name"] = json!("New Model");
+    assert_eq!(model["opencode"], expected);
+
+    // Use the dashboard's actual disable API, not a synthetic internal state.
+    let response = app
+        .clone()
+        .oneshot(authorized_request(
+            Method::POST,
+            "/api/models/disabled",
+            Body::from(json!({"providerAlias": "proxy", "ids": ["new/model"]}).to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = app
+        .oneshot(authorized_request(Method::GET, "/v1/models", Body::empty()))
+        .await
+        .unwrap();
+    let (_, body) = response_json(response).await;
+    assert!(!body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|model| model["id"] == "proxy/new/model"));
+}
+
+#[tokio::test]
+async fn custom_model_metadata_rejects_invalid_limits_and_transport_overrides() {
+    let app = openproxy::build_app(app_state().await);
+    for metadata in [
+        json!({"limit": {"context": 0}}),
+        json!({"provider": {"api": "https://example.invalid"}}),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(authorized_request(
+                Method::POST,
+                "/api/models/custom",
+                Body::from(
+                    json!({"providerAlias": "proxy", "id": "invalid", "opencode": metadata})
+                        .to_string(),
+                ),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+}
+
+#[tokio::test]
 async fn models_custom_delete_requires_provider_alias_and_id() {
     let app = openproxy::build_app(app_state().await);
     let response = app

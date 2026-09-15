@@ -8,6 +8,7 @@ use axum::{
 };
 use serde_json::json;
 
+use super::models_metadata::OpenCodeModelConfig;
 use crate::server::state::AppState;
 use crate::types::CustomModel;
 
@@ -39,6 +40,7 @@ pub struct CreateCustomModelRequest {
     #[serde(default = "default_model_type", alias = "type")]
     pub r#type: String,
     pub name: Option<String>,
+    pub opencode: Option<OpenCodeModelConfig>,
 }
 
 fn default_model_type() -> String {
@@ -50,6 +52,7 @@ fn default_model_type() -> String {
 pub struct UpdateCustomModelRequest {
     pub provider_alias: Option<String>,
     pub name: Option<String>,
+    pub opencode: Option<OpenCodeModelConfig>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -107,13 +110,18 @@ async fn create_custom_model(
             && model.r#type == req.r#type
     });
 
-    let custom_model = CustomModel {
+    let mut custom_model = CustomModel {
         provider_alias: req.provider_alias.clone(),
         id: req.id.clone(),
         r#type: req.r#type.clone(),
         name: req.name.clone(),
         extra: Default::default(),
     };
+    if let Some(metadata) = req.opencode {
+        custom_model
+            .extra
+            .insert("opencode".into(), json!(metadata));
+    }
 
     let result = state
         .db
@@ -158,6 +166,9 @@ async fn update_custom_model(
                 }
                 if let Some(name) = req.name {
                     model.name = Some(name);
+                }
+                if let Some(metadata) = req.opencode {
+                    model.extra.insert("opencode".into(), json!(metadata));
                 }
             }
         })

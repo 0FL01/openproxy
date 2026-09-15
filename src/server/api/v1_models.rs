@@ -13,6 +13,7 @@ use regex::Regex;
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use super::models_metadata::OpenCodeModelConfig;
 use crate::core::model::catalog::provider_catalog;
 use crate::core::model::resolve_provider_alias;
 use crate::server::auth::require_api_key_with_reload;
@@ -123,6 +124,13 @@ async fn build_models_list(
         None
     };
     let disabled_map = super::models_disabled::disabled_models_from_db(snapshot);
+    let models_dev = if active_connections.iter().any(|connection| {
+        crate::core::model::models_dev::is_opencode_provider(&connection.provider)
+    }) {
+        state.models_dev.snapshot().await.ok()
+    } else {
+        None
+    };
 
     let mut seen_providers = HashSet::new();
     let mut active_connection_by_provider = Vec::new();
@@ -421,7 +429,95 @@ async fn build_models_list(
 
     let mut deduped_models = Vec::new();
     let mut seen_ids = HashSet::new();
-    for model in models {
+    for mut model in models {
+        // Apply visibility after every source has been merged: the custom-model
+        // fallback must not reintroduce a disabled row.
+        if model.owned_by != "combo" {
+            let (alias, model_id) = model
+                .id
+                .split_once('/')
+                .unwrap_or((&model.owned_by, &model.id));
+            let connection = active_connections.iter().find(|connection| {
+                let static_alias = catalog
+                    .static_alias_for_provider(&connection.provider)
+                    .unwrap_or(&connection.provider);
+                alias == connection.provider
+                    || alias == static_alias
+                    || alias
+                        == output_alias(catalog, connection, &connection.provider, static_alias)
+            });
+            let provider_id = connection
+                .map(|connection| connection.provider.as_str())
+                .or_else(|| alias_to_provider_id.get(alias).map(String::as_str))
+                .unwrap_or(alias);
+            let static_alias = catalog
+                .static_alias_for_provider(provider_id)
+                .unwrap_or(alias);
+            if [alias, provider_id, static_alias].iter().any(|key| {
+                disabled_map
+                    .get(*key)
+                    .is_some_and(|ids| ids.iter().any(|id| id == model_id))
+            }) {
+                continue;
+            }
+
+            let entry = catalog.find_model(provider_id, model_id);
+            let mut metadata = OpenCodeModelConfig::from_catalog(
+                entry.and_then(|entry| entry.name.clone()),
+                model.context_length,
+                model.max_completion_tokens,
+                entry
+                    .and_then(|entry| entry.capabilities.as_deref())
+                    .unwrap_or(&[]),
+                &[],
+            );
+            if let Some(entry) = models_dev
+                .as_ref()
+                .and_then(|catalog| catalog.find(provider_id, model_id))
+            {
+                metadata.overlay(OpenCodeModelConfig::from_catalog(
+                    Some(entry.name.clone()),
+                    entry.context_window,
+                    entry.max_output,
+                    &entry.capabilities,
+                    &entry.reasoning_efforts,
+                ));
+            }
+            if let Some(entry) = codex_inventory
+                .as_ref()
+                .filter(|_| provider_id == "codex")
+                .and_then(|inventory| inventory.models.iter().find(|entry| entry.id == model_id))
+            {
+                metadata.overlay(OpenCodeModelConfig::from_catalog(
+                    Some(entry.name.clone()),
+                    entry
+                        .context_window
+                        .and_then(|value| u32::try_from(value).ok()),
+                    None,
+                    &entry.capabilities,
+                    &entry.reasoning_efforts,
+                ));
+            }
+            if let Some(custom) = snapshot.custom_models.iter().find(|custom| {
+                custom.id.trim() == model_id
+                    && [alias, provider_id, static_alias].contains(&custom.provider_alias.trim())
+                    && (custom.r#type.is_empty()
+                        || custom.r#type == LLM_KIND
+                        || custom.r#type == "chat")
+            }) {
+                if custom.name.is_some() {
+                    metadata.name = custom.name.clone();
+                }
+                if let Some(value) = custom.extra.get("opencode") {
+                    if let Ok(overrides) = serde_json::from_value(value.clone()) {
+                        metadata.overlay(overrides);
+                    }
+                }
+            }
+            if kind_filter.contains(&LLM_KIND) {
+                model.opencode = Some(metadata);
+            }
+        }
         if seen_ids.insert(model.id.clone()) {
             deduped_models.push(model);
         }
@@ -608,6 +704,7 @@ fn model_card(
         kind,
         context_length,
         max_completion_tokens,
+        opencode: None,
     }
 }
 
@@ -673,6 +770,8 @@ struct ModelCard {
     /// Maximum completion/output tokens (9router v0.5.55 parity).
     #[serde(skip_serializing_if = "Option::is_none")]
     max_completion_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    opencode: Option<OpenCodeModelConfig>,
 }
 
 /// GET /v1/models/info?model={model_id}
@@ -909,6 +1008,9 @@ mod tests {
                         "muse-spark-1.3-contributor-free": {
                             "id": "muse-spark-1.3-contributor-free",
                             "name": "Muse Spark 1.3 Free",
+                            "limit": {"context": 500000, "output": 128000},
+                            "modalities": {"input": ["text", "image"], "output": ["text"]},
+                            "reasoning_options": [{"type": "effort", "values": ["medium", "high"]}],
                             "provider": {"npm": "@ai-sdk/openai"},
                             "cost": {"input": 0, "output": 0}
                         }
@@ -926,6 +1028,15 @@ mod tests {
                 .any(|m| m.id == "opencode-zen/muse-spark-1.3-contributor-free"),
             "models.dev opencode model should appear in /v1/models"
         );
+        let model = models
+            .iter()
+            .find(|m| m.id == "opencode-zen/muse-spark-1.3-contributor-free")
+            .unwrap();
+        let metadata = json!(model.opencode);
+        assert_eq!(metadata["limit"]["context"], 500000);
+        assert_eq!(metadata["limit"]["output"], 128000);
+        assert_eq!(metadata["modalities"]["input"], json!(["text", "image"]));
+        assert_eq!(metadata["variants"]["high"]["reasoningEffort"], "high");
     }
 
     #[tokio::test]
@@ -958,6 +1069,17 @@ mod tests {
 
         let llm = build_models_list(&state, &snapshot, &[LLM_KIND]).await;
         assert!(llm.iter().any(|model| model.id == "cx/gpt-dynamic"));
+        let metadata = json!(
+            llm.iter()
+                .find(|model| model.id == "cx/gpt-dynamic")
+                .unwrap()
+                .opencode
+        );
+        assert_eq!(metadata["limit"]["context"], 872000);
+        assert_eq!(
+            metadata["variants"],
+            json!({"high": {"reasoningEffort": "high"}})
+        );
         assert!(!llm.iter().any(|model| model.id == "cx/gpt-5.5-image"));
 
         let image = build_models_list(&state, &snapshot, &["image"]).await;

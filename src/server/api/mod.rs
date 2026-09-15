@@ -21,6 +21,7 @@ pub mod models_alias;
 pub mod models_availability;
 pub mod models_custom;
 pub mod models_disabled;
+pub mod models_metadata;
 pub mod oauth;
 pub mod observability;
 pub mod pricing;
