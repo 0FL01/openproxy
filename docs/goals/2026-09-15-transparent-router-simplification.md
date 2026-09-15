@@ -34,8 +34,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: “выкинул ... DEFAULT_CODEX_INSTRUCTIONS” and separate necessary wire constraints from the default `reasoning.effort = "low"` policy.
   - Acceptance: Missing/empty client instructions do not acquire Codex CLI behavior, and the proxy does not invent a reasoning effort; tool calls, input items, tool schemas, images, and explicit client reasoning continue to translate.
   - Primary evidence: Focused Codex executor tests.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: The Codex CLI instruction constant and default `reasoning.effort = "low"` are absent. Missing instructions produce only the neutral required empty wire field; explicit reasoning and model suffixes still translate. Focused Codex tests (67), clippy, and all 1,680 library tests passed.
 
 - R4: Remove internal usage history, pricing, aggregates, live usage, and exports from request processing.
   - Source: “Историю usage и расчёт стоимости — убрать из обработки запросов”.
@@ -107,17 +107,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R3
-- Smallest next action: Remove Codex default behavioral instructions and invented default reasoning effort while retaining wire-required fields and explicit client values.
-- Expected evidence: Focused Codex executor tests pass and no behavioral fallback constant remains.
-- Stop or replan if: Codex rejects the smallest neutral wire value required when the client omits instructions.
+- Closes: R4
+- Smallest next action: Remove request-time usage-history tracking, pricing/aggregate/live-usage/export consumers, and retain the bounded application-request journal as the sole structured request record.
+- Expected evidence: Focused application-log and response-translation tests pass; upstream usage remains in responses; internal usage history writers and presentation surfaces are absent.
+- Stop or replan if: The retained request journal lacks one of the required metadata fields or contains prompts, full responses, or secrets.
 
 ## Current State
 
-- Resolved: R1-R2. Request caching and server-owned content/history/thinking policy are removed; explicit client reasoning and protocol translation remain.
-- Last relevant evidence: Rust clippy, 1,680 library tests, and 12 chat integration tests passed after capacity/history adaptation removal.
+- Resolved: R1-R3. Request caching, server-owned content/history/thinking policy, Codex behavioral instructions, and invented Codex reasoning effort are removed; explicit client reasoning and protocol translation remain.
+- Last relevant evidence: Focused Codex tests (67), Rust clippy, and all 1,680 library tests passed after Codex policy removal.
 - Blocker: None.
-- Next: Commit the final R2 checkpoint, then execute R3.
+- Next: Commit R3, then execute R4 usage/accounting removal.
 
 ## Material Decisions
 
