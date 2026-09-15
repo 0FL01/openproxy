@@ -14,7 +14,7 @@
 </div>
 
 **Single-binary AI router for AI coding tools.**  
-Routes to 40+ providers with auto-fallback combos. Embedded dashboard, OpenAI-compatible API, RTK compression. Run on `127.0.0.1:4623` — no cloud required.
+Routes to 40+ providers with auto-fallback combos. Embedded dashboard, OpenAI-compatible API. Run on `127.0.0.1:4623` — no cloud required.
 
 <p align="center">
   <a href="#install">Install</a> ·
@@ -64,7 +64,6 @@ OpenProxy runs as one binary on `127.0.0.1:4623`. Point any tool that speaks the
 
 - routes the request to a provider you've configured (OAuth, API key, or free)
 - falls back to the next provider in your combo when one is rate-limited or errors
-- compresses tool-call results via [RTK](https://github.com/rtk-ai/rtk) before they hit the LLM (typical −20–40% input tokens on tool-heavy turns)
 - tracks per-account quota so you can use subscription tiers fully before paying for API calls
 - serves a local dashboard at `/` for configuration, monitoring, and account management
 
@@ -317,7 +316,7 @@ Profiles are created programmatically by `openproxy auth login` / `openproxy aut
 
 ### Compiled-in constants
 
-Unlike 9router, the following are **not** hot-reloadable or config-file driven.
+The following are **not** hot-reloadable or config-file driven.
 They are compiled into the binary and require a rebuild to change:
 
 | Constant | Source file | Default |
@@ -427,7 +426,6 @@ The dashboard at `/` is the same authenticated API surface in HTML form. Admin e
 │  /api/*       admin / dashboard data       │
 │  /codex/*     Codex OAuth helper           │
 │                                             │
-│  RTK token compression  ─┐                  │
 │  format translation     ─┤                  │
 │  quota tracking         ─┼─→ provider HTTP │
 │  account fallback       ─┘                  │
@@ -539,8 +537,6 @@ Logs: enable with `ENABLE_REQUEST_LOGS=true`, then watch `logs/` (or stderr).
 Built on the work of others:
 
 - **CLIProxyAPI** — Go implementation that inspired the architecture.
-- **[RTK](https://github.com/rtk-ai/rtk)** — token compression pipeline. OpenProxy's `tool_result` compression is a port.
-- **[Caveman](https://github.com/JuliusBrussee/caveman)** — caveman-speak prompt that trims output tokens by reframing the system instruction.
 
 ---
 

@@ -6,9 +6,8 @@
 
 Related docs:
 - **Git conventions (branch naming, commit messages, atomic commits, PR hygiene):** [`docs/git-conventions.md`](docs/git-conventions.md)
-- **Agent intelligence brief:** [`AGENTS.md`](AGENTS.md) — architecture, beads parity, secrets policy, schema stability
-- **Intentional divergences & pipeline order:** [`docs/parity-9router.md`](docs/parity-9router.md)
-- **Provider parity authority (OmniRoute v3.8.50):** [`docs/OMNIROUTE_PROVIDER_PARITY.md`](docs/OMNIROUTE_PROVIDER_PARITY.md)
+- **Agent intelligence brief:** [`AGENTS.md`](AGENTS.md) — architecture, secrets policy, schema stability
+- **Pipeline order & intentional behavior:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
 ---
 
@@ -19,7 +18,7 @@ Related docs:
 4. [Development Workflow](#development-workflow)
 5. [Coding Standards](#coding-standards)
 6. [Testing](#testing)
-7. [Beads & Parity Workflow](#beads--parity-workflow)
+7. [Tasks](#tasks)
 8. [Commits, Branches & PRs](#commits-branches--prs)
 9. [Secrets & Local Config — Never Commit](#secrets--local-config--never-commit)
 10. [Reporting Bugs & Requesting Features](#reporting-bugs--requesting-features)
@@ -84,7 +83,7 @@ openproxy/
 ├── web/                 # Astro 4 + React 19 + Tailwind — built to web/dist
 │   └── src/             # dashboard components, provider constants
 ├── scripts/dev.sh       # THE dev entrypoint (build+test+run)
-├── docs/                # parity, state, git-conventions, omnirange parity
+├── docs/                # architecture, state, git-conventions
 ├── .github/workflows/   # CI: web (astro check+build) → rust (fmt+clippy+tests)
 ├── tests/               # provider_baseline.json, verify_no_regression.mjs
 └── Cargo.toml / web/package.json
@@ -96,7 +95,7 @@ The Rust binary embeds `web/dist` via `rust-embed` at compile time — if you ch
 
 1. **Create a branch** — see [`docs/git-conventions.md`](docs/git-conventions.md) for naming:
    ```bash
-   git checkout -b feat/my-feature   # or fix/provider-parity-claude-scopes
+   git checkout -b feat/my-feature   # or fix/provider-scope
    ```
 2. **Code** — follow [Coding Standards](#coding-standards). Keep changes focused; one logical change per commit.
 3. **Build + test + run** — always via `scripts/dev.sh`:
@@ -147,15 +146,11 @@ Golden-snapshot translator coverage lives in `src/core/translator/tests.rs`.
 
 **Evidence rule:** a task is not done until `cargo fmt` + `cargo clippy` + relevant tests are green — CI enforces the same.
 
-## Beads & Parity Workflow
+## Tasks
 
-Parity work is tracked via **beads** (not just GitHub issues):
+Use beads or GitHub issues for own product tasks only.
 
-- Epic `openproxy-9router-parity-v0550-pnc` — 9router v0.5.50 → openproxy, 122 specs + children. Prior `openproxy-9router-parity-mj1` (v0.5.30) is closed.
-- `br ready` / `bv --robot-next` to find next work.
-- Reference implementations: `/tmp/9router` (legacy JS, do NOT copy its bugs) and **OmniRoute v3.8.50** (`/tmp/omniroute_v3850`, SHA `6cd4d38`) — authoritative for provider parity (`src/managed/`: `credentialHealth.ts`, `healthCheck.ts`, `modelDiscovery.ts`, `managedModelImport.ts`).
-
-See [`docs/parity-9router.md`](docs/parity-9router.md) before touching provider-specific logic.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) before touching provider-specific logic.
 
 ## Commits, Branches & PRs
 
@@ -193,7 +188,7 @@ This is a hard rule (also in `AGENTS.md`):
 
 - **Search first:** `gh issue list` / `gh search issues` to avoid duplicates.
 - **Use the issue templates** (`.github/ISSUE_TEMPLATE/`): Bug Report / Feature Request. Fill in repro steps, expected vs actual, `openproxy --version`, and whether you can reproduce after `./scripts/dev.sh --full`.
-- **For provider parity bugs:** mention the provider, model, and whether OmniRoute behaves differently — link to the relevant `src/managed/` file if you checked.
+- **For provider bugs:** mention the provider, model, repro steps, expected vs actual.
 
 ## Release Process
 

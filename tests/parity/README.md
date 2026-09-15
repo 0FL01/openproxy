@@ -1,4 +1,4 @@
-# Parity tests (9router behavioral locks)
+# Behavioral locks (smoke tests)
 
 Unit locks live under `src/**` with `mod parity_tests` / `#[cfg(test)]` so `cargo test --lib` is enough for CI (no network).
 

@@ -64,7 +64,6 @@ docs/*
 !docs/ARCHITECTURE.md
 !docs/git-conventions.md
 !docs/integrations/
-!docs/parity-9router.md
 test/*
 bin/*
 open-sse/test/*
