@@ -10,8 +10,22 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
+use crate::server::api::models_metadata::{ModelMetadataFacts, OpenCodeModelConfig};
 use crate::server::state::AppState;
 use crate::types::{CustomModel, ProviderConnection};
+
+/// GLM Coding Plan (`api.z.ai`) models endpoints.
+///
+/// Live-verified: both accept the same API key via `Bearer` *or* `x-api-key`
+/// (chat itself uses `x-api-key`; the models surfaces accept either).
+/// - `.../coding/paas/v4/models` → OpenAI list shape, full routable id set,
+///   no metadata. Source of truth for ids.
+/// - `.../api/v1/models` → rich `{"models":[{slug,display_name,
+///   context_window/max_context_window,input_modalities,
+///   supported_reasoning_levels:[{effort}],visibility,supported_in_api}]}`.
+///   Fail-open enrichment for the intersection only.
+const GLM_PAAS_MODELS_URL: &str = "https://api.z.ai/api/coding/paas/v4/models";
+const GLM_RICH_MODELS_URL: &str = "https://api.z.ai/api/v1/models";
 
 const OPENAI_COMPATIBLE_PREFIX: &str = "openai-compatible-";
 const ANTHROPIC_COMPATIBLE_PREFIX: &str = "anthropic-compatible-";
@@ -300,6 +314,7 @@ pub(super) fn supports_models_discovery(provider: &str) -> bool {
                 | "gemini"
                 | "qwen"
                 | "codex"
+                | "glm"
                 | "antigravity"
                 | "github"
                 | "qoder"
@@ -439,6 +454,7 @@ async fn fetch_provider_models_response(
             )
             .await
         }
+        "glm" => fetch_glm_models(connection).await,
         "codex" => {
             let inventory = state
                 .codex_models
@@ -732,6 +748,177 @@ async fn fetch_opencode_models(
         })
         .collect();
     Ok(response_with_models(connection, models, None))
+}
+
+/// GLM Coding Plan models: paas id list + fail-open rich enrichment.
+///
+/// The paas endpoint is the same family as the OpenAI chat transport, so its
+/// ids are routable by construction. The rich endpoint only covers a subset
+/// (live: 3 of 10) but carries `context_window`, `input_modalities` and
+/// `supported_reasoning_levels` needed for correct modalities/effort/context
+/// display. A rich failure therefore never fails the whole fetch.
+async fn fetch_glm_models(
+    connection: &ProviderConnection,
+) -> Result<ProviderModelsResponse, RouteError> {
+    let token = primary_token(connection)
+        .ok_or_else(|| RouteError::unauthorized("No valid token found"))?;
+    let client = http_client()?;
+    let paas_payload = fetch_json(
+        client
+            .get(GLM_PAAS_MODELS_URL)
+            .header(CONTENT_TYPE, "application/json")
+            .header(AUTHORIZATION, format!("Bearer {token}")),
+    )
+    .await
+    .map_err(map_upstream_route_error)?;
+    let base = parse_openai_style_models(&paas_payload);
+
+    let enriched = fetch_json(
+        client
+            .get(GLM_RICH_MODELS_URL)
+            .header(CONTENT_TYPE, "application/json")
+            .header(AUTHORIZATION, format!("Bearer {token}")),
+    )
+    .await
+    .ok()
+    .map(|payload| parse_glm_rich_models(&payload))
+    .unwrap_or_default();
+
+    Ok(response_with_models(
+        connection,
+        merge_glm_models(base, enriched),
+        None,
+    ))
+}
+
+/// Merge paas ids (source of truth) with rich metadata by id.
+/// Rich-only ids are appended; paas-only ids keep their flat shape.
+fn merge_glm_models(base: Vec<ProviderModel>, enriched: Vec<ProviderModel>) -> Vec<ProviderModel> {
+    let mut by_id: BTreeMap<String, ProviderModel> = BTreeMap::new();
+    for model in base {
+        by_id.insert(model.id.clone(), model);
+    }
+    for model in enriched {
+        by_id.insert(model.id.clone(), model);
+    }
+    by_id.into_values().collect()
+}
+
+/// Parse the z.ai rich `{"models":[{slug,...}]}` shape into enriched models.
+/// Skips hidden/unsupported entries; `max_context_window` wins over
+/// `context_window`; empty `supported_reasoning_levels` means no reasoning
+/// (emits empty `reasoningEfforts`, never omits the key).
+fn parse_glm_rich_models(payload: &Value) -> Vec<ProviderModel> {
+    payload
+        .get("models")
+        .or_else(|| payload.get("data"))
+        .and_then(Value::as_array)
+        .map(|items| items.as_slice())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(glm_enriched_model)
+        .collect()
+}
+
+fn glm_enriched_model(item: &Value) -> Option<ProviderModel> {
+    let object = item.as_object()?;
+    if object.get("visibility").and_then(Value::as_str) == Some("hide")
+        || object.get("supported_in_api").and_then(Value::as_bool) == Some(false)
+    {
+        return None;
+    }
+    let id = object
+        .get("slug")
+        .or_else(|| object.get("id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())?;
+    let name = object
+        .get("display_name")
+        .or_else(|| object.get("displayName"))
+        .or_else(|| object.get("name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(id);
+
+    let context = object
+        .get("max_context_window")
+        .or_else(|| object.get("context_window"))
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0);
+    let input_modalities: Vec<String> = object
+        .get("input_modalities")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let efforts: Vec<String> = object
+        .get("supported_reasoning_levels")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|level| level.get("effort").and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|effort| !effort.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let has_vision = input_modalities.iter().any(|value| value == "image");
+    let mut capabilities = vec!["tools".to_string()];
+    if !efforts.is_empty() {
+        capabilities.push("reasoning".to_string());
+    }
+    if has_vision {
+        capabilities.push("vision".to_string());
+    }
+
+    let mut extra = BTreeMap::new();
+    extra.insert("kind".to_string(), Value::String("llm".to_string()));
+    // GLM transports as Claude (translator registry), not openai-responses.
+    extra.insert(
+        "targetFormat".to_string(),
+        Value::String("claude".to_string()),
+    );
+    if let Some(context) = context {
+        extra.insert("contextWindow".to_string(), Value::from(context));
+    }
+    extra.insert("capabilities".to_string(), json!(capabilities));
+    extra.insert("reasoningEfforts".to_string(), json!(efforts));
+
+    let output_modalities = vec!["text".to_string()];
+    let config = OpenCodeModelConfig::from_facts(ModelMetadataFacts {
+        name: Some(name.to_string()),
+        context,
+        input: None,
+        output: None,
+        capabilities: &capabilities,
+        modalities: Some((input_modalities.as_slice(), output_modalities.as_slice())),
+        attachment: Some(has_vision),
+        reasoning: if efforts.is_empty() { None } else { Some(true) },
+        tool_call: Some(true),
+        efforts: Some(efforts.as_slice()),
+    });
+    if let Ok(value) = serde_json::to_value(config) {
+        extra.insert("opencode".to_string(), value);
+    }
+
+    Some(ProviderModel {
+        id: id.to_string(),
+        name: name.to_string(),
+        extra,
+    })
 }
 
 /// OpenRouter listing carries the same `HTTP-Referer` + `X-Title` attribution
@@ -1833,7 +2020,80 @@ mod tests {
         assert!(supports_models_discovery("ollama-local"));
         assert!(supports_models_discovery("openai-compatible-chat"));
         assert!(supports_models_discovery("anthropic-compatible-chat"));
+        assert!(supports_models_discovery("glm"));
         assert!(!supports_models_discovery("totally-unknown-provider"));
+    }
+
+    #[test]
+    fn glm_rich_and_paas_shapes_merge_without_losing_ids() {
+        // Live shapes: paas/v4/models is the full id set without metadata,
+        // api/v1/models is rich metadata for a subset.
+        let paas = json!({
+            "object": "list",
+            "data": [
+                { "id": "glm-5.3", "object": "model" },
+                { "id": "glm-5-turbo", "object": "model" },
+                { "id": "glm-4.7", "object": "model" }
+            ]
+        });
+        let rich = json!({ "models": [
+            {"slug": "glm-5.3", "display_name": "glm-5.3", "visibility": "list",
+             "supported_in_api": true, "context_window": 204800,
+             "max_context_window": 1048576,
+             "input_modalities": ["text"],
+             "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}, {"effort": "max"}]},
+            {"slug": "glm-5.3-flash", "display_name": "glm-5.3-flash",
+             "visibility": "list", "supported_in_api": true,
+             "context_window": 1048576,
+             "input_modalities": ["text", "image"],
+             "supported_reasoning_levels": [{"effort": "low"}, {"effort": "max"}]},
+            {"slug": "glm-5-turbo", "display_name": "glm-5-turbo",
+             "visibility": "list", "supported_in_api": true,
+             "context_window": 204800, "max_context_window": 204800,
+             "input_modalities": ["text"], "supported_reasoning_levels": []},
+            {"slug": "glm-hidden", "visibility": "hide"},
+            {"slug": "glm-disabled", "supported_in_api": false}
+        ]});
+
+        let merged = merge_glm_models(
+            parse_openai_style_models(&paas),
+            parse_glm_rich_models(&rich),
+        );
+        let ids: Vec<&str> = merged.iter().map(|model| model.id.as_str()).collect();
+        // Union: paas ids kept, rich-only flash appended, hidden/disabled dropped.
+        assert_eq!(
+            ids,
+            vec!["glm-4.7", "glm-5-turbo", "glm-5.3", "glm-5.3-flash"]
+        );
+
+        let by_id = |id: &str| merged.iter().find(|model| model.id == id).expect(id);
+        // max_context_window wins over context_window.
+        assert_eq!(
+            by_id("glm-5.3").extra.get("contextWindow"),
+            Some(&json!(1048576))
+        );
+        // Vision only where input_modalities contains image.
+        assert!(by_id("glm-5.3-flash").extra["capabilities"]
+            .as_array()
+            .is_some_and(|caps| caps.contains(&json!("vision"))));
+        assert!(by_id("glm-5.3").extra["capabilities"]
+            .as_array()
+            .is_some_and(|caps| !caps.contains(&json!("vision"))));
+        // Empty levels: no reasoning cap, but the key is emitted (not omitted).
+        assert!(by_id("glm-5-turbo").extra["capabilities"]
+            .as_array()
+            .is_some_and(|caps| !caps.contains(&json!("reasoning"))));
+        assert_eq!(
+            by_id("glm-5-turbo").extra.get("reasoningEfforts"),
+            Some(&json!([]))
+        );
+        // Paas-only id keeps the flat shape.
+        assert_eq!(by_id("glm-4.7").name, "glm-4.7");
+        // Transport marker follows the Claude path, not the codex one.
+        assert_eq!(
+            by_id("glm-5.3").extra.get("targetFormat"),
+            Some(&json!("claude"))
+        );
     }
 
     #[test]
