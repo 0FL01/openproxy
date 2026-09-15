@@ -1319,37 +1319,57 @@ pub fn chat_to_responses_streaming(
     chunk: &[u8],
     state: &mut crate::core::translator::registry::ResponseTransformState,
 ) -> Vec<String> {
-    let text = String::from_utf8_lossy(chunk);
-    let payload = {
-        let line = text.trim();
-        if let Some(rest) = line.strip_prefix("data:") {
-            rest.trim()
-        } else {
-            line.lines()
-                .find_map(|p| p.strip_prefix("data:").map(|r| r.trim()))
-                .unwrap_or(line)
+    let buffer_was_empty = state.responses.buffer.is_empty();
+    state
+        .responses
+        .buffer
+        .push_str(&String::from_utf8_lossy(chunk).replace("\r\n", "\n"));
+
+    if buffer_was_empty {
+        if let Ok(value) = serde_json::from_slice::<Value>(chunk) {
+            state.responses.buffer.clear();
+            return format_responses_events(chat_to_responses_response(
+                &value,
+                &mut state.responses.state,
+            ));
         }
-    };
-    if payload.is_empty() || payload == "[DONE]" {
-        return vec![];
     }
-    let val: Value = match serde_json::from_str(payload) {
-        Ok(v) => v,
-        Err(_) => return vec![],
-    };
-    let inner = &mut state.responses.state;
-    let events = chat_to_responses_response(&val, inner);
+
+    let mut results = Vec::new();
+    while let Some(frame_end) = state.responses.buffer.find("\n\n") {
+        let frame = state.responses.buffer[..frame_end].to_string();
+        state.responses.buffer.drain(..frame_end + 2);
+
+        for line in frame.lines() {
+            let Some(payload) = line.trim().strip_prefix("data:").map(str::trim) else {
+                continue;
+            };
+            if payload == "[DONE]" {
+                results.push("data: [DONE]\n\n".to_string());
+            } else if let Ok(value) = serde_json::from_str::<Value>(payload) {
+                results.extend(format_responses_events(chat_to_responses_response(
+                    &value,
+                    &mut state.responses.state,
+                )));
+            }
+        }
+    }
+    results
+}
+
+fn format_responses_events(events: Vec<Value>) -> Vec<String> {
     events
         .into_iter()
-        .map(|v| {
-            let et = v
+        .map(|event| {
+            let event_type = event
                 .get("event")
-                .and_then(|e| e.as_str())
-                .or_else(|| v.get("type").and_then(|t| t.as_str()))
-                .unwrap_or("message");
-            let data = v.get("data").cloned().unwrap_or(v.clone());
+                .and_then(Value::as_str)
+                .or_else(|| event.get("type").and_then(Value::as_str))
+                .unwrap_or("message")
+                .to_string();
+            let data = event.get("data").cloned().unwrap_or(event);
             format!(
-                "event: {et}\ndata: {}\n\n",
+                "event: {event_type}\ndata: {}\n\n",
                 serde_json::to_string(&data).unwrap_or_default()
             )
         })
@@ -1426,6 +1446,26 @@ mod tests {
     use super::*;
     use crate::core::translator::registry::ResponseTransformState;
     use serde_json::json;
+
+    #[test]
+    fn chat_to_responses_streaming_buffers_split_multi_frame_chunks() {
+        let mut state = ResponseTransformState::default();
+        let stream = concat!(
+            "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"READY\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let split = stream.find("READY").unwrap() + 2;
+
+        assert!(chat_to_responses_streaming(&stream.as_bytes()[..split], &mut state).is_empty());
+        let output = chat_to_responses_streaming(&stream.as_bytes()[split..], &mut state).join("");
+
+        let text = output.find("response.output_text.delta").unwrap();
+        let completed = output.find("response.completed").unwrap();
+        assert!(text < completed);
+        assert!(output.contains("\"delta\":\"READY\""));
+        assert!(output.contains("data: [DONE]"));
+    }
 
     #[test]
     fn empty_tool_calls_array_does_not_trigger_tool_call_processing() {
