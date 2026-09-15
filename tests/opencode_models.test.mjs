@@ -106,6 +106,8 @@ test("discovery generates readable names without changing model IDs", async (t) 
     data: [
       { id: "cx/gpt-5.6-luna" },
       { id: "cx/gpt-5.6-sol-fast" },
+      { id: "cx/glm-5.2" },
+      { id: "cx/glm-4.6v", opencode: { name: "Glm 4.6v" } },
       { id: "cx/explicit", opencode: { name: "Public Luna" } },
       { id: "cx/same", opencode: { name: "cx/same" } },
       { id: "cx/local" },
@@ -117,10 +119,12 @@ test("discovery generates readable names without changing model IDs", async (t) 
   } } }
   await (await OpenProxyModels()).config(config)
   assert.deepEqual(Object.keys(config.provider.ludka2.models), [
-    "cx/gpt-5.6-luna", "cx/gpt-5.6-sol-fast", "cx/explicit", "cx/same", "cx/local",
+    "cx/gpt-5.6-luna", "cx/gpt-5.6-sol-fast", "cx/glm-5.2", "cx/glm-4.6v", "cx/explicit", "cx/same", "cx/local",
   ])
   assert.equal(config.provider.ludka2.models["cx/gpt-5.6-luna"].name, "GPT-5.6 Luna")
   assert.equal(config.provider.ludka2.models["cx/gpt-5.6-sol-fast"].name, "GPT-5.6 Sol Fast")
+  assert.equal(config.provider.ludka2.models["cx/glm-5.2"].name, "GLM 5.2")
+  assert.equal(config.provider.ludka2.models["cx/glm-4.6v"].name, "GLM 4.6v")
   assert.equal(config.provider.ludka2.models["cx/explicit"].name, "Public Luna")
   assert.equal(config.provider.ludka2.models["cx/same"].name, "Same")
   assert.equal(config.provider.ludka2.models["cx/local"].name, "User chosen name")

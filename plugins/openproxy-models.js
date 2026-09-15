@@ -15,12 +15,17 @@ function prettyModelName(id) {
   const words = modelId.split(/[-_]+/).filter(Boolean).map((word) => {
     const lower = word.toLowerCase()
     if (lower === "gpt") return "GPT"
+    if (lower === "glm") return "GLM"
     return lower[0].toUpperCase() + lower.slice(1)
   })
   if (words[0] === "GPT" && /^\d/.test(words[1] ?? "")) {
     words.splice(0, 2, `${words[0]}-${words[1]}`)
   }
   return words.join(" ") || id
+}
+
+function normalizeModelName(name) {
+  return name.replace(/\bglm\b/gi, "GLM")
 }
 
 function explicitModelName(name, id) {
@@ -44,7 +49,7 @@ function modelConfig(row) {
   if (!record(metadata)) throw new Error()
   if (metadata.name !== undefined) {
     if (typeof metadata.name !== "string") throw new Error()
-    result.name = explicitModelName(metadata.name, row.id) ?? result.name
+    result.name = normalizeModelName(explicitModelName(metadata.name, row.id) ?? result.name)
   }
   if (metadata.limit !== undefined) {
     if (!record(metadata.limit)) throw new Error()
@@ -116,6 +121,7 @@ export default async function OpenProxyModels() {
           const remote = modelConfig(row)
           const local = Object.hasOwn(provider.models ?? {}, row.id) ? provider.models[row.id] : {}
           const merged = { ...remote, ...local }
+          if (typeof merged.name === "string") merged.name = normalizeModelName(merged.name)
           if (remote.limit || local.limit) merged.limit = { ...remote.limit, ...local.limit }
           // OpenCode allows omitting limit, but requires context AND output
           // when present. Check after local overrides have filled any gaps.

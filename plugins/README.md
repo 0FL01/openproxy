@@ -64,6 +64,8 @@ When neither the proxy nor a local override supplies a useful name, the plugin
 removes the router prefix for display and formats the slug (for example,
 `cx/gpt-5.6-luna` becomes `GPT-5.6 Luna`). The model ID used for requests is
 unchanged. Explicit proxy and local names retain priority.
+Known acronym casing is preserved for the generated `GPT` and `GLM` names;
+`Glm 5.2` from proxy metadata is normalized to `GLM 5.2`.
 
 The updated router supplies an additive `opencode` object on `/v1/models` rows:
 name, limits, modalities, reasoning/tool support, and reasoning-effort variants.
