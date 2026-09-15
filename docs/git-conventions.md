@@ -144,7 +144,8 @@ Run the same checks CI runs — locally, every commit:
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features
 cargo test -p openproxy --lib provider_models -- --nocapture   # quick smoke
-# or: ./scripts/dev.sh --no-run   # build+test without starting server
+cargo test --lib --all-features                               # full lib gate (what CI runs)
+# or: ./scripts/dev.sh build   # build only, without starting server
 ```
 
 Dashboard changes:
@@ -199,7 +200,7 @@ Draft PRs for early feedback: `gh pr create --draft`.
 
 ## 7. Issues & Beads
 
-- **GitHub Issues:** search before creating (`gh search issues "kilocode"`). Use templates in `.github/ISSUE_TEMPLATE/` — Bug Report / Feature Request. Include repro steps, `openproxy --version`, and whether `./scripts/dev.sh --full` reproduces.
+- **GitHub Issues:** search before creating (`gh search issues "kilocode"`). Use templates in `.github/ISSUE_TEMPLATE/` — Bug Report / Feature Request. Include repro steps, `openproxy --version`, and whether `cargo test --lib --all-features` reproduces.
 - **Beads (parity work):** epics like `openproxy-9router-parity-v0550-pnc` live in `br` / `bv --robot-next`. For provider parity, check OmniRoute (`/tmp/omniroute_v3850/src/managed/`) before filing — link the relevant file in the issue.
 
 ---
@@ -210,7 +211,8 @@ Draft PRs for early feedback: `gh pr create --draft`.
 - Tag from green `main`:
   ```bash
   git checkout main && git pull
-  cargo test -p openproxy --lib -- --test-threads=1  # or ./scripts/dev.sh --full
+  cargo test -p openproxy --lib -- --test-threads=1  # full lib suite
+  cargo test --test <name>  # affected integration targets only
   git tag -a v0.2.1 -m "v0.2.1 — short changelog"
   git push origin v0.2.1
   ```
@@ -235,7 +237,7 @@ See `AGENTS.md` § Local Config & Secrets — Never Commit and `CONTRIBUTING.md`
 - [ ] Commits: Conventional Commits, atomic, bisectable
 - [ ] git status / git diff --cached reviewed — no secrets or stray files
 - [ ] cargo fmt --check / cargo clippy --all-targets --all-features — green
-- [ ] cargo test (quick or --full) — green
+- [ ] cargo test --lib --all-features (+ affected --test <name>) — green
 - [ ] pnpm --dir web run build — green (if web touched)
 - [ ] PR template filled — summary, test plan, risk, linked issue/bead
 ```

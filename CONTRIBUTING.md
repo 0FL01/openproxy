@@ -2,7 +2,7 @@
 
 **OpenProxy** is a Rust AI proxy router — single binary on `127.0.0.1:4623`, OpenAI-compatible, 40+ providers, embedded Astro dashboard. This guide makes contributions systematic, not arbitrary.
 
-> **Single source of truth for daily workflow:** run `./scripts/dev.sh` — it builds backend + dashboard, runs quick tests, and starts the server detached. Everything else is a flag on that script.
+> **Single source of truth for daily workflow:** run `./scripts/dev.sh` — it builds the backend and starts the server. Tests are explicit cargo commands (see [Testing](#testing)).
 
 Related docs:
 - **Git conventions (branch naming, commit messages, atomic commits, PR hygiene):** [`docs/git-conventions.md`](docs/git-conventions.md)
@@ -53,15 +53,13 @@ openproxy --robot server status
 openproxy --robot doctor
 ```
 
-Common variants (see `AGENTS.md` and `scripts/dev.sh --help`):
+Common variants (see `AGENTS.md` and `scripts/dev.sh`):
 
 ```bash
-./scripts/dev.sh --full          # + full lib suite (1690 tests, --test-threads=1)
-./scripts/dev.sh --no-web        # skip dashboard build
-./scripts/dev.sh --no-test       # skip tests
-./scripts/dev.sh --no-run        # build+test only, don't start server
-./scripts/dev.sh --foreground    # foreground (Ctrl+C to stop) instead of detached
-PORT=4624 ./scripts/dev.sh       # custom port
+./scripts/dev.sh            # build + run foreground (Ctrl+C to stop)
+./scripts/dev.sh build      # only build, don't run
+./scripts/dev.sh detach     # build + run detached
+PORT=4624 ./scripts/dev.sh  # custom port
 ```
 
 Live dashboard iteration without rebuilding the Rust binary:
@@ -96,8 +94,8 @@ The Rust binary embeds `web/dist` via `rust-embed` at compile time — if you ch
 1. **Code** — follow [Coding Standards](#coding-standards). Keep changes focused; one logical change per commit.
 2. **Build + test + run** — always via `scripts/dev.sh`:
    ```bash
-   ./scripts/dev.sh --no-run   # fast feedback before starting server
-   ./scripts/dev.sh            # full quick cycle + detached server
+   ./scripts/dev.sh build  # fast feedback before starting server
+   ./scripts/dev.sh         # build + run foreground
    ```
 3. **Verify** — `curl /health`, `openproxy --robot doctor`, smoke `cargo test -p openproxy --lib parity_tests`.
 4. **Push to main** — work directly on `main`; create a branch only when explicitly requested.
@@ -125,14 +123,23 @@ If dashboard changes appear "missing" at runtime, you forgot `pnpm --dir web run
 
 ## Testing
 
-`scripts/dev.sh` runs the **quick** set by default; `--full` runs the full suite:
+Local gate mirrors CI (which runs fmt + clippy + `cargo test --lib` on Linux only):
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features
+cargo test --lib --all-features
+```
+
+Integration tests (`tests/`, 61 targets) run only for affected surfaces: `cargo test --test <name>`.
+Touched `tests/common/`, `server/api`, auth, DB, or pools → run all related integration targets, not just one.
 
 | Command | What it runs |
 |---------|--------------|
 | `cargo test -p openproxy --lib provider_models -- --nocapture` | 13 provider-model parsing + discovery tests |
 | `cargo test --test providers_api import_catalog -- --nocapture` | 4 import catalog tests |
 | `cargo test -p openproxy --lib parity_tests -- --nocapture` | stream_flags smoke |
-| `cargo test -p openproxy --lib -- --test-threads=1` (`--full`) | full 1690-test lib suite |
+| `cargo test -p openproxy --lib -- --test-threads=1` | full 1727-test lib suite |
 | `cargo test --test providers_api -- --test-threads=1 --skip provider_test_models_route_fetches_live_compatible_models_and_warms_first_request` | providers API (full) |
 | `pnpm --dir web exec astro check` | dashboard typecheck |
 
@@ -183,7 +190,7 @@ This is a hard rule (also in `AGENTS.md`):
 ## Reporting Bugs & Requesting Features
 
 - **Search first:** `gh issue list` / `gh search issues` to avoid duplicates.
-- **Use the issue templates** (`.github/ISSUE_TEMPLATE/`): Bug Report / Feature Request. Fill in repro steps, expected vs actual, `openproxy --version`, and whether you can reproduce after `./scripts/dev.sh --full`.
+- **Use the issue templates** (`.github/ISSUE_TEMPLATE/`): Bug Report / Feature Request. Fill in repro steps, expected vs actual, `openproxy --version`, and whether you can reproduce after `cargo test --lib --all-features`.
 - **For provider bugs:** mention the provider, model, repro steps, expected vs actual.
 
 ## Release Process
