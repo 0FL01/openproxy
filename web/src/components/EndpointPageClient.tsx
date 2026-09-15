@@ -14,12 +14,6 @@ interface TunnelBenefit {
   desc: string;
 }
 
-interface CavemanLevel {
-  id: string;
-  label: string;
-  desc: string;
-}
-
 interface ApiKey {
   id: string;
   name: string;
@@ -112,12 +106,6 @@ async function clientPingAny(...urls: Array<string | undefined | null>): Promise
   });
 }
 
-const CAVEMAN_LEVELS: CavemanLevel[] = [
-  { id: "lite", label: "Lite", desc: "Drop filler, keep grammar" },
-  { id: "full", label: "Full", desc: "Drop articles, fragments OK" },
-  { id: "ultra", label: "Ultra", desc: "Telegraphic, max compression" },
-];
-
 export default function APIPageClient({ machineId }: APIPageClientProps) {
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -132,9 +120,6 @@ export default function APIPageClient({ machineId }: APIPageClientProps) {
   // True when the dashboard is opened via a non-loopback host (LAN / tunnel).
   const [isRemoteHost, setIsRemoteHost] = useState<boolean>(false);
   const [tunnelDashboardAccess, setTunnelDashboardAccess] = useState<boolean>(false);
-  const [rtkEnabled, setRtkEnabledState] = useState<boolean>(true);
-  const [cavemanEnabled, setCavemanEnabled] = useState<boolean>(false);
-  const [cavemanLevel, setCavemanLevel] = useState<string>("full");
 
   // Cloudflare Tunnel state
   const [tunnelChecking, setTunnelChecking] = useState<boolean>(true);
@@ -365,9 +350,6 @@ export default function APIPageClient({ machineId }: APIPageClientProps) {
         setRequireLogin(data.requireLogin !== false);
         setHasPassword(data.hasPassword || false);
         setTunnelDashboardAccess(data.tunnelDashboardAccess || false);
-        setRtkEnabledState(data.rtkEnabled !== false);
-        setCavemanEnabled(!!data.cavemanEnabled);
-        setCavemanLevel(data.cavemanLevel || "full");
       }
       if (statusRes.ok) {
         const data = await statusRes.json();
@@ -417,41 +399,6 @@ export default function APIPageClient({ machineId }: APIPageClientProps) {
       console.log("Error updating requireApiKey:", error);
       notify.error(error instanceof Error ? error.message : "Failed to save API key requirement");
     }
-  };
-
-  const handleRtkEnabled = async (value: boolean): Promise<void> => {
-    try {
-      const res = await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rtkEnabled: value }),
-      });
-      if (res.ok) setRtkEnabledState(value);
-    } catch (error) {
-      console.log("Error updating rtkEnabled:", error);
-    }
-  };
-
-  const patchSetting = async (patch: Record<string, unknown>): Promise<void> => {
-    try {
-      await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch),
-      });
-    } catch (error) {
-      console.log("Error updating setting:", error);
-    }
-  };
-
-  const handleCavemanEnabled = (value: boolean): void => {
-    setCavemanEnabled(value);
-    patchSetting({ cavemanEnabled: value });
-  };
-
-  const handleCavemanLevel = (level: string): void => {
-    setCavemanLevel(level);
-    patchSetting({ cavemanLevel: level });
   };
 
   const fetchData = async (): Promise<void> => {
@@ -1200,80 +1147,6 @@ export default function APIPageClient({ machineId }: APIPageClientProps) {
 
       {/* Response Cache hit-rate */}
       <CacheStatsCard />
-
-      {/* Token Saver (RTK + Caveman) */}
-      <Card id="rtk">
-        <div className="flex items-center justify-between mb-2">
-          <h2 className="text-lg font-semibold flex items-center gap-2">
-            <span className="material-symbols-outlined text-primary">bolt</span>
-            Token Saver
-          </h2>
-        </div>
-        <div className="flex items-center justify-between pt-2 pb-4 border-b border-border gap-4">
-          <div className="min-w-0 flex-1">
-            <p className="font-medium">
-              Compress tool output{" "}
-              <a
-                href="https://github.com/rtk-ai/rtk"
-                target="_blank"
-                rel="noreferrer"
-                className="text-xs font-normal text-primary underline hover:opacity-80"
-              >
-                (RTK)
-              </a>
-            </p>
-            <p className="text-sm text-text-muted">
-              git/grep/ls/tree/logs → 60-90% fewer input tokens
-            </p>
-          </div>
-          <Toggle
-            checked={rtkEnabled}
-            onChange={() => handleRtkEnabled(!rtkEnabled)}
-          />
-        </div>
-        <div className="flex items-center justify-between pt-4 gap-4 flex-wrap">
-          <div className="min-w-0 flex-1">
-            <p className="font-medium">
-              Compress LLM output{" "}
-              <a
-                href="https://github.com/JuliusBrussee/caveman"
-                target="_blank"
-                rel="noreferrer"
-                className="text-xs font-normal text-primary underline hover:opacity-80"
-              >
-                (Caveman)
-              </a>
-            </p>
-            <p className="text-sm text-text-muted">
-              Terse-style system prompt → ~65% fewer output tokens (up to 87%)
-            </p>
-          </div>
-          <div className="flex items-center gap-3 shrink-0">
-            {cavemanEnabled && (
-              <div className="flex items-center gap-1.5">
-                {CAVEMAN_LEVELS.map((lvl) => (
-                  <button
-                    key={lvl.id}
-                    onClick={() => handleCavemanLevel(lvl.id)}
-                    className={`px-3 py-1.5 rounded text-xs font-medium border transition-colors ${
-                      cavemanLevel === lvl.id
-                        ? "bg-primary text-white border-primary"
-                        : "bg-transparent border-border text-text-muted hover:bg-surface-2"
-                    }`}
-                    title={lvl.desc}
-                  >
-                    {lvl.label}
-                  </button>
-                ))}
-              </div>
-            )}
-            <Toggle
-              checked={cavemanEnabled}
-              onChange={() => handleCavemanEnabled(!cavemanEnabled)}
-            />
-          </div>
-        </div>
-      </Card>
 
       {/* API Keys */}
       <Card id="require-api-key">

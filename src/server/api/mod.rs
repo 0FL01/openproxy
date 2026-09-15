@@ -11,7 +11,6 @@ pub mod compat;
 pub mod cors;
 pub mod db_backups;
 pub mod guard;
-pub mod headroom;
 pub mod locale;
 pub mod mcp;
 pub mod mcp_server;
@@ -296,30 +295,6 @@ pub fn routes(state: AppState) -> Router<AppState> {
     // which openproxy does not implement).
 
     // ── ADMIN: dashboard session or management API key required ──
-    let admin_local_only = Router::new()
-        // Headroom proxy management (local-only)
-        .route("/api/headroom/status", get(headroom::status))
-        .route("/api/headroom/start", post(headroom::start))
-        .route("/api/headroom/stop", post(headroom::stop))
-        .route("/api/headroom/restart", post(headroom::restart))
-        .route(
-            "/api/headroom/extras",
-            get(headroom::extras_get)
-                .post(headroom::extras_post)
-                .delete(headroom::extras_delete),
-        )
-        .route(
-            "/api/headroom/proxy/{*path}",
-            get(headroom::proxy_handler)
-                .post(headroom::proxy_handler)
-                .put(headroom::proxy_handler)
-                .patch(headroom::proxy_handler)
-                .delete(headroom::proxy_handler)
-                .head(headroom::proxy_handler)
-                .options(headroom::proxy_handler),
-        )
-        .route_layer(middleware::from_fn(guard::require_local_only));
-
     let admin = Router::new()
         .route("/api/catalog", get(api_catalog))
         // Credential management (admin-tier — dashboard or API key)
@@ -345,7 +320,6 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .merge(tags::routes())
         .merge(translator::routes())
         .merge(oauth::routes())
-        .merge(admin_local_only)
         .route(
             "/api/dashboard/chat/completions",
             post(chat::dashboard_chat_completions),
