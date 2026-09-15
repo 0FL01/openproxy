@@ -1,6 +1,7 @@
 // Auto-loaded from ~/.config/opencode/plugins/. The key stays in provider.options.
 const PROVIDER_ID = "ludka2"
 const DISCOVERY_TIMEOUT_MS = 10000
+const STANDARD_REASONING_VARIANTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 
 function record(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -72,7 +73,7 @@ function modelConfig(row) {
     }
     result.modalities = modalities
   }
-  for (const key of ["reasoning", "tool_call"]) {
+  for (const key of ["attachment", "reasoning", "tool_call"]) {
     if (metadata[key] === undefined) continue
     if (typeof metadata[key] !== "boolean") throw new Error()
     result[key] = metadata[key]
@@ -80,9 +81,20 @@ function modelConfig(row) {
   if (metadata.variants !== undefined) {
     if (!record(metadata.variants)) throw new Error()
     result.variants = Object.fromEntries(Object.entries(metadata.variants).map(([name, variant]) => {
-      if (!record(variant) || typeof variant.reasoningEffort !== "string") throw new Error()
-      return [name, { reasoningEffort: variant.reasoningEffort }]
+      if (!name.trim() || !record(variant)) throw new Error()
+      if (typeof variant.reasoningEffort === "string" && variant.reasoningEffort.trim() && variant.disabled === undefined) {
+        return [name, { reasoningEffort: variant.reasoningEffort }]
+      }
+      if (variant.reasoningEffort === undefined && variant.disabled === true) {
+        return [name, { disabled: true }]
+      }
+      throw new Error()
     }))
+    // OpenCode adds SDK defaults before merging configured variants. An
+    // authoritative proxy allowlist must explicitly suppress unsupported ones.
+    for (const name of STANDARD_REASONING_VARIANTS) {
+      if (!Object.hasOwn(result.variants, name)) result.variants[name] = { disabled: true }
+    }
   }
   return result
 }

@@ -696,9 +696,9 @@ fn match_pattern(pattern: &str, model: &str) -> bool {
     true
 }
 
-pub fn get_capabilities_for_model(provider: &str, model: &str) -> ModelCapabilities {
+fn known_capability_entry(provider: &str, model: &str) -> Option<&'static Value> {
     if model.is_empty() {
-        return ModelCapabilities::default();
+        return None;
     }
     let base_model = model.rsplit('/').next().unwrap_or(model);
 
@@ -706,7 +706,7 @@ pub fn get_capabilities_for_model(provider: &str, model: &str) -> ModelCapabilit
     if !provider.is_empty() {
         if let Some(table) = PROVIDER_CAPABILITIES.get(provider) {
             if let Some(entry) = table.get(model).or_else(|| table.get(base_model)) {
-                return ModelCapabilities::from_value(entry);
+                return Some(entry);
             }
         }
     }
@@ -716,18 +716,32 @@ pub fn get_capabilities_for_model(provider: &str, model: &str) -> ModelCapabilit
         .get(base_model)
         .or_else(|| MODEL_CAPABILITIES.get(model))
     {
-        return ModelCapabilities::from_value(entry);
+        return Some(entry);
     }
 
     // 3. Pattern (first match wins).
     for (pattern, caps) in PATTERN_CAPABILITIES.iter() {
         if match_pattern(pattern, base_model) || match_pattern(pattern, model) {
-            return ModelCapabilities::from_value(caps);
+            return Some(caps);
         }
     }
 
-    // 4. Floor.
-    ModelCapabilities::default()
+    None
+}
+
+/// Return an output limit only when the matching capability entry states it.
+/// Unlike [`get_capabilities_for_model`], this never exposes floor defaults as
+/// model facts.
+pub(crate) fn known_max_output_for_model(provider: &str, model: &str) -> Option<u64> {
+    known_capability_entry(provider, model)?
+        .get("maxOutput")
+        .and_then(Value::as_u64)
+}
+
+pub fn get_capabilities_for_model(provider: &str, model: &str) -> ModelCapabilities {
+    known_capability_entry(provider, model)
+        .map(ModelCapabilities::from_value)
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -764,6 +778,19 @@ mod tests {
         let gem = get_capabilities_for_model("", "google/gemini-3-pro");
         assert!(gem.vision);
         assert_eq!(gem.thinking_format, Some("gemini-level"));
+    }
+
+    #[test]
+    fn known_output_lookup_never_returns_floor_defaults() {
+        assert_eq!(
+            known_max_output_for_model("codex", "gpt-5.6-luna"),
+            Some(128_000)
+        );
+        assert_eq!(
+            known_max_output_for_model("codex", "totally-unknown-model"),
+            None
+        );
+        assert_eq!(known_max_output_for_model("", "glm-4.6v"), None);
     }
 
     #[test]

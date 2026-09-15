@@ -14,6 +14,7 @@ test("discovery authenticates, refreshes inventory, preserves options and valida
         name: "New Model",
         limit: { context: 628000, input: 500000, output: 128000 },
         modalities: { input: ["text", "image"], output: ["text"] },
+        attachment: true,
         reasoning: true,
         variants: { high: { reasoningEffort: "high" } },
         provider: { api: "https://example.invalid" }, // Must never reach the SDK.
@@ -56,8 +57,17 @@ test("discovery authenticates, refreshes inventory, preserves options and valida
     name: "Local name",
     limit: { context: 628000, input: 480000, output: 128000 },
     modalities: { input: ["text", "image"], output: ["text"] },
+    attachment: true,
     reasoning: true,
-    variants: { high: { reasoningEffort: "high" } },
+    variants: {
+      high: { reasoningEffort: "high" },
+      none: { disabled: true },
+      minimal: { disabled: true },
+      low: { disabled: true },
+      medium: { disabled: true },
+      xhigh: { disabled: true },
+      max: { disabled: true },
+    },
   })
   assert.strictEqual(config.provider.ludka2.options, options)
   assert.equal(config.provider.ludka2.npm, "@ai-sdk/openai")
@@ -84,6 +94,27 @@ test("discovery authenticates, refreshes inventory, preserves options and valida
   config.disabled_providers = ["ludka2"]
   await plugin.config(config)
   assert.equal(requests, 4)
+})
+
+test("authoritative empty effort list disables SDK reasoning variants", async (t) => {
+  t.mock.method(console, "warn", () => {})
+  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({
+    object: "list",
+    data: [
+      { id: "known-none", opencode: { variants: {} } },
+      { id: "unknown" },
+    ],
+  }), { headers: { "Content-Type": "application/json" } }))
+  const config = { provider: { ludka2: {
+    options: { baseURL: "https://example.invalid/v1", apiKey: "fixture-key" },
+  } } }
+
+  await (await OpenProxyModels()).config(config)
+
+  assert.deepEqual(config.provider.ludka2.models["known-none"].variants, Object.fromEntries(
+    ["none", "minimal", "low", "medium", "high", "xhigh", "max"].map((name) => [name, { disabled: true }]),
+  ))
+  assert.equal(Object.hasOwn(config.provider.ludka2.models.unknown, "variants"), false)
 })
 
 test("discovery has its own timeout and preserves local models on network failure", async (t) => {

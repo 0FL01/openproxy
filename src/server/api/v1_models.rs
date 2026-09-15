@@ -13,7 +13,7 @@ use regex::Regex;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use super::models_metadata::OpenCodeModelConfig;
+use super::models_metadata::{ModelMetadataFacts, OpenCodeModelConfig};
 use crate::core::model::catalog::provider_catalog;
 use crate::core::model::resolve_provider_alias;
 use crate::server::auth::require_api_key_with_reload;
@@ -462,41 +462,65 @@ async fn build_models_list(
             }
 
             let entry = catalog.find_model(provider_id, model_id);
-            let mut metadata = OpenCodeModelConfig::from_catalog(
-                entry.and_then(|entry| entry.name.clone()),
-                model.context_length,
-                model.max_completion_tokens,
-                entry
-                    .and_then(|entry| entry.capabilities.as_deref())
-                    .unwrap_or(&[]),
-                &[],
-            );
+            let catalog_capabilities = entry
+                .and_then(|entry| entry.capabilities.as_deref())
+                .unwrap_or(&[]);
+            let mut metadata = OpenCodeModelConfig::from_facts(ModelMetadataFacts {
+                name: entry.and_then(|entry| entry.name.clone()),
+                context: model.context_length,
+                input: None,
+                output: model.max_completion_tokens,
+                capabilities: catalog_capabilities,
+                modalities: None,
+                attachment: None,
+                reasoning: None,
+                tool_call: None,
+                efforts: None,
+            });
             if let Some(entry) = models_dev
                 .as_ref()
                 .and_then(|catalog| catalog.find(provider_id, model_id))
             {
-                metadata.overlay(OpenCodeModelConfig::from_catalog(
-                    Some(entry.name.clone()),
-                    entry.context_window,
-                    entry.max_output,
-                    &entry.capabilities,
-                    &entry.reasoning_efforts,
-                ));
+                metadata.overlay(OpenCodeModelConfig::from_facts(ModelMetadataFacts {
+                    name: Some(entry.name.clone()),
+                    context: entry.context_window,
+                    input: entry.max_input,
+                    output: entry.max_output,
+                    capabilities: &entry.capabilities,
+                    modalities: entry
+                        .input_modalities
+                        .as_deref()
+                        .zip(entry.output_modalities.as_deref()),
+                    attachment: entry.attachment,
+                    reasoning: entry.reasoning,
+                    tool_call: entry.tool_call,
+                    efforts: entry.reasoning_efforts.as_deref(),
+                }));
             }
             if let Some(entry) = codex_inventory
                 .as_ref()
                 .filter(|_| provider_id == "codex")
                 .and_then(|inventory| inventory.models.iter().find(|entry| entry.id == model_id))
             {
-                metadata.overlay(OpenCodeModelConfig::from_catalog(
-                    Some(entry.name.clone()),
-                    entry
+                let has = |cap: &str| entry.capabilities.iter().any(|value| value == cap);
+                metadata.overlay(OpenCodeModelConfig::from_facts(ModelMetadataFacts {
+                    name: Some(entry.name.clone()),
+                    context: entry
                         .context_window
                         .and_then(|value| u32::try_from(value).ok()),
-                    None,
-                    &entry.capabilities,
-                    &entry.reasoning_efforts,
-                ));
+                    input: None,
+                    output: crate::core::combo::capabilities::known_max_output_for_model(
+                        provider_id,
+                        model_id,
+                    )
+                    .and_then(|value| u32::try_from(value).ok()),
+                    capabilities: &entry.capabilities,
+                    modalities: None,
+                    attachment: Some(has("vision")),
+                    reasoning: Some(has("reasoning")),
+                    tool_call: Some(has("tools")),
+                    efforts: Some(&entry.reasoning_efforts),
+                }));
             }
             if let Some(custom) = snapshot.custom_models.iter().find(|custom| {
                 custom.id.trim() == model_id
@@ -1008,8 +1032,9 @@ mod tests {
                         "muse-spark-1.3-contributor-free": {
                             "id": "muse-spark-1.3-contributor-free",
                             "name": "Muse Spark 1.3 Free",
-                            "limit": {"context": 500000, "output": 128000},
-                            "modalities": {"input": ["text", "image"], "output": ["text"]},
+                            "attachment": true,
+                            "limit": {"context": 500000, "input": 372000, "output": 128000},
+                            "modalities": {"input": ["text", "image", "pdf"], "output": ["text"]},
                             "reasoning_options": [{"type": "effort", "values": ["medium", "high"]}],
                             "provider": {"npm": "@ai-sdk/openai"},
                             "cost": {"input": 0, "output": 0}
@@ -1034,8 +1059,13 @@ mod tests {
             .unwrap();
         let metadata = json!(model.opencode);
         assert_eq!(metadata["limit"]["context"], 500000);
+        assert_eq!(metadata["limit"]["input"], 372000);
         assert_eq!(metadata["limit"]["output"], 128000);
-        assert_eq!(metadata["modalities"]["input"], json!(["text", "image"]));
+        assert_eq!(metadata["attachment"], true);
+        assert_eq!(
+            metadata["modalities"]["input"],
+            json!(["text", "image", "pdf"])
+        );
         assert_eq!(metadata["variants"]["high"]["reasoningEffort"], "high");
     }
 
@@ -1057,34 +1087,57 @@ mod tests {
             .codex_models
             .seed(
                 &connection,
-                vec![crate::server::codex_catalog::CodexModelMetadata {
-                    id: "gpt-dynamic".into(),
-                    name: "GPT Dynamic".into(),
-                    context_window: Some(872_000),
-                    capabilities: vec!["reasoning".into()],
-                    reasoning_efforts: vec!["high".into()],
-                }],
+                vec![
+                    crate::server::codex_catalog::CodexModelMetadata {
+                        id: "gpt-5.6-luna".into(),
+                        name: "GPT-5.6 Luna".into(),
+                        context_window: Some(872_000),
+                        capabilities: vec!["tools".into(), "reasoning".into(), "vision".into()],
+                        reasoning_efforts: vec!["high".into()],
+                    },
+                    crate::server::codex_catalog::CodexModelMetadata {
+                        id: "future-model".into(),
+                        name: "Future Model".into(),
+                        context_window: Some(999_000),
+                        capabilities: vec!["tools".into()],
+                        reasoning_efforts: vec![],
+                    },
+                ],
             )
             .await;
 
         let llm = build_models_list(&state, &snapshot, &[LLM_KIND]).await;
-        assert!(llm.iter().any(|model| model.id == "cx/gpt-dynamic"));
+        assert!(llm.iter().any(|model| model.id == "cx/gpt-5.6-luna"));
         let metadata = json!(
             llm.iter()
-                .find(|model| model.id == "cx/gpt-dynamic")
+                .find(|model| model.id == "cx/gpt-5.6-luna")
                 .unwrap()
                 .opencode
         );
         assert_eq!(metadata["limit"]["context"], 872000);
+        assert_eq!(metadata["limit"]["output"], 128000);
+        assert_eq!(metadata["attachment"], true);
+        assert_eq!(metadata["modalities"]["input"], json!(["text", "image"]));
+        assert_eq!(metadata["reasoning"], true);
+        assert_eq!(metadata["tool_call"], true);
         assert_eq!(
             metadata["variants"],
             json!({"high": {"reasoningEffort": "high"}})
         );
+        let unknown = json!(
+            llm.iter()
+                .find(|model| model.id == "cx/future-model")
+                .unwrap()
+                .opencode
+        );
+        assert_eq!(unknown["limit"]["context"], 999000);
+        assert!(unknown["limit"].get("output").is_none());
+        assert_eq!(unknown["variants"], json!({}));
         assert!(!llm.iter().any(|model| model.id == "cx/gpt-5.5-image"));
 
         let image = build_models_list(&state, &snapshot, &["image"]).await;
         assert!(image.iter().any(|model| model.id == "cx/gpt-5.5-image"));
-        assert!(!image.iter().any(|model| model.id == "cx/gpt-dynamic"));
+        assert!(!image.iter().any(|model| model.id == "cx/gpt-5.6-luna"));
     }
 
     #[tokio::test]

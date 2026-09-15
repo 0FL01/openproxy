@@ -33,6 +33,7 @@ test("OpenCode auto-loads the plugin and refresh discovers new IDs without rewri
         ...(name ? { name } : {}),
         limit,
         modalities: { input: ["text", "image"], output: ["text"] },
+        attachment: true,
         reasoning: true,
         variants: { high: { reasoningEffort: "high" } },
       },
@@ -78,8 +79,10 @@ test("OpenCode auto-loads the plugin and refresh discovers new IDs without rewri
   assert.equal(model.api.id, "cx/added")
   assert.equal(model.api.npm, "@ai-sdk/openai")
   assert.deepEqual(model.limit, { context: 628000, input: 500000, output: 128000 })
+  assert.equal(model.capabilities.attachment, true)
   assert.equal(model.capabilities.input.image, true)
   assert.equal(model.variants.high.reasoningEffort, "high")
+  assert.deepEqual(Object.keys(model.variants), ["high"])
   assert.equal(discoveries, 2)
   // Codex discovery can supply context without an output limit. The config
   // consumed by clients must not contain a partial OpenCode limit object.

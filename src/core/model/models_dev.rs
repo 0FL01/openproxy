@@ -19,9 +19,15 @@ pub struct OpenCodeModelMetadata {
     pub format: Format,
     pub family: Option<String>,
     pub context_window: Option<u32>,
+    pub max_input: Option<u32>,
     pub max_output: Option<u32>,
+    pub attachment: Option<bool>,
+    pub input_modalities: Option<Vec<String>>,
+    pub output_modalities: Option<Vec<String>>,
+    pub reasoning: Option<bool>,
+    pub tool_call: Option<bool>,
     pub capabilities: Vec<String>,
-    pub reasoning_efforts: Vec<String>,
+    pub reasoning_efforts: Option<Vec<String>>,
 }
 
 impl OpenCodeModelMetadata {
@@ -33,9 +39,10 @@ impl OpenCodeModelMetadata {
             "targetFormat": self.format.as_str(),
             "family": self.family,
             "contextWindow": self.context_window,
+            "maxInput": self.max_input,
             "maxOutput": self.max_output,
             "capabilities": self.capabilities,
-            "reasoningEfforts": self.reasoning_efforts,
+            "reasoningEfforts": self.reasoning_efforts.as_deref().unwrap_or_default(),
         })
     }
 }
@@ -177,11 +184,13 @@ struct ApiModel {
     #[serde(default)]
     modalities: Option<ApiModalities>,
     #[serde(default)]
-    reasoning: bool,
+    attachment: Option<bool>,
     #[serde(default)]
-    tool_call: bool,
+    reasoning: Option<bool>,
     #[serde(default)]
-    reasoning_options: Vec<ApiReasoningOption>,
+    tool_call: Option<bool>,
+    #[serde(default)]
+    reasoning_options: Option<Vec<ApiReasoningOption>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -198,6 +207,7 @@ struct ApiCost {
 #[derive(Debug, Deserialize)]
 struct ApiLimit {
     context: Option<u64>,
+    input: Option<u64>,
     output: Option<u64>,
 }
 
@@ -271,10 +281,7 @@ fn map_model(model: ApiModel, provider_npm: &str) -> Option<OpenCodeModelMetadat
         _ => return None,
     };
 
-    let modalities = model.modalities.unwrap_or(ApiModalities {
-        input: Vec::new(),
-        output: Vec::new(),
-    });
+    let modalities = model.modalities.as_ref();
     let mut capabilities = Vec::new();
     for (modality, capability) in [
         ("image", "vision"),
@@ -282,38 +289,48 @@ fn map_model(model: ApiModel, provider_npm: &str) -> Option<OpenCodeModelMetadat
         ("audio", "audioInput"),
         ("video", "videoInput"),
     ] {
-        if modalities.input.iter().any(|value| value == modality) {
+        if modalities.is_some_and(|values| values.input.iter().any(|value| value == modality)) {
             capabilities.push(capability.to_string());
         }
     }
-    if modalities.output.iter().any(|value| value == "image") {
+    if modalities.is_some_and(|values| values.output.iter().any(|value| value == "image")) {
         capabilities.push("imageOutput".to_string());
     }
-    if modalities.output.iter().any(|value| value == "audio") {
+    if modalities.is_some_and(|values| values.output.iter().any(|value| value == "audio")) {
         capabilities.push("audioOutput".to_string());
     }
-    if model.tool_call {
+    if model.tool_call == Some(true) {
         capabilities.push("tools".to_string());
     }
-    if model.reasoning {
+    if model.reasoning == Some(true) {
         capabilities.push("reasoning".to_string());
     }
 
-    let reasoning_efforts = model
-        .reasoning_options
-        .into_iter()
-        .find(|option| option.kind == "effort")
-        .map(|option| option.values)
-        .unwrap_or_default();
-    let (context_window, max_output) = model
+    let reasoning_efforts = model.reasoning_options.map(|options| {
+        options
+            .into_iter()
+            .find(|option| option.kind == "effort")
+            .map(|option| option.values)
+            .unwrap_or_default()
+    });
+    let (context_window, max_input, max_output) = model
         .limit
         .map(|limit| {
             (
                 limit.context.and_then(|value| u32::try_from(value).ok()),
+                limit.input.and_then(|value| u32::try_from(value).ok()),
                 limit.output.and_then(|value| u32::try_from(value).ok()),
             )
         })
-        .unwrap_or((None, None));
+        .unwrap_or((None, None, None));
+    let input_modalities = model
+        .modalities
+        .as_ref()
+        .map(|modalities| modalities.input.clone());
+    let output_modalities = model
+        .modalities
+        .as_ref()
+        .map(|modalities| modalities.output.clone());
 
     Some(OpenCodeModelMetadata {
         id: model.id,
@@ -321,7 +338,13 @@ fn map_model(model: ApiModel, provider_npm: &str) -> Option<OpenCodeModelMetadat
         format,
         family: model.family,
         context_window,
+        max_input,
         max_output,
+        attachment: model.attachment,
+        input_modalities,
+        output_modalities,
+        reasoning: model.reasoning,
+        tool_call: model.tool_call,
         capabilities,
         reasoning_efforts,
     })
@@ -343,9 +366,12 @@ mod tests {
                         "provider": {"npm": "@ai-sdk/openai"},
                         "family": "muse-free",
                         "cost": {"input": 0, "output": 0},
+                        "attachment": true,
                         "reasoning": true,
                         "tool_call": true,
-                        "limit": {"context": 1048576, "output": 131072}
+                        "limit": {"context": 1048576, "input": 917504, "output": 131072},
+                        "modalities": {"input": ["text", "image", "pdf"], "output": ["text"]},
+                        "reasoning_options": [{"type": "effort", "values": ["medium", "high"]}]
                     },
                     "paid": {
                         "id": "paid", "name": "Paid", "cost": {"input": 1, "output": 1}
@@ -367,6 +393,12 @@ mod tests {
                         "name": "DeepSeek V4.1 Flash",
                         "cost": {"input": 0.15, "output": 0.6}
                     },
+                    "no-effort-config": {
+                        "id": "no-effort-config",
+                        "name": "No Effort Config",
+                        "reasoning_options": [],
+                        "cost": {"input": 0.15, "output": 0.6}
+                    },
                     "old": {
                         "id": "old", "name": "Old", "status": "deprecated",
                         "cost": {"input": 0, "output": 0}
@@ -380,9 +412,35 @@ mod tests {
         assert_eq!(zen.len(), 1);
         assert_eq!(zen[0].format, Format::OpenAiResponses);
         assert_eq!(zen[0].context_window, Some(1_048_576));
+        assert_eq!(zen[0].max_input, Some(917_504));
+        assert_eq!(zen[0].max_output, Some(131_072));
+        assert_eq!(zen[0].attachment, Some(true));
+        assert_eq!(
+            zen[0].input_modalities.as_deref().unwrap(),
+            ["text", "image", "pdf"]
+        );
+        assert_eq!(
+            zen[0].reasoning_efforts.as_deref().unwrap(),
+            ["medium", "high"]
+        );
 
         let go = snapshot.models("opencode-go").unwrap();
-        assert_eq!(go.len(), 2);
+        assert_eq!(go.len(), 3);
+        assert_eq!(
+            snapshot
+                .find("opencode-go", "no-effort-config")
+                .unwrap()
+                .reasoning_efforts
+                .as_deref(),
+            Some([].as_slice())
+        );
+        assert_eq!(
+            snapshot
+                .find("opencode-go", "deepseek-v4.1-flash")
+                .unwrap()
+                .reasoning_efforts,
+            None
+        );
         assert_eq!(
             snapshot
                 .find("opencode-go", "muse-spark-1.3-contributor")
@@ -417,9 +475,10 @@ mod tests {
                     }),
                     limit: None,
                     modalities: None,
-                    reasoning: false,
-                    tool_call: false,
-                    reasoning_options: Vec::new(),
+                    attachment: None,
+                    reasoning: Some(false),
+                    tool_call: Some(false),
+                    reasoning_options: None,
                 },
             )]),
         };
