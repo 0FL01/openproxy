@@ -41,7 +41,6 @@ pub mod provider_ext;
 pub mod provider_models;
 pub mod provider_node;
 pub mod provider_oauth;
-pub mod pxpipe;
 pub mod quota;
 pub mod runtime;
 pub mod schema;
@@ -300,11 +299,6 @@ pub enum Command {
     Sync {
         #[command(subcommand)]
         cmd: sync::SyncCmd,
-    },
-    /// PXPIPE token-saver status, health, stats, and logs.
-    Pxpipe {
-        #[command(subcommand)]
-        cmd: pxpipe::PxpipeCmd,
     },
 }
 
@@ -895,14 +889,6 @@ impl Cli {
                     let db = std::sync::Arc::new(db);
                     let rt = tokio::runtime::Runtime::new()?;
                     rt.block_on(sync::run(cmd, &db, ctx))
-                }
-                Command::Pxpipe { cmd } => {
-                    let resolved = config::ResolvedConfig::resolve(overrides)?;
-                    let exit = rt.block_on(pxpipe::run(cmd, &resolved, ctx))?;
-                    if exit != 0 {
-                        std::process::exit(exit);
-                    }
-                    Ok(())
                 }
             }
         } else {

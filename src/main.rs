@@ -364,13 +364,6 @@ async fn main() -> anyhow::Result<()> {
                 openproxy::cli::sync::run(cmd.clone(), &db, ctx).await?;
                 return Ok(());
             }
-            Command::Pxpipe { cmd } => {
-                let exit = openproxy::cli::pxpipe::run(cmd.clone(), &resolved, ctx).await?;
-                if exit != 0 {
-                    std::process::exit(exit);
-                }
-                return Ok(());
-            }
         }
     }
 
