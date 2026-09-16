@@ -888,12 +888,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dotenvy"
-version = "0.15.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
-
-[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1748,16 +1742,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
-name = "md-5"
-version = "0.10.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
-dependencies = [
- "cfg-if",
- "digest 0.10.7",
-]
-
-[[package]]
 name = "memchr"
 version = "2.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1995,7 +1979,6 @@ dependencies = [
  "crc32fast",
  "dashmap",
  "directories",
- "dotenvy",
  "flate2",
  "futures-util",
  "hex",
@@ -2007,12 +1990,10 @@ dependencies = [
  "insta",
  "jsonwebtoken",
  "libc",
- "md-5",
  "mime_guess",
  "once_cell",
  "open",
  "parking_lot",
- "pkcs8",
  "predicates",
  "rand 0.8.6",
  "regex",
@@ -2025,23 +2006,19 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "serde_yml",
- "sha1",
  "sha2 0.10.9",
  "sha2 0.11.0",
  "sha256",
- "subtle",
  "tempfile",
  "thiserror 2.0.18",
  "time",
  "tokio",
- "tokio-rustls",
  "tokio-util",
  "toml",
  "tower",
  "tower-http 0.7.0",
  "tracing",
  "tracing-subscriber",
- "unicode-normalization",
  "url",
  "urlencoding",
  "uuid",
@@ -2807,17 +2784,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sha1"
-version = "0.10.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3bf829a2d51ab4a5ddf1352d8470c140cadc8301b2ae1789db023f01cedd6ba"
-dependencies = [
- "cfg-if",
- "cpufeatures 0.2.17",
- "digest 0.10.7",
-]
-
-[[package]]
 name = "sha1_smol"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3418,15 +3384,6 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
-
-[[package]]
-name = "unicode-normalization"
-version = "0.1.25"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
-dependencies = [
- "tinyvec",
-]
 
 [[package]]
 name = "universal-hash"

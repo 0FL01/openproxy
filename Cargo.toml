@@ -15,7 +15,6 @@ tower-http = { version = "0.7", features = ["cors", "trace", "fs"] }
 hyper = { version = "1.5", features = ["client", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "http2", "tokio"] }
 hyper-rustls = { version = "0.27", features = ["http2"] }
-tokio-rustls = "0.26"
 rustls = "0.23"
 
 # HTTP client (complex - OAuth, proxy)
@@ -58,16 +57,13 @@ hmac = "0.13"
 sha2 = "0.11"
 hex = "0.4"
 base64 = "0.23"
-sha1 = "0.10"
 sha256 = "1.6"
 # rsa 0.9 OAEP needs digest-0.10 sha2; the workspace sha2 is 0.11.
 sha2_rsa_compat = { package = "sha2", version = "0.10" }
-subtle = "2"
 
 # URL / query
 url = "2"
 urlencoding = "2"
-unicode-normalization = "0.1"
 serde_urlencoded = "0.7"
 
 # Time
@@ -75,9 +71,6 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # UUID
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
-
-# Environment / config
-dotenvy = "0.15"
 
 # Error handling
 thiserror = "2"
@@ -109,8 +102,6 @@ cbc = "0.1"
 aes-gcm = "0.10"
 # Argon2id KDF — credential key derivation (H20)
 argon2 = "0.5"
-md-5 = "0.10"
-pkcs8 = "0.10"
 time = "0.3"
 
 # Client identity
