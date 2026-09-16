@@ -14,7 +14,6 @@ export const FREE_PROVIDERS: Record<string, Provider> = {
   "gemini-cli": { id: "gemini-cli", alias: "gc", name: "Gemini CLI", icon: "terminal", color: "#4285F4", deprecated: true, deprecationNotice: "Gemini CLI is designed exclusively for Gemini CLI. Using it with other tools (OpenClaw, Claude, Codex...) may result in account restrictions or bans.", website: "https://github.com/google-gemini/gemini-cli", notice: { signupUrl: "https://github.com/google-gemini/gemini-cli" } },
   // gitlab: { id: "gitlab", alias: "gl", name: "GitLab Duo", icon: "code", color: "#FC6D26" },
   // codebuddy: { id: "codebuddy", alias: "cb", name: "CodeBuddy", icon: "smart_toy", color: "#006EFF" },
-  qoder: { id: "qoder", alias: "qd", name: "Qoder AI", icon: "water_drop", color: "#EC4899", website: "https://qoder.com", notice: { apiKeyUrl: "https://qoder.com/account/integrations", signupUrl: "https://qoder.com" }, authModes: ["oauth", "apikey"], hasOAuth: true, authHint: "Personal Access Token (pt-...) from https://qoder.com/account/integrations", serviceKinds: ["llm"] },
   iflow: { id: "iflow", alias: "if", name: "iFlow AI", icon: "water_drop", color: "#6366F1", website: "https://iflow.cn", notice: { signupUrl: "https://iflow.cn" } },
   "opencode-zen": { id: "opencode-zen", alias: "opencode-zen", name: "OpenCode Zen", icon: "terminal", color: "#E87040", textIcon: "OC", noAuth: true, passthroughModels: true },
 };
@@ -602,7 +601,6 @@ export const SUPPORTS_MODELS_DISCOVERY: string[] = [
   "antigravity",
   "github",
   "qwen",
-  "qoder",
   "alicode",
   "alicode-intl",
   "volcengine-ark",

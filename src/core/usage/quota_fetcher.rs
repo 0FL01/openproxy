@@ -1,5 +1,5 @@
 //! Live provider quota fetchers (GLM, MiniMax, GitHub, Codex, Claude, Gemini CLI,
-//! Antigravity, Qoder, Kiro).
+//! Antigravity, Kiro).
 //!
 //! Each provider exposes a small JSON API that reports remaining quota for the
 //! current billing window. These functions issue a one-shot GET and normalize
@@ -1374,94 +1374,6 @@ async fn load_code_assist(
         return Err(format!("loadCodeAssist returned {status}"));
     }
     Ok(body)
-}
-
-/// Fetch Qoder OAuth subscription quota.
-pub async fn fetch_qoder_quota(access_token: &str, _provider: &str) -> Value {
-    if access_token.is_empty() {
-        return json!({ "message": "Invalid or expired Qoder token" });
-    }
-
-    let client = http_client();
-    let response = match client
-        .get("https://openapi.qoder.sh/api/v2/quota/usage")
-        .bearer_auth(access_token)
-        .header("Accept", "application/json")
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => return json!({ "message": format!("Qoder error: {e}") }),
-    };
-
-    let status = response.status();
-    if status.as_u16() == 401 || status.as_u16() == 403 {
-        return json!({ "message": "Invalid or expired Qoder token" });
-    }
-    if !status.is_success() {
-        return json!({
-            "message": format!("Qoder quota API error ({}).", status.as_u16())
-        });
-    }
-
-    let body: Value = match response.json().await {
-        Ok(v) => v,
-        Err(e) => return json!({ "message": format!("Qoder error: {e}") }),
-    };
-
-    let reset_at = body
-        .get("expiresAt")
-        .or_else(|| body.get("expires_at"))
-        .or_else(|| body.get("reset_at"))
-        .and_then(parse_reset_time);
-
-    let mut quotas = serde_json::Map::new();
-
-    if let Some(user) = body.get("userQuota") {
-        let total = user
-            .get("total")
-            .or_else(|| user.get("limit"))
-            .or_else(|| user.get("quota"))
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-        let used = user
-            .get("used")
-            .or_else(|| user.get("usage"))
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-        if total > 0.0 || used > 0.0 {
-            quotas.insert(
-                "user".to_string(),
-                build_quota_entry(used, total, reset_at.clone()),
-            );
-        }
-    }
-
-    if let Some(org) = body.get("orgResourcePackage") {
-        let total = org
-            .get("total")
-            .or_else(|| org.get("limit"))
-            .or_else(|| org.get("quota"))
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-        let used = org
-            .get("used")
-            .or_else(|| org.get("usage"))
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-        if total > 0.0 || used > 0.0 {
-            quotas.insert(
-                "org".to_string(),
-                build_quota_entry(used, total, reset_at.clone()),
-            );
-        }
-    }
-
-    if quotas.is_empty() {
-        return json!({ "message": "Qoder connected. No quota data was returned." });
-    }
-
-    json!({ "quotas": Value::Object(quotas) })
 }
 
 /// Vercel AI Gateway credit usage (9router services/usage/misc.js getVercelAiGatewayUsage).

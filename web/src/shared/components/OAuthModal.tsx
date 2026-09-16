@@ -47,8 +47,6 @@ interface DeviceData {
   _region?: string;
   _authMethod?: string;
   _startUrl?: string;
-  _qoderNonce?: string;
-  _qoderMachineId?: string;
 }
 
 export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, onClose, oauthMeta, idcConfig }: OAuthModalProps) {
@@ -191,7 +189,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     try {
       setError(null);
 
-      // Must match backend device-code providers (oauth.rs is_device_code_provider + kiro/qoder/grok-cli)
+      // Must match backend device-code providers (oauth.rs is_device_code_provider + kiro/grok-cli)
       const deviceCodeProviders = [
         "github",
         "qwen",
@@ -201,7 +199,6 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         "kilocode",
         "codebuddy",
         "codebuddy-cn",
-        "qoder",
         "grok-cli",
         "kimchi",
       ];
@@ -233,12 +230,6 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
               _region: data._region,
               _authMethod: data._authMethod,
               _startUrl: data._startUrl,
-            }
-          : provider === "qoder"
-          ? {
-              _qoderNonce: data._qoderNonce,
-              _qoderMachineId: data._qoderMachineId,
-              _qoderVerifier: data.codeVerifier,
             }
           : null;
         startPolling(

@@ -100,7 +100,6 @@ export default function ProviderDetailPageClient() {
   const [oneByOneResults, setOneByOneResults] = useState<Record<string, { state: string; error: string | null }>>({});
   const [oneByOneSummary, setOneByOneSummary] = useState<null | { total: number; completed: number; passed: number; failed: number; stopped: boolean }>(null);
   const stopOneByOneRef = useRef(false);
-  const [importingQoderModels, setImportingQoderModels] = useState(false);
   const { copied, copy } = useCopyToClipboard();
   const notify = useNotificationStore();
   const AG_RISK_STORAGE_KEY = "ag_risk_confirmed";
@@ -438,67 +437,6 @@ export default function ProviderDetailPageClient() {
     }
     setShowAgRiskModal(false);
     openOAuthConnection();
-  };
-
-  const handleImportQoderModels = async () => {
-    if (importingQoderModels) return;
-    const activeConnection = connections.find((conn: any) => conn.isActive !== false);
-    if (!activeConnection) {
-      notify.error("Please add an active Qoder connection first");
-      return;
-    }
-
-    setImportingQoderModels(true);
-    try {
-      const res = await fetch(`/api/providers/${activeConnection.id}/models`);
-      const data = await res.json();
-      if (!res.ok) {
-        notify.error(data.error || "Failed to fetch models");
-        return;
-      }
-      const fetched = data.models || [];
-      if (fetched.length === 0) {
-        notify.error("No models returned");
-        return;
-      }
-
-      let importedCount = 0;
-      for (const model of fetched) {
-        const modelId = model.id || model.name;
-        if (!modelId) continue;
-        // Qoder model ID format may be "qoder/auto" or "auto"
-        const cleanModelId = String(modelId).replace(/^qoder\//, "");
-        const alreadyExists =
-          customModels.some(
-            (entry: any) =>
-              entry.providerAlias === providerStorageAlias &&
-              entry.id === cleanModelId &&
-              (entry.kind || entry.type || "llm") === "llm",
-          ) ||
-          Object.values(modelAliases).includes(
-            `${providerStorageAlias}/${cleanModelId}`,
-          );
-        if (alreadyExists) continue;
-        // 9router parity: store under custom models, not aliases.
-        await handleAddCustomModel(cleanModelId, "llm", providerStorageAlias);
-        importedCount += 1;
-      }
-
-      if (importedCount === 0) {
-        notify.success("All models already exist, no new models added");
-      } else {
-        notify.success(`Successfully added ${importedCount} models`);
-        await fetchCustomModels();
-        if (typeof window !== "undefined") {
-          window.dispatchEvent(new CustomEvent("customModelChanged"));
-        }
-      }
-    } catch (error: any) {
-      console.log("Error importing Qoder models:", error);
-      notify.error(`Error fetching models: ${error?.message || "unknown"}`);
-    } finally {
-      setImportingQoderModels(false);
-    }
   };
 
   const handleRunOneByOneTest = async () => {
@@ -1170,20 +1108,6 @@ export default function ProviderDetailPageClient() {
           Add Model
         </button>
 
-
-        {/* Import Qoder models button — only show for qoder provider */}
-        {providerId === "qoder" && connections.some((conn: any) => conn.isActive !== false) && (
-          <button
-            onClick={handleImportQoderModels}
-            disabled={importingQoderModels}
-            className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-blue-500/40 px-3 py-2 text-xs text-blue-600 dark:text-blue-400 transition-colors hover:border-blue-500 hover:bg-blue-500/5 sm:w-auto disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <span className="material-symbols-outlined text-sm" style={importingQoderModels ? { animation: "spin 1s linear infinite" } : undefined}>
-              {importingQoderModels ? "progress_activity" : "download"}
-            </span>
-            {importingQoderModels ? "Fetching..." : "Fetch Qoder Models"}
-          </button>
-        )}
 
         {/* Suggested models from provider API — show only models not yet added */}
         {suggestedModels.length > 0 && (() => {

@@ -28,11 +28,6 @@ pub fn iflow_client_secret() -> &'static str {
     resolve("IFLOW_CLIENT_SECRET", "4Z3YjXycVsQvyGF1etiNlIBB4RsqSDtW")
 }
 
-/// qoder OAuth client secret (env `QODER_CLIENT_SECRET`).
-pub fn qoder_client_secret() -> &'static str {
-    resolve("QODER_CLIENT_SECRET", "4Z3YjXycVsQvyGF1etiNlIBB4RsqSDtW")
-}
-
 /// antigravity OAuth client secret (env `ANTIGRAVITY_CLIENT_SECRET`).
 pub fn antigravity_client_secret() -> &'static str {
     resolve(

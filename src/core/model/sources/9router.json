@@ -57,7 +57,6 @@
     "openrouter": "openrouter",
     "perplexity": "perplexity",
     "perplexity-agent": "perplexity-agent",
-    "qoder": "qd",
     "siliconflow": "siliconflow",
     "together": "together",
     "venice": "venice",
@@ -4536,79 +4535,6 @@
         {
           "id": "poolside/laguna-xs-2.1",
           "name": "Laguna XS 2.1",
-          "kind": "llm"
-        }
-      ]
-    },
-    {
-      "id": "qoder",
-      "alias": "qd",
-      "format": "openai",
-      "baseUrl": "https://api3.qoder.sh/algo/api/v2/service/pro/sse/agent_chat_generation",
-      "models": [
-        {
-          "id": "ultimate",
-          "name": "Ultimate",
-          "kind": "llm"
-        },
-        {
-          "id": "auto",
-          "name": "Auto",
-          "kind": "llm"
-        },
-        {
-          "id": "performance",
-          "name": "Performance",
-          "kind": "llm"
-        },
-        {
-          "id": "efficient",
-          "name": "Efficient",
-          "kind": "llm"
-        },
-        {
-          "id": "qmodel_preview",
-          "name": "Qwen3.8-Max-Preview",
-          "kind": "llm"
-        },
-        {
-          "id": "qmodel_latest",
-          "name": "Qwen3.7-Max",
-          "kind": "llm"
-        },
-        {
-          "id": "qmodel",
-          "name": "Qwen3.7-Plus",
-          "kind": "llm"
-        },
-        {
-          "id": "kmodel_latest",
-          "name": "Kimi-K3",
-          "kind": "llm"
-        },
-        {
-          "id": "kmodel",
-          "name": "Kimi-K2.7-Code",
-          "kind": "llm"
-        },
-        {
-          "id": "gm51model",
-          "name": "GLM-5.2",
-          "kind": "llm"
-        },
-        {
-          "id": "dmodel",
-          "name": "DeepSeek-V4-Pro",
-          "kind": "llm"
-        },
-        {
-          "id": "dfmodel",
-          "name": "DeepSeek-V4-Flash",
-          "kind": "llm"
-        },
-        {
-          "id": "mmodel",
-          "name": "MiniMax-M3",
           "kind": "llm"
         }
       ]

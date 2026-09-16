@@ -975,9 +975,9 @@ async fn forward_with_provider_fallback(
             GithubExecutionRequest, GithubExecutor, GrokWebExecutionRequest, GrokWebExecutor,
             IFlowExecutionRequest, IFlowExecutor, KimchiExecutor, KiroExecutionRequest,
             KiroExecutor, KiroExecutorResponse, OpenCodeExecutionRequest, OpenCodeExecutor,
-            OpenCodeTier, ProviderExecutionRequest, ProviderExecutor, QoderExecutionRequest,
-            QoderExecutor, QwenExecutionRequest, QwenExecutor, TraeExecutionRequest, TraeExecutor,
-            VertexExecutionRequest, VertexExecutor, WindsurfExecutionRequest, WindsurfExecutor,
+            OpenCodeTier, ProviderExecutionRequest, ProviderExecutor, QwenExecutionRequest,
+            QwenExecutor, TraeExecutionRequest, TraeExecutor, VertexExecutionRequest,
+            VertexExecutor, WindsurfExecutionRequest, WindsurfExecutor,
         };
 
         let is_codex_model = provider == "codex";
@@ -1276,36 +1276,6 @@ async fn forward_with_provider_fallback(
                     .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("OpenCode execution failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                Ok(KiroExecutorResponse {
-                    response: result.response,
-                    url: result.url,
-                    headers: result.headers,
-                    transformed_body: result.transformed_body,
-                    transport: result.transport,
-                })
-            } else if provider == "qoder" {
-                let executor = QoderExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("Qoder executor creation failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                let result = executor
-                    .execute_request(QoderExecutionRequest {
-                        model: model.to_string(),
-                        body: request_body.clone(),
-                        stream,
-                        credentials: connection.clone(),
-                        proxy,
-                    })
-                    .await
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("Qoder execution failed: {:?}", e),
                         retry_after: None,
                         upstream_body: None,
                     })?;
@@ -2547,23 +2517,6 @@ async fn proxy_response_with_pending_tracking(
     let transformer = normalize_for_dashboard
         .then(|| transformer_for_provider(&provider))
         .flatten();
-    // Qoder wraps every SSE chunk in a {statusCodeValue, body} envelope that
-    // must be unwrapped before downstream consumers see it (9router wrapQoderSSE).
-    // Usage arrives on a later `choices: []` frame, so a coalescer merges the
-    // held finish + usage frames into one terminal chunk (9router sse.js).
-    // Billing blocks arrive pre-detected as a real 403 by the executor's
-    // first-frame peek — but the flag is still re-checked here so the
-    // non-peeked dashboard path also short-circuits.
-    let qoder_sse_unwrap = provider == "qoder";
-    // Billing block detection state (9router v0.5.55 peekFirstQoderFrame).
-    let mut qoder_seen_first_frame = false;
-    let mut qoder_billing_block = false;
-    let mut qoder_coalescer: Option<crate::core::executor::qoder::QoderSseCoalescer> =
-        if qoder_sse_unwrap {
-            Some(crate::core::executor::qoder::QoderSseCoalescer::new(&model))
-        } else {
-            None
-        };
     let body = match response {
         UpstreamResponse::Reqwest(response) => {
             let provider = provider.clone();
@@ -2620,29 +2573,7 @@ async fn proxy_response_with_pending_tracking(
                             usage_capture.observe(&chunk);
                             let response_completed = stop_on_response_completed
                                 && responses_stream_completed(&mut completion_frames, &chunk);
-                            if qoder_sse_unwrap {
-                                for line in qoder_unwrap_sse_chunk(
-                                    &chunk,
-                                    &mut pending_text,
-                                    &mut qoder_seen_first_frame,
-                                    &mut qoder_billing_block,
-                                    qoder_coalescer.as_mut(),
-                                ) {
-                                    yield Ok::<Bytes, std::io::Error>(Bytes::from(line));
-                                }
-                                if qoder_billing_block {
-                                    // Billing block: close the stream now so the
-                                    // client sees the 403-shaped error frame.
-                                    // (Account fallback itself happens in the
-                                    // executor's pre-stream peek; this flag is
-                                    // the backstop for already-open streams.)
-                                    let usage = usage_capture.usage.clone();
-                                    if let Some(log) = attempt_log.take() {
-                                        log.finish("error", Some(403), usage.as_ref()).await;
-                                    }
-                                    return;
-                                }
-                            } else if let Some(transformer) = transformer.as_mut() {
+                            if let Some(transformer) = transformer.as_mut() {
                                 for line in transform_dashboard_sse_chunk(&chunk, transformer.as_mut(), &mut pending_text) {
                                     if let Some(frame) = sse_frame_for_dashboard(&line) {
                                         yield Ok::<Bytes, std::io::Error>(frame);
@@ -2706,14 +2637,6 @@ async fn proxy_response_with_pending_tracking(
                         if let Some(frame) = sse_frame_for_dashboard(&line) {
                             yield Ok::<Bytes, std::io::Error>(frame);
                         }
-                    }
-                }
-                // Qoder end-of-stream: flush the usage coalescer (held
-                // finish+usage → terminal chunk). Qoder only uses Reqwest
-                // transport so the Hyper branch needs no equivalent.
-                if qoder_sse_unwrap {
-                    for line in qoder_coalescer_flush(qoder_coalescer.as_mut()) {
-                        yield Ok::<Bytes, std::io::Error>(Bytes::from(line));
                     }
                 }
                 // End-of-stream flush: emit the terminal chunk + [DONE] for
@@ -3091,83 +3014,6 @@ fn extract_dashboard_assistant_text_from_bytes(body: &[u8]) -> Option<String> {
     } else {
         Some(thinking_parts.join("\n"))
     }
-}
-
-/// Split raw upstream bytes into complete SSE lines and unwrap Qoder's
-/// `{statusCodeValue, body}` envelope on each `data:` line (9router
-/// wrapQoderSSE). Non-`data:` lines (keepalives) are dropped; the terminal
-/// `[DONE]` frame passes through.
-///
-/// On the first `data:` line, checks for billing/quota blocks (9router v0.5.55
-/// peekFirstQoderFrame). If detected, emits a synthetic 403 error frame and
-/// sets `billing_block` to `true` so the caller can trigger account fallback.
-fn qoder_unwrap_sse_chunk(
-    chunk: &Bytes,
-    pending_text: &mut String,
-    seen_first_frame: &mut bool,
-    billing_block: &mut bool,
-    mut coalescer: Option<&mut crate::core::executor::qoder::QoderSseCoalescer>,
-) -> Vec<String> {
-    pending_text.push_str(&String::from_utf8_lossy(chunk));
-    let mut out = Vec::new();
-    while let Some(newline_index) = pending_text.find('\n') {
-        let mut line = pending_text[..newline_index].to_string();
-        if line.ends_with('\r') {
-            line.pop();
-        }
-        pending_text.drain(..=newline_index);
-        if line.is_empty() {
-            continue;
-        }
-        // First-frame billing block detection (9router peekFirstQoderFrame).
-        if !*seen_first_frame && line.starts_with("data:") {
-            *seen_first_frame = true;
-            if let Some(billing_err) =
-                crate::core::executor::qoder::check_billing_in_sse_line(&line)
-            {
-                *billing_block = true;
-                // Emit the billing error as a JSON error frame so the chat
-                // handler sees status 403 and triggers account fallback.
-                out.push(format!("data: {billing_err}\n\n"));
-                out.push("data: [DONE]\n\n".to_string());
-                return out;
-            }
-        }
-        // Unwrap the {statusCodeValue, body} envelope, then run the inner
-        // body through the usage coalescer (9router sse.js).
-        let Some(unwrapped) =
-            crate::core::executor::qoder::QoderExecutor::unwrap_qoder_envelope(&line)
-        else {
-            continue;
-        };
-        if let Some(coal) = coalescer.as_deref_mut() {
-            let (frames, _terminal) = coal.handle_inner(&unwrapped);
-            out.extend(frames);
-            if coal.done_emitted() {
-                out.push("data: [DONE]\n\n".to_string());
-                return out;
-            }
-        } else if let Some(frame) =
-            crate::core::executor::qoder::QoderExecutor::wrap_qoder_sse_line(&line)
-        {
-            out.push(frame);
-        }
-    }
-    out
-}
-
-/// Flush a Qoder coalescer at end-of-stream: emit any held terminal
-/// finish+usage chunk, then `[DONE]` (9router `coalescer.flush`).
-fn qoder_coalescer_flush(
-    coalescer: Option<&mut crate::core::executor::qoder::QoderSseCoalescer>,
-) -> Vec<String> {
-    let mut out = Vec::new();
-    if let Some(coal) = coalescer {
-        if let Some(t) = coal.flush() {
-            out.push(t);
-        }
-    }
-    out
 }
 
 fn transform_dashboard_sse_chunk(

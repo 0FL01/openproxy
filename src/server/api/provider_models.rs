@@ -317,7 +317,6 @@ pub(super) fn supports_models_discovery(provider: &str) -> bool {
                 | "glm"
                 | "antigravity"
                 | "github"
-                | "qoder"
                 | "openai"
                 | "openrouter"
                 | "opencode-zen"
@@ -474,13 +473,6 @@ async fn fetch_provider_models_response(
             let token = primary_token(connection)
                 .ok_or_else(|| RouteError::unauthorized("No valid token found"))?;
             fetch_github_models(connection, &token).await
-        }
-        // Qoder exposes an OpenAI-compatible models listing behind its API host.
-        // Full COSY-signed catalog is a deeper port; this is enough for the
-        // dashboard "Fetch Qoder Models" import button.
-        "qoder" => {
-            fetch_first_party_openai_style_models(connection, "https://api.qoder.com/v1/models")
-                .await
         }
         "openai" => {
             fetch_first_party_openai_style_models(connection, "https://api.openai.com/v1/models")

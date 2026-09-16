@@ -697,7 +697,6 @@ fn is_device_code_provider(provider: &str) -> bool {
             | "codebuddy"
             | "codebuddy-cn"
             | "codebuddy-intl"
-            | "qoder"
             | "grok-cli"
             | "qwen"
     )

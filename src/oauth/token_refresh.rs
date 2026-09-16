@@ -912,11 +912,6 @@ pub async fn refresh_codebuddy_cn_token(refresh_token: &str) -> Result<RefreshRe
     })
 }
 
-/// Qoder does not support token refresh. This function always returns an error.
-pub async fn refresh_qoder_token(_refresh_token: &str) -> Result<RefreshResult, String> {
-    Err("Qoder does not support token refresh".to_string())
-}
-
 /// Refresh a Trae (ByteDance marscode) access token.
 ///
 /// 9router parity: `open-sse/services/tokenRefresh/providers.js:619-688`.

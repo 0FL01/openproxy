@@ -11,8 +11,7 @@ use crate::core::usage::quota_fetcher::{
     fetch_claude_quota, fetch_codebuddy_quota, fetch_codex_quota, fetch_deepseek_usage,
     fetch_gemini_cli_quota, fetch_github_quota, fetch_glm_quota, fetch_grok_cli_quota,
     fetch_kimi_oauth_usage, fetch_kimi_usage, fetch_kiro_quota, fetch_minimax_quota,
-    fetch_ollama_quota, fetch_qoder_quota, fetch_vercel_ai_gateway_quota,
-    get_codex_rate_limit_reset_credits,
+    fetch_ollama_quota, fetch_vercel_ai_gateway_quota, get_codex_rate_limit_reset_credits,
 };
 use crate::oauth::token_refresh::{dispatch_oauth_refresh, refresh_codex_token};
 use crate::server::state::AppState;
@@ -36,7 +35,6 @@ fn is_usage_apikey_provider(provider: &str) -> bool {
             | "deepseek"
             | "kiro"
             | "ollama"
-            | "qoder"
             | "vercel-ai-gateway"
             | "codebuddy-cn"
             | "codebuddy-intl"
@@ -67,7 +65,6 @@ pub async fn fetch_oauth_quota(connection: &ProviderConnection) -> Value {
         "kiro" => fetch_kiro_quota(token, provider, psd).await,
         "gemini-cli" => fetch_gemini_cli_quota(token, provider, psd).await,
         "antigravity" => fetch_antigravity_quota(token, provider).await,
-        "qoder" => fetch_qoder_quota(token, provider).await,
         "grok-cli" => fetch_grok_cli_quota(token).await,
         "ollama" => fetch_ollama_quota(token).await,
         // Kimi OAuth connections hit /v1/usages with Bearer + X-Msh-* headers.
@@ -165,7 +162,6 @@ async fn get_connection_usage(
                 "minimax" | "minimax-cn" => fetch_minimax_quota(api_key, &provider).await,
                 "kimi" => fetch_kimi_usage(api_key).await,
                 "deepseek" => fetch_deepseek_usage(api_key).await,
-                "qoder" => fetch_qoder_quota(api_key, &provider).await,
                 "kiro" => fetch_kiro_quota(api_key, &provider, &psd).await,
                 "vercel-ai-gateway" => fetch_vercel_ai_gateway_quota(api_key).await,
                 "codebuddy-cn" | "codebuddy-intl" => {
@@ -805,7 +801,6 @@ mod tests {
             "deepseek",
             "kiro",
             "ollama",
-            "qoder",
             "vercel-ai-gateway",
             "codebuddy-cn",
             "codebuddy-intl",

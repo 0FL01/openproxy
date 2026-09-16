@@ -135,7 +135,6 @@
     "publicai": "publicai",
     "puter": "pu",
     "qianfan": "qianfan",
-    "qoder": "if",
     "qwen": "qw",
     "qwen-web": "qwen-web",
     "reka": "reka",
@@ -7432,85 +7431,6 @@
           "name": "ERNIE X1.1",
           "kind": "llm",
           "contextLength": 64000
-        }
-      ]
-    },
-    {
-      "id": "qoder",
-      "alias": "if",
-      "format": "openai",
-      "authType": "apikey",
-      "baseUrl": "https://api.qoder.com/v1/chat/completions",
-      "models": [
-        {
-          "id": "qoder-rome-30ba3b",
-          "name": "Qoder ROME",
-          "kind": "llm"
-        },
-        {
-          "id": "qwen3-coder-plus",
-          "name": "Qwen3 Coder Plus",
-          "kind": "llm"
-        },
-        {
-          "id": "qwen3-max",
-          "name": "Qwen3 Max",
-          "kind": "llm"
-        },
-        {
-          "id": "qwen3-vl-plus",
-          "name": "Qwen3 Vision Plus",
-          "kind": "llm"
-        },
-        {
-          "id": "kimi-k2-0905",
-          "name": "Kimi K2 0905",
-          "kind": "llm"
-        },
-        {
-          "id": "qwen3-max-preview",
-          "name": "Qwen3 Max Preview",
-          "kind": "llm"
-        },
-        {
-          "id": "kimi-k2",
-          "name": "Kimi K2",
-          "kind": "llm"
-        },
-        {
-          "id": "deepseek-v3.2",
-          "name": "DeepSeek-V3.2-Exp",
-          "kind": "llm"
-        },
-        {
-          "id": "deepseek-r1",
-          "name": "DeepSeek R1",
-          "kind": "llm"
-        },
-        {
-          "id": "deepseek-v3",
-          "name": "DeepSeek V3",
-          "kind": "llm"
-        },
-        {
-          "id": "qwen3-32b",
-          "name": "Qwen3 32B",
-          "kind": "llm"
-        },
-        {
-          "id": "qwen3-235b-a22b-thinking-2507",
-          "name": "Qwen3 235B A22B Thinking 2507",
-          "kind": "llm"
-        },
-        {
-          "id": "qwen3-235b-a22b-instruct",
-          "name": "Qwen3 235B A22B Instruct",
-          "kind": "llm"
-        },
-        {
-          "id": "qwen3-235b",
-          "name": "Qwen3 235B",
-          "kind": "llm"
         }
       ]
     },

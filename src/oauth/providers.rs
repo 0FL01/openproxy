@@ -297,19 +297,6 @@ pub fn gemini_cli() -> OAuthProviderConfig {
     }
 }
 
-/// Qoder — device-code flow.
-pub fn qoder() -> OAuthProviderConfig {
-    OAuthProviderConfig {
-        id: "qoder",
-        client_id: "openproxy",
-        authorize_url: "https://api.qoder.ai/oauth/device/code",
-        token_url: "https://api.qoder.ai/oauth/token",
-        scopes: &[],
-        uses_pkce: false,
-        extra_params: &[],
-        refresh_lead_ms: 0,
-    }
-}
 pub fn clinepass() -> OAuthProviderConfig {
     OAuthProviderConfig {
         id: "clinepass",
@@ -550,7 +537,6 @@ pub fn get_config(provider: &str) -> Option<OAuthProviderConfig> {
         "openai-native" => Some(openai_native()),
         "xai" => Some(xai()),
         "gemini-cli" => Some(gemini_cli()),
-        "qoder" => Some(qoder()),
         "kimchi" => Some(kimchi()),
         "cursor" => Some(cursor()),
         "antigravity" => Some(antigravity()),
