@@ -14,15 +14,12 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 
 use crate::core::account_fallback::{
-    build_model_lock_update, filter_available_accounts, StrategyType,
+    build_model_lock_update, check_fallback_error, filter_available_accounts, ProviderAttemptError,
+    StrategyType,
 };
 use crate::core::chat::RequestPlan;
-use crate::core::combo::{
-    check_fallback_error, execute_combo, get_combo_models_from_data,
-    get_disabled_members_for_combo, ComboAttemptError, ComboExecutionError,
-};
 use crate::core::executor::UpstreamResponse;
-use crate::core::model::{get_model_info, ModelRouteKind};
+use crate::core::model::get_model_info;
 use crate::core::proxy::resolve_proxy_target;
 use crate::core::translator::helpers::image_helper::fetch_image_as_base64;
 use crate::core::translator::helpers::modality_helper::{
@@ -98,9 +95,7 @@ const SSE_STALL_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Maximum number of concurrent in-flight requests per provider account.
 ///
-/// Used both as the per-account slot cap inside
-/// [`forward_with_provider_fallback`] and as the round-robin capacity
-/// threshold when deciding whether a combo member is `Available` or `Busy`.
+/// Used as the per-account slot cap inside [`forward_with_provider_fallback`].
 const MAX_IN_FLIGHT_PER_ACCOUNT: usize = 10;
 pub(super) const CODEX_WEB_SEARCH_HEADER: &str = "x-openproxy-codex-web-search";
 const CODEX_WEB_SEARCH_CONTEXT_SIZE_KEY: &str = "codexWebSearchContextSize";
@@ -247,9 +242,6 @@ fn normalize_dashboard_chat_request_body(
     }
 
     let snapshot = state.db.snapshot();
-    if snapshot.combos.iter().any(|combo| combo.name == model) {
-        return Ok(Json(value));
-    }
     if snapshot.model_aliases.contains_key(model) {
         return Ok(Json(value));
     }
@@ -340,7 +332,7 @@ async fn chat_completions_impl(
     };
 
     // Claude Code marks a 1M-context request as `<model>[1m]`. The marker is a
-    // client-side annotation that matches no combo, alias or `provider/model`
+    // client-side annotation that matches no alias or `provider/model`
     // pair, so it must not reach model resolution or the request dies with an
     // invalid-model error. The actual 1M capability travels in the
     // `anthropic-beta` header, which is forwarded untouched.
@@ -369,6 +361,12 @@ async fn chat_completions_impl(
         return json_error_response(StatusCode::BAD_REQUEST, "Missing model");
     };
     let model_str = model_str.as_str();
+    if model_str.starts_with("combo:") {
+        return json_error_response(
+            StatusCode::BAD_REQUEST,
+            "Combo routes are no longer supported",
+        );
+    }
     let request_log_context = authenticated_api_key
         .as_ref()
         .map(|_| RequestLogContext::new(state.db.clone(), model_str));
@@ -376,27 +374,7 @@ async fn chat_completions_impl(
     let snapshot = state.db.snapshot();
     let resolved = get_model_info(model_str, &snapshot);
 
-    // Stale-snapshot recovery: if the model name looks like a combo (no '/')
-    // but wasn't found, reload from SQLite and try once more. This handles
-    // combos created by the CLI process that bypasses the server's snapshot.
-    let (snapshot, resolved) =
-        if resolved.route_kind == ModelRouteKind::Combo || model_str.contains('/') {
-            (snapshot, resolved)
-        } else {
-            if let Ok(fresh) = state.db.reload_snapshot().await {
-                if fresh.combos.iter().any(|c| c.name == model_str) {
-                    let re_resolved = get_model_info(model_str, &fresh);
-                    (fresh, re_resolved)
-                } else {
-                    (snapshot, resolved)
-                }
-            } else {
-                (snapshot, resolved)
-            }
-        };
-
-    // Convert headers once for client-tool detection shared by both
-    // Direct and Combo dispatch paths.
+    // Convert headers once for client-tool detection and provider dispatch.
     let headers_map: std::collections::HashMap<String, String> = headers
         .iter()
         .map(|(k, v)| {
@@ -421,144 +399,42 @@ async fn chat_completions_impl(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    let response = match resolved.route_kind {
-        ModelRouteKind::Combo => {
-            let combo_name = resolved.model;
-            let Some(combo_models) = get_combo_models_from_data(&combo_name, &snapshot.combos)
-            else {
-                return json_error_response(StatusCode::BAD_REQUEST, "Unknown combo model");
-            };
-
-            let disabled_members = get_disabled_members_for_combo(&combo_name, &snapshot.combos);
-
-            let estimated_tokens = crate::core::context_limit::estimate_input_tokens(&body);
-            let mut context_allowed_models = Vec::with_capacity(combo_models.len());
-            let mut first_context_error = None;
-            for combo_model in &combo_models {
-                let combo_resolved = get_model_info(combo_model, &snapshot);
-                let provider = combo_resolved.provider.as_deref().unwrap_or("unknown");
-                match context_limit_error(
-                    &state,
-                    &snapshot.settings,
-                    provider,
-                    &combo_resolved.model,
-                    estimated_tokens,
-                )
-                .await
-                {
-                    Some(error) => {
-                        first_context_error.get_or_insert(error);
-                    }
-                    None => context_allowed_models.push(combo_model.clone()),
-                }
-            }
-            if !combo_models.is_empty() && context_allowed_models.is_empty() {
-                return attempt_error_response(
-                    first_context_error.expect("a filtered combo member has a context error"),
-                );
-            }
-            let combo_body = body.clone();
-            let combo_state = state.clone();
-            let combo_api_key = presented_api_key.clone();
-            let client_tool_for_combo = client_tool;
-            let combo_headers = headers_map.clone();
-            let combo_log_context = request_log_context.clone();
-            let result = execute_combo(
-                &context_allowed_models,
-                &disabled_members,
-                move |combo_model| {
-                    let state = combo_state.clone();
-                    let body = combo_body.clone();
-                    let combo_model = combo_model.to_string();
-                    let api_key = combo_api_key.clone();
-                    let headers = combo_headers.clone();
-                    let log_context = combo_log_context.clone();
-                    // Re-resolve provider/model for this combo entry so each
-                    // iteration dispatches against the correct provider node
-                    // (e.g. "custom/gpt-fail" -> provider "node-openai", model "gpt-fail").
-                    let inner_snapshot = state.db.snapshot();
-                    let combo_resolved = get_model_info(&combo_model, &inner_snapshot);
-                    tracing::warn!(
-                        "COMBO model={} provider={:?} model_resolved={:?}",
-                        combo_model,
-                        combo_resolved.provider,
-                        combo_resolved.model,
-                    );
-                    let combo_provider_str = combo_resolved
-                        .provider
-                        .as_deref()
-                        .unwrap_or("unknown")
-                        .to_string();
-                    let resolved_model = combo_resolved.model.clone();
-                    let mut combo_plan =
-                        RequestPlan::new(endpoint, &body, &combo_provider_str, &resolved_model);
-                    combo_plan.passthrough =
-                        is_native_passthrough(client_tool_for_combo, &combo_provider_str);
-                    // Accept header not available inside combo closure — use body only
-                    apply_stream_plan(&mut combo_plan, &body, None, client_tool_for_combo);
-                    let plan_for_combo = combo_plan.clone();
-                    async move {
-                        execute_single_model(
-                            &state,
-                            &body,
-                            &resolved_model,
-                            api_key.as_deref(),
-                            log_context.as_ref(),
-                            endpoint,
-                            &plan_for_combo,
-                            client_tool_for_combo,
-                            Some(&headers),
-                            false,
-                        )
-                        .await
-                    }
-                },
-            )
-            .await;
-            match result {
-                Ok(response) => response,
-                Err(error) => combo_error_response(error),
-            }
-        }
-        ModelRouteKind::Direct => {
-            let estimated_tokens = crate::core::context_limit::estimate_input_tokens(&body);
-            if let Some(error) = context_limit_error(
-                &state,
-                &snapshot.settings,
-                resolved.provider.as_deref().unwrap_or(model_str),
-                &resolved.model,
-                estimated_tokens,
-            )
-            .await
-            {
-                return attempt_error_response(error);
-            }
-            let mut plan = RequestPlan::new(
-                endpoint,
-                &body,
-                resolved.provider.as_deref().unwrap_or(model_str),
-                &resolved.model,
-            );
-            plan.passthrough = is_native_passthrough(client_tool, &plan.provider);
-            apply_stream_plan(&mut plan, &body, accept_header.as_deref(), client_tool);
-            match execute_single_model(
-                &state,
-                &body,
-                model_str,
-                presented_api_key.as_deref(),
-                request_log_context.as_ref(),
-                endpoint,
-                &plan,
-                client_tool,
-                Some(&headers_map),
-                codex_web_search_requested,
-            )
-            .await
-            {
-                Ok(response) => response,
-                Err(error) => attempt_error_response(error),
-            }
-        }
+    let estimated_tokens = crate::core::context_limit::estimate_input_tokens(&body);
+    if let Some(error) = context_limit_error(
+        &state,
+        &snapshot.settings,
+        resolved.provider.as_deref().unwrap_or(model_str),
+        &resolved.model,
+        estimated_tokens,
+    )
+    .await
+    {
+        return attempt_error_response(error);
+    }
+    let mut plan = RequestPlan::new(
+        endpoint,
+        &body,
+        resolved.provider.as_deref().unwrap_or(model_str),
+        &resolved.model,
+    );
+    plan.passthrough = is_native_passthrough(client_tool, &plan.provider);
+    apply_stream_plan(&mut plan, &body, accept_header.as_deref(), client_tool);
+    let response = match execute_single_model(
+        &state,
+        &body,
+        model_str,
+        presented_api_key.as_deref(),
+        request_log_context.as_ref(),
+        endpoint,
+        &plan,
+        client_tool,
+        Some(&headers_map),
+        codex_web_search_requested,
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(error) => attempt_error_response(error),
     };
 
     response
@@ -674,8 +550,8 @@ fn context_limit_attempt_error(
     estimated_tokens: u64,
     effective_limit: u32,
     configured_limit: u32,
-) -> ComboAttemptError {
-    ComboAttemptError {
+) -> ProviderAttemptError {
+    ProviderAttemptError {
         status: 413,
         message: format!(
             "Context limit exceeded for provider {provider}: estimated {estimated_tokens} input tokens, effective limit {effective_limit}, configured limit {configured_limit}"
@@ -691,7 +567,7 @@ async fn context_limit_error(
     provider: &str,
     model: &str,
     estimated_tokens: u64,
-) -> Option<ComboAttemptError> {
+) -> Option<ProviderAttemptError> {
     let configured =
         crate::core::context_limit::configured_limit(&settings.provider_context_limits, provider)?;
     let native = native_context_window(state, provider, model).await;
@@ -711,7 +587,7 @@ async fn execute_single_model(
     client_tool: Option<ClientTool>,
     client_headers: Option<&std::collections::HashMap<String, String>>,
     codex_web_search_requested: bool,
-) -> Result<Response, ComboAttemptError> {
+) -> Result<Response, ProviderAttemptError> {
     let snapshot = state.db.snapshot();
     let mut plan = base_plan.clone();
     if crate::core::model::models_dev::is_opencode_provider(&plan.provider) {
@@ -719,7 +595,7 @@ async fn execute_single_model(
             .models_dev
             .snapshot()
             .await
-            .map_err(|message| ComboAttemptError {
+            .map_err(|message| ProviderAttemptError {
                 status: 503,
                 message,
                 retry_after: None,
@@ -727,7 +603,7 @@ async fn execute_single_model(
             })?;
         let metadata = models
             .find(&plan.provider, plan.dispatch_model())
-            .ok_or_else(|| ComboAttemptError {
+            .ok_or_else(|| ProviderAttemptError {
                 status: 400,
                 message: format!(
                     "Model {} is not published for {} by models.dev",
@@ -757,7 +633,7 @@ async fn execute_single_model(
     if let Some(fields) = body.as_object_mut() {
         fields.insert("model".into(), Value::String(plan.model.clone()));
     } else {
-        return Err(ComboAttemptError {
+        return Err(ProviderAttemptError {
             status: 400,
             message: "Request body must be a JSON object".into(),
             retry_after: None,
@@ -915,9 +791,9 @@ async fn forward_with_provider_fallback(
     client_tool: Option<ClientTool>,
     client_headers: Option<&std::collections::HashMap<String, String>>,
     codex_web_search_requested: bool,
-) -> Result<Response, ComboAttemptError> {
+) -> Result<Response, ProviderAttemptError> {
     let mut excluded = HashSet::new();
-    let mut last_error: Option<ComboAttemptError> = None;
+    let mut last_error: Option<ProviderAttemptError> = None;
     let mut reloaded = false;
     let registry = &state.account_registry;
     let codex_supporters = if provider == "codex" {
@@ -979,7 +855,7 @@ async fn forward_with_provider_fallback(
                 }
             }
 
-            return Err(ComboAttemptError {
+            return Err(ProviderAttemptError {
                 status: if retry_after.is_some() { 503 } else { 400 },
                 message: if retry_after.is_some() {
                     format!("All accounts for {provider}/{model} are cooling down")
@@ -1025,7 +901,7 @@ async fn forward_with_provider_fallback(
                     true
                 }
                 Ok(_) => {
-                    last_error = Some(ComboAttemptError::new(
+                    last_error = Some(ProviderAttemptError::new(
                         400,
                         format!(
                             "Codex web search is not supported for model {model} on this account"
@@ -1035,7 +911,7 @@ async fn forward_with_provider_fallback(
                     continue;
                 }
                 Err(error) => {
-                    last_error = Some(ComboAttemptError::new(
+                    last_error = Some(ProviderAttemptError::new(
                         error.status.as_u16(),
                         format!(
                             "Unable to verify Codex web search support: {}",
@@ -1128,10 +1004,10 @@ async fn forward_with_provider_fallback(
         let is_codex_model = provider == "codex";
         let is_cursor_model =
             model.starts_with("cursor/") || provider == "cu" || provider == "cursor";
-        let executor_result: Result<KiroExecutorResponse, ComboAttemptError> = async {
+        let executor_result: Result<KiroExecutorResponse, ProviderAttemptError> = async {
             if provider == "kiro" {
                 let executor = KiroExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("Kiro executor creation failed: {:?}", e),
                         retry_after: None,
@@ -1146,7 +1022,7 @@ async fn forward_with_provider_fallback(
                         proxy,
                     })
                     .await
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("Kiro execution failed: {:?}", e),
                         retry_after: None,
@@ -1154,7 +1030,7 @@ async fn forward_with_provider_fallback(
                     })
             } else if provider == "vertex" || provider == "vertex-partner" || provider == "vxp" {
                 let executor = VertexExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("Vertex executor creation failed: {:?}", e),
                         retry_after: None,
@@ -1169,7 +1045,7 @@ async fn forward_with_provider_fallback(
                         proxy,
                     })
                     .await
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("Vertex execution failed: {:?}", e),
                         retry_after: None,
@@ -1184,7 +1060,7 @@ async fn forward_with_provider_fallback(
                 })
             } else if is_codex_model {
                 let executor = CodexExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("Codex executor creation failed: {:?}", e),
                         retry_after: None,
@@ -1200,7 +1076,7 @@ async fn forward_with_provider_fallback(
                         proxy,
                     })
                     .await
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("Codex execution failed: {:?}", e),
                         retry_after: None,
@@ -1215,7 +1091,7 @@ async fn forward_with_provider_fallback(
                 })
             } else if is_cursor_model {
                 let executor = CursorExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("Cursor executor creation failed: {:?}", e),
                         retry_after: None,
@@ -1230,7 +1106,7 @@ async fn forward_with_provider_fallback(
                         proxy,
                     })
                     .await
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("Cursor execution failed: {:?}", e),
                         retry_after: None,
@@ -1245,7 +1121,7 @@ async fn forward_with_provider_fallback(
                 })
             } else if provider == "github" {
                 let executor = GithubExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("Github executor creation failed: {:?}", e),
                         retry_after: None,
@@ -1260,7 +1136,7 @@ async fn forward_with_provider_fallback(
                         proxy,
                     })
                     .await
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("Github execution failed: {:?}", e),
                         retry_after: None,
@@ -1275,7 +1151,7 @@ async fn forward_with_provider_fallback(
                 })
             } else if provider == "azure" {
                 let executor = AzureExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("Azure executor creation failed: {:?}", e),
                         retry_after: None,
@@ -1290,7 +1166,7 @@ async fn forward_with_provider_fallback(
                         proxy,
                     })
                     .await
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("Azure execution failed: {:?}", e),
                         retry_after: None,
@@ -1305,7 +1181,7 @@ async fn forward_with_provider_fallback(
                 })
             } else if provider == "qwen" {
                 let executor = QwenExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("Qwen executor creation failed: {:?}", e),
                         retry_after: None,
@@ -1320,7 +1196,7 @@ async fn forward_with_provider_fallback(
                         proxy,
                     })
                     .await
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("Qwen execution failed: {:?}", e),
                         retry_after: None,
@@ -1335,7 +1211,7 @@ async fn forward_with_provider_fallback(
                 })
             } else if provider == "iflow" {
                 let executor = IFlowExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("IFlow executor creation failed: {:?}", e),
                         retry_after: None,
@@ -1350,7 +1226,7 @@ async fn forward_with_provider_fallback(
                         proxy,
                     })
                     .await
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("IFlow execution failed: {:?}", e),
                         retry_after: None,
@@ -1365,7 +1241,7 @@ async fn forward_with_provider_fallback(
                 })
             } else if provider == "gemini-cli" {
                 let executor = GeminiCliExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("GeminiCli executor creation failed: {:?}", e),
                         retry_after: None,
@@ -1380,7 +1256,7 @@ async fn forward_with_provider_fallback(
                         proxy,
                     })
                     .await
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("GeminiCli execution failed: {:?}", e),
                         retry_after: None,
@@ -1395,7 +1271,7 @@ async fn forward_with_provider_fallback(
                 })
             } else if let Some(tier) = OpenCodeTier::from_provider(provider) {
                 let executor = OpenCodeExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("OpenCode executor creation failed: {:?}", e),
                         retry_after: None,
@@ -1418,7 +1294,7 @@ async fn forward_with_provider_fallback(
                         family: plan.model_family.clone(),
                     })
                     .await
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("OpenCode execution failed: {:?}", e),
                         retry_after: None,
@@ -1433,7 +1309,7 @@ async fn forward_with_provider_fallback(
                 })
             } else if provider == "qoder" {
                 let executor = QoderExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("Qoder executor creation failed: {:?}", e),
                         retry_after: None,
@@ -1448,7 +1324,7 @@ async fn forward_with_provider_fallback(
                         proxy,
                     })
                     .await
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("Qoder execution failed: {:?}", e),
                         retry_after: None,
@@ -1463,7 +1339,7 @@ async fn forward_with_provider_fallback(
                 })
             } else if provider == "commandcode" {
                 let executor = CommandCodeExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                     status: 500,
                     message: format!("CommandCode executor creation failed: {:?}", e),
                     retry_after: None,
@@ -1478,7 +1354,7 @@ async fn forward_with_provider_fallback(
                         proxy,
                     })
                     .await
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("CommandCode execution failed: {:?}", e),
                         retry_after: None,
@@ -1493,7 +1369,7 @@ async fn forward_with_provider_fallback(
                 })
             } else if provider == "antigravity" {
                 let executor = AntigravityExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                     status: 500,
                     message: format!("Antigravity executor creation failed: {:?}", e),
                     retry_after: None,
@@ -1508,7 +1384,7 @@ async fn forward_with_provider_fallback(
                         proxy,
                     })
                     .await
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("Antigravity execution failed: {:?}", e),
                         retry_after: None,
@@ -1532,7 +1408,7 @@ async fn forward_with_provider_fallback(
                         proxy,
                     })
                     .await
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("GrokWeb execution failed: {:?}", e),
                         retry_after: None,
@@ -1556,7 +1432,7 @@ async fn forward_with_provider_fallback(
                         proxy,
                     })
                     .await
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("PerplexityWeb execution failed: {:?}", e),
                         retry_after: None,
@@ -1580,7 +1456,7 @@ async fn forward_with_provider_fallback(
                         proxy,
                     })
                     .await
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("Windsurf execution failed: {:?}", e),
                         retry_after: None,
@@ -1606,7 +1482,7 @@ async fn forward_with_provider_fallback(
                         proxy,
                     })
                     .await
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("Zed execution failed: {}", e),
                         retry_after: None,
@@ -1630,7 +1506,7 @@ async fn forward_with_provider_fallback(
                         proxy,
                     })
                     .await
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("Trae execution failed: {:?}", e),
                         retry_after: None,
@@ -1648,7 +1524,7 @@ async fn forward_with_provider_fallback(
                 // carries its own credentials) and bridges session/update
                 // notifications to OpenAI SSE.
                 let executor = DevinCliExecutor::new(state.client_pool.clone()).map_err(|e| {
-                    ComboAttemptError {
+                    ProviderAttemptError {
                         status: 500,
                         message: format!("Devin executor init failed: {:?}", e),
                         retry_after: None,
@@ -1662,7 +1538,7 @@ async fn forward_with_provider_fallback(
                         stream,
                     })
                     .await
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("Devin execution failed: {}", e),
                         retry_after: None,
@@ -1689,7 +1565,7 @@ async fn forward_with_provider_fallback(
                         proxy_options: None,
                     })
                     .await
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("Kimchi execution failed: {:?}", e),
                         retry_after: None,
@@ -1718,7 +1594,7 @@ async fn forward_with_provider_fallback(
                         proxy_options: None,
                     })
                     .await
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("CodeBuddy CN execution failed: {:?}", e),
                         retry_after: None,
@@ -1747,7 +1623,7 @@ async fn forward_with_provider_fallback(
                         proxy_options: None,
                     })
                     .await
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("CodeBuddy intl execution failed: {:?}", e),
                         retry_after: None,
@@ -1772,7 +1648,7 @@ async fn forward_with_provider_fallback(
                         proxy,
                     })
                     .await
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("Ollama execution failed: {:?}", e),
                         retry_after: None,
@@ -1797,7 +1673,7 @@ async fn forward_with_provider_fallback(
                         proxy,
                     })
                     .await
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("MimoFree execution failed: {:?}", e),
                         retry_after: None,
@@ -1817,7 +1693,7 @@ async fn forward_with_provider_fallback(
             {
                 use crate::core::executor::{GrokCliExecutionRequest, GrokCliExecutor};
                 let executor = GrokCliExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("GrokCli executor creation failed: {:?}", e),
                         retry_after: None,
@@ -1832,7 +1708,7 @@ async fn forward_with_provider_fallback(
                         proxy,
                     })
                     .await
-                    .map_err(|e| ComboAttemptError {
+                    .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("GrokCli execution failed: {:?}", e),
                         retry_after: None,
@@ -1851,7 +1727,7 @@ async fn forward_with_provider_fallback(
                     state.client_pool.clone(),
                     provider_node,
                 )
-                .map_err(|e| ComboAttemptError {
+                .map_err(|e| ProviderAttemptError {
                     status: 500,
                     message: format!("Default executor creation failed: {:?}", e),
                     retry_after: None,
@@ -1866,7 +1742,7 @@ async fn forward_with_provider_fallback(
                         proxy,
                     })
                     .await
-                    .map_err(|err| err.into_combo_attempt_error())?;
+                    .map_err(|err| err.into_provider_attempt_error())?;
                 Ok(KiroExecutorResponse {
                     response: result.response,
                     url: result.url,
@@ -1948,7 +1824,7 @@ async fn forward_with_provider_fallback(
                 let cooldown = retry_after
                     .map(|timestamp| (timestamp - Utc::now()).to_std().unwrap_or_default())
                     .unwrap_or(decision.cooldown);
-                last_error = Some(ComboAttemptError {
+                last_error = Some(ProviderAttemptError {
                     status: status.as_u16(),
                     message: message.clone(),
                     retry_after,
@@ -2064,7 +1940,10 @@ async fn forward_with_provider_fallback(
                 }
 
                 return Err(last_error.unwrap_or_else(|| {
-                    ComboAttemptError::new(502, "provider error after exhausting all connections")
+                    ProviderAttemptError::new(
+                        502,
+                        "provider error after exhausting all connections",
+                    )
                 }));
             }
             Err(error) => {
@@ -2074,7 +1953,7 @@ async fn forward_with_provider_fallback(
                 }
                 let current_backoff = connection.backoff_level.unwrap_or(0);
                 let decision = check_fallback_error(502, &message, current_backoff);
-                let error_for_return = ComboAttemptError::new(502, message.clone());
+                let error_for_return = ProviderAttemptError::new(502, message.clone());
                 last_error = Some(error);
 
                 if decision.should_fallback {
@@ -2875,7 +2754,7 @@ async fn proxy_response_with_pending_tracking(
                                 if qoder_billing_block {
                                     // Billing block: close the stream now so the
                                     // client sees the 403-shaped error frame.
-                                    // (Combo fallback itself happens in the
+                                    // (Account fallback itself happens in the
                                     // executor's pre-stream peek; this flag is
                                     // the backstop for already-open streams.)
                                     let usage = usage_capture.usage.clone();
@@ -3342,7 +3221,7 @@ fn extract_dashboard_assistant_text_from_bytes(body: &[u8]) -> Option<String> {
 ///
 /// On the first `data:` line, checks for billing/quota blocks (9router v0.5.55
 /// peekFirstQoderFrame). If detected, emits a synthetic 403 error frame and
-/// sets `billing_block` to `true` so the caller can trigger combo fallback.
+/// sets `billing_block` to `true` so the caller can trigger account fallback.
 fn qoder_unwrap_sse_chunk(
     chunk: &Bytes,
     pending_text: &mut String,
@@ -3369,7 +3248,7 @@ fn qoder_unwrap_sse_chunk(
             {
                 *billing_block = true;
                 // Emit the billing error as a JSON error frame so the chat
-                // handler sees status 403 and triggers combo fallback.
+                // handler sees status 403 and triggers account fallback.
                 out.push(format!("data: {billing_err}\n\n"));
                 out.push("data: [DONE]\n\n".to_string());
                 return out;
@@ -3724,8 +3603,7 @@ async fn extract_upstream_error_with_body(response: UpstreamResponse) -> (String
 }
 
 /// Read the error response body once and return both the extracted message and
-/// a body-based `retryAfter` (9router `handleComboChat` reads
-/// `errorBody.retryAfter`; `new Date(retryAfter)` accepts ISO date or seconds).
+/// a body-based `retryAfter` (accepted as an ISO date or seconds).
 async fn extract_error_message_and_retry_after(
     response: UpstreamResponse,
 ) -> (String, Option<DateTime<Utc>>) {
@@ -3740,7 +3618,7 @@ async fn extract_error_message_and_retry_after(
                 .unwrap_or_default()
         }
     };
-    let retry_after = crate::core::combo::parse_retry_after_from_body(text.as_bytes());
+    let retry_after = crate::core::account_fallback::parse_retry_after_from_body(text.as_bytes());
     let message = {
         if let Ok(value) = serde_json::from_str::<Value>(&text) {
             if let Some(message) = value
@@ -3854,16 +3732,7 @@ fn parse_timestamp(value: &str) -> Option<DateTime<Utc>> {
         .ok()
 }
 
-fn combo_error_response(error: ComboExecutionError) -> Response {
-    with_cors_response(attempt_error_response(ComboAttemptError {
-        status: error.status,
-        message: error.message,
-        retry_after: error.earliest_retry_after,
-        upstream_body: error.upstream_body,
-    }))
-}
-
-fn attempt_error_response(error: ComboAttemptError) -> Response {
+fn attempt_error_response(error: ProviderAttemptError) -> Response {
     // H23: When upstream_body is available, return it verbatim instead
     // of constructing a new error body.
     if let Some(body_bytes) = error.upstream_body {

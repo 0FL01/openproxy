@@ -4,11 +4,100 @@
 //! Provides per-account state tracking, health scoring, and fallback routing logic.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 
 use crate::types::ProviderConnection;
+
+const LONG_COOLDOWN: Duration = Duration::from_secs(120);
+const TRANSIENT_COOLDOWN: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderAttemptError {
+    pub status: u16,
+    pub message: String,
+    pub retry_after: Option<DateTime<Utc>>,
+    pub upstream_body: Option<Vec<u8>>,
+}
+
+impl ProviderAttemptError {
+    pub fn new(status: u16, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: message.into(),
+            retry_after: None,
+            upstream_body: None,
+        }
+    }
+}
+
+pub fn parse_retry_after_from_body(body: &[u8]) -> Option<DateTime<Utc>> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let retry_after = value
+        .get("error")
+        .and_then(|error| error.get("retryAfter"))
+        .or_else(|| value.get("retryAfter"))?;
+
+    if let Some(value) = retry_after.as_str() {
+        if let Ok(timestamp) = DateTime::parse_from_rfc3339(value) {
+            return Some(timestamp.with_timezone(&Utc));
+        }
+        if let Ok(seconds) = value.parse::<i64>() {
+            return Utc::now().checked_add_signed(chrono::Duration::seconds(seconds));
+        }
+        return None;
+    }
+
+    retry_after
+        .as_i64()
+        .or_else(|| retry_after.as_f64().map(|seconds| seconds as i64))
+        .and_then(|seconds| Utc::now().checked_add_signed(chrono::Duration::seconds(seconds)))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FallbackDecision {
+    pub should_fallback: bool,
+    pub cooldown: Duration,
+    pub new_backoff_level: Option<u32>,
+}
+
+pub fn get_quota_cooldown(backoff_level: u32) -> Duration {
+    let level = backoff_level.saturating_sub(1);
+    let cooldown_ms = BACKOFF_BASE_MS.saturating_mul(2u64.saturating_pow(level));
+    Duration::from_millis(cooldown_ms.min(BACKOFF_MAX_MS))
+}
+
+pub fn check_fallback_error(status: u16, error_text: &str, backoff_level: u32) -> FallbackDecision {
+    use crate::core::config::error_config::{classify_error, ErrorClassification};
+
+    match classify_error(Some(error_text), Some(status)) {
+        ErrorClassification::Backoff => {
+            let new_level = (backoff_level + 1).min(MAX_BACKOFF_LEVEL);
+            FallbackDecision {
+                should_fallback: true,
+                cooldown: get_quota_cooldown(new_level),
+                new_backoff_level: Some(new_level),
+            }
+        }
+        ErrorClassification::Cooldown(duration) => FallbackDecision {
+            should_fallback: true,
+            cooldown: duration,
+            new_backoff_level: None,
+        },
+        ErrorClassification::NoMatch => FallbackDecision {
+            should_fallback: true,
+            cooldown: TRANSIENT_COOLDOWN,
+            new_backoff_level: None,
+        },
+        ErrorClassification::Permanent => FallbackDecision {
+            should_fallback: true,
+            cooldown: LONG_COOLDOWN,
+            new_backoff_level: None,
+        },
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AccountLockState {
@@ -599,7 +688,7 @@ pub fn is_model_lock_active(
 /// 2. `degradedUntil` — set by the health daemon from the last probe status
 ///    (429 → 2 min, 503 → 10 min, 500/502/504 → 5 min). Reading the persisted
 ///    field keeps this helper pure and testable; the in-memory
-///    `core::health` registry gates combo members separately.
+///    `core::health` registry gates provider accounts separately.
 pub fn is_account_unavailable(connection: &ProviderConnection, now: DateTime<Utc>) -> bool {
     let rate_limited = connection
         .rate_limited_until

@@ -1,6 +1,6 @@
 ---
 name: openproxy
-description: Install, initialize, and operate OpenProxy from the CLI — either guiding a human through setup or driving it fully autonomously as an agent. Use whenever the user asks to install the openproxy binary, start the local AI router on 127.0.0.1:4623, configure providers / combos / keys, or wire an AI coding CLI (Claude Code, Codex, Cursor, Cline, OpenClaw, Copilot, …) into OpenProxy.
+description: Install, initialize, and operate OpenProxy from the CLI — either guiding a human through setup or driving it fully autonomously as an agent. Use whenever the user asks to install the openproxy binary, start the local AI router on 127.0.0.1:4623, configure providers / keys, or wire an AI coding CLI (Claude Code, Codex, Cursor, Cline, OpenClaw, Copilot, …) into OpenProxy.
 ---
 
 # openproxy — install & operate from the CLI
@@ -143,7 +143,7 @@ openproxy server stop
 openproxy server start --detach --no-open --port 4626   # alt port
 ```
 
-## 4 · Configure providers + combos non-interactively
+## 4 · Configure providers non-interactively
 
 The CLI is self-documenting — discover the resource schemas before generating payloads:
 
@@ -186,15 +186,6 @@ openproxy --robot provider apply --from-file /tmp/providers.json
 
 The same `apply --from-file` pattern works for `key apply` and `pool apply`. Read from stdin with `--from-file -`.
 
-### Quick combo (imperative)
-
-```bash
-openproxy combo create my-stack \
-  --models "openai/gpt-4o,anthropic/claude-3-5-sonnet"
-```
-
-Combo entries are `<provider-key>/<model-id>`. For a custom provider node, the prefix is the node's **UUID** (not its name) — see the model-resolution details in `.agents/skills/testing-combo-fallback/SKILL.md`.
-
 ### OAuth subscription providers (Claude Code, Codex, Copilot, Cursor, Antigravity)
 
 OAuth providers (`openproxy provider oauth …`) require a one-time browser dance. In a headless / agent context, prefer:
@@ -225,11 +216,11 @@ curl -sS http://127.0.0.1:4623/health
 curl -sS http://127.0.0.1:4623/v1/models \
   -H "Authorization: Bearer $OPENPROXY_API_KEY"
 
-# End-to-end chat completion through a combo
+# End-to-end chat completion through a direct provider/model route
 curl -sS http://127.0.0.1:4623/v1/chat/completions \
   -H "Authorization: Bearer $OPENPROXY_API_KEY" \
   -H 'content-type: application/json' \
-  -d '{"model":"my-stack","messages":[{"role":"user","content":"ping"}]}'
+  -d '{"model":"openai/gpt-4o","messages":[{"role":"user","content":"ping"}]}'
 ```
 
 Stop after verification if you only needed a smoke test:
@@ -297,7 +288,6 @@ Maintainers refresh the embedded snapshots by running
 
 ## When _not_ to use this skill
 
-- The user has openproxy running and wants help debugging combo dispatch — use `.agents/skills/testing-combo-fallback/SKILL.md` instead.
 - The user is asking about cloud-hosted multi-tenant OpenProxy — out of scope; this skill covers the local single-binary mode only.
 - The user explicitly wants to `--from-source` build openproxy from scratch — follow the README's "Build from source" section; this skill optimizes for the prebuilt-binary path.
 
@@ -306,4 +296,3 @@ Maintainers refresh the embedded snapshots by running
 - Full README: https://github.com/quangdang46/openproxy
 - CLI reference: `openproxy --help` and `openproxy <command> --help`
 - Schema introspection: `openproxy schema list`
-- Combo-fallback / E2E skill: [`.agents/skills/testing-combo-fallback/SKILL.md`](../testing-combo-fallback/SKILL.md)

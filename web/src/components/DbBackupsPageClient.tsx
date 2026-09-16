@@ -15,7 +15,6 @@ interface BackupInfo {
   size: number;
   reason: string;
   providerCount: number;
-  comboCount: number;
   apiKeyCount: number;
 }
 
@@ -218,9 +217,7 @@ export default function DbBackupsPageClient() {
       const json = await res.json();
       setStatus({
         type: "success",
-        text: `Restored ${target.id} — ${json?.providerCount ?? 0} providers, ${
-          json?.comboCount ?? 0
-        } combos, ${json?.apiKeyCount ?? 0} API keys.`,
+        text: `Restored ${target.id} — ${json?.providerCount ?? 0} providers, ${json?.apiKeyCount ?? 0} API keys.`,
       });
       await fetchList();
     } catch (err) {
@@ -317,9 +314,7 @@ export default function DbBackupsPageClient() {
         const json = await res.json();
         setStatus({
           type: "success",
-          text: `Imported ${file.name} — ${json?.providerCount ?? 0} providers, ${
-            json?.comboCount ?? 0
-          } combos, ${json?.apiKeyCount ?? 0} API keys.`,
+          text: `Imported ${file.name} — ${json?.providerCount ?? 0} providers, ${json?.apiKeyCount ?? 0} API keys.`,
         });
         await fetchList();
       } catch (err) {
@@ -423,7 +418,6 @@ export default function DbBackupsPageClient() {
                 <th className="px-4 py-2">Created</th>
                 <th className="px-4 py-2">Size</th>
                 <th className="px-4 py-2">Providers</th>
-                <th className="px-4 py-2">Combos</th>
                 <th className="px-4 py-2">API keys</th>
                 <th className="px-4 py-2 text-right">Actions</th>
               </tr>
@@ -431,14 +425,14 @@ export default function DbBackupsPageClient() {
             <tbody className="divide-y divide-line">
               {loading && (
                 <tr>
-                  <td colSpan={8} className="px-4 py-6 text-center text-body">
+                  <td colSpan={7} className="px-4 py-6 text-center text-body">
                     Loading backups…
                   </td>
                 </tr>
               )}
               {!loading && backups.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="px-4 py-6 text-center text-body">
+                  <td colSpan={7} className="px-4 py-6 text-center text-body">
                     No backups yet. Click <span className="font-medium">Create snapshot</span> to
                     save one now, or wait for the hourly auto-backup.
                   </td>
@@ -454,7 +448,6 @@ export default function DbBackupsPageClient() {
                     <td className="px-4 py-2 text-body">{formatTime(b.createdAt)}</td>
                     <td className="px-4 py-2 text-body">{formatSize(b.size)}</td>
                     <td className="px-4 py-2 text-body">{b.providerCount}</td>
-                    <td className="px-4 py-2 text-body">{b.comboCount}</td>
                     <td className="px-4 py-2 text-body">{b.apiKeyCount}</td>
                     <td className="px-4 py-2 text-right">
                       <div className="inline-flex gap-2">
@@ -494,8 +487,7 @@ export default function DbBackupsPageClient() {
               snapshot will be created first.
             </p>
             <p className="mt-2">
-              {pendingRestore.providerCount} providers · {pendingRestore.comboCount} combos ·{" "}
-              {pendingRestore.apiKeyCount} API keys.
+              {pendingRestore.providerCount} providers · {pendingRestore.apiKeyCount} API keys.
             </p>
           </>
         ) : null}

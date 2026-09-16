@@ -58,7 +58,6 @@ async fn settings_get_emits_envelope() {
         .and(path("/api/settings"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "requireApiKey": true,
-            "rtkEnabled": true,
         })))
         .mount(&server)
         .await;
@@ -72,7 +71,6 @@ async fn settings_get_emits_envelope() {
     let v = parse_robot(&out.stdout);
     assert_eq!(v["schema"], "openproxy.v1.settings.get");
     assert_eq!(v["data"]["requireApiKey"], true);
-    assert_eq!(v["data"]["rtkEnabled"], true);
 }
 
 #[tokio::test(flavor = "multi_thread")]

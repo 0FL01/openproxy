@@ -25,8 +25,6 @@ pub struct AppDb {
     #[serde(default, deserialize_with = "deserialize_null_default")]
     pub custom_models: Vec<CustomModel>,
     #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub combos: Vec<Combo>,
-    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub api_keys: Vec<ApiKey>,
     /// Index of `api_keys` keyed by the raw `key` field for O(1) lookup.
     /// Rebuilt automatically in `normalize()` — not serialized.
@@ -43,6 +41,7 @@ impl AppDb {
         self.settings.normalize();
         self.extra.remove("pricing");
         self.extra.remove("mitmAlias");
+        self.extra.remove("combos");
 
         for api_key in &mut self.api_keys {
             if api_key.is_active.is_none() {
@@ -50,29 +49,6 @@ impl AppDb {
             }
             api_key.extra.remove("monthlyBudgetUsd");
             api_key.extra.remove("monthly_budget_usd");
-        }
-
-        for combo in &mut self.combos {
-            for key in ["strategy", "fusionConfig", "judgeModel", "fusionTuning"] {
-                combo.extra.remove(key);
-            }
-            if combo.kind.as_deref().is_some_and(|kind| {
-                matches!(
-                    kind,
-                    "fallback"
-                        | "round-robin"
-                        | "sticky-round-robin"
-                        | "fusion"
-                        | "auto-combo"
-                        | "hedging"
-                        | "shadow"
-                        | "cheapest"
-                        | "fastest"
-                        | "quality"
-                )
-            }) {
-                combo.kind = None;
-            }
         }
 
         // Strip empty providerFilters/favoriteModels from extra so that
@@ -105,6 +81,7 @@ impl AppDb {
         let Value::Object(mut fields) = value else {
             return Self::default();
         };
+        fields.remove("combos");
 
         let mut db = Self {
             schema_version: extract_named_field(&mut fields, "schemaVersion"),
@@ -114,7 +91,6 @@ impl AppDb {
             proxy_pools: extract_named_field(&mut fields, "proxyPools"),
             model_aliases: extract_named_field(&mut fields, "modelAliases"),
             custom_models: extract_named_field(&mut fields, "customModels"),
-            combos: extract_named_field(&mut fields, "combos"),
             api_keys: extract_named_field(&mut fields, "apiKeys"),
             api_key_map: HashMap::new(),
             settings: extract_named_field(&mut fields, "settings"),
@@ -353,30 +329,6 @@ pub struct ProviderStrategyConfig {
     pub rotate_strategy: Option<String>,
     #[serde(default)]
     pub proxy_pool_id: Option<String>,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
-}
-
-#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct Combo {
-    pub id: String,
-    pub name: String,
-    #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub models: Vec<String>,
-    /// Combo members the operator has explicitly muted. The dispatcher
-    /// filters these out *before* rotation / capacity / iteration, so a
-    /// "known bad" model can stay in the configured list (for visibility
-    /// or quick re-enable) without ever being dispatched to. Empty by
-    /// default.
-    #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub disabled_models: Vec<String>,
-    #[serde(default)]
-    pub kind: Option<String>,
-    #[serde(default)]
-    pub created_at: Option<String>,
-    #[serde(default)]
-    pub updated_at: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }

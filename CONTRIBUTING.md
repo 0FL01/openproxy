@@ -77,7 +77,7 @@ openproxy/
 ├── src/                 # Rust — axum, hyper, SQLite WAL, encrypted columns
 │   ├── core/            # model parsing, format translation, executor trait
 │   ├── server/api/      # /v1, /api, provider_models, chat
-│   └── cli/             # provider apply, combo, schema, doctor
+│   └── cli/             # provider apply, schema, doctor
 ├── web/                 # Astro 4 + React 19 + Tailwind — built to web/dist
 │   └── src/             # dashboard components, provider constants
 ├── scripts/dev.sh       # THE dev entrypoint (build+test+run)

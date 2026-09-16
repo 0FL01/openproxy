@@ -22,7 +22,7 @@ use serde_json::Value;
 
 use crate::types::{AppDb, ModelAliasTarget, Settings};
 
-use super::repo::{api_key_repo, combo_repo, connection_repo, kv_repo, node_repo, pool_repo};
+use super::repo::{api_key_repo, connection_repo, kv_repo, node_repo, pool_repo};
 
 /// The in-memory representation of disabled models: `provider -> [model ids]`.
 type DisabledMap = BTreeMap<String, Vec<String>>;
@@ -74,16 +74,6 @@ pub fn apply_app_db_diff(conn: &Connection, old: &AppDb, new: &AppDb) -> rusqlit
         api_key_repo::update,
         |c, id| api_key_repo::delete(c, id),
     )?;
-    diff_by_id(
-        conn,
-        &old.combos,
-        &new.combos,
-        |c| &c.id,
-        combo_repo::create,
-        combo_repo::update,
-        |c, id| combo_repo::delete(c, id),
-    )?;
-
     diff_kv_scope(
         conn,
         "modelAliases",

@@ -163,9 +163,6 @@ async fn cowork_settings_post_bootstraps_and_get_reads_config() {
 
     let config_path = PathBuf::from(json["configPath"].as_str().unwrap());
     assert!(config_path.exists());
-    let written_config: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-    assert!(written_config.get("managedMcpServers").is_none());
     assert!(cowork_root(home.path())
         .join("configLibrary")
         .join("_meta.json")

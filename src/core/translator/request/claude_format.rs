@@ -264,7 +264,7 @@ pub fn normalize_claude_passthrough(body: &mut Value, model: &str) {
         obj.insert("messages".to_string(), Value::Array(folded));
     }
 
-    // 5. Drop thinking blocks whose signature is not Claude's (combo mixes
+    // 5. Drop thinking blocks whose signature is not Claude's (sessions can mix
     // models, so foreign signatures leak into history and Anthropic rejects
     // them), drop foreign server_tool_use ids + orphaned results, and inject
     // a placeholder thinking block when thinking is enabled but none survived

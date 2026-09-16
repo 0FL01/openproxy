@@ -1,3 +1,4 @@
+pub mod capabilities;
 pub mod catalog;
 pub mod models_dev;
 
@@ -133,7 +134,6 @@ pub struct ParsedModel {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelRouteKind {
     Direct,
-    Combo,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -203,20 +203,7 @@ pub fn resolve_model_alias_from_map(
 }
 
 pub fn get_model_info(model_str: &str, db: &AppDb) -> ResolvedModel {
-    let (explicit_combo, normalized_model) = model_str
-        .strip_prefix("combo:")
-        .map(|value| (true, value))
-        .unwrap_or((false, model_str));
-
-    if explicit_combo {
-        return ResolvedModel {
-            provider: None,
-            model: normalized_model.to_string(),
-            route_kind: ModelRouteKind::Combo,
-        };
-    }
-
-    let parsed = parse_model(normalized_model);
+    let parsed = parse_model(model_str);
 
     if !parsed.is_alias {
         if let (Some(provider), Some(provider_alias), Some(model)) = (
@@ -251,14 +238,6 @@ pub fn get_model_info(model_str: &str, db: &AppDb) -> ResolvedModel {
     }
 
     let alias_name = parsed.model.unwrap_or_default();
-    if db.combos.iter().any(|combo| combo.name == alias_name) {
-        return ResolvedModel {
-            provider: None,
-            model: alias_name,
-            route_kind: ModelRouteKind::Combo,
-        };
-    }
-
     if let Some(resolved) = resolve_model_alias_from_map(&alias_name, &db.model_aliases) {
         return ResolvedModel {
             provider: Some(resolved.provider),
@@ -277,7 +256,7 @@ pub fn get_model_info(model_str: &str, db: &AppDb) -> ResolvedModel {
 
 /// Infer the target provider from a bare model name string, based on known
 /// model-family prefixes.  This is the last-resort fallback used when no
-/// explicit alias or combo maps the model — it avoids forcing every unknown
+/// explicit alias maps the model — it avoids forcing every unknown
 /// model to "openai".
 ///
 /// Known model-family prefix → provider mappings:

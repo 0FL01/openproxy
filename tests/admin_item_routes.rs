@@ -5,7 +5,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use openproxy::db::Db;
 use openproxy::server::state::AppState;
-use openproxy::types::{ApiKey, Combo, ProviderConnection, ProxyPool};
+use openproxy::types::{ApiKey, ProviderConnection, ProxyPool};
 use serde_json::{json, Value};
 use tempfile::tempdir;
 use tower::util::ServiceExt;
@@ -89,19 +89,6 @@ fn proxy_pool() -> ProxyPool {
     }
 }
 
-fn combo() -> Combo {
-    Combo {
-        id: "combo-1".into(),
-        name: "writer".into(),
-        models: vec!["openai/gpt-4o-mini".into()],
-        disabled_models: Vec::new(),
-        kind: None,
-        created_at: None,
-        updated_at: None,
-        extra: BTreeMap::new(),
-    }
-}
-
 async fn app_state() -> AppState {
     let temp = tempdir().expect("tempdir");
     let db = Arc::new(Db::load_from(temp.path()).await.expect("db"));
@@ -109,7 +96,6 @@ async fn app_state() -> AppState {
         state.api_keys = vec![active_key()];
         state.provider_connections = vec![provider_connection()];
         state.proxy_pools = vec![proxy_pool()];
-        state.combos = vec![combo()];
     })
     .await
     .expect("seed db");

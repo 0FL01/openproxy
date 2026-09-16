@@ -28,20 +28,12 @@ pub fn routes() -> Router<AppState> {
                 .put(update_provider)
                 .delete(delete_provider),
         )
-        .route(
-            "/api/combos/{id}",
-            get(get_combo).put(update_combo).delete(delete_combo),
-        )
         .route("/api/keys/{id}", get(get_key))
         .route("/api/proxy-pools/{id}", get(get_proxy_pool))
         // Batch operations
         .route(
             "/api/batch/providers",
             axum::routing::delete(batch_delete_providers),
-        )
-        .route(
-            "/api/batch/combos",
-            axum::routing::delete(batch_delete_combos),
         )
         .route("/api/batch/keys", axum::routing::delete(batch_delete_keys))
 }
@@ -258,124 +250,6 @@ async fn delete_provider(
         .await
     {
         Ok(_) => Json(json!({ "message": "Connection deleted successfully" })).into_response(),
-        Err(error) => internal_error(error),
-    }
-}
-
-async fn get_combo(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-) -> Response {
-    if let Err(response) = require_management_access(&headers, &state) {
-        return response;
-    }
-
-    let snapshot = state.db.snapshot();
-    let Some(combo) = snapshot.combos.iter().find(|combo| combo.id == id).cloned() else {
-        return not_found("Combo not found");
-    };
-
-    Json(combo).into_response()
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct UpdateComboRequest {
-    name: Option<String>,
-    models: Option<Vec<String>>,
-    /// Members the operator has explicitly muted. When present, replaces
-    /// the existing `disabledModels` list. `None` (i.e. field omitted)
-    /// leaves the current value untouched so callers can update
-    /// `name`/`models`/`kind` independently.
-    disabled_models: Option<Vec<String>>,
-    kind: Option<String>,
-}
-
-async fn update_combo(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-    Json(req): Json<UpdateComboRequest>,
-) -> Response {
-    if let Err(response) = require_management_access(&headers, &state) {
-        return response;
-    }
-
-    let snapshot = state.db.snapshot();
-    let Some(existing) = snapshot.combos.iter().find(|combo| combo.id == id).cloned() else {
-        return not_found("Combo not found");
-    };
-
-    if let Some(name) = req.name.as_deref() {
-        if !name.is_empty() && !valid_combo_name(name) {
-            return bad_request("Name can only contain letters, numbers, -, _ and .");
-        }
-
-        if !name.is_empty()
-            && snapshot
-                .combos
-                .iter()
-                .any(|combo| combo.id != id && combo.name == name)
-        {
-            return bad_request("Combo name already exists");
-        }
-    }
-
-    match state
-        .db
-        .update(move |db| {
-            if let Some(combo) = db.combos.iter_mut().find(|combo| combo.id == id) {
-                if let Some(name) = req.name.clone() {
-                    combo.name = name;
-                }
-                if let Some(models) = req.models.clone() {
-                    combo.models = models;
-                }
-                if let Some(disabled_models) = req.disabled_models.clone() {
-                    combo.disabled_models = disabled_models;
-                }
-                if let Some(kind) = req.kind.clone() {
-                    combo.kind = Some(kind);
-                }
-                combo.updated_at = Some(Utc::now().to_rfc3339());
-            }
-        })
-        .await
-    {
-        Ok(snapshot) => {
-            let Some(combo) = snapshot.combos.iter().find(|combo| combo.id == existing.id) else {
-                return not_found("Combo not found");
-            };
-
-            Json(combo).into_response()
-        }
-        Err(error) => internal_error(error),
-    }
-}
-
-async fn delete_combo(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-) -> Response {
-    if let Err(response) = require_management_access(&headers, &state) {
-        return response;
-    }
-
-    let snapshot = state.db.snapshot();
-    if !snapshot.combos.iter().any(|combo| combo.id == id) {
-        return not_found("Combo not found");
-    }
-
-    match state
-        .db
-        .update(move |db| {
-            db.combos.retain(|combo| combo.id != id);
-        })
-        .await
-    {
-        Ok(_) => Json(json!({ "success": true })).into_response(),
         Err(error) => internal_error(error),
     }
 }
@@ -708,13 +582,6 @@ fn normalize_proxy_pool_update(
     })
 }
 
-pub(crate) fn valid_combo_name(name: &str) -> bool {
-    !name.trim().is_empty()
-        && name
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
-}
-
 #[derive(Clone, Default)]
 struct ProxyPoolUpdates {
     name: Option<String>,
@@ -818,34 +685,6 @@ async fn batch_delete_providers(
     }
 }
 
-/// DELETE /api/batch/combos — delete multiple combos
-async fn batch_delete_combos(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(req): Json<BatchDeleteRequest>,
-) -> Response {
-    if let Err(response) = require_management_access(&headers, &state) {
-        return response;
-    }
-    if req.ids.is_empty() {
-        return bad_request("ids array must not be empty");
-    }
-
-    let ids = req.ids;
-    let count = ids.len();
-
-    match state
-        .db
-        .update(move |db| {
-            db.combos.retain(|combo| !ids.contains(&combo.id));
-        })
-        .await
-    {
-        Ok(_) => Json(json!({ "deleted": count })).into_response(),
-        Err(error) => internal_error(error),
-    }
-}
-
 /// DELETE /api/batch/keys — delete multiple API keys
 async fn batch_delete_keys(
     State(state): State<AppState>,
@@ -876,13 +715,6 @@ async fn batch_delete_keys(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn combo_name_validation_matches_baseline_shape() {
-        assert!(valid_combo_name("combo_1.v2"));
-        assert!(!valid_combo_name("combo name"));
-        assert!(!valid_combo_name(""));
-    }
 
     #[test]
     fn proxy_pool_update_rejects_missing_url_when_enabled() {

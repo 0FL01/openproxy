@@ -7,7 +7,7 @@ use serde_json::Value;
 use tokio::fs;
 use tokio::sync::RwLock;
 
-use crate::types::{AppDb, Combo, ModelAliasTarget, ProviderConnection, ProviderNode, Settings};
+use crate::types::{AppDb, ModelAliasTarget, ProviderConnection, ProviderNode, Settings};
 
 pub mod backups;
 pub mod crypto;
@@ -166,8 +166,8 @@ impl Db {
     }
 
     /// Reload the in-memory AppDb snapshot from SQLite.
-    /// Used when an external process (e.g. CLI `combo create`) writes to
-    /// the SQLite file directly and the server's snapshot is stale.
+    /// Used when an external process writes to the SQLite file directly and
+    /// the server's snapshot is stale.
     pub async fn reload_snapshot(&self) -> anyhow::Result<Arc<AppDb>> {
         let sq = self.sqlite.clone();
         let app_db = tokio::task::spawn_blocking(move || -> anyhow::Result<AppDb> {
@@ -231,15 +231,6 @@ impl Db {
             .filter(|node| node_type.is_none_or(|expected| node.r#type == expected))
             .cloned()
             .collect()
-    }
-
-    pub fn combo_by_name(&self, name: &str) -> Option<Combo> {
-        let snapshot = self.snapshot();
-        snapshot
-            .combos
-            .iter()
-            .find(|combo| combo.name == name)
-            .cloned()
     }
 
     pub fn model_aliases(&self) -> Arc<std::collections::BTreeMap<String, ModelAliasTarget>> {

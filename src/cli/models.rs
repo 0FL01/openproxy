@@ -109,10 +109,7 @@ async fn run_info(db: &Db, ctx: OutputCtx, model: &str) -> anyhow::Result<()> {
     let snapshot = db.snapshot();
     let resolved = crate::core::model::get_model_info(model, &snapshot);
     let alias_target = snapshot.model_aliases.get(model).cloned();
-    let route_kind = match resolved.route_kind {
-        crate::core::model::ModelRouteKind::Direct => "direct",
-        crate::core::model::ModelRouteKind::Combo => "combo",
-    };
+    let route_kind = "direct";
     let payload = json!({
         "input": model,
         "provider": resolved.provider,

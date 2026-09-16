@@ -8,7 +8,7 @@ Own single-binary AI router: faster, safer Rust implementation. Critical pattern
 
 ## How (Architecture)
 - **Core**: model parsing → format detection → request translation → provider execution → response translation → SSE streaming
-- **Account mgmt**: credential selection → token refresh → model-level fallback → combo/fusion
+- **Account mgmt**: credential selection → token refresh → model-level account fallback
 - **Executor trait**: `ProviderExecutor` with default+specialized impls
 - **Persistence**: SQLite WAL + encrypted columns + usage tracking
 - **Security**: HMAC API keys, bcrypt auth, SSRF protection
@@ -63,14 +63,13 @@ PRs use [`.github/pull_request_template.md`](.github/pull_request_template.md); 
 
 ## Core Product Surfaces (TOP PRIORITY)
 
-These 4 surfaces ARE the product. Everything else is optional. They must be flawless, reliable, and mutually consistent — always prioritize regressions and improvements here:
+These 3 surfaces ARE the product. Everything else is optional. They must be flawless, reliable, and mutually consistent — always prioritize regressions and improvements here:
 
 1. **Providers page** — `/dashboard/providers/<provider>` (e.g. kilocode): user controls Available Models (disable/enable/custom). Configuration is user data, persisted in SQLite — must survive binary rebuilds/updates.
 2. **CLI tools config** — `/dashboard/cli-tools/opencode` (opencode is the primary client).
-3. **Combos page** — `/dashboard/combos`.
-4. **`web/src/shared/components/ModelSelectModal.tsx`** — the single model-picker used everywhere; must exactly mirror the provider page's Available Models (same disabled map + custom rows + catalog merge). Any change to model-list logic MUST be applied consistently to both the provider page and this modal.
+3. **`web/src/shared/components/ModelSelectModal.tsx`** — the single model-picker used everywhere; must exactly mirror the provider page's Available Models (same disabled map + custom rows + catalog merge). Any change to model-list logic MUST be applied consistently to both the provider page and this modal.
 
-Core workflow that must never break: configure provider → customize available models → create combos → select models for opencode CLI config.
+Core workflow that must never break: configure provider → customize available models → select models for opencode CLI config.
 
 ## OpenCode Model Discovery
 - `plugins/openproxy-models.js` is the supported fetch path for the aggregate `ludka2` provider; OpenCode auto-loads its installed copy from `~/.config/opencode/plugins/` and fetches `/v1/models` at startup.
@@ -101,8 +100,8 @@ The `schema` subcommand provides four operations:
 | Command | Purpose |
 |---|---|
 | `openproxy schema list` | List all resource kinds with schema and example support |
-| `openproxy schema show <resource>` | Print JSON Schema for a resource (provider, key, combo, etc.) |
+| `openproxy schema show <resource>` | Print JSON Schema for a resource (provider, key, etc.) |
 | `openproxy schema example <resource>` | Print an example payload for a resource |
 | `openproxy schema stability` | Print the v1 namespace stability contract |
 
-13 resources are covered: `provider`, `provider-node`, `combo`, `key`, `pool`, `settings`, `custom-model`, `model-alias`, `usage-event`, `log-event`, `chat-event`, `quota`, `oauth-status`. Each has both a schema and an example — enforced by tests.
+13 resources are covered. The retired `combo` resource remains schema/example-only compatibility metadata under the frozen v1 contract; it has no operational command or route.

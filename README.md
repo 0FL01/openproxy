@@ -14,13 +14,12 @@
 </div>
 
 **Single-binary AI router for AI coding tools.**  
-Routes to 40+ providers with auto-fallback combos. Embedded dashboard, OpenAI-compatible API. Run on `127.0.0.1:4623` — no cloud required.
+Routes to 40+ providers with account fallback. Embedded dashboard, OpenAI-compatible API. Run on `127.0.0.1:4623` — no cloud required.
 
 <p align="center">
   <a href="#install">Install</a> ·
   <a href="#connect-a-cli-tool">Connect a CLI</a> ·
   <a href="#supported-providers">Providers</a> ·
-  <a href="#combos-build-a-fallback-chain">Combos</a> ·
   <a href="#for-ai-agents">For AI Agents</a> ·
   <a href="#configuration">Configuration</a>
 </p>
@@ -54,7 +53,7 @@ curl http://127.0.0.1:4623/v1/chat/completions \
   -d '{"model":"claude/claude-opus-4-8","messages":[{"role":"user","content":"hi"}]}'
 ```
 
-**Dashboard** — open `http://127.0.0.1:4623/` in browser for provider config, combo chains, quota tracking, and request logs.
+**Dashboard** — open `http://127.0.0.1:4623/` in browser for provider config, quota tracking, and request logs.
 
 ---
 
@@ -63,7 +62,7 @@ curl http://127.0.0.1:4623/v1/chat/completions \
 OpenProxy runs as one binary on `127.0.0.1:4623`. Point any tool that speaks the OpenAI Chat Completions API at it (Claude Code, Codex, Cursor, Cline, OpenClaw, Copilot, ...) and OpenProxy:
 
 - routes the request to a provider you've configured (OAuth, API key, or free)
-- falls back to the next provider in your combo when one is rate-limited or errors
+- falls back to the next configured account when one is rate-limited or errors
 - tracks per-account quota so you can use subscription tiers fully before paying for API calls
 - serves a local dashboard at `/` for configuration, monitoring, and account management
 
@@ -252,21 +251,6 @@ Configure providers from the dashboard (`Providers` tab) or via `openproxy provi
 
 ---
 
-## Combos: build a fallback chain
-
-A combo is an ordered list of models. OpenProxy tries them in order, falling back when one is rate-limited or errors. Models are addressed as `<provider-prefix>/<model-id>`:
-
-```
-combo: my-stack
-  1. cc/claude-opus-4-7      # Claude Pro/Max subscription
-  2. glm/glm-4.7             # paid backup ($0.6/1M)
-  3. kr/claude-sonnet-4.5    # Kiro free fallback
-```
-
-Created from `Combos` in the dashboard or `openproxy combo create`. Use the combo name as the model field in your CLI tool — OpenProxy resolves it.
-
----
-
 ## Configuration
 
 Most operators set stable `JWT_SECRET` and `OPENPROXY_ENCRYPTION_KEY` values and leave the rest at defaults. The dashboard password is a random value generated on first boot (see `INITIAL_PASSWORD` below).
@@ -349,7 +333,6 @@ openproxy provider list
 openproxy provider add <name> '<json-config>'
                                    # e.g. openproxy provider add openai-paid \
                                    #        '{"provider":"openai","apiKey":"sk-..."}'
-openproxy combo create --name <name> --models cc/opus,glm/glm-5
 openproxy key list
 openproxy key add <name> <secret>  # provide your own secret
 openproxy key add <name> --auto    # let openproxy mint a fresh `op-…` secret
@@ -396,7 +379,7 @@ Content-Type: application/json
 }
 ```
 
-List available models and combos:
+List available models:
 
 ```http
 GET /v1/models
@@ -516,7 +499,7 @@ For internet-exposed deploys: set `REQUIRE_API_KEY=true`, `AUTH_COOKIE_SECURE=tr
 | Dashboard shows blank page | Embedded asset not hashed correctly | Hard reload (`Ctrl+Shift+R`); check `/health` returns 200 |
 | OAuth "callback failed" | Browser blocked the redirect | Retry from the dashboard's `Providers → Reconnect` |
 | 401 on `/v1/chat/completions` | Wrong API key | Copy fresh from dashboard. Header: `Authorization: Bearer <key>` |
-| Quota exhausted message | Subscription / API limit hit | Combo fallback handles this — add a cheaper or free tier as the next entry |
+| Quota exhausted message | Subscription / API limit hit | Configure another account for the same provider and model |
 | `cargo build` fails with "web/dist not built" | Embedded build needs the dashboard | `(cd web && pnpm install --frozen-lockfile && pnpm run build)` first |
 | First login password rejected | Wrong dashboard password | If you set `INITIAL_PASSWORD`, check `.env.prod` is loaded. Otherwise the password was generated at first boot — look for "Initial dashboard password" in the startup banner or run `openproxy auth reset-password --show` |
 

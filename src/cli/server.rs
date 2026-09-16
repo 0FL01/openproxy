@@ -342,7 +342,6 @@ pub async fn run_status(ctx: OutputCtx, cfg: &ResolvedConfig) -> anyhow::Result<
                 "providers": snap.provider_connections.len(),
                 "keys": snap.api_keys.len(),
                 "pools": snap.proxy_pools.len(),
-                "combos": snap.combos.len(),
             }))
         }
         Err(_) => None,
@@ -385,7 +384,7 @@ pub async fn run_status(ctx: OutputCtx, cfg: &ResolvedConfig) -> anyhow::Result<
 /// fresh admin API key. If an `openproxy.sqlite` already exists, behaviour
 /// depends on what's inside it:
 ///
-/// - apiKeys empty *and* providerConnections empty *and* combos empty: we
+/// - apiKeys empty and providerConnections empty: we
 ///   treat the data dir as effectively unprovisioned and append a fresh
 ///   admin key idempotently. This avoids the deadlock described in bug #4
 ///   where `openproxy doctor` (or just running the server once) creates an
@@ -401,14 +400,13 @@ pub async fn run_init(ctx: OutputCtx, cfg: &ResolvedConfig, force: bool) -> anyh
 
     if db_existed && !force {
         // Inspect the existing DB. If it's an "empty shell" (no keys, no
-        // providers, no combos) then we proceed with a non-destructive
+        // providers) then we proceed with a non-destructive
         // mint of the admin key. Otherwise refuse to overwrite.
         match Db::load_from(&cfg.data_dir).await {
             Ok(db) => {
                 let snap = db.snapshot();
                 let truly_empty = snap.api_keys.is_empty()
                     && snap.provider_connections.is_empty()
-                    && snap.combos.is_empty()
                     && snap.proxy_pools.is_empty();
                 if !truly_empty {
                     let msg = format!(

@@ -8,7 +8,7 @@ use hmac::{Hmac, Mac};
 use openproxy::db::Db;
 use openproxy::server::state::AppState;
 use openproxy::types::{
-    ApiKey, Combo, CustomModel, ModelAliasTarget, ProviderConnection, ProviderModelRef,
+    ApiKey, CustomModel, ModelAliasTarget, ProviderConnection, ProviderModelRef,
 };
 use serde_json::json;
 use sha2::Sha256;
@@ -122,16 +122,6 @@ async fn app_state() -> AppState {
                 ..active_key("inactive-key")
             },
         ];
-        state.combos = vec![Combo {
-            id: "combo-1".into(),
-            name: "writer".into(),
-            models: vec!["openai/gpt-4.1".into()],
-            disabled_models: Vec::new(),
-            kind: None,
-            created_at: None,
-            updated_at: None,
-            extra: BTreeMap::new(),
-        }];
         state.provider_connections = vec![
             connection("openai", Some("gpt-4.1"), &[], true),
             connection("groq", None, &["llama-3.3-70b"], true),
@@ -462,7 +452,7 @@ async fn valid_key_still_resolves_with_many_stored_keys() {
 }
 
 #[tokio::test]
-async fn models_endpoint_returns_combo_active_connection_and_custom_llm_models() {
+async fn models_endpoint_returns_active_connection_and_custom_llm_models() {
     let app = openproxy::build_app(app_state().await);
     let response = app
         .oneshot(
@@ -490,7 +480,6 @@ async fn models_endpoint_returns_combo_active_connection_and_custom_llm_models()
         .map(|item| item["id"].as_str().unwrap().to_string())
         .collect();
 
-    assert_eq!(ids[0], "writer");
     assert!(ids.contains(&"openai/gpt-4.1".to_string()));
     assert!(ids.contains(&"groq/llama-3.3-70b".to_string()));
     assert!(ids.contains(&"openai/gpt-custom".to_string()));
@@ -544,7 +533,6 @@ async fn models_endpoint_falls_back_to_static_models_when_no_active_connections(
     state
         .db
         .update(|db| {
-            db.combos.clear();
             db.provider_connections.clear();
             db.custom_models.clear();
         })

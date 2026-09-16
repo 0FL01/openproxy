@@ -223,7 +223,7 @@ pub enum ErrorClassification {
 ///
 /// After all rules are checked, permanent HTTP status codes (400, 401, 403)
 /// that did *not* match any earlier rule are classified as [`Permanent`] so
-/// the caller does not burn through combo members on client errors.
+/// the caller does not burn through provider accounts on client errors.
 pub fn classify_error(message: Option<&str>, status: Option<u16>) -> ErrorClassification {
     let lowered = message.map(|m| m.to_lowercase());
     for rule in ERROR_RULES {

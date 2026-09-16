@@ -16,11 +16,10 @@ Single-binary AI router: OpenAI-compatible endpoint → provider executors.
 - SSRF checks on image prefetch.
 - Missing credentials fail loud (no `Bearer undefined`).
 - Refresh dedup does not cache null failures.
-- Combo quarantine + capacity pre-skip for reliability.
+- Account cooldowns and model locks keep known-bad credentials out of fallback attempts.
 - Secrets encrypted in SQLite WAL.
 - No token-saver passes (PXPIPE/RTK/Headroom/Caveman/Ponytail
   removed) — the proxy forwards bodies unmutated.
-- Hedging/shadow/auto-combo are scaffold-only until product demand.
 
 ## Smoke
 

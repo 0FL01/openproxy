@@ -6,7 +6,7 @@ use axum::http::{Request, StatusCode};
 use openproxy::db::sqlite::repo::request_repo::{self, RequestDetailFilter};
 use openproxy::db::Db;
 use openproxy::server::state::AppState;
-use openproxy::types::{ApiKey, Combo, ProviderConnection, ProviderNode, Settings};
+use openproxy::types::{ApiKey, ProviderConnection, ProviderNode, Settings};
 use serde_json::json;
 use tempfile::tempdir;
 use tower::util::ServiceExt;
@@ -80,18 +80,13 @@ fn connection(id: &str, provider: &str, priority: u32, api_key: &str) -> Provide
     }
 }
 
-async fn seeded_state(
-    nodes: Vec<ProviderNode>,
-    connections: Vec<ProviderConnection>,
-    combos: Vec<Combo>,
-) -> AppState {
-    seeded_state_with_settings(nodes, connections, combos, Settings::default()).await
+async fn seeded_state(nodes: Vec<ProviderNode>, connections: Vec<ProviderConnection>) -> AppState {
+    seeded_state_with_settings(nodes, connections, Settings::default()).await
 }
 
 async fn seeded_state_with_settings(
     nodes: Vec<ProviderNode>,
     connections: Vec<ProviderConnection>,
-    combos: Vec<Combo>,
     settings: Settings,
 ) -> AppState {
     let temp = tempdir().expect("tempdir");
@@ -100,7 +95,6 @@ async fn seeded_state_with_settings(
         state.api_keys = vec![active_key("valid-bearer")];
         state.provider_nodes = nodes;
         state.provider_connections = connections;
-        state.combos = combos;
         // Auth is not under test here (see api_auth_and_models) — disable the
         // login guard so requests without keys reach the chat pipeline.
         let mut settings = settings;
@@ -139,7 +133,6 @@ async fn chat_completions_streams_openai_compatible_response() {
             &format!("{}/v1", upstream.uri()),
         )],
         vec![connection("conn-1", "node-openai", 1, "upstream-key")],
-        Vec::new(),
     )
     .await;
 
@@ -199,7 +192,7 @@ async fn chat_completions_streams_openai_compatible_response() {
 #[tokio::test]
 async fn context_limit_rejects_before_provider_dispatch() {
     let settings = Settings::default();
-    let state = seeded_state_with_settings(Vec::new(), Vec::new(), Vec::new(), settings).await;
+    let state = seeded_state_with_settings(Vec::new(), Vec::new(), settings).await;
     let app = openproxy::build_app(state);
     // Exceeds Axum's default 2 MiB JSON limit, but remains below OpenProxy's
     // fixed 8 MiB LLM-route ceiling so the semantic context guard handles it.
@@ -259,7 +252,6 @@ async fn chat_completions_forwards_short_requests_unmutated() {
             &format!("{}/v1", upstream.uri()),
         )],
         vec![connection("conn-1", "node-openai", 1, "upstream-key")],
-        Vec::new(),
         Settings::default(),
     )
     .await;
@@ -348,7 +340,6 @@ async fn chat_completions_falls_back_to_next_account_on_retryable_error() {
             connection("conn-bad", "node-openai", 1, "bad-key"),
             connection("conn-good", "node-openai", 2, "good-key"),
         ],
-        Vec::new(),
     )
     .await;
 
@@ -405,159 +396,6 @@ async fn chat_completions_falls_back_to_next_account_on_retryable_error() {
 }
 
 #[tokio::test]
-async fn chat_completions_uses_combo_fallback_across_models() {
-    let upstream = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
-        .and(header("authorization", "Bearer upstream-key"))
-        .and(body_partial_json(json!({ "model": "gpt-fail" })))
-        .respond_with(ResponseTemplate::new(503).set_body_json(json!({
-            "error": { "message": "temporary upstream issue" }
-        })))
-        .expect(3)
-        .mount(&upstream)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
-        .and(header("authorization", "Bearer upstream-key"))
-        .and(body_partial_json(json!({ "model": "gpt-pass" })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "id": "chatcmpl-combo",
-            "object": "chat.completion",
-            "choices": [{
-                "index": 0,
-                "message": { "role": "assistant", "content": "combo ok" },
-                "finish_reason": "stop"
-            }]
-        })))
-        .expect(1)
-        .mount(&upstream)
-        .await;
-
-    let combo = Combo {
-        id: "combo-1".into(),
-        name: "writer".into(),
-        models: vec!["custom/gpt-fail".into(), "custom/gpt-pass".into()],
-        disabled_models: Vec::new(),
-        kind: None,
-        created_at: None,
-        updated_at: None,
-        extra: BTreeMap::new(),
-    };
-    let mut combo_connection = connection("conn-1", "node-openai", 1, "upstream-key");
-    combo_connection.default_model = None;
-    combo_connection
-        .provider_specific_data
-        .insert("enabledModels".into(), json!(["gpt-fail", "gpt-pass"]));
-
-    let state = seeded_state(
-        vec![provider_node(
-            "node-openai",
-            "custom",
-            &format!("{}/v1", upstream.uri()),
-        )],
-        vec![combo_connection],
-        vec![combo],
-    )
-    .await;
-
-    let app = openproxy::build_app(state);
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/chat/completions")
-                .header("authorization", "Bearer valid-bearer")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({
-                        "model": "writer",
-                        "messages": [{"role": "user", "content": "hi"}],
-                        "stream": false,
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["id"], "chatcmpl-combo");
-}
-
-#[tokio::test]
-async fn combo_skips_over_limit_member_without_dispatching_it() {
-    let upstream = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
-        .and(body_partial_json(json!({ "model": "gpt-pass" })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "id": "chatcmpl-context-fallback",
-            "object": "chat.completion",
-            "choices": []
-        })))
-        .expect(1)
-        .mount(&upstream)
-        .await;
-
-    let combo = Combo {
-        id: "combo-context-limit".into(),
-        name: "context-limit-fallback".into(),
-        models: vec!["glm/glm-5.1".into(), "custom/gpt-pass".into()],
-        disabled_models: Vec::new(),
-        kind: None,
-        created_at: None,
-        updated_at: None,
-        extra: BTreeMap::new(),
-    };
-    let mut custom = connection("conn-custom", "node-openai", 1, "upstream-key");
-    custom.default_model = None;
-    custom
-        .provider_specific_data
-        .insert("enabledModels".into(), json!(["gpt-pass"]));
-    let mut settings = Settings::default();
-    settings.provider_context_limits.insert("glm".into(), 10);
-    let state = seeded_state_with_settings(
-        vec![provider_node(
-            "node-openai",
-            "custom",
-            &format!("{}/v1", upstream.uri()),
-        )],
-        vec![custom],
-        vec![combo],
-        settings,
-    )
-    .await;
-
-    let response = openproxy::build_app(state)
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/chat/completions")
-                .header("authorization", "Bearer valid-bearer")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({
-                        "model": "context-limit-fallback",
-                        "messages": [{"role": "user", "content": "This prompt is deliberately longer than forty bytes."}],
-                        "stream": false
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-}
-
-#[tokio::test]
 async fn chat_completions_skips_accounts_that_do_not_advertise_requested_model() {
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -596,7 +434,6 @@ async fn chat_completions_skips_accounts_that_do_not_advertise_requested_model()
             &format!("{}/v1", upstream.uri()),
         )],
         vec![unsupported, supported],
-        Vec::new(),
     )
     .await;
 
@@ -654,7 +491,6 @@ async fn chat_completions_returns_retry_after_while_model_is_cooling_down() {
             &format!("{}/v1", upstream.uri()),
         )],
         vec![connection("conn-1", "node-openai", 1, "upstream-key")],
-        Vec::new(),
     )
     .await;
 
@@ -771,7 +607,6 @@ async fn chat_completions_does_not_cool_down_entire_connection_for_model_specifi
             &format!("{}/v1", upstream.uri()),
         )],
         vec![connection],
-        Vec::new(),
     )
     .await;
 
@@ -865,7 +700,6 @@ async fn chat_completions_supports_enabled_models_with_nested_slashes() {
             &format!("{}/v1", upstream.uri()),
         )],
         vec![connection],
-        Vec::new(),
     )
     .await;
 
@@ -936,7 +770,6 @@ async fn chat_completions_preserves_earliest_retry_after_when_all_accounts_fail(
             connection("conn-1", "node-openai", 1, "first-key"),
             connection("conn-2", "node-openai", 2, "second-key"),
         ],
-        Vec::new(),
     )
     .await;
 
@@ -988,7 +821,6 @@ async fn chat_completions_rejects_connections_without_credentials() {
             &format!("{}/v1", upstream.uri()),
         )],
         vec![missing_credentials],
-        Vec::new(),
     )
     .await;
 

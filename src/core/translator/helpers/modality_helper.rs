@@ -23,7 +23,7 @@ const PH_CURRENT_VISION: &str = "[image omitted: model has no vision support]";
 const PH_CURRENT_AUDIO: &str = "[audio omitted: model has no audio support]";
 const PH_CURRENT_PDF: &str = "[file omitted: model has no document support]";
 
-/// Placeholder for earlier turns — neutral (combo may route to a different model).
+/// Placeholder for earlier turns — neutral across provider formats.
 const PH_PREV_VISION: &str = "[Previous image omitted from context.]";
 const PH_PREV_AUDIO: &str = "[Previous audio omitted from context.]";
 const PH_PREV_PDF: &str = "[Previous file omitted from context.]";

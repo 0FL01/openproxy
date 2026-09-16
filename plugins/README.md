@@ -76,7 +76,7 @@ The updated router supplies an additive `opencode` object on `/v1/models` rows:
 name, canonical `source`, limits, modalities, reasoning/tool support, and
 reasoning-effort variants.
 It reuses static, models.dev and Codex metadata. Missing metadata is **not
-guessed** from model names or from one member of a combo. Input limits and some
+guessed** from model names. Input limits and some
 output limits may be unknown. The plugin warns about missing context/output
 limits; retain local overrides until the proxy has the correct values. An older
 router still supports ID discovery and optional `context_length` /

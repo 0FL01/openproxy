@@ -2,7 +2,7 @@
 //!
 //! A `ProviderNode` is the "what is this server's API shape?" half. It
 //! pairs with one or more `ProviderConnection` entries that hold actual
-//! credentials. Combo entries that reference a custom node use the node's
+//! credentials. Model routes that reference a custom node use the node's
 //! UUID as the provider prefix (`<node-uuid>/gpt-4o`).
 
 use std::collections::BTreeMap;

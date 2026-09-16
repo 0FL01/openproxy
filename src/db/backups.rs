@@ -76,7 +76,6 @@ pub struct BackupInfo {
     pub size: u64,
     pub reason: String,
     pub provider_count: usize,
-    pub combo_count: usize,
     pub api_key_count: usize,
 }
 
@@ -87,16 +86,6 @@ pub struct CleanupResult {
     pub kept_files: usize,
     pub max_files: usize,
     pub retention_days: u64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RestoreResult {
-    pub restored: bool,
-    pub backup_id: String,
-    pub provider_count: usize,
-    pub combo_count: usize,
-    pub api_key_count: usize,
 }
 
 pub struct BackupManager {
@@ -428,12 +417,12 @@ async fn describe_backup(backup_dir: &Path, filename: &str) -> anyhow::Result<Ba
     let reason = parse_reason_from_filename(filename).to_string();
 
     // Cheap object count: parse JSON only when describing list entries.
-    let (provider_count, combo_count, api_key_count) = match fs::read(&path).await {
+    let (provider_count, api_key_count) = match fs::read(&path).await {
         Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
             Ok(value) => count_objects(&value),
-            Err(_) => (0, 0, 0),
+            Err(_) => (0, 0),
         },
-        Err(_) => (0, 0, 0),
+        Err(_) => (0, 0),
     };
 
     Ok(BackupInfo {
@@ -443,19 +432,13 @@ async fn describe_backup(backup_dir: &Path, filename: &str) -> anyhow::Result<Ba
         size: meta.len(),
         reason,
         provider_count,
-        combo_count,
         api_key_count,
     })
 }
 
-fn count_objects(value: &Value) -> (usize, usize, usize) {
+fn count_objects(value: &Value) -> (usize, usize) {
     let providers = value
         .get("providerConnections")
-        .and_then(|v| v.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
-    let combos = value
-        .get("combos")
         .and_then(|v| v.as_array())
         .map(|a| a.len())
         .unwrap_or(0);
@@ -464,7 +447,7 @@ fn count_objects(value: &Value) -> (usize, usize, usize) {
         .and_then(|v| v.as_array())
         .map(|a| a.len())
         .unwrap_or(0);
-    (providers, combos, api_keys)
+    (providers, api_keys)
 }
 
 fn now_millis() -> u64 {

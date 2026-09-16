@@ -38,7 +38,6 @@ fn project_structure_matches_bead_layout() {
         "src/server/dashboard/mod.rs",
         "src/server/auth/mod.rs",
         "src/core/proxy/mod.rs",
-        "src/core/combo/mod.rs",
         "src/core/executor/mod.rs",
         "src/core/translator/mod.rs",
         "src/core/auth/mod.rs",

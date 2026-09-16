@@ -511,8 +511,7 @@ pub fn open_db(bytes: &[u8], key: Option<&str>) -> anyhow::Result<AppDb> {
     }
 
     // Deserialize into AppDb.
-    let mut db: AppDb =
-        serde_json::from_value(root).map_err(|e| anyhow::anyhow!("failed to parse AppDb: {e}"))?;
+    let mut db = AppDb::from_json_value(root);
 
     // Always run decrypt path: empty key clears `opxenc1:` ciphertext (fail-loud).
     let key_str = key.unwrap_or("");

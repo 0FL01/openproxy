@@ -5,7 +5,7 @@
 //!
 //! The pipeline is:
 //!   1. Detect source format (from endpoint path + body)
-//!   2. Resolve model (provider, model, alias, combo)
+//!   2. Resolve model (provider, model, alias)
 //!   3. Select credentials (with account fallback)
 //!   4. Translate request (source -> OpenAI intermediate -> target)
 //!   5. Dispatch to executor (body forwarded unmutated — no context munging)

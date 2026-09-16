@@ -108,27 +108,6 @@ async fn build_models_list(
 
     let mut models = Vec::new();
 
-    for combo in &snapshot.combos {
-        if !combo_matches_kinds(combo.kind.as_deref(), kind_filter) {
-            continue;
-        }
-
-        let kind = match combo.kind.as_deref() {
-            Some("webSearch") => Some("webSearch".to_string()),
-            Some("webFetch") => Some("webFetch".to_string()),
-            _ => None,
-        };
-
-        models.push(model_card(
-            combo.name.clone(),
-            "combo".to_string(),
-            created,
-            kind,
-            None,
-            None,
-        ));
-    }
-
     if active_connections.is_empty() {
         for provider_entry in catalog.iter_provider_models() {
             let provider_id = alias_to_provider_id
@@ -348,7 +327,7 @@ async fn build_models_list(
     for mut model in models {
         // Apply visibility after every source has been merged: the custom-model
         // fallback must not reintroduce a disabled row.
-        if model.owned_by != "combo" {
+        {
             let (alias, model_id) = model
                 .id
                 .split_once('/')
@@ -425,7 +404,7 @@ async fn build_models_list(
                         .context_window
                         .and_then(|value| u32::try_from(value).ok()),
                     input: None,
-                    output: crate::core::combo::capabilities::known_max_output_for_model(
+                    output: crate::core::model::capabilities::known_max_output_for_model(
                         provider_id,
                         model_id,
                     )
@@ -504,11 +483,6 @@ fn provider_matches_kinds(
     kind_filter
         .iter()
         .any(|candidate| service_kinds.iter().any(|kind| kind == candidate))
-}
-
-fn combo_matches_kinds(kind: Option<&str>, kind_filter: &[&str]) -> bool {
-    let combo_kind = kind.unwrap_or(LLM_KIND);
-    kind_filter.contains(&combo_kind)
 }
 
 fn output_alias(
@@ -769,7 +743,7 @@ pub async fn models_info(
         "id": model_str,
         "provider": resolved.provider,
         "model": resolved.model,
-        "routeKind": format!("{:?}", resolved.route_kind),
+        "routeKind": "direct",
     });
 
     // Merge catalog model fields

@@ -19,9 +19,9 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - R1: Remove Combo runtime and management end to end.
   - Source: Approved plan Part A.
   - Acceptance: Combo no longer resolves, executes, appears in model discovery, or has operational API/CLI/dashboard/persistence surfaces; explicit `combo:*` requests fail before upstream dispatch; direct routes and model aliases still resolve.
-  - Primary evidence: Focused Rust tests, dashboard build, OpenCode model-discovery tests, and repository search.
-  - Status: pending
-  - Evidence:
+  - Primary evidence: Existing direct-route/alias tests, dashboard build, OpenCode model-discovery tests, and repository search. Do not retain tests whose sole purpose is proving removed Combo behavior is absent.
+  - Status: verified
+  - Evidence: Removed Combo execution, resolution, discovery, management, persistence serialization, dashboard, CLI, current docs, literals, and dedicated/deletion-only tests. Retained v1 schema/example and inert SQLite DDL. Focused Rust tests (43), dashboard build (124 pages), clippy/check/fmt, and both OpenCode model-discovery suites passed.
 
 - R2: Remove proactive provider-account balancing.
   - Source: Approved plan Part B and user requirement that round-robin harms prompt-cache affinity.
@@ -55,23 +55,23 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 - Target: Combo runtime, management, persistence serialization, dashboard/docs consumers, and proactive account-selection strategy/registry paths.
 - Expected paths, symbols, and direct consumers: `src/core/{combo,model,account_fallback}`, chat/web-fetch/model-discovery APIs, CLI command/dispatch/schema/settings surfaces, `AppDb`/`Settings` and SQLite repositories/import/export/patch/backups, directly coupled dashboard components/routes/literals, nearest tests, and current operational docs.
-- Allowed artifacts: Deletions, minimal ownership moves for retained shared helpers/capabilities, focused regression tests, this goal document, and compatibility constants/tombstones required by constraints.
+- Allowed artifacts: Deletions, minimal ownership moves for retained shared helpers/capabilities, tests for retained routing behavior, this goal document, and compatibility constants/tombstones required by constraints.
 - Forbidden artifacts: New dependencies, migrations that destroy historical rows, replacement routing abstractions, unrelated fallback/proxy redesign, secrets, local configuration, database files, or generated backups.
 - User or harness budget: No explicit LOC/time budget. Use one independently buildable commit for Combo removal, one for account-balancing removal, then a final goal/evidence commit if needed.
 
 ## Current Checkpoint
 
-- Closes: R1
-- Smallest next action: Remove Combo runtime, operational surfaces, and persistence readers/writers while retaining compatibility metadata and inert SQLite rows.
-- Expected evidence: Focused Rust tests and dashboard build pass; explicit Combo routes are rejected and model discovery omits Combo.
-- Stop or replan if: Removing a surface requires breaking a retained direct-route, alias, v1 compatibility, or persistence-safety constraint.
+- Closes: R2
+- Smallest next action: Replace proactive account strategy/slot selection with stable priority ordering, then remove the unused registry and strategy controls.
+- Expected evidence: Deterministic-selection and existing reactive-fallback tests pass; dashboard and Rust checks remain green.
+- Stop or replan if: The change bypasses an existing eligibility filter, cooldown/model lock, OAuth refresh, or next-account fallback path.
 
 ## Current State
 
-- Resolved: Contract frozen; implementation has not started.
-- Last relevant evidence: Recon and three independent audits identified direct consumers and persistence/deployment risks; working tree was clean at `e7b28103`.
+- Resolved: R1 verified; Combo is no longer an operational feature.
+- Last relevant evidence: `cargo test --test api_auth_and_models --test chat_completions --test db_and_models --test admin_item_routes --test db_backups_api`, `pnpm build`, fmt/check/clippy, and both `tests/opencode_models*.test.mjs` suites passed.
 - Blocker: None.
-- Next: Implement and verify R1.
+- Next: Commit R1, then implement and verify R2.
 
 ## Material Decisions
 
@@ -79,10 +79,12 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-09-16: Keep the `combos` SQLite DDL as an inert rollback-friendly tombstone, but remove every runtime reader and writer.
 - 2026-09-16: Keep `openproxy.v1` Combo schema/example as deprecated compatibility metadata and settings strategy fields as fixed ignored response values.
 - 2026-09-16: Account selection becomes deterministic only after existing eligibility filters; reactive failure fallback remains unchanged.
+- 2026-09-16: Per user instruction, delete tests that only prove removed features are gone, including stale tests left by earlier removal goals; verify retained behavior instead.
 
 ## Checkpoint History
 
 - 2026-09-16: Frozen R1-R3 from the approved audited plan. Next: R1 Combo removal.
+- 2026-09-16: R1 verified. Combo runtime/management and stale deletion-only tests are removed; direct routes, aliases, frozen schema metadata, and SQLite tombstone remain. Next: commit R1 and implement deterministic account affinity.
 
 ## Completion
 

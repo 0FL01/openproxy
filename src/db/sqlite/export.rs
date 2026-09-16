@@ -154,26 +154,6 @@ pub(crate) fn export_all(conn: &Connection) -> rusqlite::Result<Value> {
         rows.collect::<rusqlite::Result<Vec<_>>>()?
     };
 
-    // Combos
-    let combos: Vec<Value> = {
-        let mut stmt =
-            conn.prepare("SELECT id, name, kind, models, data, createdAt, updatedAt FROM combos")?;
-        let rows = stmt.query_map([], |row| {
-            let id: String = row.get(0)?;
-            let name: String = row.get(1)?;
-            let kind: Option<String> = row.get(2)?;
-            let models_str: String = row.get(3)?;
-            let models: Vec<String> = serde_json::from_str(&models_str).unwrap_or_default();
-            let created_at: String = row.get(5)?;
-            let updated_at: String = row.get(6)?;
-            Ok(json!({
-                "id": id, "name": name, "kind": kind, "models": models,
-                "createdAt": created_at, "updatedAt": updated_at,
-            }))
-        })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()?
-    };
-
     // KV scopes
     let model_aliases: Value = kv_scope_to_map(conn, "modelAliases");
     let custom_models: Vec<Value> = kv_scope_to_array(conn, "customModels");
@@ -195,7 +175,6 @@ pub(crate) fn export_all(conn: &Connection) -> rusqlite::Result<Value> {
         "providerNodes": provider_nodes,
         "proxyPools": proxy_pools,
         "apiKeys": api_keys,
-        "combos": combos,
         "modelAliases": model_aliases,
         "customModels": custom_models,
         "providerFilters": provider_filters,
@@ -263,7 +242,6 @@ mod tests {
             "providerNodes",
             "proxyPools",
             "apiKeys",
-            "combos",
             "modelAliases",
             "customModels",
             "disabledModels",

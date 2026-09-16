@@ -7,7 +7,6 @@ use clap_complete::Shell;
 use serde_json::Value;
 
 use crate::core::account_fallback::AccountRegistry;
-use crate::core::combo::get_combo_models_from_data;
 use crate::core::executor::{ClientPool, DefaultExecutor, ExecutionRequest};
 use crate::core::model::get_model_info;
 use crate::core::proxy::resolve_proxy_target;
@@ -17,7 +16,6 @@ use crate::types::{ApiKey, AppDb, ProviderConnection, ProxyPool};
 pub mod apply;
 pub mod auth;
 pub mod chat;
-pub mod combo;
 pub mod config;
 pub mod db;
 pub mod doctor;
@@ -177,11 +175,6 @@ pub enum Command {
         #[command(subcommand)]
         cmd: PoolCmd,
     },
-    /// Ordered combo fallback-chain management.
-    Combo {
-        #[command(subcommand)]
-        cmd: combo::ComboCmd,
-    },
     /// Top-level model registry (built-in + custom).
     Models {
         #[command(subcommand)]
@@ -200,10 +193,7 @@ pub enum Command {
     Route {
         /// Model ID (e.g. openai/gpt-4o-mini)
         #[arg(long)]
-        model: Option<String>,
-        /// Combo name
-        #[arg(long)]
-        combo: Option<String>,
+        model: String,
         /// Prompt text
         #[arg(long)]
         prompt: String,
@@ -571,12 +561,6 @@ impl Cli {
                     let rt = tokio::runtime::Runtime::new()?;
                     rt.block_on(run_pool(cmd, &db, ctx))
                 }
-                Command::Combo { cmd } => {
-                    let db = rt.block_on(Db::load())?;
-                    let db = std::sync::Arc::new(db);
-                    let rt = tokio::runtime::Runtime::new()?;
-                    rt.block_on(combo::run(cmd, &db, ctx))
-                }
                 Command::Models { cmd } => {
                     let db = rt.block_on(Db::load())?;
                     let db = std::sync::Arc::new(db);
@@ -585,13 +569,12 @@ impl Cli {
                 }
                 Command::Route {
                     model,
-                    combo,
                     prompt,
                     stream,
                     json,
                 } => {
                     let rt = tokio::runtime::Runtime::new()?;
-                    rt.block_on(run_route(model, combo, prompt, stream, json))?;
+                    rt.block_on(run_route(model, prompt, stream, json))?;
                     Ok(())
                 }
                 Command::Completion { shell } => {
@@ -1350,32 +1333,10 @@ pub async fn run_pool(cmd: PoolCmd, db: &Db, ctx: output::OutputCtx) -> anyhow::
     Ok(())
 }
 
-async fn run_route(
-    model: Option<String>,
-    combo: Option<String>,
-    prompt: String,
-    stream: bool,
-    json: bool,
-) -> anyhow::Result<()> {
+async fn run_route(model: String, prompt: String, stream: bool, json: bool) -> anyhow::Result<()> {
     let pool = Arc::new(ClientPool::new());
     let registry = AccountRegistry::default();
-
-    if let (Some(model_str), None) = (&model, &combo) {
-        run_direct_route(pool, registry, model_str, &prompt, stream, json).await
-    } else if let (None, Some(combo_name)) = (&model, &combo) {
-        run_combo_route(pool, registry, combo_name, &prompt, stream, json).await
-    } else if let (Some(_model_str), Some(combo_name)) = (&model, &combo) {
-        eprintln!(
-            "Warning: both --model and --combo specified, using --combo '{}'",
-            combo_name
-        );
-        run_combo_route(pool, registry, combo_name, &prompt, stream, json).await
-    } else {
-        eprintln!("Error: must specify either --model or --combo");
-        eprintln!("Usage: openproxy route --model cc/claude-opus-5 --prompt 'hello'");
-        eprintln!("   or: openproxy route --combo default --prompt 'hello'");
-        std::process::exit(1);
-    }
+    run_direct_route(pool, registry, &model, &prompt, stream, json).await
 }
 
 async fn run_direct_route(
@@ -1489,127 +1450,6 @@ async fn run_direct_route(
             Err(e) => {
                 let error_msg = format!("{:?}", e);
                 last_error = Some(error_msg.clone());
-                excluded.insert(connection.id.clone());
-                continue;
-            }
-        }
-    }
-}
-
-async fn run_combo_route(
-    pool: Arc<ClientPool>,
-    registry: AccountRegistry,
-    combo_name: &str,
-    prompt: &str,
-    stream: bool,
-    json: bool,
-) -> anyhow::Result<()> {
-    let snapshot = db_snapshot();
-    let Some(combo_models) = get_combo_models_from_data(combo_name, &snapshot.combos) else {
-        eprintln!("Error: combo '{}' not found", combo_name);
-        std::process::exit(1);
-    };
-
-    let model_str = combo_models
-        .first()
-        .map(|m| m.as_str())
-        .unwrap_or("gpt-4o-mini");
-    let resolved = get_model_info(model_str, &snapshot);
-
-    let Some(provider) = resolved.provider.clone() else {
-        eprintln!(
-            "Error: could not resolve provider from combo model '{}'",
-            model_str
-        );
-        std::process::exit(1);
-    };
-
-    let request_body = serde_json::json!({
-        "model": resolved.model,
-        "messages": [{"role": "user", "content": prompt}],
-        "stream": stream,
-    });
-
-    let mut excluded = HashSet::new();
-
-    loop {
-        let snapshot = db_snapshot();
-        let connection = select_connection_cli(&snapshot, &provider, &resolved.model, &excluded);
-
-        let Some(connection) = connection else {
-            eprintln!(
-                "Error: no available credentials for provider '{}'",
-                provider
-            );
-            std::process::exit(1);
-        };
-
-        let provider_node = snapshot
-            .provider_nodes
-            .iter()
-            .find(|node| node.id == provider)
-            .cloned();
-
-        let proxy = resolve_proxy_target(&snapshot, &connection, &snapshot.settings);
-
-        let (rate_limit_remaining, rate_limit_reset) = registry.rate_limit_info(&connection.id);
-        let slot =
-            registry.acquire_slot(&connection.id, 10, rate_limit_remaining, rate_limit_reset);
-
-        let Some(_slot) = slot else {
-            excluded.insert(connection.id.clone());
-            continue;
-        };
-
-        let executor = match DefaultExecutor::new(provider.clone(), pool.clone(), provider_node) {
-            Ok(ex) => ex,
-            Err(e) => {
-                eprintln!("Error creating executor: {:?}", e);
-                std::process::exit(1);
-            }
-        };
-
-        let stream_flag = request_body
-            .get("stream")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-
-        let result = executor
-            .execute(ExecutionRequest {
-                model: resolved.model.clone(),
-                body: request_body.clone(),
-                stream: stream_flag,
-                credentials: connection.clone(),
-                proxy,
-            })
-            .await;
-
-        match result {
-            Ok(response) => {
-                if json {
-                    let body = response.transformed_body;
-                    println!("{}", serde_json::to_string_pretty(&body)?);
-                    return Ok(());
-                }
-
-                match response.response {
-                    crate::core::executor::UpstreamResponse::Reqwest(reqwest_resp) => {
-                        if stream_flag {
-                            print_stream_response(reqwest_resp).await?;
-                        } else {
-                            let text = reqwest_resp.text().await?;
-                            let parsed: Value = serde_json::from_str(&text)?;
-                            println!("{}", serde_json::to_string_pretty(&parsed)?);
-                        }
-                    }
-                    crate::core::executor::UpstreamResponse::Hyper(_) => {
-                        eprintln!("Hyper response not supported in CLI mode");
-                    }
-                }
-                return Ok(());
-            }
-            Err(e) => {
-                let _error_msg = format!("{:?}", e);
                 excluded.insert(connection.id.clone());
                 continue;
             }

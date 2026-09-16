@@ -74,8 +74,8 @@ pub struct AppState {
     pub circuit_breaker: Arc<CircuitBreakerRegistry>,
 
     /// Provider health records written by the health daemon. Shares the
-    /// process-global registry (`core::health::health_registry`) so the combo
-    /// dispatcher and account fallback observe the same degrade windows.
+    /// process-global registry (`core::health::health_registry`) so request
+    /// dispatch and account fallback observe the same degrade windows.
     pub health: Arc<HealthRegistry>,
 
     pub models_dev: Arc<ModelsDevCatalog>,

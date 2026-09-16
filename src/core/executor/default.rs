@@ -587,25 +587,27 @@ pub enum ExecutorError {
     UpstreamStatus(http::StatusCode, String),
 }
 impl ExecutorError {
-    /// Map an executor failure into a ComboAttemptError preserving the raw
+    /// Map an executor failure into a provider attempt error preserving the raw
     /// upstream status when available (429 rate limits must surface with
     /// retry-after, not be masked as 500).
-    pub fn into_combo_attempt_error(self) -> crate::core::combo::ComboAttemptError {
-        use crate::core::combo::ComboAttemptError;
+    pub fn into_provider_attempt_error(
+        self,
+    ) -> crate::core::account_fallback::ProviderAttemptError {
+        use crate::core::account_fallback::ProviderAttemptError;
         match &self {
-            Self::UpstreamStatus(status, message) => ComboAttemptError {
+            Self::UpstreamStatus(status, message) => ProviderAttemptError {
                 status: status.as_u16(),
                 message: message.clone(),
                 retry_after: None,
                 upstream_body: None,
             },
-            Self::MissingCredentials(p) => ComboAttemptError {
+            Self::MissingCredentials(p) => ProviderAttemptError {
                 status: 400,
                 message: format!("Missing credentials for provider: {p}"),
                 retry_after: None,
                 upstream_body: None,
             },
-            other => ComboAttemptError {
+            other => ProviderAttemptError {
                 status: 500,
                 message: format!("Execution failed: {other:?}"),
                 retry_after: None,

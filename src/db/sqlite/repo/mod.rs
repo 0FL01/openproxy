@@ -4,7 +4,6 @@
 //! operations into a single transaction via `SqliteDb::with_transaction`.
 
 pub mod api_key_repo;
-pub mod combo_repo;
 pub mod connection_repo;
 pub mod kv_repo;
 pub mod node_repo;

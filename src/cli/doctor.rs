@@ -135,11 +135,10 @@ async fn check_db_loadable(dir: &Path) -> Check {
         Ok(value) => Check::ok(
             "db_loadable",
             format!(
-                "{} providers, {} keys, {} pools, {} combos, {} nodes",
+                "{} providers, {} keys, {} pools, {} nodes",
                 value.provider_connections.len(),
                 value.api_keys.len(),
                 value.proxy_pools.len(),
-                value.combos.len(),
                 value.provider_nodes.len(),
             ),
         ),

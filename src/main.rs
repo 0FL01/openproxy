@@ -66,12 +66,6 @@ async fn main() -> anyhow::Result<()> {
                 openproxy::cli::run_pool(cmd.clone(), &db, ctx).await?;
                 return Ok(());
             }
-            Command::Combo { cmd } => {
-                let db = Db::load().await?;
-                let db = Arc::new(db);
-                openproxy::cli::combo::run(cmd.clone(), &db, ctx).await?;
-                return Ok(());
-            }
             Command::Models { cmd } => {
                 let db = Db::load().await?;
                 let db = Arc::new(db);
@@ -80,7 +74,6 @@ async fn main() -> anyhow::Result<()> {
             }
             Command::Route {
                 model,
-                combo,
                 prompt,
                 stream,
                 json,
@@ -90,15 +83,7 @@ async fn main() -> anyhow::Result<()> {
                 // `--robot` implies JSON mode for route, but the per-event
                 // shape is left to a future M3 refactor (streaming envelope).
                 let json_mode = *json || ctx.is_robot();
-                return run_route(
-                    model.clone(),
-                    combo.clone(),
-                    prompt.clone(),
-                    *stream,
-                    json_mode,
-                    &db,
-                )
-                .await;
+                return run_route(model.clone(), prompt.clone(), *stream, json_mode, &db).await;
             }
             Command::Completion { shell } => {
                 let mut cmd = Cli::command();
@@ -571,17 +556,12 @@ fn browser_host(bind_host: &str) -> &str {
 }
 
 async fn run_route(
-    model: Option<String>,
-    combo: Option<String>,
+    model: String,
     prompt: String,
     stream: bool,
     json: bool,
     db: &Arc<Db>,
 ) -> anyhow::Result<()> {
-    let model_id = model
-        .or_else(|| combo.map(|c| format!("combo/{}", c)))
-        .ok_or_else(|| anyhow::anyhow!("--model or --combo required"))?;
-
     let snapshot = db.snapshot();
     let api_key = snapshot
         .api_keys
@@ -598,7 +578,7 @@ async fn run_route(
     let url = format!("http://127.0.0.1:{}/v1/chat/completions", port);
 
     let body = serde_json::json!({
-        "model": model_id,
+        "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "stream": stream,
     });

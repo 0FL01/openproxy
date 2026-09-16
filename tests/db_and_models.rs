@@ -7,8 +7,7 @@ use openproxy::core::model::{
 };
 use openproxy::db::Db;
 use openproxy::types::{
-    ApiKey, AppDb, Combo, ModelAliasTarget, ProviderConnection, ProviderModelRef, ProviderNode,
-    Settings,
+    ApiKey, AppDb, ModelAliasTarget, ProviderConnection, ProviderModelRef, ProviderNode, Settings,
 };
 use tempfile::tempdir;
 
@@ -60,19 +59,6 @@ fn app_db_round_trips_through_serde() {
             prefix: Some("custom".into()),
             api_type: Some("openai".into()),
             base_url: Some("https://example.com/v1".into()),
-            created_at: Some("2026-01-01T00:00:00Z".into()),
-            updated_at: Some("2026-01-01T00:00:00Z".into()),
-            extra: BTreeMap::new(),
-        }],
-        combos: vec![Combo {
-            id: "combo-1".into(),
-            name: "writer".into(),
-            models: vec![
-                "openai/gpt-4.1".into(),
-                "anthropic/claude-sonnet-4-5".into(),
-            ],
-            disabled_models: Vec::new(),
-            kind: Some("chat".into()),
             created_at: Some("2026-01-01T00:00:00Z".into()),
             updated_at: Some("2026-01-01T00:00:00Z".into()),
             extra: BTreeMap::new(),
@@ -158,16 +144,10 @@ async fn db_updates_are_serialized_and_snapshots_remain_lock_free() {
         let db = Arc::clone(&db);
         tasks.push(tokio::spawn(async move {
             db.update(|state| {
-                state.combos.push(Combo {
-                    id: format!("combo-{index}"),
-                    name: format!("combo-{index}"),
-                    models: vec![format!("openai/gpt-{index}")],
-                    disabled_models: Vec::new(),
-                    kind: None,
-                    created_at: None,
-                    updated_at: None,
-                    extra: BTreeMap::new(),
-                });
+                state.model_aliases.insert(
+                    format!("alias-{index}"),
+                    ModelAliasTarget::Path(format!("openai/gpt-{index}")),
+                );
             })
             .await
             .expect("serialized update");
@@ -178,11 +158,11 @@ async fn db_updates_are_serialized_and_snapshots_remain_lock_free() {
         task.await.expect("task joins");
     }
 
-    assert!(baseline.combos.is_empty());
-    assert_eq!(db.snapshot().combos.len(), 4);
+    assert!(baseline.model_aliases.is_empty());
+    assert_eq!(db.snapshot().model_aliases.len(), 4);
 
     let reloaded = Db::load_from(temp.path()).await.expect("reload db");
-    assert_eq!(reloaded.snapshot().combos.len(), 4);
+    assert_eq!(reloaded.snapshot().model_aliases.len(), 4);
 
     let temp_files = std::fs::read_dir(temp.path())
         .expect("read dir")
@@ -246,7 +226,7 @@ async fn db_preserves_valid_sections_when_legacy_fields_are_null_or_invalid() {
 }
 
 #[test]
-fn model_resolution_supports_aliases_nodes_and_combos() {
+fn model_resolution_supports_aliases_and_nodes() {
     let db = AppDb {
         provider_nodes: vec![ProviderNode {
             id: "node-openai".into(),
@@ -263,16 +243,6 @@ fn model_resolution_supports_aliases_nodes_and_combos() {
             "draft".into(),
             ModelAliasTarget::Path("cc/claude-sonnet-4-5".into()),
         )]),
-        combos: vec![Combo {
-            id: "combo-1".into(),
-            name: "writer".into(),
-            models: vec!["draft".into(), "openai/gpt-4.1".into()],
-            disabled_models: Vec::new(),
-            kind: None,
-            created_at: None,
-            updated_at: None,
-            extra: BTreeMap::new(),
-        }],
         ..AppDb::default()
     };
 
@@ -287,13 +257,10 @@ fn model_resolution_supports_aliases_nodes_and_combos() {
     assert_eq!(alias.provider, "claude");
     assert_eq!(alias.model, "claude-sonnet-4-5");
 
-    let combo = get_model_info("writer", &db);
-    assert_eq!(combo.route_kind, ModelRouteKind::Combo);
-    assert_eq!(combo.provider, None);
-
-    let explicit_combo = get_model_info("combo:writer", &db);
-    assert_eq!(explicit_combo.route_kind, ModelRouteKind::Combo);
-    assert_eq!(explicit_combo.model, "writer");
+    let routed_alias = get_model_info("draft", &db);
+    assert_eq!(routed_alias.route_kind, ModelRouteKind::Direct);
+    assert_eq!(routed_alias.provider.as_deref(), Some("claude"));
+    assert_eq!(routed_alias.model, "claude-sonnet-4-5");
 
     let compatible = get_model_info("custom/gpt-4.1", &db);
     // JS model.js: provider = matchedOpenAI.id (node id), not display name.

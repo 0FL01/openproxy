@@ -103,9 +103,6 @@ async fn patch_settings_updates_values_and_rejects_password_fields() {
                         "providerStrategies": {
                             "openai": "latency"
                         },
-                        "rtkEnabled": false,
-                        "cavemanEnabled": true,
-                        "cavemanLevel": "ultra",
                         "requireApiKey": false,
                         "codexWebSearchContextSize": "low",
                         "glmAutoPing": {

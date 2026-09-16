@@ -109,7 +109,8 @@ pub const TABLES_SQL: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_ak_key
         ON apiKeys(key)
     "#,
-    // Combos: named ordered fallback chains over models.
+    // Legacy Combo tombstone retained for rollback compatibility. Runtime code
+    // does not read, write, export, import, or restore these rows.
     r#"
     CREATE TABLE IF NOT EXISTS combos (
         id          TEXT PRIMARY KEY,
@@ -139,8 +140,8 @@ pub const TABLES_SQL: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_kv_scope
         ON kv(scope)
     "#,
-    // Disabled models per provider — used by combo execution to skip a
-    // specific model without removing its parent connection.
+    // Disabled models per provider — controls Available Models without
+    // removing the parent connection.
     r#"
     CREATE TABLE IF NOT EXISTS disabledModels (
         provider    TEXT NOT NULL,

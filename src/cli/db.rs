@@ -67,7 +67,6 @@ pub enum DbCmd {
 pub enum DumpResource {
     Providers,
     Nodes,
-    Combos,
     Keys,
     Pools,
     Models,
@@ -80,7 +79,6 @@ impl DumpResource {
         match self {
             DumpResource::Providers => "providerConnections",
             DumpResource::Nodes => "providerNodes",
-            DumpResource::Combos => "combos",
             DumpResource::Keys => "apiKeys",
             DumpResource::Pools => "proxyPools",
             DumpResource::Models => "customModels",
@@ -93,7 +91,6 @@ impl DumpResource {
         match self {
             DumpResource::Providers => "providers",
             DumpResource::Nodes => "nodes",
-            DumpResource::Combos => "combos",
             DumpResource::Keys => "keys",
             DumpResource::Pools => "pools",
             DumpResource::Models => "models",
@@ -496,7 +493,6 @@ mod tests {
         for r in [
             DumpResource::Providers,
             DumpResource::Nodes,
-            DumpResource::Combos,
             DumpResource::Keys,
             DumpResource::Pools,
             DumpResource::Models,

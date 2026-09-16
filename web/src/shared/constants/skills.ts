@@ -22,7 +22,7 @@ export const SKILLS: Skill[] = [
   {
     id: "openproxy",
     name: "OpenProxy (Entry)",
-    description: "Setup + index of all capabilities. Start here — covers install, server init, provider apply, combo setup, and wiring every AI coding CLI tool.",
+    description: "Setup + index of all capabilities. Start here — covers install, server init, provider setup, and wiring every AI coding CLI tool.",
     endpoint: null,
     icon: "hub",
     isEntry: true,
@@ -47,13 +47,6 @@ export const SKILLS: Skill[] = [
     description: "Configure AI providers: OAuth (Claude Code, Codex, Copilot, Cursor), API key (OpenAI, Anthropic, Gemini — 40+), and free tiers (Kiro AI, Vertex AI).",
     endpoint: null,
     icon: "cloud",
-  },
-  {
-    id: "openproxy-combos",
-    name: "Combos",
-    description: "Build ordered fallback chains across providers. OpenProxy retries each model in sequence, auto-failing over on rate limits and errors.",
-    endpoint: null,
-    icon: "alt_route",
   },
   {
     id: "openproxy-cli-tools",

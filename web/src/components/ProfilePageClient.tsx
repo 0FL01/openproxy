@@ -632,8 +632,7 @@ export default function ProfilePageClient() {
             <p className="text-xs text-muted-soft italic pt-2 border-t border-hairline-soft">
               {accountRoundRobin
                 ? `Accounts use round-robin with up to ${accountStickyLimit} request${accountStickyLimit === 1 ? "" : "s"} per account.`
-                : "Accounts use fill-first (priority order)."}{" "}
-              Combos always try their explicitly configured models in order.
+                : "Accounts use fill-first (priority order)."}
             </p>
           </div>
         </Card>

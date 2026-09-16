@@ -34,11 +34,6 @@ interface ActiveProvider {
   [key: string]: any;
 }
 
-interface Combo {
-  id: string;
-  name: string;
-}
-
 interface ProviderNode {
   id: string;
   name?: string;
@@ -96,7 +91,6 @@ export default function ModelSelectModal({
   const reloadCatalog = useCatalogStore((state) => state.reload);
   const { getCaps } = useModelCaps();
   const [searchQuery, setSearchQuery] = useState("");
-  const [combos, setCombos] = useState<Combo[]>([]);
   const [providerNodes, setProviderNodes] = useState<ProviderNode[]>([]);
   const [customModels, setCustomModels] = useState<CustomModel[]>([]);
   const [disabledMap, setDisabledMap] = useState<Record<string, string[]>>({});
@@ -120,22 +114,6 @@ export default function ModelSelectModal({
       void reloadCatalog();
     }
   }, [isOpen, reloadCatalog]);
-
-  const fetchCombos = async () => {
-    try {
-      const res = await fetch("/api/combos");
-      if (!res.ok) throw new Error(`Failed to fetch combos: ${res.status}`);
-      const data = await res.json();
-      setCombos(data.combos || []);
-    } catch (error) {
-      console.error("Error fetching combos:", error);
-      setCombos([]);
-    }
-  };
-
-  useEffect(() => {
-    if (isOpen) fetchCombos();
-  }, [isOpen]);
 
   const fetchProviderNodes = async () => {
     try {
@@ -347,13 +325,6 @@ export default function ModelSelectModal({
     return groups;
   }, [activeProviders, modelAliases, allProviders, providerNodes, customModels, disabledMap, liveModelsByAlias, freeOnlyByAlias]);
 
-  // Filter combos by search query.
-  const filteredCombos = useMemo(() => {
-    if (!searchQuery.trim()) return combos;
-    const query = searchQuery.toLowerCase();
-    return combos.filter(c => c.name.toLowerCase().includes(query));
-  }, [combos, searchQuery]);
-
   // Filter models by search query
   const filteredGroups = useMemo(() => {
     if (!searchQuery.trim()) return groupedModels;
@@ -486,39 +457,6 @@ export default function ModelSelectModal({
 
       {/* Models grouped by provider - compact */}
       <div ref={listRef} className="max-h-[400px] overflow-y-auto space-y-3 scroll-smooth">
-        {/* Combos section - always first */}
-        {filteredCombos.length > 0 && (
-          <div>
-            <div className="flex items-center gap-1.5 mb-1.5 sticky top-0 bg-surface py-0.5">
-              <span className="material-symbols-outlined text-primary text-[14px]">layers</span>
-              <span className="text-xs font-medium text-primary">Combos</span>
-              <span className="text-[10px] text-text-muted">({filteredCombos.length})</span>
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {filteredCombos.map((combo) => {
-                const isSelected = Array.isArray(selectedModel)
-                  ? selectedModel.includes(combo.name)
-                  : selectedModel === combo.name;
-                return (
-                  <button
-                    key={combo.id}
-                    onClick={() => handleSelect({ id: combo.name, name: combo.name, value: combo.name })}
-                    className={`
-                      px-2 py-1 rounded-xl text-xs font-medium transition-all border hover:cursor-pointer
-                      ${isSelected
-                        ? "bg-primary text-white border-primary"
-                        : "bg-surface border-border text-text-main hover:border-primary/50 hover:bg-primary/5"
-                      }
-                    `}
-                  >
-                    {combo.name}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
         {/* Provider models */}
         {Object.entries(filteredGroups).map(([providerId, group]) => (
           <div key={providerId} id={`provider-section-${providerId}`}>
@@ -618,7 +556,7 @@ export default function ModelSelectModal({
           </div>
         ))}
 
-        {Object.keys(filteredGroups).length === 0 && filteredCombos.length === 0 && (
+        {Object.keys(filteredGroups).length === 0 && (
           <div className="text-center py-4 text-text-muted">
             <span className="material-symbols-outlined text-2xl mb-1 block">
               search_off

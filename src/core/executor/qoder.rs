@@ -276,7 +276,7 @@ fn stub_model_config(qoder_key: &str) -> Value {
     })
 }
 
-/// Billing/quota error codes that should trigger combo fallback.
+/// Billing/quota error codes that should trigger account fallback.
 /// 9router `isBillingBlock` (qoder.js) matches string codes only via
 /// `/"code"\s*:\s*"(112|10605)"/` (whitespace-tolerant, strings only).
 /// Rust additionally accepts numeric `{"code":112}` — a benign superset for
@@ -2340,7 +2340,7 @@ impl QoderExecutor {
 
         // Peek the first SSE frame for billing blocks (9router
         // peekFirstQoderFrame): return a real 403 before streaming so the
-        // combo dispatcher marks the connection unavailable and falls over.
+        // request dispatcher marks the connection unavailable and falls over.
         // Normal frames are re-attached so nothing is dropped.
         if response.status().is_success() {
             match Self::peek_first_frame(response, &url).await {
@@ -2396,7 +2396,7 @@ impl QoderExecutor {
     }
 
     /// Peek the first SSE `data:` line of a successful chat response.
-    /// Billing block → synthetic 403 JSON response (combo fallback).
+    /// Billing block → synthetic 403 JSON response (account fallback).
     /// Anything else → the original response rebuilt with the consumed bytes
     /// prepended so the stream loses nothing (9router `consumed` re-process).
     async fn peek_first_frame(response: reqwest::Response, url: &str) -> QoderPeek {
@@ -2858,7 +2858,7 @@ impl QoderSseCoalescer {
 
 /// Outcome of peeking the first SSE frame of a Qoder response.
 enum QoderPeek {
-    /// Billing block → synthetic 403 JSON response (combo fallback).
+    /// Billing block → synthetic 403 JSON response (account fallback).
     Billing { response: reqwest::Response },
     /// Normal → original response rebuilt with consumed bytes prepended.
     Passthrough { response: reqwest::Response },

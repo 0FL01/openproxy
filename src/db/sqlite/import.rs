@@ -26,7 +26,6 @@ fn import_all(conn: &Connection, payload: &Value) -> rusqlite::Result<usize> {
         "providerNodes",
         "proxyPools",
         "apiKeys",
-        "combos",
         "kv",
         "disabledModels",
         "requestDetails",
@@ -140,27 +139,6 @@ fn import_all(conn: &Connection, payload: &Value) -> rusqlite::Result<usize> {
                     item.get("machineId").and_then(Value::as_str),
                     item.get("isActive").and_then(Value::as_bool).map(|v| v as i32).unwrap_or(1),
                     item.get("createdAt").and_then(Value::as_str).unwrap_or(""),
-                ],
-            )?;
-        }
-    }
-
-    // Combos
-    if let Some(arr) = payload.get("combos").and_then(Value::as_array) {
-        for item in arr {
-            let models_vec = Value::Array(vec![]);
-            let models_val = item.get("models").unwrap_or(&models_vec);
-            let models_str = serde_json::to_string(models_val).unwrap_or_else(|_| "[]".into());
-            conn.execute(
-                "INSERT INTO combos(id, name, kind, models, data, createdAt, updatedAt) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                rusqlite::params![
-                    item.get("id").and_then(Value::as_str).unwrap_or(""),
-                    item.get("name").and_then(Value::as_str).unwrap_or(""),
-                    item.get("kind").and_then(Value::as_str),
-                    models_str,
-                    "{}",
-                    item.get("createdAt").and_then(Value::as_str).unwrap_or(""),
-                    item.get("updatedAt").and_then(Value::as_str).unwrap_or(""),
                 ],
             )?;
         }

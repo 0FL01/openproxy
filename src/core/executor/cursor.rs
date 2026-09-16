@@ -2081,7 +2081,7 @@ impl CursorExecutor {
 
         // JS createErrorResponse (cursor.js:257-276): an in-stream
         // resource_exhausted error must surface as HTTP 429 so the caller's
-        // account rotation / combo fallback reacts instead of treating the
+        // account fallback path reacts instead of treating the
         // turn as a successful empty completion.
         let is_rate_limit = String::from_utf8_lossy(&body_bytes).contains("\"rate_limit_error\"");
         let content_type = if request.stream {

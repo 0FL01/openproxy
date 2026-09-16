@@ -1,6 +1,6 @@
 //! `/v1/web/fetch` — Web URL extraction endpoint.
-//! Baseline parity: POST + OPTIONS, conditional auth, combo support,
-//! per-account fallback, exact normalized response envelope.
+//! Baseline parity: POST + OPTIONS, conditional auth, per-account fallback,
+//! exact normalized response envelope.
 
 use std::collections::HashSet;
 
@@ -14,7 +14,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::core::combo::{check_fallback_error, execute_combo, get_combo_models_from_data};
+use crate::core::account_fallback::check_fallback_error;
 use crate::server::state::AppState;
 use crate::types::ProviderConnection;
 
@@ -89,6 +89,12 @@ async fn handle_web_fetch(
             )
         }
     };
+    if provider_input.starts_with("combo:") {
+        return fetch_error(
+            StatusCode::BAD_REQUEST,
+            "Combo routes are no longer supported",
+        );
+    }
 
     let url = match req.url.as_deref() {
         Some(s) if !s.trim().is_empty() => {
@@ -107,27 +113,7 @@ async fn handle_web_fetch(
 
     let format = req.format.trim();
     let max_chars = req.max_characters.unwrap_or(usize::MAX);
-    let snapshot = state.db.snapshot();
-
-    // ── 4. Combo detection (baseline parity) ────────────────────────────────
-    if let Some(combo_models) = get_combo_models_from_data(&provider_input, &snapshot.combos) {
-        let fetch_state = state.clone();
-        let req_url = url.clone();
-        let req_format = format.to_string();
-        let req_max = max_chars;
-
-        match execute_combo_fetch(&combo_models, req_url, req_format, req_max, &fetch_state).await {
-            Ok(resp) => return resp,
-            Err(e) => {
-                return fetch_error(
-                    StatusCode::from_u16(e.status).unwrap_or(StatusCode::BAD_GATEWAY),
-                    &e.message,
-                )
-            }
-        }
-    }
-
-    // ── 5. Single provider dispatch ─────────────────────────────────────────
+    // ── 4. Single provider dispatch ─────────────────────────────────────────
     match execute_single_fetch(&state, &provider_input, &url, format, max_chars).await {
         Ok(resp) => resp,
         Err(e) => fetch_error(
@@ -135,45 +121,6 @@ async fn handle_web_fetch(
             &e.message,
         ),
     }
-}
-
-// ─── Combo execution ──────────────────────────────────────────────────────────
-
-async fn execute_combo_fetch(
-    models: &[String],
-    url: String,
-    format: String,
-    max_chars: usize,
-    state: &AppState,
-) -> Result<Response, crate::core::combo::ComboExecutionError> {
-    let url = url.clone();
-    let format = format.to_string();
-    let state = state.clone();
-
-    execute_combo(models, &[], move |model: &str| {
-        let model_owned = model.to_string();
-        let url = url.clone();
-        let format = format.clone();
-        let max_chars = max_chars;
-        let state = state.clone();
-        async move {
-            execute_single_fetch(&state, &model_owned, &url, &format, max_chars)
-                .await
-                .map_err(|e| crate::core::combo::ComboAttemptError {
-                    status: e.status,
-                    message: e.message,
-                    retry_after: None,
-                    upstream_body: None,
-                })
-        }
-    })
-    .await
-    .map_err(|e| crate::core::combo::ComboExecutionError {
-        status: e.status,
-        message: e.message,
-        earliest_retry_after: e.earliest_retry_after,
-        upstream_body: e.upstream_body,
-    })
 }
 
 // ─── Single provider execution ───────────────────────────────────────────────

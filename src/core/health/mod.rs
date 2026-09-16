@@ -6,7 +6,7 @@
 //! the status onto a *degrade window*: while a connection is degraded it is
 //! skipped by account fallback (via `degradedUntil` persisted on the
 //! connection) and — when every connection of a provider is degraded — by the
-//! combo dispatcher.
+//! account fallback path.
 //!
 //! # Degrade timing (OmniRoute `credentialHealth` parity)
 //!
@@ -22,7 +22,7 @@
 //!
 //! `auth_failed` deliberately does *not* degrade: a bad key is an operator
 //! problem that a cooldown cannot fix, and degrading would silently remove the
-//! account from every combo without surfacing the cause.
+//! account from every route without surfacing the cause.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -152,7 +152,7 @@ static GLOBAL_HEALTH_REGISTRY: Lazy<Arc<HealthRegistry>> =
 /// Process-global health registry.
 ///
 /// `AppState::health` holds a clone of this `Arc` so HTTP handlers, the daemon,
-/// the combo dispatcher, and account fallback all observe the same records
+/// request dispatch and account fallback both observe the same records
 /// without threading state through pure helpers.
 pub fn health_registry() -> Arc<HealthRegistry> {
     GLOBAL_HEALTH_REGISTRY.clone()

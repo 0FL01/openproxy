@@ -140,7 +140,6 @@ async fn restore_handler(
             "restored": true,
             "backupId": payload.backup_id,
             "providerCount": snapshot.provider_connections.len(),
-            "comboCount": snapshot.combos.len(),
             "apiKeyCount": snapshot.api_keys.len(),
         }))
         .into_response(),
@@ -293,7 +292,6 @@ async fn import_handler(
     Json(json!({
         "imported": true,
         "providerCount": next.provider_connections.len(),
-        "comboCount": next.combos.len(),
         "apiKeyCount": next.api_keys.len(),
     }))
     .into_response()

@@ -32,7 +32,6 @@ interface NavItem {
 const navItems: NavItem[] = [
   { href: "/dashboard/endpoint", label: "Endpoint", icon: "api" },
   { href: "/dashboard/providers", label: "Providers", icon: "dns" },
-  { href: "/dashboard/combos", label: "Combos", icon: "layers" },
   { href: "/dashboard/db-backups", label: "DB Backups", icon: "backup" },
   { href: "/dashboard/logs", label: "Application Logs", icon: "receipt_long" },
   { href: "/dashboard/quota", label: "Quota Tracker", icon: "data_usage" },
