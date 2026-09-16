@@ -169,20 +169,31 @@ async fn kiro_import_route_validates_missing_and_invalid_tokens_like_openproxy()
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(json, json!({ "error": "Refresh token is required" }));
 
-    let invalid = app
+    // Non-prefixed tokens are not rejected up front (IDC / external_idp
+    // tokens have no aorAAAAAG prefix); they fall through to refresh
+    // validation. Mock the refresh endpoint so the failure is deterministic
+    // instead of depending on live-network error text.
+    let _lock = ENV_LOCK.lock().unwrap();
+    let server = MockServer::start().await;
+    let _env = EnvVarGuard::set("OPENPROXY_KIRO_AUTH_SERVICE_BASE_URL", &server.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/refreshToken"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("bad token"))
+        .mount(&server)
+        .await;
+
+    let retry = app
         .oneshot(request(Body::from(
             json!({ "refreshToken": "bad-token" }).to_string(),
         )))
         .await
         .unwrap();
-    let (status, json) = response_json(invalid).await;
+    let (status, json) = response_json(retry).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-    // Non-prefixed tokens are not rejected up front (IDC / external_idp
-    // tokens have no aorAAAAAG prefix); they fall through to refresh
-    // validation, which fails here with no mock upstream.
     assert_eq!(
         json,
-        json!({ "error": "Token validation failed: Token refresh failed: " })
+        json!({ "error": "Token validation failed: Token refresh failed: bad token" })
     );
 }
 
