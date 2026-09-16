@@ -325,7 +325,6 @@ pub(super) fn supports_models_discovery(provider: &str) -> bool {
                 | "fireworks"
                 | "cerebras"
                 | "cohere"
-                | "nebius"
                 | "hyperbolic"
                 | "ollama"
                 | "nvidia"
@@ -335,7 +334,6 @@ pub(super) fn supports_models_discovery(provider: &str) -> bool {
                 | "longcat"
                 | "scaleway"
                 | "sambanova"
-                | "nscale"
                 | "nous-research"
                 | "glhf"
                 | "kilocode"
@@ -520,13 +518,6 @@ async fn fetch_provider_models_response(
             fetch_first_party_openai_style_models(connection, "https://api.cohere.ai/v1/models")
                 .await
         }
-        "nebius" => {
-            fetch_first_party_openai_style_models(
-                connection,
-                "https://api.studio.nebius.ai/v1/models",
-            )
-            .await
-        }
         "hyperbolic" => {
             fetch_first_party_openai_style_models(
                 connection,
@@ -580,13 +571,6 @@ async fn fetch_provider_models_response(
         "sambanova" => {
             fetch_first_party_openai_style_models(connection, "https://api.sambanova.ai/v1/models")
                 .await
-        }
-        "nscale" => {
-            fetch_first_party_openai_style_models(
-                connection,
-                "https://inference.api.nscale.com/v1/models",
-            )
-            .await
         }
         "nous-research" => {
             fetch_first_party_openai_style_models(

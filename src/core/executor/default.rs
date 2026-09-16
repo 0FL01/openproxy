@@ -91,10 +91,6 @@ static PROVIDER_CONFIGS: Lazy<BTreeMap<&'static str, ProviderConfig>> = Lazy::ne
             ProviderConfig::openai("https://api.cohere.ai/v1/chat/completions"),
         ),
         (
-            "nebius",
-            ProviderConfig::openai("https://api.studio.nebius.ai/v1/chat/completions"),
-        ),
-        (
             "hyperbolic",
             ProviderConfig::openai("https://api.hyperbolic.xyz/v1/chat/completions"),
         ),
@@ -271,10 +267,6 @@ static PROVIDER_CONFIGS: Lazy<BTreeMap<&'static str, ProviderConfig>> = Lazy::ne
             ProviderConfig::openai("https://api.modal.com/v1/chat/completions"),
         ),
         (
-            "enally",
-            ProviderConfig::openai("https://ai.enally.in/v1/chat/completions"),
-        ),
-        (
             "llm7",
             ProviderConfig::openai("https://api.llm7.io/v1/chat/completions"),
         ),
@@ -289,10 +281,6 @@ static PROVIDER_CONFIGS: Lazy<BTreeMap<&'static str, ProviderConfig>> = Lazy::ne
         (
             "sambanova",
             ProviderConfig::openai("https://api.sambanova.ai/v1/chat/completions"),
-        ),
-        (
-            "nscale",
-            ProviderConfig::openai("https://inference.api.nscale.com/v1/chat/completions"),
         ),
         (
             "nous-research",
@@ -897,7 +885,7 @@ impl DefaultExecutor {
                 .or(credentials.api_key.as_deref())
                 .ok_or_else(|| ExecutorError::MissingCredentials(self.provider.clone()))?;
 
-            if matches!(self.provider.as_str(), "glm" | "kimi" | "enally") {
+            if matches!(self.provider.as_str(), "glm" | "kimi") {
                 headers.insert("x-api-key", HeaderValue::from_str(token)?);
             } else if matches!(self.provider.as_str(), "minimax" | "minimax-cn") {
                 headers.insert(

@@ -41,7 +41,6 @@
     "mistral": "mistral",
     "mmf": "mmf",
     "nanobanana": "nanobanana",
-    "nebius": "nebius",
     "nvidia": "nvidia",
     "ollama-local": "ollama-local",
     "ollama": "ollama",
@@ -3161,24 +3160,6 @@
         {
           "id": "nanobanana-pro",
           "name": "NanoBanana Pro",
-          "kind": "llm"
-        }
-      ]
-    },
-    {
-      "id": "nebius",
-      "alias": "nebius",
-      "format": "openai",
-      "baseUrl": "https://api.studio.nebius.ai/v1/chat/completions",
-      "models": [
-        {
-          "id": "meta-llama/Llama-3.3-70B-Instruct",
-          "name": "Llama 3.3 70B Instruct",
-          "kind": "llm"
-        },
-        {
-          "id": "Qwen/Qwen3-Embedding-8B",
-          "name": "Qwen3 Embedding 8B",
           "kind": "llm"
         }
       ]

@@ -67,7 +67,6 @@ async fn validate_provider(
         "fireworks" => validate_bearer(&client, "https://api.fireworks.ai/inference/v1/models", &api_key).await,
         "cerebras" => validate_bearer(&client, "https://api.cerebras.ai/v1/models", &api_key).await,
         "cohere" => validate_bearer(&client, "https://api.cohere.ai/v1/models", &api_key).await,
-        "nebius" => validate_bearer(&client, "https://api.studio.nebius.ai/v1/models", &api_key).await,
         "hyperbolic" => validate_bearer(&client, "https://api.hyperbolic.xyz/v1/models", &api_key).await,
         "nvidia" => validate_bearer(&client, "https://integrate.api.nvidia.com/v1/models", &api_key).await,
         "xiaomi-mimo" => validate_bearer(&client, "https://api.xiaomimimo.com/v1/models", &api_key).await,
@@ -89,15 +88,8 @@ async fn validate_provider(
         "longcat" => validate_bearer(&client, "https://api.longcat.chat/openai/v1/models", &api_key).await,
         "scaleway" => validate_bearer(&client, "https://api.scaleway.ai/v1/models", &api_key).await,
         "sambanova" => validate_bearer(&client, "https://api.sambanova.ai/v1/models", &api_key).await,
-        "nscale" => validate_bearer(&client, "https://inference.api.nscale.com/v1/models", &api_key).await,
         "nous-research" => validate_bearer(&client, "https://inference-api.nousresearch.com/v1/models", &api_key).await,
         "glhf" => validate_bearer(&client, "https://glhf.chat/api/openai/v1/models", &api_key).await,
-        "enally" => {
-            match client.get("https://ai.enally.in/v1/models").header("x-api-key", &api_key).send().await {
-                Ok(resp) => (resp.status().is_success(), None),
-                Err(e) => (false, Some(e.to_string())),
-            }
-        }
 
         "xai" => {
             match client.get("https://api.x.ai/v1/models").header("Authorization", format!("Bearer {api_key}")).send().await {

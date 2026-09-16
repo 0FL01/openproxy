@@ -636,16 +636,6 @@ async fn test_api_key_connection(
             )
             .await
         }
-        "nebius" => {
-            simple_get_bearer_test(
-                state,
-                connection,
-                effective_proxy,
-                "https://api.studio.nebius.ai/v1/models",
-                "Invalid API key",
-            )
-            .await
-        }
         "hyperbolic" => {
             simple_get_bearer_test(
                 state,

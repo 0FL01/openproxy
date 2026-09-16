@@ -99,10 +99,8 @@
     "moonshot": "moonshot",
     "muse-spark-web": "ms-web",
     "nanogpt": "nanogpt",
-    "nebius": "nebius",
     "nous-research": "nous",
     "novita": "novita",
-    "nscale": "nscale",
     "nvidia": "nvidia",
     "ollama-cloud": "ollamacloud",
     "openadapter": "oad",
@@ -5210,20 +5208,6 @@
       ]
     },
     {
-      "id": "nebius",
-      "alias": "nebius",
-      "format": "openai",
-      "authType": "apikey",
-      "baseUrl": "https://api.tokenfactory.nebius.com/v1/chat/completions",
-      "models": [
-        {
-          "id": "meta-llama/Llama-3.3-70B-Instruct",
-          "name": "Llama 3.3 70B Instruct",
-          "kind": "llm"
-        }
-      ]
-    },
-    {
       "id": "nous-research",
       "alias": "nous",
       "format": "openai",
@@ -5252,45 +5236,6 @@
         {
           "id": "meta-llama/llama-3.1-8b-instruct",
           "name": "Llama 3.1 8B Instruct",
-          "kind": "llm"
-        }
-      ]
-    },
-    {
-      "id": "nscale",
-      "alias": "nscale",
-      "format": "openai",
-      "authType": "apikey",
-      "baseUrl": "https://inference.api.nscale.com/v1/chat/completions",
-      "models": [
-        {
-          "id": "moonshotai/Kimi-K2.5",
-          "name": "moonshotai/Kimi-K2.5",
-          "kind": "llm"
-        },
-        {
-          "id": "Qwen/Qwen3-235B-A22B-Instruct-2507",
-          "name": "Qwen/Qwen3-235B-A22B-Instruct-2507",
-          "kind": "llm"
-        },
-        {
-          "id": "openai/gpt-oss-120b",
-          "name": "openai/gpt-oss-120b",
-          "kind": "llm"
-        },
-        {
-          "id": "openai/gpt-oss-20b",
-          "name": "openai/gpt-oss-20b",
-          "kind": "llm"
-        },
-        {
-          "id": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
-          "name": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
-          "kind": "llm"
-        },
-        {
-          "id": "meta-llama/Llama-3.3-70B-Instruct",
-          "name": "meta-llama/Llama-3.3-70B-Instruct",
           "kind": "llm"
         }
       ]

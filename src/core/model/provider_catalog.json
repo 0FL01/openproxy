@@ -32,7 +32,6 @@
   "fireworks": "fireworks",
   "cerebras": "cerebras",
   "cohere": "cohere",
-  "nebius": "nebius",
   "hyperbolic": "hyperbolic",
   "deepgram": "deepgram",
   "assemblyai": "assemblyai",
@@ -2064,21 +2063,6 @@
      "id": "z-ai/glm-5.2",
      "name": "glm-5.2",
      "kind": "llm"
-    }
-   ]
-  },
-  {
-   "alias": "nebius",
-   "models": [
-    {
-     "id": "meta-llama/Llama-3.3-70B-Instruct",
-     "name": "Llama 3.3 70B Instruct",
-     "kind": "llm"
-    },
-    {
-     "id": "Qwen/Qwen3-Embedding-8B",
-     "name": "Qwen3 Embedding 8B",
-     "kind": "embedding"
     }
    ]
   },
@@ -5031,20 +5015,6 @@
    ],
    "ttsModels": [],
    "embeddingModels": [],
-   "hasSearch": false,
-   "hasFetch": false
-  },
-  {
-   "id": "nebius",
-   "alias": "nebius",
-   "serviceKinds": [
-    "llm",
-    "embedding"
-   ],
-   "ttsModels": [],
-   "embeddingModels": [
-    "Qwen/Qwen3-Embedding-8B"
-   ],
    "hasSearch": false,
    "hasFetch": false
   },

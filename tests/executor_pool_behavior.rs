@@ -224,7 +224,6 @@ fn default_executor_supports_current_passthrough_provider_matrix() {
         ),
         ("cerebras", "https://api.cerebras.ai/v1/chat/completions"),
         ("cohere", "https://api.cohere.ai/v1/chat/completions"),
-        ("nebius", "https://api.studio.nebius.ai/v1/chat/completions"),
         (
             "hyperbolic",
             "https://api.hyperbolic.xyz/v1/chat/completions",
@@ -675,7 +674,6 @@ fn default_executor_builds_bearer_headers_for_openai_passthrough_matrix() {
         "fireworks",
         "cerebras",
         "cohere",
-        "nebius",
         "hyperbolic",
         "codebuddy",
         "kilocode",
