@@ -183,8 +183,8 @@ async fn chat_completions_streams_openai_compatible_response() {
         .unwrap();
     assert_eq!(logs.len(), 1);
     assert_eq!(logs[0].status.as_deref(), Some("success"));
-    assert!(logs[0].api_key_id.is_none());
-    assert!(logs[0].api_key_name.is_none());
+    assert_eq!(logs[0].api_key_id.as_deref(), Some("test-key-id"));
+    assert_eq!(logs[0].api_key_name.as_deref(), Some("Local"));
     assert_eq!(logs[0].data["inputTokens"], 16);
     assert_eq!(logs[0].data["outputTokens"], 25);
     assert!(logs[0].data.get("tokens").is_none());
@@ -390,7 +390,7 @@ async fn chat_completions_falls_back_to_next_account_on_retryable_error() {
     assert_eq!(logs[0].status.as_deref(), Some("success"));
     assert_eq!(logs[1].status.as_deref(), Some("error"));
     assert_eq!(logs[0].correlation_id, logs[1].correlation_id);
-    assert!(logs[0].api_key_id.is_none());
+    assert_eq!(logs[0].api_key_id.as_deref(), Some("test-key-id"));
     assert!(!logs
         .iter()
         .any(|log| log.data.to_string().contains("valid-bearer")));

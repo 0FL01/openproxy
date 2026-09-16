@@ -364,7 +364,7 @@ async fn chat_completions_impl(
     }
     let request_log_context = authenticated_api_key
         .as_ref()
-        .map(|_| RequestLogContext::new(state.db.clone(), model_str));
+        .map(|api_key| RequestLogContext::new(state.db.clone(), api_key, model_str));
 
     let snapshot = state.db.snapshot();
     let resolved = get_model_info(model_str, &snapshot);

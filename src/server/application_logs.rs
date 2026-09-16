@@ -15,19 +15,23 @@ use serde_json::{json, Map, Value};
 use crate::db::sqlite::repo::request_repo::{self, NewRequestDetail};
 use crate::db::Db;
 use crate::server::state::AppState;
-use crate::types::TokenUsage;
+use crate::types::{ApiKey, TokenUsage};
 
 #[derive(Clone)]
 pub struct RequestLogContext {
     db: Arc<Db>,
     route: String,
+    api_key_id: String,
+    api_key_name: String,
 }
 
 impl RequestLogContext {
-    pub fn new(db: Arc<Db>, route: &str) -> Self {
+    pub fn new(db: Arc<Db>, api_key: &ApiKey, route: &str) -> Self {
         Self {
             db,
             route: route.to_string(),
+            api_key_id: api_key.id.clone(),
+            api_key_name: api_key.name.clone(),
         }
     }
 
@@ -46,6 +50,8 @@ impl RequestLogContext {
         let record_timestamp = timestamp.clone();
         let record_provider = provider.to_string();
         let record_model = model.to_string();
+        let api_key_id = self.api_key_id.clone();
+        let api_key_name = self.api_key_name.clone();
         let record_data = data.clone();
         let inserted = tokio::task::spawn_blocking(move || {
             sqlite.with_conn(|conn| {
@@ -58,8 +64,8 @@ impl RequestLogContext {
                         model: Some(&record_model),
                         connection_id: None,
                         status: "pending",
-                        api_key_id: None,
-                        api_key_name: None,
+                        api_key_id: Some(&api_key_id),
+                        api_key_name: Some(&api_key_name),
                         correlation_id: None,
                         data: &record_data,
                     },
@@ -212,6 +218,8 @@ struct RequestLogRecord {
     duration_ms: u64,
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
+    api_key_id: Option<String>,
+    api_key_name: Option<String>,
 }
 
 async fn get_request_logs(
@@ -319,6 +327,8 @@ fn request_log_from_row(row: request_repo::RequestDetailRow) -> RequestLogRecord
             .unwrap_or_default(),
         input_tokens: row.data.get("inputTokens").and_then(Value::as_u64),
         output_tokens: row.data.get("outputTokens").and_then(Value::as_u64),
+        api_key_id: row.api_key_id,
+        api_key_name: row.api_key_name,
     }
 }
 
@@ -335,8 +345,8 @@ mod tests {
             model: Some("gpt-5".into()),
             connection_id: Some("secret-connection".into()),
             status: Some("success".into()),
-            api_key_id: Some("secret-key".into()),
-            api_key_name: Some("private".into()),
+            api_key_id: Some("key-1".into()),
+            api_key_name: Some("OpenCode".into()),
             correlation_id: Some("internal".into()),
             data: json!({
                 "route": "work",
@@ -353,9 +363,10 @@ mod tests {
         assert_eq!(value["requestId"], "request-1");
         assert_eq!(value["route"], "work");
         assert_eq!(value["inputTokens"], 10);
+        assert_eq!(value["apiKeyId"], "key-1");
+        assert_eq!(value["apiKeyName"], "OpenCode");
         let serialized = value.to_string();
         assert!(!serialized.contains("secret"));
-        assert!(!serialized.contains("private"));
         assert!(!serialized.contains("internal"));
     }
 }

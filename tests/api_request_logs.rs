@@ -39,8 +39,8 @@ async fn request_logs_return_only_structured_metadata() {
                     model: Some("gpt-5"),
                     connection_id: Some("private-connection"),
                     status: "success",
-                    api_key_id: Some("private-key"),
-                    api_key_name: Some("private-name"),
+                    api_key_id: Some("consumer-key-id"),
+                    api_key_name: Some("OpenCode"),
                     correlation_id: Some("private-correlation"),
                     data: &json!({
                         "route": "work",
@@ -76,7 +76,10 @@ async fn request_logs_return_only_structured_metadata() {
     assert_eq!(payload["requests"][0]["requestId"], "request-1");
     assert_eq!(payload["requests"][0]["route"], "work");
     assert_eq!(payload["requests"][0]["inputTokens"], 10);
+    assert_eq!(payload["requests"][0]["apiKeyId"], "consumer-key-id");
+    assert_eq!(payload["requests"][0]["apiKeyName"], "OpenCode");
     let serialized = String::from_utf8_lossy(&body);
+    assert!(!serialized.contains(TEST_KEY));
     assert!(!serialized.contains("secret"));
     assert!(!serialized.contains("private"));
 }

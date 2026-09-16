@@ -9,6 +9,8 @@ export interface ApplicationLog {
   durationMs: number;
   inputTokens?: number;
   outputTokens?: number;
+  apiKeyId?: string;
+  apiKeyName?: string;
 }
 
 export interface LogsPayload {

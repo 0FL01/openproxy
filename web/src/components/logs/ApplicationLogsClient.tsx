@@ -92,7 +92,7 @@ export default function ApplicationLogsClient() {
       <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
         <div>
           <h1 className="text-2xl font-semibold text-text-main">Application Logs</h1>
-          <p className="text-sm text-text-muted">Metadata-only provider attempts · refreshes every 10 seconds</p>
+          <p className="text-sm text-text-muted">Provider attempts attributed to API keys · refreshes every 10 seconds</p>
         </div>
         <Button variant="outline" onClick={() => setRefresh((value) => value + 1)}>
           <span className="material-symbols-outlined text-[18px]">refresh</span> Refresh
@@ -115,18 +115,19 @@ export default function ApplicationLogsClient() {
 
       <Card padding="none">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[850px] text-sm">
+          <table className="w-full min-w-[1000px] text-sm">
             <thead><tr className="border-b border-border text-left text-xs uppercase tracking-wide text-text-muted">
               <th className="p-4">Status</th><th className="p-4">Model</th><th className="p-4">Provider</th>
-              <th className="p-4">Route</th><th className="p-4 text-right">Tokens</th><th className="p-4 text-right">Duration</th><th className="p-4">Time</th>
+              <th className="p-4">Route</th><th className="p-4">API key</th><th className="p-4 text-right">Tokens</th><th className="p-4 text-right">Duration</th><th className="p-4">Time</th>
             </tr></thead>
             <tbody>
-              {loading && logs.length === 0 ? <tr><td colSpan={7} className="p-10 text-center text-text-muted">Loading logs…</td></tr> :
-               logs.length === 0 ? <tr><td colSpan={7} className="p-10 text-center text-text-muted">No application logs yet.</td></tr> :
+              {loading && logs.length === 0 ? <tr><td colSpan={8} className="p-10 text-center text-text-muted">Loading logs…</td></tr> :
+               logs.length === 0 ? <tr><td colSpan={8} className="p-10 text-center text-text-muted">No application logs yet.</td></tr> :
                logs.map((log) => <tr key={log.requestId} onClick={() => setSelected(log)} className="cursor-pointer border-b border-border/60 transition-colors hover:bg-primary/5">
                  <td className="p-4"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(log.status)}`}>{log.status === "pending" ? "LIVE" : log.status.toUpperCase()}</span></td>
                   <td className="max-w-[240px] p-4"><div className="truncate font-mono text-text-main">{log.model}</div></td>
                   <td className="p-4 text-text-main">{log.provider || "—"}</td><td className="p-4 font-mono text-text-main">{log.route || "—"}</td>
+                  <td className="p-4 text-text-main"><div className="font-medium">{log.apiKeyName || "—"}</div>{log.apiKeyId && <div className="mt-1 max-w-[180px] truncate font-mono text-xs text-text-muted">{log.apiKeyId}</div>}</td>
                   <td className="p-4 text-right font-mono text-text-main">{(log.inputTokens ?? 0).toLocaleString()} / {(log.outputTokens ?? 0).toLocaleString()}</td>
                   <td className="p-4 text-right font-mono text-text-main">{log.durationMs.toLocaleString()} ms</td>
                  <td className="whitespace-nowrap p-4 text-text-muted">{new Date(log.timestamp).toLocaleString()}</td>

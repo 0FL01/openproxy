@@ -27,6 +27,8 @@ export default function ApplicationLogDrawer({ log, onClose }: Props) {
             <Field label="Route" value={log.route} />
             <Field label="Model" value={log.model} />
             <Field label="Provider" value={log.provider} />
+            <Field label="API key" value={log.apiKeyName} />
+            <Field label="API key ID" value={log.apiKeyId} />
             <Field label="Started" value={new Date(log.timestamp).toLocaleString()} />
             <Field label="Duration" value={`${log.durationMs} ms`} />
           </div>
