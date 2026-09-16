@@ -360,7 +360,7 @@ async fn response_sanitization_strips_breaking_fields() {
         "core content survived sanitization: {text}"
     );
     assert!(
-        text.contains("data: [DONE]"),
+        text.contains("\"done\":true"),
         "streaming terminated cleanly: {text}"
     );
     assert!(

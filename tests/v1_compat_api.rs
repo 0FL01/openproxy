@@ -245,7 +245,7 @@ async fn responses_compact_normalizes_input_and_sets_compact_flag() {
             "_compact": true,
             "messages": [
                 { "role": "system", "content": "Be terse" },
-                { "role": "user", "content": "Ping" }
+                { "role": "user", "content": [{ "type": "text", "text": "Ping" }] }
             ]
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({

@@ -49,7 +49,11 @@ async fn api_health_returns_sidecar_compatible_payload() {
         .await
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json, serde_json::json!({ "ok": true }));
+    assert_eq!(json["ok"], serde_json::json!(true));
+    assert!(
+        json["providers"].is_object(),
+        "health carries providers summary: {json}"
+    );
 }
 
 #[tokio::test]

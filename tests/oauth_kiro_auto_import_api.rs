@@ -130,7 +130,12 @@ async fn kiro_auto_import_prefers_kiro_auth_token_file_like_openproxy() {
         json!({
             "found": true,
             "refreshToken": "aorAAAAAG-primary-token",
-            "source": "kiro-auth-token.json"
+            "source": "kiro-auth-token.json",
+            "authMethod": null,
+            "clientId": null,
+            "clientSecret": null,
+            "profileArn": null,
+            "region": null
         })
     );
 }
@@ -163,7 +168,12 @@ async fn kiro_auto_import_scans_other_json_files_when_needed() {
         json!({
             "found": true,
             "refreshToken": "aorAAAAAG-fallback-token",
-            "source": "match.json"
+            "source": "match.json",
+            "authMethod": null,
+            "clientId": null,
+            "clientSecret": null,
+            "profileArn": null,
+            "region": null
         })
     );
 }
