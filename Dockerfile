@@ -7,7 +7,7 @@
 #   2. chef   — shared Rust build environment with cargo-chef
 #   3. planner — dependency recipe generated from Cargo metadata
 #   4. rust   — cached dependencies + binary with embedded web/dist
-#   5. runtime — debian:bookworm-slim + the binary + ca-certificates
+#   5. runtime — debian:trixie-slim + the binary + ca-certificates
 #
 # Final image is ~80 MB (debian-slim base + the openproxy binary, which
 # already contains the dashboard via rust-embed).
@@ -50,7 +50,7 @@
 # ──────────────────────────────────────────────────────────────────────────
 # Stage 1: build the dashboard
 # ──────────────────────────────────────────────────────────────────────────
-FROM node:20-bookworm-slim AS web
+FROM node:24-trixie-slim AS web
 WORKDIR /web
 
 # pnpm via corepack — version pinned to match web/package.json packageManager
@@ -69,14 +69,14 @@ RUN pnpm run build
 # ──────────────────────────────────────────────────────────────────────────
 # Stage 2: shared Rust build environment
 # ──────────────────────────────────────────────────────────────────────────
-FROM rust:1-bookworm AS chef
+FROM rust:1-trixie AS chef
 WORKDIR /src
 ARG CARGO_BUILD_JOBS=1
 ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
 
 # Install build deps for crates that need them at compile time.
 # rusqlite/bundled handles its own SQLite. reqwest/rustls handles its own TLS.
-# We only need pkg-config and a working linker, both already in rust:bookworm.
+# We only need pkg-config and a working linker, both already in rust:trixie.
 # (apt update kept minimal.)
 RUN apt-get update \
     && apt-get install -y --no-install-recommends pkg-config \
@@ -118,7 +118,7 @@ RUN strip /src/target/release/openproxy
 # ──────────────────────────────────────────────────────────────────────────
 # Stage 5: minimal runtime
 # ──────────────────────────────────────────────────────────────────────────
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 
 # ca-certificates: required for outbound HTTPS to provider APIs.
 # tini: clean signal handling for ctrl+c / SIGTERM in the container.
