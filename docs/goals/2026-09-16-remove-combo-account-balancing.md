@@ -1,6 +1,6 @@
 # Goal: Remove Combo and proactive account balancing
 
-Status: active
+Status: complete
 Source: User-approved audited plan on 2026-09-16; implement iteratively, commit, push, and deploy.
 Last updated: 2026-09-16
 
@@ -34,8 +34,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: “итеративно реализовать и коммит пуш деплой” and “в цель документируй что делается”.
   - Acceptance: Part A and Part B are independently buildable Conventional Commits, final required gates pass, the goal records current evidence, `main` is pushed to `origin`, production is rebuilt without deleting its persistent volume, and `/health` succeeds.
   - Primary evidence: Git history/push output, final gate output, `docker compose ps`, and `curl -fsS http://127.0.0.1:4623/health`.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: Combo removal, deterministic routing, and dead-test cleanup shipped as separate commits and were pushed to `origin/main`. Production was rebuilt from the new image, the existing `openproxy-prod-data` volume was reused, Compose reports healthy, `/health` succeeds, `/v1/models` reports 39 models and zero Combo IDs, and a minimal direct `glm/glm-5.3-flash` chat succeeded. Old- and new-format logical backups plus a stopped-volume archive were created.
 
 ### Constraints
 
@@ -61,17 +61,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R3
-- Smallest next action: Commit this checkpoint, push `main`, build the production image, take a stopped-volume archive, and recreate the service without deleting its volume.
-- Expected evidence: Final checks pass, Git history is clean and pushed, Compose reports the service healthy, and `http://127.0.0.1:4623/health` succeeds.
-- Stop or replan if: A gate fails because of the current diff, the production volume or encryption key cannot be preserved, or deployment would require a destructive action.
+- Closes: R1-R3
+- Smallest next action: None; closure check passed.
+- Expected evidence: Recorded below.
+- Stop or replan if: A new objective is requested.
 
 ## Current State
 
-- Resolved: R1 and R2 verified; Combo and proactive account balancing are no longer operational features. Obsolete legacy JS tests and fixtures for removed features were deleted.
-- Last relevant evidence: fmt, clippy, dashboard build, both OpenCode model-discovery suites, affected integration tests, and the 1,329 library tests passed. The all-target gate exposed unrelated pre-existing stale tests: `/api/health` exact payload, Kiro URL ordering/import payload assertions, and an intermittent SQLite encryption assertion; no failing test exercises this diff.
+- Resolved: R1-R3 verified; implementation, cleanup, push, backup, and production deployment are complete.
+- Last relevant evidence: Production is healthy on `127.0.0.1:4623`, model discovery and direct chat succeeded, and the persistent volume remained `openproxy-prod-data`.
 - Blocker: None.
-- Next: Push, take the raw volume backup during the deployment stop, deploy, verify production, then close the goal.
+- Next: None.
 
 ## Material Decisions
 
@@ -87,10 +87,11 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-09-16: R1 verified. Combo runtime/management and stale deletion-only tests are removed; direct routes, aliases, frozen schema metadata, and SQLite tombstone remain. Next: commit R1 and implement deterministic account affinity.
 - 2026-09-16: R2 verified. Stable priority/ID selection replaces all proactive account balancing while persisted cooldowns and reactive fallback remain. Removed the orphan legacy JS test harness and stale removed-feature fixture fields. Next: commit R2 and run final gates.
 - 2026-09-16: Final affected gates passed. The broad suite's unrelated stale failures are documented above; a removed `usage summary` CLI test discovered by the gate was deleted. Production preflight found zero live Combos and created an old-version logical backup. Next: push and deploy with a stopped-volume archive.
+- 2026-09-16: R3 verified. Pushed `main`, rebuilt production, archived the stopped volume, recreated the healthy service with the same volume, verified model discovery and direct chat, and created the post-deploy logical backup.
 
 ## Completion
 
-- Resolved outcomes:
-- Commands and artifacts:
-- Constraint and diff-scope check:
-- Final status:
+- Resolved outcomes: R1 Combo removal, R2 deterministic account affinity, R3 committed/pushed/deployed delivery.
+- Commands and artifacts: `cargo fmt --all -- --check`; `cargo clippy --all-targets --all-features`; focused routing/settings/database tests; 1,329 library tests; `pnpm build` (124 pages); both `tests/opencode_models*.test.mjs`; Docker image `sha256:1c5d4082b5dd4f8906724e69278d3b76b8739afc58b41ebb45fb53d944afd164`; raw archive `/tmp/opencode/openproxy-prod-data-pre-router-cleanup-20260916.tar.gz` (`b0a4b4dbac72ad14b02233d18b88c9255be1d8d571f2f5726f78e9802bcdd0b2`).
+- Constraint and diff-scope check: Direct routing, aliases, model picker/provider availability, reactive fallback, v1 compatibility metadata, inert Combo DDL, secrets, encryption key, and the named production volume were preserved. The broad all-target run remains blocked only by unrelated stale health/Kiro assertions and an intermittent pre-existing SQLite encryption test; affected tests are green.
+- Final status: Complete; production healthy and `main` pushed.
