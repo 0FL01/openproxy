@@ -64,9 +64,6 @@ docs/*
 !docs/ARCHITECTURE.md
 !docs/git-conventions.md
 !docs/integrations/
-!docs/goals/
-docs/goals/*
-!docs/goals/2026-09-16-leptos-dashboard-migration.md
 test/*
 bin/*
 open-sse/test/*
@@ -91,10 +88,6 @@ gitbooks/*
 # Added by cargo
 
 /target
-/dashboard/dist/
-/web/.astro/
-/web/dist/
-/web/node_modules/
 
 # bv (beads viewer) local config and caches
 .bv/

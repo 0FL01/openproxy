@@ -3,10 +3,10 @@
 # OpenProxy — single-binary Docker image
 #
 # Five-stage build:
-#   1. web    — Trunk builds Leptos CSR → dashboard/dist/
+#   1. web    — pnpm install + astro build → web/dist/
 #   2. chef   — shared Rust build environment with cargo-chef
 #   3. planner — dependency recipe generated from Cargo metadata
-#   4. rust   — cached dependencies + binary with embedded dashboard/dist
+#   4. rust   — cached dependencies + binary with embedded web/dist
 #   5. runtime — debian:trixie-slim + the binary + ca-certificates
 #
 # Final image is ~80 MB (debian-slim base + the openproxy binary, which
@@ -50,21 +50,26 @@
 # ──────────────────────────────────────────────────────────────────────────
 # Stage 1: build the dashboard
 # ──────────────────────────────────────────────────────────────────────────
-FROM rust:1.98-trixie AS web
-WORKDIR /src
-RUN rustup target add wasm32-unknown-unknown \
-    && cargo install trunk --version 0.21.14 --locked
-COPY Cargo.toml Cargo.lock build.rs ./
-COPY src/ ./src/
-COPY dashboard/ ./dashboard/
-COPY web/public/ ./web/public/
-RUN trunk build --release --config dashboard/Trunk.toml
-# → /src/dashboard/dist/
+FROM node:24-trixie-slim AS web
+WORKDIR /web
+
+# pnpm via corepack — version pinned to match web/package.json packageManager
+RUN corepack enable && corepack prepare pnpm@10.33.2 --activate
+
+# Copy the lockfile + manifest first so the install layer caches when the
+# rest of web/ changes but dependencies don't.
+COPY web/package.json web/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+
+# Copy the rest and build.
+COPY web/ ./
+RUN pnpm run build
+# → /web/dist/
 
 # ──────────────────────────────────────────────────────────────────────────
 # Stage 2: shared Rust build environment
 # ──────────────────────────────────────────────────────────────────────────
-FROM rust:1.98-trixie AS chef
+FROM rust:1-trixie AS chef
 WORKDIR /src
 ARG CARGO_BUILD_JOBS=1
 ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
@@ -86,8 +91,6 @@ FROM chef AS planner
 
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY src/ ./src/
-COPY dashboard/Cargo.toml ./dashboard/Cargo.toml
-COPY dashboard/src/ ./dashboard/src/
 RUN cargo chef prepare --recipe-path recipe.json
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -98,18 +101,18 @@ FROM chef AS rust
 COPY --from=planner /src/recipe.json recipe.json
 # embed-web has no dependency feature edges. Disabling it for the dependency
 # layer avoids requiring generated dashboard files during cargo-chef cook.
-RUN cargo chef cook -p openproxy --release --locked --no-default-features --recipe-path recipe.json
+RUN cargo chef cook --release --locked --no-default-features --recipe-path recipe.json
 
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY src/ ./src/
-COPY dashboard/Cargo.toml ./dashboard/Cargo.toml
-COPY dashboard/src/ ./dashboard/src/
-# rust-embed reads the Trunk output at compile time.
-COPY --from=web /src/dashboard/dist/ ./dashboard/dist/
+# rust-embed reads web/dist/ at compile time; src/server/api/mod.rs also
+# include_str!s web/package.json. Both must exist before `cargo build`.
+COPY --from=web /web/dist/ ./web/dist/
+COPY --from=web /web/package.json ./web/package.json
 
 # Build with the default `embed-web` feature on. build.rs verifies
-# dashboard/dist/index.html exists before invoking rust-embed.
-RUN cargo build -p openproxy --release --locked --bin openproxy
+# web/dist/index.html exists before invoking rust-embed.
+RUN cargo build --release --locked --bin openproxy
 RUN strip /src/target/release/openproxy
 
 # ──────────────────────────────────────────────────────────────────────────

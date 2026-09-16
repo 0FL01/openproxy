@@ -17,47 +17,50 @@ env:
 
 jobs:
   # ──────────────────────────────────────────────────────────────────────
-  # Dashboard: check and build the Leptos CSR application.
+  # Web: lint + typecheck + build the Astro dashboard.
   #
-  # Runs unconditionally — dashboard/dist/ is required by build.rs
+  # Runs unconditionally — the resulting web/dist/ is required by build.rs
   # before any Rust compile step in this workflow.
   # ──────────────────────────────────────────────────────────────────────
   web:
-    name: Dashboard (Leptos)
+    name: Web (Astro)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install Rust 1.98
-        uses: dtolnay/rust-toolchain@1.98.1
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
         with:
-          targets: wasm32-unknown-unknown
+          version: 10.33.2
 
-      - name: Install Trunk
-        uses: taiki-e/install-action@v2
+      - name: Install Node.js
+        uses: actions/setup-node@v7
         with:
-          tool: trunk@0.21.14
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: dashboard
+      - name: Install deps
+        working-directory: web
+        run: pnpm install --frozen-lockfile
 
-      - name: Check dashboard
-        run: cargo check -p openproxy-dashboard --target wasm32-unknown-unknown
-
-      - name: Test dashboard model logic
-        run: cargo test -p openproxy-dashboard --lib
+      # `astro check` runs the TypeScript compiler against .astro/.ts/.tsx
+      # files and surfaces type errors that `pnpm run build` only catches
+      # for content collections. Advisory until the web side is clean —
+      # tighten by removing `|| true` once green.
+      - name: astro check (advisory)
+        working-directory: web
+        run: pnpm exec astro check || true
 
       - name: Build dashboard
-        working-directory: dashboard
-        run: trunk build --release
+        working-directory: web
+        run: pnpm run build
 
       - name: Upload dashboard artifact
         uses: actions/upload-artifact@v7
         with:
-          name: dashboard-dist
-          path: dashboard/dist
+          name: web-dist
+          path: web/dist
           if-no-files-found: error
           retention-days: 1
 
@@ -92,11 +95,11 @@ jobs:
       - name: Download dashboard artifact
         uses: actions/download-artifact@v4
         with:
-          name: dashboard-dist
-          path: dashboard/dist
+          name: web-dist
+          path: web/dist
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.1
+        uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
@@ -114,7 +117,7 @@ jobs:
         # exits non-zero on clippy lints by default; the redundant
         # `-- -D warnings` is omitted because it also catches harmless
         # cargo future-incompat warnings (proc-macro-error2).
-        run: cargo clippy -p openproxy --all-targets --all-features
+        run: cargo clippy --all-targets --all-features
 
       - name: cargo test (Linux only)
         # 3 integration tests (bearer_takes_precedence_over_x_api_key,

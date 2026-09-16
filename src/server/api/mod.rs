@@ -401,7 +401,36 @@ async fn version_update_api() -> Response {
 }
 
 fn dashboard_package_version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
+    static PACKAGE_JSON: &str = include_str!("../../../web/package.json");
+    serde_json::from_str::<Value>(PACKAGE_JSON)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("version")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .map(|version| Box::leak(version.into_boxed_str()) as &'static str)
+        .unwrap_or(env!("CARGO_PKG_VERSION"))
+}
+
+async fn fetch_latest_dashboard_version() -> Option<String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(4))
+        .build()
+        .ok()?;
+
+    client
+        .get("https://registry.npmjs.org/openproxy/latest")
+        .send()
+        .await
+        .ok()?
+        .json::<Value>()
+        .await
+        .ok()?
+        .get("version")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 async fn fetch_latest_release_version() -> Option<String> {

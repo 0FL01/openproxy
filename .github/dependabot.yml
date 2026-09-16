@@ -32,6 +32,21 @@ updates:
       serde:
         patterns: ["serde*"]
 
+  # Astro dashboard.
+  - package-ecosystem: npm
+    directory: "/web"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "Asia/Ho_Chi_Minh"
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - dashboard
+    commit-message:
+      prefix: "deps(web)"
+
   # GitHub Actions used in the workflows.
   - package-ecosystem: github-actions
     directory: "/"

@@ -1,8 +1,6 @@
 # Build outputs
 target/
-dashboard/dist/
 web/dist/
-web/.astro/
 web/node_modules/
 **/node_modules/
 

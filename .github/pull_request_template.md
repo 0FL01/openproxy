@@ -12,7 +12,7 @@ See CONTRIBUTING.md and docs/git-conventions.md for the full workflow.
 - [ ] `cargo fmt --all -- --check`
 - [ ] `cargo clippy --all-targets --all-features`
 - [ ] `cargo test -p openproxy --lib provider_models` / `./scripts/dev.sh --full`
-- [ ] `trunk build --release --config dashboard/Trunk.toml` (if dashboard touched)
+- [ ] `pnpm --dir web run build` (if dashboard touched)
 - [ ] Manual: `curl -sf http://127.0.0.1:4623/health` → `{"ok":true}` / `openproxy --robot doctor`
 
 Evidence:

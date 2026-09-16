@@ -103,7 +103,7 @@ curl -fsSL "https://raw.githubusercontent.com/quangdang46/openproxy/main/install
 # Add to PATH automatically (~/.bashrc / ~/.zshrc)
 curl -fsSL "https://raw.githubusercontent.com/quangdang46/openproxy/main/install.sh" | bash -s -- --easy-mode
 
-# Build from source (requires Rust 1.98.1; installs Trunk if needed)
+# Build from source (requires cargo + Node 20 + pnpm)
 curl -fsSL "https://raw.githubusercontent.com/quangdang46/openproxy/main/install.sh" | bash -s -- --from-source
 
 # Uninstall
@@ -324,7 +324,7 @@ They are compiled into the binary and require a rebuild to change:
 ```
 openproxy [FLAGS]                  # default: start server + open browser
 openproxy --port 4623 --no-open    # foreground, no browser
-openproxy --web-dir ./dashboard/dist # serve dashboard from disk (UI dev)
+openproxy --web-dir ./web/dist     # serve dashboard from disk (UI dev)
 openproxy --dashboard-sidecar-url http://127.0.0.1:4624
                                    # reverse-proxy dashboard requests to a dev server
 
@@ -403,7 +403,7 @@ The dashboard at `/` is the same authenticated API surface in HTML form. Admin e
 │ openproxy  (single binary, port 4623)      │
 │                                             │
 │  /            embedded web dashboard       │
-│               (Leptos CSR via rust-embed) │
+│               (Astro static via rust-embed)│
 │                                             │
 │  /v1/*        OpenAI-compatible API        │
 │  /api/*       admin / dashboard data       │
@@ -418,21 +418,20 @@ The dashboard at `/` is the same authenticated API surface in HTML form. Admin e
                           [ provider APIs: Anthropic, OpenAI, GLM, ... ]
 ```
 
-Stack: Rust 1.98.1, axum 0.8, hyper 1, rusqlite (bundled), Leptos 0.8 CSR and Trunk 0.21. Storage: SQLite (`openproxy.sqlite`) with legacy JSON import on first run.
+Stack: Rust 1.76+, axum 0.8, hyper 1, rusqlite (bundled), Astro 4 (static, embedded), React 19, Tailwind. Storage: SQLite (`openproxy.sqlite`) with legacy JSON import on first run.
 
 ---
 
 ## Build from source
 
-Requires Rust 1.98.1 with the `wasm32-unknown-unknown` target and Trunk 0.21.14.
+Requires Node ≥ 20.3 and `pnpm` (`corepack enable && corepack prepare pnpm@10.33.2 --activate`, or `npm i -g pnpm`).
 
 ```bash
 git clone https://github.com/quangdang46/openproxy.git
 cd openproxy
 
-rustup target add wasm32-unknown-unknown
-cargo install trunk --version 0.21.14 --locked
-trunk build --release --config dashboard/Trunk.toml
+pnpm --dir web install
+pnpm --dir web run build
 
 cargo build --release --locked
 ./target/release/openproxy
@@ -441,15 +440,15 @@ cargo build --release --locked
 UI iteration without rebuilding the binary:
 
 ```bash
-trunk build --config dashboard/Trunk.toml
-cargo run -- --web-dir ./dashboard/dist
+pnpm --dir web run build
+cargo run -- --web-dir ./web/dist
 ```
 
-UI live-reload via the Trunk dev server:
+UI live-reload via the Astro dev server:
 
 ```bash
 # Terminal 1
-trunk serve --config dashboard/Trunk.toml # → http://127.0.0.1:4624
+pnpm --dir web run dev   # → http://127.0.0.1:4624
 
 # Terminal 2
 cargo run -- --port 4625 --data-dir ~/.openproxy-dev --dashboard-sidecar-url http://127.0.0.1:4624
@@ -501,7 +500,7 @@ For internet-exposed deploys: set `REQUIRE_API_KEY=true`, `AUTH_COOKIE_SECURE=tr
 | OAuth "callback failed" | Browser blocked the redirect | Retry from the dashboard's `Providers → Reconnect` |
 | 401 on `/v1/chat/completions` | Wrong API key | Copy fresh from dashboard. Header: `Authorization: Bearer <key>` |
 | Quota exhausted message | Subscription / API limit hit | Configure another account for the same provider and model |
-| `cargo build` fails with "dashboard/dist not built" | Embedded build needs the dashboard | `trunk build --release --config dashboard/Trunk.toml` first |
+| `cargo build` fails with "web/dist not built" | Embedded build needs the dashboard | `(cd web && pnpm install --frozen-lockfile && pnpm run build)` first |
 | First login password rejected | Wrong dashboard password | If you set `INITIAL_PASSWORD`, check `.env.prod` is loaded. Otherwise the password was generated at first boot — look for "Initial dashboard password" in the startup banner or run `openproxy auth reset-password --show` |
 
 

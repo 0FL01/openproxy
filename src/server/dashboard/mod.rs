@@ -4,12 +4,12 @@
 //! or `/codex/*`. Three serving modes, picked by `AppState`:
 //!
 //! 1. **Reverse proxy** (`dashboard_sidecar_url` set) — used by UI developers
-//!    against the Trunk dev server (`trunk serve`). The legacy
+//!    against the Astro dev server (`pnpm --dir web run dev`). The legacy
 //!    sidecar code path is preserved exactly for parity.
 //! 2. **On-disk** (`web_dir` set) — serves `index.html` + assets from a
-//!    directory. Useful when iterating on a pre-built `dashboard/dist/` without
+//!    directory. Useful when iterating on a pre-built `web/dist/` without
 //!    rebuilding the Rust binary.
-//! 3. **Embedded** (default) — `dashboard/dist/` is baked into the binary at build
+//! 3. **Embedded** (default) — `web/dist/` is baked into the binary at build
 //!    time via `rust-embed`. Single-binary distribution.
 
 use std::path::{Path, PathBuf};
@@ -31,11 +31,11 @@ use rust_embed::RustEmbed;
 
 use crate::server::state::AppState;
 
-/// Embedded copy of `dashboard/dist/`, baked at build time. The `embed-web` feature
+/// Embedded copy of `web/dist/`, baked at build time. The `embed-web` feature
 /// (default) gates this so headless builds still compile.
 #[cfg(feature = "embed-web")]
 #[derive(RustEmbed)]
-#[folder = "dashboard/dist/"]
+#[folder = "web/dist/"]
 struct WebAssets;
 
 pub fn routes() -> Router<AppState> {
@@ -85,7 +85,37 @@ async fn serve_embedded(uri: &Uri) -> Response {
         return resp;
     }
 
+    // Astro `build.format: 'file'` outputs `dashboard.html` rather than
+    // `dashboard/index.html`. URLs from the dashboard SPA never include the
+    // `.html` extension (`/dashboard`, `/dashboard/endpoint`), so we try the
+    // `<path>.html` variant before the SPA shell fallback. Without this the
+    // server returns the redirect-stub `index.html` for `/dashboard`, which
+    // points back at `/dashboard` and produces an infinite meta-refresh loop
+    // (see bug report #1).
     if !looks_like_asset(candidate) {
+        let html_candidate = format!("{candidate}.html");
+        if let Some(resp) = lookup_embedded(&html_candidate) {
+            return resp;
+        }
+        // Also try the directory-style layout `<path>/index.html` for
+        // forward compatibility if Astro is switched to `format: 'directory'`.
+        let dir_candidate = format!("{candidate}/index.html");
+        if let Some(resp) = lookup_embedded(&dir_candidate) {
+            return resp;
+        }
+        // Dynamic-segment fallback: for paths like `/dashboard/providers/<uuid>`
+        // where the final segment is a user-created ID unknown at build time,
+        // try a `_dynamic.html` placeholder page in the parent directory. The
+        // Astro build emits this file so the correct page shell (e.g.
+        // ProviderDetailPageClient) is served instead of the generic dashboard.
+        if let Some(resp) = dynamic_segment_fallback(candidate, lookup_embedded) {
+            return resp;
+        }
+        // SPA fallback: requests without a file extension are client-router
+        // routes. Serve the SPA shell so the JS router can take over.
+        if let Some(resp) = lookup_embedded("dashboard.html") {
+            return resp;
+        }
         if let Some(resp) = lookup_embedded("index.html") {
             return resp;
         }
@@ -138,25 +168,33 @@ fn looks_like_asset(path: &str) -> bool {
         .is_some_and(|last| last.contains('.'))
 }
 
-fn cache_control_for(path: &str) -> &'static str {
-    if path.ends_with(".html") || path == "index.html" {
-        "no-cache"
-    } else if is_hashed_asset(path) {
-        "public, max-age=31536000, immutable"
-    } else {
-        "no-cache"
+/// For a path like `dashboard/providers/8d82774e-…`, try
+/// `dashboard/providers/_dynamic.html`. The Astro build emits this placeholder
+/// so that user-created provider UUIDs (unknown at build time) still get the
+/// correct page shell instead of the generic `dashboard.html` fallback.
+fn dynamic_segment_fallback<F>(candidate: &str, lookup: F) -> Option<Response>
+where
+    F: Fn(&str) -> Option<Response>,
+{
+    // Only attempt this for paths with at least two segments (parent + slug).
+    if let Some(parent) = candidate.rsplit_once('/').map(|(p, _)| p) {
+        let fallback = format!("{parent}/_dynamic.html");
+        if let Some(resp) = lookup(&fallback) {
+            return Some(resp);
+        }
     }
+    None
 }
 
-fn is_hashed_asset(path: &str) -> bool {
-    let Some(name) = path.rsplit('/').next() else {
-        return false;
-    };
-    let Some(stem) = name.rsplit_once('.').map(|(stem, _)| stem) else {
-        return false;
-    };
-    stem.rsplit_once('-')
-        .is_some_and(|(_, hash)| hash.len() >= 16 && hash.chars().all(|ch| ch.is_ascii_hexdigit()))
+fn cache_control_for(path: &str) -> &'static str {
+    // HTML shells must not be cached: a stale shell breaks code-split bundles
+    // after a redeploy. Other assets are content-hashed by the Astro build
+    // pipeline (`_astro/<hash>.js`) and safe to cache forever.
+    if path.ends_with(".html") || path == "index.html" {
+        "no-cache"
+    } else {
+        "public, max-age=31536000, immutable"
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -170,6 +208,23 @@ async fn serve_from_disk(root: &Path, uri: &Uri) -> Response {
         return resp;
     }
     if !looks_like_asset(candidate) {
+        // Mirror the embedded path: try `<path>.html` first, then `<path>/index.html`,
+        // then fall back to the SPA shell.
+        let html_candidate = format!("{candidate}.html");
+        if let Some(resp) = read_disk_asset(root, &html_candidate) {
+            return resp;
+        }
+        let dir_candidate = format!("{candidate}/index.html");
+        if let Some(resp) = read_disk_asset(root, &dir_candidate) {
+            return resp;
+        }
+        // Dynamic-segment fallback (mirrors embedded mode logic above).
+        if let Some(resp) = dynamic_segment_fallback(candidate, |p| read_disk_asset(root, p)) {
+            return resp;
+        }
+        if let Some(resp) = read_disk_asset(root, "dashboard.html") {
+            return resp;
+        }
         if let Some(resp) = read_disk_asset(root, "index.html") {
             return resp;
         }

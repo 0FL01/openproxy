@@ -43,8 +43,8 @@ pub struct AppState {
     /// Optional reverse-proxy target for the dashboard.
     ///
     /// When `Some`, all dashboard fallback requests are forwarded to this URL
-    /// instead of being served from the embedded `dashboard/dist/` assets. Used
-    /// in development against the Trunk dev server.
+    /// instead of being served from the embedded `web/dist/` assets. Used in
+    /// development against the Astro/Vite dev server (`pnpm --dir web run dev`).
     pub dashboard_sidecar_url: Option<String>,
 
     /// HTTP client used by the dashboard reverse proxy. `Some` iff
