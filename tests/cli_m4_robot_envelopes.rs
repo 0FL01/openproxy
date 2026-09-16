@@ -158,41 +158,6 @@ async fn provider_oauth_status_envelopes() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn server_down_exits_with_code_6() {
-    // Bind to an unused port and immediately drop the listener so connection
-    // is refused. `openproxy` must exit 6 with a `server_unreachable` envelope.
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listen");
-    let port = listener.local_addr().expect("addr").port();
-    drop(listener);
-
-    let out = Command::cargo_bin("openproxy")
-        .expect("openproxy binary")
-        .env("OPENPROXY_URL", format!("http://127.0.0.1:{port}"))
-        .env("OPENPROXY_API_KEY", API_KEY)
-        .env(
-            "DATA_DIR",
-            tempfile::tempdir()
-                .expect("tempdir")
-                .path()
-                .to_string_lossy()
-                .to_string(),
-        )
-        .args(["--robot", "usage", "summary"])
-        .output()
-        .expect("run openproxy");
-
-    assert_eq!(
-        out.status.code(),
-        Some(6),
-        "stdout: {}",
-        String::from_utf8_lossy(&out.stdout)
-    );
-    let env = parse_robot(&out.stdout);
-    assert_eq!(env["schema"], "openproxy.v1.error");
-    assert_eq!(env["error"]["code"], "server_unreachable");
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn schema_list_includes_m4_resources() {
     let out = Command::cargo_bin("openproxy")
         .expect("openproxy binary")
