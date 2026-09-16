@@ -151,9 +151,9 @@ impl OllamaExecutor {
     ///   1. `credentials.provider_specific_data.baseUrl` (e.g. when
     ///      operating against a remote/host-overridden Ollama instance).
     ///   2. `https://ollama.com` for the hosted Ollama Cloud provider ids.
-    ///   3. The default `http://localhost:11434` for `ollama-local`.
+    ///   3. The default `http://localhost:11434` when no base URL is set.
     ///
-    /// No `?stream=` query parameter — 9router's ollama-local.js returns
+    /// No `?stream=` query parameter — the Ollama native API returns
     /// plain `${base}/api/chat`; streaming is driven by the body's `stream`.
     fn build_url(
         &self,
@@ -174,7 +174,7 @@ impl OllamaExecutor {
     }
 
     /// `ollama` is Ollama Cloud (hosted, API key from ollama.com/settings/keys);
-    /// only `ollama-local` talks to a machine-local daemon.
+    /// a connection without a key talks to a machine-local daemon.
     fn default_base_url(provider: &str) -> &'static str {
         match provider {
             "ollama" | "ollama-cloud" => OLLAMA_CLOUD_BASE_URL,
@@ -371,17 +371,6 @@ mod tests {
     }
 
     #[test]
-    fn local_provider_keeps_localhost_default() {
-        let executor = OllamaExecutor::new(Arc::new(ClientPool::default()));
-        let mut creds = crate::types::ProviderConnection::default();
-        creds.provider = "ollama-local".to_string();
-        assert_eq!(
-            executor.build_url("llama3", false, &creds),
-            "http://localhost:11434/api/chat"
-        );
-    }
-
-    #[test]
     fn cloud_provider_targets_ollama_com() {
         let executor = OllamaExecutor::new(Arc::new(ClientPool::default()));
         let mut creds = crate::types::ProviderConnection::default();
@@ -419,14 +408,5 @@ mod tests {
             "Bearer ollama-key-123",
             "Ollama Cloud /api/chat returns 401 without a Bearer key"
         );
-    }
-
-    #[test]
-    fn local_without_key_sends_no_authorization() {
-        let executor = OllamaExecutor::new(Arc::new(ClientPool::default()));
-        let mut creds = crate::types::ProviderConnection::default();
-        creds.provider = "ollama-local".to_string();
-        let headers = executor.build_headers(&creds).unwrap();
-        assert!(!headers.contains_key(AUTHORIZATION));
     }
 }

@@ -1095,43 +1095,4 @@ mod tests {
             .iter()
             .any(|model| model.id == "custom-cx/gpt-5.5-image"));
     }
-
-    #[tokio::test]
-    async fn catalog_less_builtin_provider_falls_back_to_dynamic_discovery() {
-        // Generic path: a built-in provider with NO static catalog models but
-        // with a server-side discovery fetcher must still surface its models
-        // through /v1/models (same discovery the dashboard uses).
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path("/api/tags"))
-            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
-                "models": [
-                    { "id": "local-llama-3.1" },
-                    { "id": "local-qwen-2.5" }
-                ]
-            })))
-            .mount(&server)
-            .await;
-
-        let snapshot = AppDb {
-            provider_connections: vec![ProviderConnection {
-                id: "conn-ollama-local".into(),
-                provider: "ollama-local".into(),
-                auth_type: "apikey".into(),
-                provider_specific_data: BTreeMap::from([("baseUrl".into(), json!(server.uri()))]),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        let models = build_models_list(&test_state().await, &snapshot, &[LLM_KIND]).await;
-        assert!(
-            models.iter().any(|m| m.id == "ollama-local/local-llama-3.1"),
-            "dynamically discovered models of a catalog-less built-in provider should appear in /v1/models"
-        );
-        assert!(
-            models.iter().any(|m| m.id == "ollama-local/local-qwen-2.5"),
-            "dynamically discovered models of a catalog-less built-in provider should appear in /v1/models"
-        );
-    }
 }

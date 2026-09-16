@@ -76,7 +76,6 @@ export const PROVIDER_ENDPOINTS = {
   anthropic: "https://api.anthropic.com/v1/messages",
   gemini: "https://generativelanguage.googleapis.com/v1beta/models",
   ollama: "https://ollama.com/api/chat",
-  "ollama-local": "http://localhost:11434/api/chat",
 } as const;
 
 // Re-export from providers.ts for backward compatibility

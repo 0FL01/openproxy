@@ -27,7 +27,6 @@ interface AddApiKeyModalProps {
 
 export default function AddApiKeyModal({ isOpen, provider, providerName, isCompatible, isAnthropic, authType, authHint, website, proxyPools, onSave, onClose, error }: AddApiKeyModalProps): React.ReactNode {
   const NONE_PROXY_POOL_VALUE = "__none__";
-  const isOllamaLocal = provider === "ollama-local";
   const isCookie = authType === "cookie";
   const isAzure = provider === "azure";
   const isCloudflareAi = provider === "cloudflare-ai";
@@ -44,7 +43,6 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
     defaultModel: "",
     priority: 1,
     proxyPoolId: NONE_PROXY_POOL_VALUE,
-    ollamaHostUrl: "",
   });
   const [azureData, setAzureData] = useState({
     azureEndpoint: "",
@@ -60,7 +58,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
 
   // Bulk add: one key per line. Cloudflare uses name|apiKey|accountId.
   // Skipped for Azure/Ollama/xAI single-key flows that need extra fields.
-  const supportsBulk = !isOllamaLocal && !isAzure && !isXaiApiKey;
+  const supportsBulk = !isAzure && !isXaiApiKey;
   const bulkPlaceholder = isCloudflareAi
     ? `name1|sk-key1|acc123456\nname2|sk-key2|def789012\nsk-key-only-auto-named`
     : `prod|sk-aaa...\nstaging|sk-bbb...\nsk-ccc...`;
@@ -130,9 +128,6 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
   };
 
   const buildProviderSpecificData = (): any => {
-    if (isOllamaLocal && formData.ollamaHostUrl.trim()) {
-      return { baseUrl: formData.ollamaHostUrl.trim() };
-    }
     if (isAzure) {
       return {
         azureEndpoint: azureData.azureEndpoint,
@@ -169,11 +164,8 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
 
   const handleSubmit = async (): Promise<void> => {
     if (!provider) return;
-    if (!isOllamaLocal && !formData.apiKey) return;
-    if (!isOllamaLocal) {
-      // Non-ollama providers require a name
-      if (!formData.name) return;
-    }
+    if (!formData.apiKey) return;
+    if (!formData.name) return;
     if (isCompatible && !formData.defaultModel.trim()) return;
 
     setSaving(true);
@@ -197,7 +189,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
       }
 
       await onSave({
-        name: formData.name || (isOllamaLocal ? "Ollama Local" : ""),
+        name: formData.name,
         apiKey: formData.apiKey,
         defaultModel: isCompatible ? formData.defaultModel.trim() : undefined,
         priority: formData.priority,
@@ -281,25 +273,9 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
           label="Name"
           value={formData.name}
           onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, name: e.target.value })}
-          placeholder={isOllamaLocal ? "Ollama Local" : "Production Key"}
+          placeholder="Production Key"
         />
-        {isOllamaLocal && (
-          <div className="flex gap-2">
-            <Input
-              label="Ollama Host URL"
-              value={formData.ollamaHostUrl}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, ollamaHostUrl: e.target.value })}
-              placeholder="http://localhost:11434"
-              className="flex-1"
-            />
-            <div className="pt-6">
-              <Button onClick={handleValidate} disabled={validating || saving} variant="secondary">
-                {validating ? "Checking..." : "Check"}
-              </Button>
-            </div>
-          </div>
-        )}
-        {!isOllamaLocal && (
+        {(
           <div className="flex gap-2">
             <Input
               label={credentialLabel}
@@ -327,11 +303,6 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
                 </a>
               </>
             )}
-          </p>
-        )}
-        {isOllamaLocal && (
-          <p className="text-xs text-text-muted">
-            Leave blank to use <code>http://localhost:11434</code>. For remote Ollama, enter the full host URL (e.g. <code>http://192.168.1.10:11434</code>).
           </p>
         )}
         {validationResult && (
@@ -458,7 +429,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
         </p>
 
         <div className="flex gap-2">
-          <Button onClick={handleSubmit} fullWidth disabled={saving || (!isOllamaLocal && (!formData.name || !formData.apiKey)) || (isCompatible && !formData.defaultModel.trim()) || (isAzure && (!azureData.azureEndpoint || !azureData.deployment || !azureData.organization)) || (isCloudflareAi && !cloudflareData.accountId)}>
+          <Button onClick={handleSubmit} fullWidth disabled={saving || (!formData.name || !formData.apiKey) || (isCompatible && !formData.defaultModel.trim()) || (isAzure && (!azureData.azureEndpoint || !azureData.deployment || !azureData.organization)) || (isCloudflareAi && !cloudflareData.accountId)}>
             {saving ? "Saving..." : "Save"}
           </Button>
           <Button onClick={onClose} variant="ghost" fullWidth>

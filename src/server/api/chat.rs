@@ -1500,7 +1500,7 @@ async fn forward_with_provider_fallback(
                     transformed_body: result.transformed_body,
                     transport: result.transport,
                 })
-            } else if provider == "ollama-local" || provider == "ollama" {
+            } else if provider == "ollama" {
                 use crate::core::executor::{OllamaExecutionRequest, OllamaExecutor};
                 let executor = OllamaExecutor::new(state.client_pool.clone());
                 let result = executor
@@ -1920,10 +1920,7 @@ fn select_connection_with_supporters(
 }
 
 fn is_no_auth_provider(provider: &str) -> bool {
-    matches!(
-        provider,
-        "opencode" | "opencode-zen" | "ollama-local" | "grok-web"
-    )
+    matches!(provider, "opencode" | "opencode-zen" | "grok-web")
 }
 
 fn virtual_no_auth_connection(provider: &str) -> ProviderConnection {

@@ -205,10 +205,6 @@ static PROVIDER_CONFIGS: Lazy<BTreeMap<&'static str, ProviderConfig>> = Lazy::ne
             ProviderConfig::gemini("https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}"),
         ),
         (
-            "ollama-local",
-            ProviderConfig::openai("http://localhost:11434/v1/chat/completions"),
-        ),
-        (
             "antigravity",
             ProviderConfig::gemini("https://cloudcode-pa.googleapis.com/v1internal"),
         ),

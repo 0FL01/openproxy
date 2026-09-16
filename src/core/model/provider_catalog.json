@@ -35,7 +35,6 @@
   "assemblyai": "assemblyai",
   "nanobanana": "nanobanana",
   "ollama": "ollama",
-  "ollama-local": "ollama-local",
   "vertex": "vertex",
   "vertex-partner": "vertex-partner",
   "gitlab": "gitlab",
@@ -5131,17 +5130,6 @@
     "facebook/mms-tts-eng",
     "microsoft/speecht5_tts"
    ],
-   "embeddingModels": [],
-   "hasSearch": false,
-   "hasFetch": false
-  },
-  {
-   "id": "ollama-local",
-   "alias": "ollama-local",
-   "serviceKinds": [
-    "llm"
-   ],
-   "ttsModels": [],
    "embeddingModels": [],
    "hasSearch": false,
    "hasFetch": false

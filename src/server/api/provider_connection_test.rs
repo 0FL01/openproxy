@@ -22,7 +22,6 @@ use crate::types::ProviderConnection;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
 const PROXY_TEST_TIMEOUT: Duration = Duration::from_secs(8);
 const TOKEN_EXPIRY_BUFFER_SECS: i64 = 5 * 60;
-const OLLAMA_LOCAL_DEFAULT_HOST: &str = "http://localhost:11434";
 
 const CLAUDE_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const CLAUDE_TOKEN_URL: &str = "https://api.anthropic.com/v1/oauth/token";
@@ -634,7 +633,6 @@ async fn test_api_key_connection(
             )
             .await
         }
-        "ollama-local" => test_ollama_local_connection(state, connection, effective_proxy).await,
         "xiaomi-tokenplan" => {
             let region =
                 provider_specific_string(connection, "region").unwrap_or("sgp".to_string());
@@ -796,43 +794,6 @@ async fn test_gemini_api_key_connection(
             new_tokens: None,
         },
         Err(error) => invalid(&error),
-    }
-}
-
-async fn test_ollama_local_connection(
-    state: &AppState,
-    connection: &ProviderConnection,
-    effective_proxy: &EffectiveProxy,
-) -> ConnectionTestResult {
-    let host = provider_specific_string(connection, "baseUrl")
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| OLLAMA_LOCAL_DEFAULT_HOST.to_string());
-
-    let request = PreparedRequest {
-        method: Method::GET,
-        url: format!("{}/api/tags", host.trim_end_matches('/')),
-        headers: vec![],
-        body: None,
-    };
-
-    match execute_request(state, &connection.provider, effective_proxy, request).await {
-        Ok(response) => ConnectionTestResult {
-            valid: response.status().is_success(),
-            error: if response.status().is_success() {
-                None
-            } else {
-                Some(format!(
-                    "Ollama not reachable at {}",
-                    host.trim_end_matches('/')
-                ))
-            },
-            refreshed: false,
-            new_tokens: None,
-        },
-        Err(_) => invalid(&format!(
-            "Ollama not reachable at {}",
-            host.trim_end_matches('/')
-        )),
     }
 }
 

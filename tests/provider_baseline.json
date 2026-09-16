@@ -983,16 +983,6 @@
     "hasFetch": false
   },
   {
-    "id": "ollama-local",
-    "alias": "ollama-local",
-    "serviceKinds": [
-      "llm"
-    ],
-    "models": [],
-    "hasSearch": false,
-    "hasFetch": false
-  },
-  {
     "id": "vertex-partner",
     "alias": "vxp",
     "serviceKinds": [

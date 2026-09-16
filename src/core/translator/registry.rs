@@ -362,7 +362,7 @@ pub fn get_target_format_for_provider(provider: &str) -> Format {
         "codex" | "grok-cli" | "gcli" | "gb" | "perplexity-agent" => Format::OpenAiResponses,
         "cursor" | "cu" => Format::Cursor,
         "kiro" => Format::Kiro,
-        "ollama" | "ollama-local" | "ollama-cloud" => Format::Ollama,
+        "ollama" | "ollama-cloud" => Format::Ollama,
         "antigravity" => Format::Antigravity,
         "commandcode" | "command-code" => Format::CommandCode,
         _ => Format::OpenAi,

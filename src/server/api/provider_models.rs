@@ -29,7 +29,6 @@ const GLM_RICH_MODELS_URL: &str = "https://api.z.ai/api/v1/models";
 
 const OPENAI_COMPATIBLE_PREFIX: &str = "openai-compatible-";
 const ANTHROPIC_COMPATIBLE_PREFIX: &str = "anthropic-compatible-";
-const OLLAMA_LOCAL_DEFAULT_HOST: &str = "http://localhost:11434";
 /// Live-verified: `/v1/models` → 200 OpenAI shape (`{"object":"list","data":[…]}`),
 /// with or without a Bearer key. `/api/v1/models` → 404.
 const OLLAMA_CLOUD_OPENAI_MODELS_URL: &str = "https://ollama.com/v1/models";
@@ -301,7 +300,6 @@ pub(super) fn supports_models_discovery(provider: &str) -> bool {
         || matches!(
             provider,
             "kiro"
-                | "ollama-local"
                 | "claude"
                 | "anthropic"
                 | "gemini"
@@ -404,7 +402,6 @@ async fn fetch_provider_models_response(
 
     match connection.provider.as_str() {
         "kiro" => fetch_kiro_models_with_fallback(state, connection).await,
-        "ollama-local" => fetch_ollama_local_models(connection).await,
         "claude" | "anthropic" => {
             let token = primary_token(connection)
                 .ok_or_else(|| RouteError::unauthorized("No valid token found"))?;
@@ -1167,22 +1164,6 @@ async fn fetch_kiro_models_with_fallback(
     Ok(response_with_models(connection, Vec::new(), warning))
 }
 
-async fn fetch_ollama_local_models(
-    connection: &ProviderConnection,
-) -> Result<ProviderModelsResponse, RouteError> {
-    let url = format!("{}/api/tags", resolve_ollama_local_host(connection));
-    let client = http_client()?;
-    let request = client.get(url).header(CONTENT_TYPE, "application/json");
-    let payload = fetch_json(request)
-        .await
-        .map_err(map_upstream_route_error)?;
-    Ok(response_with_models(
-        connection,
-        parse_ollama_native_models(&payload),
-        None,
-    ))
-}
-
 /// Ollama Cloud catalog. Prefers the OpenAI-shaped `/v1/models` listing (same
 /// host and version prefix the chat endpoint uses) and falls back to the native
 /// `/api/tags` shape, which needs `parse_ollama_native_models`.
@@ -1547,13 +1528,6 @@ fn resolve_qwen_models_url(connection: &ProviderConnection) -> String {
     format!("https://{}/v1/models", raw.trim_end_matches('/'))
 }
 
-fn resolve_ollama_local_host(connection: &ProviderConnection) -> String {
-    provider_specific_string(connection, "baseUrl")
-        .unwrap_or_else(|| OLLAMA_LOCAL_DEFAULT_HOST.to_string())
-        .trim_end_matches('/')
-        .to_string()
-}
-
 fn response_with_models(
     connection: &ProviderConnection,
     models: Vec<ProviderModel>,
@@ -1727,7 +1701,6 @@ mod tests {
         assert!(supports_models_discovery("nvidia"));
         assert!(supports_models_discovery("openrouter"));
         assert!(supports_models_discovery("kilocode"));
-        assert!(supports_models_discovery("ollama-local"));
         assert!(supports_models_discovery("openai-compatible-chat"));
         assert!(supports_models_discovery("anthropic-compatible-chat"));
         assert!(supports_models_discovery("glm"));

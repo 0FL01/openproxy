@@ -30,7 +30,7 @@ async fn validate_provider(
     let api_key = req.api_key.as_deref().unwrap_or("").trim().to_string();
 
     // No-auth providers
-    let no_auth = ["ollama-local", "opencode-zen"];
+    let no_auth = ["opencode-zen"];
     if no_auth.contains(&provider.as_str()) {
         return Json(json!({ "valid": true })).into_response();
     }

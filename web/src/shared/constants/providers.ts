@@ -138,7 +138,6 @@ export const APIKEY_PROVIDERS: Record<string, Provider> = {
   cerebras: { id: "cerebras", alias: "cerebras", name: "Cerebras", icon: "memory", color: "#FF4F00", textIcon: "CB", website: "https://www.cerebras.ai", notice: { apiKeyUrl: "https://cloud.cerebras.ai/platform" } },
   cohere: { id: "cohere", alias: "cohere", name: "Cohere", icon: "hub", color: "#39594D", textIcon: "CO", website: "https://cohere.com", notice: { apiKeyUrl: "https://dashboard.cohere.com/api-keys" } },
   hyperbolic: { id: "hyperbolic", alias: "hyp", name: "Hyperbolic", icon: "bolt", color: "#00D4FF", textIcon: "HY", website: "https://hyperbolic.xyz", notice: { apiKeyUrl: "https://app.hyperbolic.xyz/settings" }, serviceKinds: ["llm"] },
-  "ollama-local": { id: "ollama-local", alias: "ollama-local", name: "Ollama Local", icon: "cloud", color: "#ffffffff", textIcon: "OL", website: "https://ollama.com" },
   "vertex-partner": { id: "vertex-partner", alias: "vxp", name: "Vertex Partner", icon: "cloud", color: "#34A853", textIcon: "VP", website: "https://cloud.google.com/vertex-ai/generative-ai/docs/partner-models/use-partner-models", notice: { apiKeyUrl: "https://console.cloud.google.com/iam-admin/serviceaccounts" } },
   modal: { id: "modal", alias: "modal", name: "Modal", icon: "cloud", color: "#22C55E", textIcon: "MD", website: "https://modal.com", notice: { apiKeyUrl: "https://modal.com" } },
   llm7: { id: "llm7", alias: "llm7", name: "LLM7", icon: "psychology", color: "#7C3AED", textIcon: "L7", website: "https://llm7.io", notice: { apiKeyUrl: "https://llm7.io" } },
