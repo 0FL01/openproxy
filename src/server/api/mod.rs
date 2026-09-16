@@ -23,6 +23,7 @@ mod provider_models;
 pub mod provider_nodes;
 mod provider_validate;
 pub mod providers;
+pub mod proxy_pool_ops;
 pub mod quota_auto_ping;
 pub mod shutdown;
 pub mod tags;
@@ -233,6 +234,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
         // whose dashboard error message differs from the handler contract.
         .merge(cloud_credentials::routes())
         .merge(observability::routes())
+        .merge(proxy_pool_ops::routes())
         .merge(auth::routes())
         .merge(provider_validate::routes());
 
