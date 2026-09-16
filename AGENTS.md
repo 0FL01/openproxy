@@ -33,21 +33,20 @@ The dev server uses port `4625` and `~/.openproxy-dev` by default so it cannot
 stop or read the production Compose instance on `4623` and its persistent volume.
 Override them with `PORT` and `DATA_DIR` when needed.
 
-**Dashboard is not live-reloaded.** `web/src` → `web/dist` (Astro) is what the Rust server serves.
-After any `web/src` change you **must** rebuild the dashboard or the feature will be invisible
-(past "feature not found" confusion was a missing rebuild, not a missing backend):
+The Leptos dashboard is compiled to WASM by Trunk and embedded in the Rust binary.
+`scripts/dev.sh` builds it automatically. For live dashboard iteration:
 
 ```bash
-cd web && pnpm install        # once
-pnpm build                    # rebuild web/dist after every web/src change
-# or during iteration:
-pnpm dev                      # Astro dev on :4624 (proxy API to :4625)
+# Terminal 1: backend API
+./scripts/dev.sh
+# Terminal 2: Leptos dev server on :4624, proxying API to :4625
+cd dashboard && trunk serve
 ```
 
 Full loop for a feature touching both layers:
 
 ```bash
-./scripts/dev.sh build && (cd web && pnpm build) && ./scripts/dev.sh detach
+./scripts/dev.sh detach
 curl -s http://127.0.0.1:4625/health
 open http://127.0.0.1:4625/dashboard/providers
 ```
@@ -57,9 +56,9 @@ open http://127.0.0.1:4625/dashboard/providers
 Systematic, not arbitrary — all contributions follow two documents linked from the intelligence brief:
 
 - **Workflow & expectations:** [`CONTRIBUTING.md`](CONTRIBUTING.md) — prerequisites, `scripts/dev.sh` quick/full, project layout, coding standards, testing matrix, secrets policy, releases.
-- **Enforceable git rules:** [`docs/git-conventions.md`](docs/git-conventions.md) — branch naming (`<type>/<kebab>`), Conventional Commits (`<type>(<scope>): <subject>`), atomic bisectable commits, verification before each commit (`cargo fmt --check` + `cargo clippy --all-targets --all-features`), history hygiene (rebase, no `git add .`), PR hygiene (template, ≤400 lines, CI `web` → `rust` must be green), issue/beads discipline, tagging.
+- **Enforceable git rules:** [`docs/git-conventions.md`](docs/git-conventions.md) — branch naming (`<type>/<kebab>`), Conventional Commits (`<type>(<scope>): <subject>`), atomic bisectable commits, verification before each commit (`cargo fmt --check` + `cargo clippy --all-targets --all-features`), history hygiene (rebase, no `git add .`), PR hygiene (template, ≤400 lines, CI `dashboard` → `rust` must be green), issue/beads discipline, tagging.
 
-PRs use [`.github/pull_request_template.md`](.github/pull_request_template.md); bugs/features use [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/). CI (`.github/workflows/ci.yml`) enforces `web: astro check + build → rust: fmt + clippy + tests` on `ubuntu` + `macos`. The checklist in `docs/git-conventions.md` §10 is the gate — all green means systematic.
+PRs use [`.github/pull_request_template.md`](.github/pull_request_template.md); bugs/features use [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/). CI (`.github/workflows/ci.yml`) enforces `dashboard: check + test + Trunk build → rust: fmt + clippy + tests` on `ubuntu` + `macos`. The checklist in `docs/git-conventions.md` §10 is the gate — all green means systematic.
 
 ## Core Product Surfaces (TOP PRIORITY)
 
@@ -67,7 +66,7 @@ These 3 surfaces ARE the product. Everything else is optional. They must be flaw
 
 1. **Providers page** — `/dashboard/providers/<provider>` (e.g. kilocode): user controls Available Models (disable/enable/custom). Configuration is user data, persisted in SQLite — must survive binary rebuilds/updates.
 2. **CLI tools config** — `/dashboard/cli-tools/opencode` (opencode is the primary client).
-3. **`web/src/shared/components/ModelSelectModal.tsx`** — the single model-picker used everywhere; must exactly mirror the provider page's Available Models (same disabled map + custom rows + catalog merge). Any change to model-list logic MUST be applied consistently to both the provider page and this modal.
+3. **`dashboard/src/components/model_picker.rs`** — the single model-picker used everywhere; it and the provider page must derive from `dashboard/src/model_inventory.rs` so disabled, custom, catalog, live, alias, and free-only behavior stays identical.
 
 Core workflow that must never break: configure provider → customize available models → select models for opencode CLI config.
 

@@ -1,6 +1,6 @@
 # Contributing to OpenProxy
 
-**OpenProxy** is a Rust AI proxy router — single binary on `127.0.0.1:4623`, OpenAI-compatible, 40+ providers, embedded Astro dashboard. This guide makes contributions systematic, not arbitrary.
+**OpenProxy** is a Rust AI proxy router — single binary on `127.0.0.1:4623`, OpenAI-compatible, 40+ providers, embedded Leptos dashboard. This guide makes contributions systematic, not arbitrary.
 
 > **Single source of truth for daily workflow:** run `./scripts/dev.sh` — it builds the backend and starts the server. Tests are explicit cargo commands (see [Testing](#testing)).
 
@@ -31,9 +31,8 @@ Related docs:
 
 | Tool | Version | Notes |
 |------|---------|-------|
-| Rust | 1.76+ (`stable`) | `rustup update` — needs `rustfmt` + `clippy` components |
-| Node | 20.3+ | Required for dashboard build |
-| pnpm | 10.33.2 | `corepack enable && corepack prepare pnpm@10.33.2 --activate` |
+| Rust | 1.98.1 | Pinned by `rust-toolchain.toml`; includes the WASM target, `rustfmt`, and `clippy` |
+| Trunk | 0.21.14 | `cargo install trunk --version 0.21.14 --locked` |
 | cargo / git / curl / jq | — | `jq` needed for `--robot` JSON parsing |
 
 Optional: `fuser`, `ss`, `gh` CLI.
@@ -65,7 +64,7 @@ PORT=4626 ./scripts/dev.sh  # custom port
 Live dashboard iteration without rebuilding the Rust binary:
 
 ```bash
-pnpm --dir web dev               # Astro dev on :4624 (proxies API to :4625)
+trunk serve --config dashboard/Trunk.toml # Leptos dev server on :4624
 # in another terminal:
 cargo run -- --port 4625 --data-dir ~/.openproxy-dev --dashboard-sidecar-url http://127.0.0.1:4624
 ```
@@ -78,16 +77,16 @@ openproxy/
 │   ├── core/            # model parsing, format translation, executor trait
 │   ├── server/api/      # /v1, /api, provider_models, chat
 │   └── cli/             # provider apply, schema, doctor
-├── web/                 # Astro 4 + React 19 + Tailwind — built to web/dist
-│   └── src/             # dashboard components, provider constants
+├── dashboard/           # Leptos CSR dashboard — built by Trunk to dashboard/dist
+├── web/public/          # static provider, locale, icon, and service-worker assets
 ├── scripts/dev.sh       # THE dev entrypoint (build+test+run)
 ├── docs/                # architecture, state, git-conventions
-├── .github/workflows/   # CI: web (astro check+build) → rust (fmt+clippy+tests)
+├── .github/workflows/   # CI: dashboard (check+test+build) → rust (fmt+clippy+tests)
 ├── tests/               # provider_baseline.json, verify_no_regression.mjs
-└── Cargo.toml / web/package.json
+└── Cargo.toml / rust-toolchain.toml
 ```
 
-The Rust binary embeds `web/dist` via `rust-embed` at compile time — if you change dashboard code, run `pnpm --dir web run build` or just `./scripts/dev.sh` again.
+The Rust binary embeds `dashboard/dist` via `rust-embed`. `./scripts/dev.sh` runs Trunk before Cargo.
 
 ## Development Workflow
 
@@ -100,7 +99,7 @@ The Rust binary embeds `web/dist` via `rust-embed` at compile time — if you ch
 3. **Verify** — `curl /health`, `openproxy --robot doctor`, smoke `cargo test -p openproxy --lib parity_tests`.
 4. **Push to main** — work directly on `main`; create a branch only when explicitly requested.
 
-If dashboard changes appear "missing" at runtime, you forgot `pnpm --dir web run build` — `scripts/dev.sh` does it for you.
+If dashboard changes appear "missing" at runtime, rebuild the binary with `./scripts/dev.sh`; the embedded output is captured at compile time.
 
 ## Coding Standards
 
@@ -112,9 +111,9 @@ If dashboard changes appear "missing" at runtime, you forgot `pnpm --dir web run
 - Prefer existing crates over new dependencies. Justify any new dep in the PR description.
 - 250 LOC ceiling per module — split oversized files.
 
-### TypeScript / Web
-- Astro `pnpm exec astro check` is advisory today (see CI `|| true`) but fix new type errors you introduce.
-- `pnpm --dir web run build` must succeed. The Rust `build.rs` requires `web/dist`.
+### Leptos dashboard
+- `cargo check -p openproxy-dashboard --target wasm32-unknown-unknown` must pass.
+- `trunk build --release --config dashboard/Trunk.toml` must pass before the native binary is built.
 
 ### General
 - Small, focused changes over large refactors.
@@ -141,7 +140,8 @@ Touched `tests/common/`, `server/api`, auth, DB, or pools → run all related in
 | `cargo test -p openproxy --lib parity_tests -- --nocapture` | stream_flags smoke |
 | `cargo test -p openproxy --lib -- --test-threads=1` | full 1727-test lib suite |
 | `cargo test --test providers_api -- --test-threads=1` | providers API (full) |
-| `pnpm --dir web exec astro check` | dashboard typecheck |
+| `cargo check -p openproxy-dashboard --target wasm32-unknown-unknown` | dashboard typecheck |
+| `trunk build --release --config dashboard/Trunk.toml` | dashboard release build |
 
 Add regression coverage for provider model changes in `tests/provider_baseline.json` (+ `tests/verify_no_regression.mjs`).
 

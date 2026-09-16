@@ -411,16 +411,21 @@ install_completions() {
 
 build_from_source() {
     command -v cargo >/dev/null || die "cargo not found. Install Rust: https://rustup.rs"
-    command -v node  >/dev/null || die "node not found. Node 20+ required to build the dashboard."
-    command -v pnpm  >/dev/null || die "pnpm not found. Install: npm i -g pnpm@10.33.2"
+    command -v rustup >/dev/null || die "rustup not found. Install Rust: https://rustup.rs"
     command -v git   >/dev/null || die "git not found."
 
     log_info "cloning ${OWNER}/${REPO}"
     git clone --depth 1 "https://github.com/${OWNER}/${REPO}.git" "$TMP/src" >/dev/null 2>&1 \
         || die "git clone failed"
 
-    log_info "building dashboard (pnpm)"
-    (cd "$TMP/src/web" && pnpm install --frozen-lockfile && pnpm run build) \
+    log_info "installing the WebAssembly target and Trunk"
+    rustup target add wasm32-unknown-unknown >/dev/null \
+        || die "could not install wasm32-unknown-unknown"
+    command -v trunk >/dev/null || cargo install trunk --version 0.21.14 --locked \
+        || die "could not install Trunk"
+
+    log_info "building dashboard (Leptos CSR)"
+    (cd "$TMP/src/dashboard" && trunk build --release) \
         || die "dashboard build failed"
 
     log_info "building binary (cargo --release, this takes 2-5 minutes)"

@@ -158,7 +158,7 @@ prune_tmp_op() {
   log "freed $(human "$sz") in /tmp/op-* (mtime>+${AGE_DAYS}d)"
 }
 
-# prune_cache_dir: fully clear a regenerable cache directory (e.g. web/dist/.cache).
+# prune_cache_dir: fully clear a regenerable cache directory (e.g. dashboard/dist).
 prune_cache_dir() {
   local dir="$1"
   [[ -d "$dir" ]] || { log "skip (missing): $dir"; return 0; }
@@ -206,8 +206,8 @@ fi
 # ── 3. /tmp/op-* debug scratch trees ───────────────────────────────────────
 prune_tmp_op
 
-# ── 4. web/dist/.cache (Astro build cache) ─────────────────────────────────
-prune_cache_dir "web/dist/.cache"
+# ── 4. generated dashboard output ──────────────────────────────────────────
+prune_cache_dir "dashboard/dist/.stage"
 
 # ── 5. cargo registry cache — only under space pressure / aggressive ───────
 if (( SPACE_PRESSURE == 1 || AGGRESSIVE == 1 )); then

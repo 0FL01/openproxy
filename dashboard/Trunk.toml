@@ -1,0 +1,19 @@
+[build]
+target = "index.html"
+dist = "dist"
+public_url = "/"
+filehash = true
+
+[serve]
+addresses = ["127.0.0.1"]
+port = 4624
+open = false
+
+[[proxy]]
+backend = "http://127.0.0.1:4625/api/"
+
+[[proxy]]
+backend = "http://127.0.0.1:4625/v1/"
+
+[[proxy]]
+backend = "http://127.0.0.1:4625/oauth/"

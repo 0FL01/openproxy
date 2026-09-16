@@ -62,9 +62,10 @@ fi
 
 # --- 4. build the embedded dashboard (required before cargo build) ----------
 if [[ "$NEED_BUILD" == true ]]; then
-  log "building dashboard (web/dist)"
-  pnpm --dir web install --frozen-lockfile
-  pnpm --dir web run build
+  log "building dashboard (dashboard/dist)"
+  rustup target add wasm32-unknown-unknown >/dev/null
+  command -v trunk >/dev/null || cargo install trunk --version 0.21.14 --locked
+  (cd dashboard && trunk build --release)
 fi
 
 # --- 5. build the release binary --------------------------------------------

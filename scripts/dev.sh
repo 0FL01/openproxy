@@ -33,6 +33,8 @@ stop_dev_server() {
 }
 
 build() {
+  echo "== trunk build dashboard =="
+  (cd dashboard && trunk build)
   echo "== cargo ${CARGO_ARGS[*]} =="
   # incremental by default; only rebuilds crates that changed
   # --bin openproxy avoids building tests/examples

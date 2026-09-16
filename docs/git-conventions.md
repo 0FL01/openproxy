@@ -122,7 +122,7 @@ Stage intentionally — never `git add .` blindly:
 ```bash
 git status
 git diff
-git add src/server/api/provider_models.rs web/src/shared/constants/providers.ts
+git add src/server/api/provider_models.rs dashboard/src/model_inventory.rs
 git diff --cached   # verify only intended hunks are staged
 git commit -m "feat(providers): add kilocode to supports_models_discovery"
 ```
@@ -151,8 +151,8 @@ cargo test --lib --all-features                               # full lib gate (w
 Dashboard changes:
 
 ```bash
-pnpm --dir web exec astro check   # typecheck (advisory but fix new errors)
-pnpm --dir web run build          # must succeed — Rust embeds web/dist
+cargo check -p openproxy-dashboard --target wasm32-unknown-unknown
+trunk build --release --config dashboard/Trunk.toml
 ```
 
 If CI fails, fix it in a new commit — don't amend pushed history (see below).
@@ -190,7 +190,7 @@ Rules:
 
 - Keep PLs ≤ ~400 lines where possible; split large work into stacked PRs.
 - One concern per PR — don't mix refactors with features.
-- CI must be green: `web` job (astro check+build+upload `web/dist`) → `rust` jobs (`cargo fmt --check` + `cargo clippy` + tests on `ubuntu` + `macos`).
+- CI must be green: `dashboard` job (check+test+Trunk build) → `rust` jobs (`cargo fmt --check` + backend clippy + tests on `ubuntu` + `macos`).
 - Request review; address comments with new commits (don't force-push review history away).
 - Update docs (`AGENTS.md`, `CONTRIBUTING.md`, `docs/parity-9router.md`) when you change workflow, architecture, or parity behavior.
 
@@ -238,7 +238,7 @@ See `AGENTS.md` § Local Config & Secrets — Never Commit and `CONTRIBUTING.md`
 - [ ] git status / git diff --cached reviewed — no secrets or stray files
 - [ ] cargo fmt --check / cargo clippy --all-targets --all-features — green
 - [ ] cargo test --lib --all-features (+ affected --test <name>) — green
-- [ ] pnpm --dir web run build — green (if web touched)
+- [ ] Trunk dashboard build — green (if dashboard touched)
 - [ ] PR template filled — summary, test plan, risk, linked issue/bead
 ```
 

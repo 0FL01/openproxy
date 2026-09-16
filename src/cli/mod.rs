@@ -101,13 +101,13 @@ pub struct Cli {
     pub api_key: Option<String>,
 
     /// Reverse-proxy dashboard requests to this URL instead of serving the
-    /// embedded `web/dist/` assets. Used for UI development against the
-    /// Astro dev server (e.g. `http://127.0.0.1:4624`).
+    /// embedded `dashboard/dist/` assets. Used for UI development against the
+    /// Trunk dev server (e.g. `http://127.0.0.1:4624`).
     #[arg(long, env = "DASHBOARD_SIDECAR_URL")]
     pub dashboard_sidecar_url: Option<String>,
 
     /// Serve the dashboard from a directory on disk instead of the embedded
-    /// assets. Useful for iterating on a pre-built `web/dist/` without
+    /// assets. Useful for iterating on a pre-built `dashboard/dist/` without
     /// rebuilding the Rust binary. Ignored if `--dashboard-sidecar-url` is set.
     #[arg(long, env = "OPENPROXY_WEB_DIR")]
     pub web_dir: Option<PathBuf>,

@@ -2,7 +2,12 @@
 name = "openproxy"
 version = "0.3.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.98"
+
+[workspace]
+members = [".", "dashboard"]
+default-members = ["."]
+resolver = "3"
 
 [dependencies]
 # HTTP server
@@ -110,7 +115,7 @@ whoami = "2"
 # CLI: cross-platform user config directory resolution
 directories = "5"
 
-# Embedded web dashboard (Astro static output) + cross-platform browser-open.
+# Embedded Leptos CSR dashboard + cross-platform browser-open.
 # `compression` requires the rust-embed `folder` to be a relative path at the
 # crate root, so we drop `interpolate-folder-path`.
 rust-embed = { version = "8", features = ["compression", "mime-guess"] }
@@ -130,7 +135,7 @@ path = "src/main.rs"
 
 [features]
 default = ["embed-web"]
-# Embed `web/dist/` into the release binary. Disable for headless / sidecar-proxy builds.
+# Embed `dashboard/dist/` into the release binary. Disable for headless / sidecar-proxy builds.
 embed-web = []
 
 [profile.release]

@@ -45,7 +45,7 @@ Drops the binary at `~/.local/bin/openproxy`. Idempotent (locked via `/tmp/openp
 | `--dest <path>` | Install to a custom directory. |
 | `--system` | Install to `/usr/local/bin` (may need sudo). |
 | `--easy-mode` | Append `PATH` export to `~/.bashrc` and `~/.zshrc`. |
-| `--from-source` | Build from source via cargo (needs Rust ≥ 1.95 + Node 20 + pnpm). |
+| `--from-source` | Build from source with Rust 1.98.1 and Trunk (installed automatically when needed). |
 | `--verify` | Run `openproxy --version` after install. |
 | `--uninstall` | Remove binary and any easy-mode PATH lines. |
 | `--quiet` / `-q` | Suppress info logs. |
