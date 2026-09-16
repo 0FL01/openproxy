@@ -27,8 +27,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: Approved plan Part B and user requirement that round-robin harms prompt-cache affinity.
   - Acceptance: Eligible accounts are selected deterministically by `(priority.unwrap_or(MAX), id)` without round-robin, sticky, least-loaded, quota, or in-flight-capacity diversion; persisted cooldown/model locks and reactive fallback to the next account remain.
   - Primary evidence: A concurrency regression proving more than ten held requests all use the first account, plus the existing 429 fallback regression.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: Removed the account registry, strategy types/settings, slot caps, quota tie-breaks, rotation/sticky state, and dashboard controls. Chat, web fetch, and CLI now select by stable `(priority, id)` after their existing eligibility filters. The 11-request concurrency regression and existing reactive fallback test passed; focused account-fallback, settings, database, and backup tests plus dashboard build and clippy passed.
 
 - R3: Deliver the simplification safely.
   - Source: “итеративно реализовать и коммит пуш деплой” and “в цель документируй что делается”.
@@ -61,17 +61,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R2
-- Smallest next action: Replace proactive account strategy/slot selection with stable priority ordering, then remove the unused registry and strategy controls.
-- Expected evidence: Deterministic-selection and existing reactive-fallback tests pass; dashboard and Rust checks remain green.
-- Stop or replan if: The change bypasses an existing eligibility filter, cooldown/model lock, OAuth refresh, or next-account fallback path.
+- Closes: R3
+- Smallest next action: Commit this checkpoint, push `main`, build the production image, take a stopped-volume archive, and recreate the service without deleting its volume.
+- Expected evidence: Final checks pass, Git history is clean and pushed, Compose reports the service healthy, and `http://127.0.0.1:4623/health` succeeds.
+- Stop or replan if: A gate fails because of the current diff, the production volume or encryption key cannot be preserved, or deployment would require a destructive action.
 
 ## Current State
 
-- Resolved: R1 verified; Combo is no longer an operational feature.
-- Last relevant evidence: `cargo test --test api_auth_and_models --test chat_completions --test db_and_models --test admin_item_routes --test db_backups_api`, `pnpm build`, fmt/check/clippy, and both `tests/opencode_models*.test.mjs` suites passed.
+- Resolved: R1 and R2 verified; Combo and proactive account balancing are no longer operational features. Obsolete legacy JS tests and fixtures for removed features were deleted.
+- Last relevant evidence: fmt, clippy, dashboard build, both OpenCode model-discovery suites, affected integration tests, and the 1,329 library tests passed. The all-target gate exposed unrelated pre-existing stale tests: `/api/health` exact payload, Kiro URL ordering/import payload assertions, and an intermittent SQLite encryption assertion; no failing test exercises this diff.
 - Blocker: None.
-- Next: Commit R1, then implement and verify R2.
+- Next: Push, take the raw volume backup during the deployment stop, deploy, verify production, then close the goal.
 
 ## Material Decisions
 
@@ -85,6 +85,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 - 2026-09-16: Frozen R1-R3 from the approved audited plan. Next: R1 Combo removal.
 - 2026-09-16: R1 verified. Combo runtime/management and stale deletion-only tests are removed; direct routes, aliases, frozen schema metadata, and SQLite tombstone remain. Next: commit R1 and implement deterministic account affinity.
+- 2026-09-16: R2 verified. Stable priority/ID selection replaces all proactive account balancing while persisted cooldowns and reactive fallback remain. Removed the orphan legacy JS test harness and stale removed-feature fixture fields. Next: commit R2 and run final gates.
+- 2026-09-16: Final affected gates passed. The broad suite's unrelated stale failures are documented above; a removed `usage summary` CLI test discovered by the gate was deleted. Production preflight found zero live Combos and created an old-version logical backup. Next: push and deploy with a stopped-volume archive.
 
 ## Completion
 
