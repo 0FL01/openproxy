@@ -317,9 +317,7 @@ pub(super) fn supports_models_discovery(provider: &str) -> bool {
                 | "alicode"
                 | "alicode-intl"
                 | "volcengine-ark"
-                | "byteplus"
                 | "deepseek"
-                | "groq"
                 | "xai"
                 | "mistral"
                 | "perplexity"
@@ -328,23 +326,16 @@ pub(super) fn supports_models_discovery(provider: &str) -> bool {
                 | "cerebras"
                 | "cohere"
                 | "nebius"
-                | "siliconflow"
                 | "hyperbolic"
                 | "ollama"
-                | "chutes"
                 | "nvidia"
                 | "xiaomi-mimo"
                 | "xiaomi-tokenplan"
-                | "aimlapi"
                 | "modal"
-                | "reka"
-                | "kluster"
-                | "morph"
                 | "longcat"
                 | "scaleway"
                 | "sambanova"
                 | "nscale"
-                | "baseten"
                 | "nous-research"
                 | "glhf"
                 | "kilocode"
@@ -495,23 +486,9 @@ async fn fetch_provider_models_response(
             )
             .await
         }
-        "byteplus" => {
-            fetch_first_party_openai_style_models(
-                connection,
-                "https://ark.ap-southeast.bytepluses.com/api/coding/v3/models",
-            )
-            .await
-        }
         "deepseek" => {
             fetch_first_party_openai_style_models(connection, "https://api.deepseek.com/models")
                 .await
-        }
-        "groq" => {
-            fetch_first_party_openai_style_models(
-                connection,
-                "https://api.groq.com/openai/v1/models",
-            )
-            .await
         }
         "xai" => {
             fetch_first_party_openai_style_models(connection, "https://api.x.ai/v1/models").await
@@ -550,13 +527,6 @@ async fn fetch_provider_models_response(
             )
             .await
         }
-        "siliconflow" => {
-            fetch_first_party_openai_style_models(
-                connection,
-                "https://api.siliconflow.com/v1/models",
-            )
-            .await
-        }
         "hyperbolic" => {
             fetch_first_party_openai_style_models(
                 connection,
@@ -565,10 +535,6 @@ async fn fetch_provider_models_response(
             .await
         }
         "ollama" => fetch_ollama_cloud_models(connection).await,
-        "chutes" => {
-            fetch_first_party_openai_style_models(connection, "https://llm.chutes.ai/v1/models")
-                .await
-        }
         "nvidia" => {
             fetch_first_party_openai_style_models(
                 connection,
@@ -596,23 +562,8 @@ async fn fetch_provider_models_response(
             };
             fetch_first_party_openai_style_models(connection, &format!("{base}/models")).await
         }
-        "aimlapi" => {
-            fetch_first_party_openai_style_models(connection, "https://api.aimlapi.com/v1/models")
-                .await
-        }
         "modal" => {
             fetch_first_party_openai_style_models(connection, "https://api.modal.com/v1/models")
-                .await
-        }
-        "reka" => {
-            fetch_first_party_openai_style_models(connection, "https://api.reka.ai/v1/models").await
-        }
-        "kluster" => {
-            fetch_first_party_openai_style_models(connection, "https://api.kluster.ai/v1/models")
-                .await
-        }
-        "morph" => {
-            fetch_first_party_openai_style_models(connection, "https://api.morphllm.com/v1/models")
                 .await
         }
         "longcat" => {
@@ -634,13 +585,6 @@ async fn fetch_provider_models_response(
             fetch_first_party_openai_style_models(
                 connection,
                 "https://inference.api.nscale.com/v1/models",
-            )
-            .await
-        }
-        "baseten" => {
-            fetch_first_party_openai_style_models(
-                connection,
-                "https://inference.baseten.co/v1/models",
             )
             .await
         }

@@ -74,7 +74,7 @@ async fn app_state() -> AppState {
                 ..active_key("inactive-bearer")
             },
         ];
-        state.provider_connections = vec![connection("openai", true), connection("groq", false)];
+        state.provider_connections = vec![connection("openai", true), connection("xai", false)];
         state.model_aliases.insert(
             "draft".into(),
             ModelAliasTarget::Path("openai/gpt-4.1".into()),

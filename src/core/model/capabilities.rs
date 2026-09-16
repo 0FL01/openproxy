@@ -191,10 +191,6 @@ static PROVIDER_CAPABILITIES: LazyLock<HashMap<&'static str, HashMap<&'static st
             ("deepseek-v4-flash", serde_json::json!({ "vision": true, "reasoning": true, "thinkingFormat": "openai", "thinkingCanDisable": false, "contextWindow": 1000000, "maxOutput": 50000 })),
             ("deepseek-v3-2-volc", serde_json::json!({ "reasoning": true, "thinkingFormat": "openai", "thinkingCanDisable": false, "contextWindow": 96000, "maxOutput": 32000 })),
         ]));
-        table.insert("poolside", HashMap::from([
-            ("laguna-s-2.1", serde_json::json!({ "reasoning": true, "thinkingFormat": "openai", "contextWindow": 1000000, "maxOutput": 32000 })),
-            ("laguna-xs-2.1", serde_json::json!({ "reasoning": true, "thinkingFormat": "openai", "contextWindow": 200000, "maxOutput": 32000 })),
-        ]));
         table
     });
 

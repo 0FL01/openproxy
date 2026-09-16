@@ -35,12 +35,6 @@ static PROVIDER_CONFIGS: Lazy<BTreeMap<&'static str, ProviderConfig>> = Lazy::ne
                 .with_header("X-Title", "Endpoint Proxy"),
         ),
         (
-            "api-airforce",
-            ProviderConfig::openai("https://api.airforce/v1/chat/completions")
-                .with_header("HTTP-Referer", "https://endpoint-proxy.local")
-                .with_header("X-Title", "Endpoint Proxy"),
-        ),
-        (
             "anthropic",
             ProviderConfig::anthropic("https://api.anthropic.com/v1/messages"),
         ),
@@ -73,10 +67,6 @@ static PROVIDER_CONFIGS: Lazy<BTreeMap<&'static str, ProviderConfig>> = Lazy::ne
             ProviderConfig::openai("https://api.deepseek.com/chat/completions"),
         ),
         (
-            "groq",
-            ProviderConfig::openai("https://api.groq.com/openai/v1/chat/completions"),
-        ),
-        (
             "xai",
             ProviderConfig::openai("https://api.x.ai/v1/chat/completions"),
         ),
@@ -105,20 +95,12 @@ static PROVIDER_CONFIGS: Lazy<BTreeMap<&'static str, ProviderConfig>> = Lazy::ne
             ProviderConfig::openai("https://api.studio.nebius.ai/v1/chat/completions"),
         ),
         (
-            "siliconflow",
-            ProviderConfig::openai("https://api.siliconflow.com/v1/chat/completions"),
-        ),
-        (
             "hyperbolic",
             ProviderConfig::openai("https://api.hyperbolic.xyz/v1/chat/completions"),
         ),
         (
             "perplexity",
             ProviderConfig::openai("https://api.perplexity.ai/chat/completions"),
-        ),
-        (
-            "chutes",
-            ProviderConfig::openai("https://llm.chutes.ai/v1/chat/completions"),
         ),
         (
             "gitlab",
@@ -159,14 +141,6 @@ static PROVIDER_CONFIGS: Lazy<BTreeMap<&'static str, ProviderConfig>> = Lazy::ne
             ),
         ),
         (
-            "baidu",
-            ProviderConfig::openai("https://qianfan.baidubce.com/v2/chat/completions"),
-        ),
-        (
-            "bluesminds",
-            ProviderConfig::openai("https://api.bluesminds.com/v1/chat/completions"),
-        ),
-        (
             "clinepass",
             ProviderConfig::openai("https://api.cline.bot/api/v1/chat/completions")
                 .with_header("HTTP-Referer", "https://cline.bot")
@@ -196,14 +170,6 @@ static PROVIDER_CONFIGS: Lazy<BTreeMap<&'static str, ProviderConfig>> = Lazy::ne
             ProviderConfig::openai("https://api.perplexity.ai/v1/responses"),
         ),
         (
-            "poolside",
-            ProviderConfig::openai("https://inference.poolside.ai/v1/chat/completions"),
-        ),
-        (
-            "tencent",
-            ProviderConfig::openai("https://api.hunyuan.cloud.tencent.com/v1/chat/completions"),
-        ),
-        (
             "tokenrouter",
             ProviderConfig::openai("https://api.tokenrouter.com/v1/chat/completions"),
         ),
@@ -227,12 +193,6 @@ static PROVIDER_CONFIGS: Lazy<BTreeMap<&'static str, ProviderConfig>> = Lazy::ne
             ),
         ),
         (
-            "byteplus",
-            ProviderConfig::openai(
-                "https://ark.ap-southeast.bytepluses.com/api/coding/v3/chat/completions",
-            ),
-        ),
-        (
             "nvidia",
             ProviderConfig::openai("https://integrate.api.nvidia.com/v1/chat/completions"),
         ),
@@ -245,11 +205,6 @@ static PROVIDER_CONFIGS: Lazy<BTreeMap<&'static str, ProviderConfig>> = Lazy::ne
         (
             "azure",
             ProviderConfig::openai("https://{resource}.openai.azure.com/v1/chat/completions"),
-        ),
-        (
-            "blackbox",
-            // 9router registry/blackbox.js:26 — /v1/chat/completions.
-            ProviderConfig::openai("https://api.blackbox.ai/v1/chat/completions"),
         ),
         (
             "ollama-cloud",
@@ -312,72 +267,20 @@ static PROVIDER_CONFIGS: Lazy<BTreeMap<&'static str, ProviderConfig>> = Lazy::ne
             ProviderConfig::openai("https://ollama.com/v1/chat/completions"),
         ),
         (
-            "agentrouter",
-            ProviderConfig::anthropic("https://agentrouter.org/v1/messages"),
-        ),
-        (
-            "aimlapi",
-            ProviderConfig::openai("https://api.aimlapi.com/v1/chat/completions"),
-        ),
-        (
             "modal",
             ProviderConfig::openai("https://api.modal.com/v1/chat/completions"),
-        ),
-        (
-            "reka",
-            ProviderConfig::openai("https://api.reka.ai/v1/chat/completions"),
-        ),
-        (
-            "nlpcloud",
-            ProviderConfig::openai("https://api.nlpcloud.io/v1/gpu/chatbot"),
-        ),
-        (
-            "bazaarlink",
-            ProviderConfig::openai("https://bazaarlink.ai/api/v1/chat/completions"),
-        ),
-        (
-            "completions",
-            ProviderConfig::openai("https://completions.me/api/v1/chat/completions"),
         ),
         (
             "enally",
             ProviderConfig::openai("https://ai.enally.in/v1/chat/completions"),
         ),
         (
-            "freetheai",
-            ProviderConfig::openai("https://api.freetheai.xyz/v1/chat/completions"),
-        ),
-        (
             "llm7",
             ProviderConfig::openai("https://api.llm7.io/v1/chat/completions"),
         ),
         (
-            "kluster",
-            ProviderConfig::openai("https://api.kluster.ai/v1/chat/completions"),
-        ),
-        (
-            "predibase",
-            ProviderConfig::openai("https://serving.app.predibase.com/v1/chat/completions"),
-        ),
-        (
-            "bytez",
-            ProviderConfig::openai("https://api.bytez.com/models/v2"),
-        ),
-        (
-            "morph",
-            ProviderConfig::openai("https://api.morphllm.com/v1/chat/completions"),
-        ),
-        (
             "longcat",
             ProviderConfig::openai("https://api.longcat.chat/openai/v1/chat/completions"),
-        ),
-        (
-            "puter",
-            ProviderConfig::openai("https://api.puter.com/puterai/openai/v1/chat/completions"),
-        ),
-        (
-            "uncloseai",
-            ProviderConfig::openai("https://hermes.ai.unturf.com/v1/chat/completions"),
         ),
         (
             "scaleway",
@@ -390,14 +293,6 @@ static PROVIDER_CONFIGS: Lazy<BTreeMap<&'static str, ProviderConfig>> = Lazy::ne
         (
             "nscale",
             ProviderConfig::openai("https://inference.api.nscale.com/v1/chat/completions"),
-        ),
-        (
-            "baseten",
-            ProviderConfig::openai("https://inference.baseten.co/v1/chat/completions"),
-        ),
-        (
-            "publicai",
-            ProviderConfig::openai("https://api.publicai.co/v1/chat/completions"),
         ),
         (
             "nous-research",
@@ -716,14 +611,7 @@ impl DefaultExecutor {
     fn provider_wants_claude_beta(provider: &str) -> bool {
         matches!(
             provider,
-            "claude"
-                | "anthropic"
-                | "glm"
-                | "kimi"
-                | "kimi-coding"
-                | "minimax"
-                | "minimax-cn"
-                | "agentrouter"
+            "claude" | "anthropic" | "glm" | "kimi" | "kimi-coding" | "minimax" | "minimax-cn"
         )
     }
 
@@ -807,7 +695,6 @@ impl DefaultExecutor {
                         | "kimi-coding"
                         | "minimax"
                         | "minimax-cn"
-                        | "agentrouter"
                         | "xiaomi-mimo"
                         | "mimo"
                 ) {
@@ -888,7 +775,7 @@ impl DefaultExecutor {
 
         if matches!(
             self.provider.as_str(),
-            "claude" | "kimi" | "minimax" | "minimax-cn" | "kimi-coding" | "agentrouter"
+            "claude" | "kimi" | "minimax" | "minimax-cn" | "kimi-coding"
         ) {
             return Ok(format!("{}?beta=true", self.config.base_url));
         }
@@ -1010,10 +897,7 @@ impl DefaultExecutor {
                 .or(credentials.api_key.as_deref())
                 .ok_or_else(|| ExecutorError::MissingCredentials(self.provider.clone()))?;
 
-            if matches!(
-                self.provider.as_str(),
-                "glm" | "kimi" | "agentrouter" | "enally"
-            ) {
+            if matches!(self.provider.as_str(), "glm" | "kimi" | "enally") {
                 headers.insert("x-api-key", HeaderValue::from_str(token)?);
             } else if matches!(self.provider.as_str(), "minimax" | "minimax-cn") {
                 headers.insert(
@@ -1115,7 +999,7 @@ impl DefaultExecutor {
         // uses a Claude-compatible endpoint (minimax, kimi, etc.)
         if matches!(
             self.provider.as_str(),
-            "minimax" | "minimax-cn" | "kimi" | "kimi-coding" | "agentrouter"
+            "minimax" | "minimax-cn" | "kimi" | "kimi-coding"
         ) {
             convert_openai_tools_to_claude(&mut body);
         }

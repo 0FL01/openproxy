@@ -546,33 +546,12 @@ async fn test_api_key_connection(
             )
             .await
         }
-        "byteplus" => {
-            openai_chat_status_test(
-                state,
-                connection,
-                effective_proxy,
-                "https://ark.ap-southeast.bytepluses.com/api/coding/v3/chat/completions",
-                &default_catalog_model("byteplus"),
-                "Invalid API key",
-            )
-            .await
-        }
         "deepseek" => {
             simple_get_bearer_test(
                 state,
                 connection,
                 effective_proxy,
                 "https://api.deepseek.com/models",
-                "Invalid API key",
-            )
-            .await
-        }
-        "groq" => {
-            simple_get_bearer_test(
-                state,
-                connection,
-                effective_proxy,
-                "https://api.groq.com/openai/v1/models",
                 "Invalid API key",
             )
             .await
@@ -667,16 +646,6 @@ async fn test_api_key_connection(
             )
             .await
         }
-        "siliconflow" => {
-            simple_get_bearer_test(
-                state,
-                connection,
-                effective_proxy,
-                "https://api.siliconflow.com/v1/models",
-                "Invalid API key",
-            )
-            .await
-        }
         "hyperbolic" => {
             simple_get_bearer_test(
                 state,
@@ -698,16 +667,6 @@ async fn test_api_key_connection(
             .await
         }
         "ollama-local" => test_ollama_local_connection(state, connection, effective_proxy).await,
-        "chutes" => {
-            simple_get_bearer_test(
-                state,
-                connection,
-                effective_proxy,
-                "https://llm.chutes.ai/v1/models",
-                "Invalid API key",
-            )
-            .await
-        }
         "xiaomi-tokenplan" => {
             let region =
                 provider_specific_string(connection, "region").unwrap_or("sgp".to_string());

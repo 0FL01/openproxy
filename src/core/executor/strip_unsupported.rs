@@ -13,7 +13,7 @@ type ParamFilter = fn(provider: &str, model: &str, field: &str) -> bool;
 
 /// Composite filter that checks against all known unsupported-parameter rules.
 fn should_strip(provider: &str, model: &str, field: &str) -> bool {
-    // Anthropic-compatible providers (kimi, minimax, glm, agentrouter, etc.)
+    // Anthropic-compatible providers (kimi, minimax, glm, etc.)
     // don't support `max_completion_tokens` — they use `max_tokens` instead.
     if field == "max_completion_tokens" && is_anthropic_compatible(provider) {
         return true;
@@ -64,7 +64,7 @@ fn should_strip(provider: &str, model: &str, field: &str) -> bool {
 fn is_anthropic_compatible(provider: &str) -> bool {
     matches!(
         provider,
-        "claude" | "glm" | "kimi" | "kimi-coding" | "minimax" | "minimax-cn" | "agentrouter"
+        "claude" | "glm" | "kimi" | "kimi-coding" | "minimax" | "minimax-cn"
     )
 }
 

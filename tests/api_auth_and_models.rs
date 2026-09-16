@@ -124,7 +124,7 @@ async fn app_state() -> AppState {
         ];
         state.provider_connections = vec![
             connection("openai", Some("gpt-4.1"), &[], true),
-            connection("groq", None, &["llama-3.3-70b"], true),
+            connection("xai", None, &["grok-4"], true),
             connection("deepseek", Some("deepseek-chat"), &[], false),
         ];
         state.custom_models = vec![
@@ -481,7 +481,7 @@ async fn models_endpoint_returns_active_connection_and_custom_llm_models() {
         .collect();
 
     assert!(ids.contains(&"openai/gpt-4.1".to_string()));
-    assert!(ids.contains(&"groq/llama-3.3-70b".to_string()));
+    assert!(ids.contains(&"xai/grok-4".to_string()));
     assert!(ids.contains(&"openai/gpt-custom".to_string()));
     assert!(!ids.contains(&"deepseek/deepseek-chat".to_string()));
     assert!(!ids.contains(&"openai/text-embedding-3-large".to_string()));

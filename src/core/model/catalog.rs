@@ -167,29 +167,24 @@ mod tests {
         assert!(models.is_empty());
     }
 
-    // Bead .46: all 17 parity providers must be registered in the static
+    // Bead .46: all 12 parity providers must be registered in the static
     // catalog (providerIdToAlias + providerModels + providers[]), keyed by the
     // same aliases the 9router v0.5.50 registry files declare.
     #[test]
-    fn all_17_parity_providers_registered() {
+    fn all_12_parity_providers_registered() {
         let catalog = provider_catalog();
 
         // (provider id, js alias) — mirror of the `alias` fields in
         // open-sse/providers/registry/*.js for the 17 parity providers.
         let expected: &[(&str, &str)] = &[
-            ("api-airforce", "af"),
-            ("baidu", "qianfan"),
-            ("bluesminds", "bm"),
             ("clinepass", "clinepass"),
             ("codebuddy-intl", "cbai"),
             ("featherless", "featherless"),
             ("kilo-gateway", "kgw"),
             ("perplexity-agent", "perplexity-agent"),
-            ("poolside", "poolside"),
             ("selfhosted-embedding", "selfhosted-embedding"),
             ("selfhosted-stt", "selfhosted-stt"),
             ("selfhosted-tts", "selfhosted-tts"),
-            ("tencent", "hunyuan"),
             ("tokenrouter", "tokenrouter"),
             ("venice", "venice"),
             ("zed", "zd"),
@@ -223,16 +218,12 @@ mod tests {
         let catalog = provider_catalog();
 
         let m = catalog
-            .find_model("baidu", "deepseek-v4-pro")
-            .expect("baidu/deepseek-v4-pro should be in provider_catalog.json");
+            .find_model("glm", "glm-5.3")
+            .expect("glm/glm-5.3 should be in provider_catalog.json");
         assert_eq!(m.context_window, Some(1_048_576));
         assert_eq!(m.kind, "llm");
 
-        // api-airforce and kilo-gateway carry explicit context lengths too.
-        let m = catalog
-            .find_model("api-airforce", "google/gemini-2.5-flash")
-            .expect("api-airforce/google/gemini-2.5-flash should be in the catalog");
-        assert_eq!(m.context_window, Some(1_048_576));
+        // kilo-gateway carries explicit context lengths too.
         let m = catalog
             .find_model("kilo-gateway", "nvidia/nemotron-3-ultra-550b-a55b:free")
             .expect("kilo-gateway nemotron should be in the catalog");
@@ -247,13 +238,9 @@ mod tests {
 
         for (provider_id, alias) in [
             ("venice", "venice"),
-            ("tencent", "hunyuan"),
-            ("baidu", "qianfan"),
+            ("kilo-gateway", "kgw"),
             ("zed", "zd"),
             ("codebuddy-intl", "cbai"),
-            ("kilo-gateway", "kgw"),
-            ("api-airforce", "af"),
-            ("bluesminds", "bm"),
             ("tokenrouter", "tokenrouter"),
             ("perplexity-agent", "perplexity-agent"),
             ("alitp-intl", "alitp-intl"),
@@ -269,18 +256,14 @@ mod tests {
 
         // Reverse resolution: alias -> provider id.
         let reverse = catalog.alias_to_provider_id();
-        for (provider_id, alias) in [
-            ("venice", "venice"),
-            ("tencent", "hunyuan"),
-            ("baidu", "qianfan"),
-        ] {
+        for (provider_id, alias) in [("venice", "venice"), ("kilo-gateway", "kgw")] {
             assert_eq!(reverse.get(alias).map(String::as_str), Some(provider_id));
         }
 
         let m = catalog
-            .find_model("baidu", "deepseek-v4-pro")
-            .expect("baidu/deepseek-v4-pro should resolve through qianfan");
-        assert_eq!(m.name.as_deref(), Some("DeepSeek V4 Pro"));
+            .find_model("kilo-gateway", "nvidia/nemotron-3-ultra-550b-a55b:free")
+            .expect("kilo-gateway nemotron should resolve through kgw");
+        assert_eq!(m.name.as_deref(), Some("Nemotron 3 Ultra 550B (Free)"));
 
         // alitp-intl (Alibaba Token Plan) — new in v0.5.55.
         let m = catalog

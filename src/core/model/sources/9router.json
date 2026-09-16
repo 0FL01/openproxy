@@ -9,10 +9,7 @@
     "antigravity": "ag",
     "assemblyai": "assemblyai",
     "azure": "azure",
-    "blackbox": "blackbox",
-    "byteplus": "byteplus",
     "cerebras": "cerebras",
-    "chutes": "chutes",
     "claude": "cc",
     "cline": "cl",
     "clinepass": "clinepass",
@@ -33,7 +30,6 @@
     "glm": "glm",
     "grok-cli": "gcli",
     "grok-web": "grok-web",
-    "groq": "groq",
     "hyperbolic": "hyperbolic",
     "kilocode": "kc",
     "kimchi": "kimchi",
@@ -55,7 +51,6 @@
     "openrouter": "openrouter",
     "perplexity": "perplexity",
     "perplexity-agent": "perplexity-agent",
-    "siliconflow": "siliconflow",
     "together": "together",
     "venice": "venice",
     "vercel-ai-gateway": "vercel-ai-gateway",
@@ -68,46 +63,13 @@
     "alims-intl": "alims-intl",
     "codebuddy-intl": "cbai",
     "zed": "zd",
-    "api-airforce": "af",
-    "baidu": "qianfan",
-    "bazaarlink": "bzl",
-    "bluesminds": "bm",
     "kilo-gateway": "kgw",
     "llm7": "llm7",
     "sambanova": "samba",
-    "tencent": "hunyuan",
-    "morph": "morph",
-    "poolside": "poolside",
     "tokenrouter": "tokenrouter",
     "alitp-intl": "alitp-intl"
   },
   "providers": [
-    {
-      "id": "api-airforce",
-      "alias": "af",
-      "format": "openai",
-      "baseUrl": "https://api.airforce/v1/chat/completions",
-      "models": [
-        {
-          "id": "anthropic/claude-3.7-sonnet",
-          "name": "Claude 3.7 Sonnet (Free)",
-          "kind": "llm",
-          "contextLength": 200000
-        },
-        {
-          "id": "moonshot/kimi-k2.6",
-          "name": "Kimi K2.6 (Free)",
-          "kind": "llm",
-          "contextLength": 262144
-        },
-        {
-          "id": "google/gemini-2.5-flash",
-          "name": "Gemini 2.5 Flash (Free)",
-          "kind": "llm",
-          "contextLength": 1048576
-        }
-      ]
-    },
     {
       "id": "antigravity",
       "alias": "ag",
@@ -476,350 +438,6 @@
           "id": "flux-kontext-max",
           "name": "FLUX Kontext Max (Edit)",
           "kind": "image"
-        }
-      ]
-    },
-    {
-      "id": "blackbox",
-      "alias": "blackbox",
-      "format": "openai",
-      "baseUrl": "https://api.blackbox.ai/v1/chat/completions",
-      "models": [
-        {
-          "id": "claude-fable-5",
-          "name": "Claude Fable 5",
-          "kind": "llm"
-        },
-        {
-          "id": "claude-opus-4.8",
-          "name": "Claude Opus 4.8",
-          "kind": "llm"
-        },
-        {
-          "id": "claude-sonnet-4.6",
-          "name": "Claude Sonnet 4.6",
-          "kind": "llm"
-        },
-        {
-          "id": "gpt-5.5",
-          "name": "GPT-5.5",
-          "kind": "llm"
-        },
-        {
-          "id": "gpt-5.4-pro",
-          "name": "GPT-5.4 Pro",
-          "kind": "llm"
-        },
-        {
-          "id": "gpt-5.4",
-          "name": "GPT-5.4",
-          "kind": "llm"
-        },
-        {
-          "id": "gpt-5.3-codex",
-          "name": "GPT-5.3 Codex",
-          "kind": "llm"
-        },
-        {
-          "id": "gpt-5.4-nano",
-          "name": "GPT-5.4 Nano",
-          "kind": "llm"
-        },
-        {
-          "id": "deepseek-v4-flash",
-          "name": "DeepSeek V4 Flash",
-          "kind": "llm"
-        },
-        {
-          "id": "grok-4.3",
-          "name": "Grok 4.3",
-          "kind": "llm"
-        }
-      ]
-    },
-    {
-      "id": "bluesminds",
-      "alias": "bm",
-      "format": "openai",
-      "baseUrl": "https://api.bluesminds.com/v1/chat/completions",
-      "models": [
-        {
-          "id": "gpt-4.1",
-          "name": "GPT-4.1",
-          "kind": "llm",
-          "contextLength": 1048576
-        },
-        {
-          "id": "gpt-4.1-mini",
-          "name": "GPT-4.1 Mini",
-          "kind": "llm",
-          "contextLength": 1048576
-        },
-        {
-          "id": "gpt-4.1-nano",
-          "name": "GPT-4.1 Nano",
-          "kind": "llm",
-          "contextLength": 1048576
-        },
-        {
-          "id": "claude-sonnet-4-5",
-          "name": "Claude Sonnet 4.5",
-          "kind": "llm",
-          "contextLength": 200000
-        },
-        {
-          "id": "claude-haiku-4-5",
-          "name": "Claude Haiku 4.5",
-          "kind": "llm",
-          "contextLength": 200000
-        },
-        {
-          "id": "gemini-2.0-flash",
-          "name": "Gemini 2.0 Flash",
-          "kind": "llm",
-          "contextLength": 1048576
-        },
-        {
-          "id": "gemini-2.0-flash-exp",
-          "name": "Gemini 2.0 Flash (Exp)",
-          "kind": "llm",
-          "contextLength": 1048576
-        },
-        {
-          "id": "qwen-turbo",
-          "name": "Qwen Turbo",
-          "kind": "llm",
-          "contextLength": 1000000
-        },
-        {
-          "id": "kimi-k2",
-          "name": "Kimi K2",
-          "kind": "llm",
-          "contextLength": 262144
-        },
-        {
-          "id": "kimi-k2-thinking",
-          "name": "Kimi K2 Thinking",
-          "kind": "llm",
-          "contextLength": 262144
-        },
-        {
-          "id": "glm-4.7",
-          "name": "GLM 4.7",
-          "kind": "llm",
-          "contextLength": 204800
-        },
-        {
-          "id": "minimax-m2.5",
-          "name": "MiniMax M2.5",
-          "kind": "llm",
-          "contextLength": 204800
-        },
-        {
-          "id": "claude-opus-4-5",
-          "name": "Claude Opus 4.5 (VIP)",
-          "kind": "llm",
-          "contextLength": 200000
-        },
-        {
-          "id": "gemini-2.5-pro",
-          "name": "Gemini 2.5 Pro (VIP)",
-          "kind": "llm",
-          "contextLength": 1048576
-        }
-      ]
-    },
-    {
-      "id": "byteplus",
-      "alias": "byteplus",
-      "format": "openai",
-      "baseUrl": "https://ark.ap-southeast.bytepluses.com/api/coding/v3/chat/completions",
-      "models": [
-        {
-          "id": "seed-2-0-pro-260328",
-          "name": "Seed 2.0 Pro",
-          "kind": "llm"
-        },
-        {
-          "id": "seed-2-0-code-preview-260328",
-          "name": "Seed 2.0 Code Preview",
-          "kind": "llm"
-        },
-        {
-          "id": "seed-2-0-mini-260215",
-          "name": "Seed 2.0 Mini",
-          "kind": "llm"
-        },
-        {
-          "id": "seed-2-0-lite-260228",
-          "name": "Seed 2.0 Lite",
-          "kind": "llm"
-        },
-        {
-          "id": "kimi-k2-thinking-251104",
-          "name": "Kimi K2 Thinking",
-          "kind": "llm"
-        },
-        {
-          "id": "glm-4-7-251222",
-          "name": "GLM 4.7",
-          "kind": "llm"
-        },
-        {
-          "id": "gpt-oss-120b-250805",
-          "name": "GPT-OSS-120B",
-          "kind": "llm"
-        }
-      ]
-    },
-    {
-      "id": "bazaarlink",
-      "alias": "bzl",
-      "format": "openai",
-      "baseUrl": "https://bazaarlink.ai/api/v1/chat/completions",
-      "models": [
-        {
-          "id": "auto:free",
-          "name": "Auto Free (Zero Cost)",
-          "kind": "llm"
-        },
-        {
-          "id": "claude-opus-4.7",
-          "name": "Claude Opus 4.7",
-          "kind": "llm",
-          "contextLength": 1000000
-        },
-        {
-          "id": "claude-sonnet-4.6",
-          "name": "Claude Sonnet 4.6",
-          "kind": "llm",
-          "contextLength": 1000000
-        },
-        {
-          "id": "claude-haiku-4.5",
-          "name": "Claude Haiku 4.5",
-          "kind": "llm",
-          "contextLength": 200000
-        },
-        {
-          "id": "gpt-5.5",
-          "name": "GPT-5.5",
-          "kind": "llm",
-          "contextLength": 1050000
-        },
-        {
-          "id": "gpt-5.4",
-          "name": "GPT-5.4",
-          "kind": "llm",
-          "contextLength": 1050000
-        },
-        {
-          "id": "gpt-5.4-mini",
-          "name": "GPT-5.4 Mini",
-          "kind": "llm",
-          "contextLength": 400000
-        },
-        {
-          "id": "gpt-5.4-nano",
-          "name": "GPT-5.4 Nano",
-          "kind": "llm",
-          "contextLength": 400000
-        },
-        {
-          "id": "grok-4.3",
-          "name": "Grok 4.3",
-          "kind": "llm",
-          "contextLength": 1000000
-        },
-        {
-          "id": "grok-4.20",
-          "name": "Grok 4.20",
-          "kind": "llm",
-          "contextLength": 2000000
-        },
-        {
-          "id": "gemini-3.1-pro-preview",
-          "name": "Gemini 3.1 Pro",
-          "kind": "llm",
-          "contextLength": 1048576
-        },
-        {
-          "id": "gemini-3-flash-preview",
-          "name": "Gemini 3 Flash",
-          "kind": "llm",
-          "contextLength": 1048576
-        },
-        {
-          "id": "gemini-3.1-flash-lite-preview",
-          "name": "Gemini 3.1 Flash Lite",
-          "kind": "llm",
-          "contextLength": 1048576
-        },
-        {
-          "id": "kimi-k2.6",
-          "name": "Kimi K2.6",
-          "kind": "llm",
-          "contextLength": 262144
-        },
-        {
-          "id": "kimi-k2.5",
-          "name": "Kimi K2.5",
-          "kind": "llm",
-          "contextLength": 262144
-        },
-        {
-          "id": "glm-5.1",
-          "name": "GLM 5.1",
-          "kind": "llm",
-          "contextLength": 204800
-        },
-        {
-          "id": "glm-5",
-          "name": "GLM 5",
-          "kind": "llm",
-          "contextLength": 204800
-        },
-        {
-          "id": "mimo-v2.5-pro",
-          "name": "MiMo-V2.5-Pro",
-          "kind": "llm",
-          "contextLength": 1050000
-        },
-        {
-          "id": "mimo-v2.5",
-          "name": "MiMo-V2.5",
-          "kind": "llm",
-          "contextLength": 1050000
-        },
-        {
-          "id": "minimax-m3",
-          "name": "MiniMax M3",
-          "kind": "llm",
-          "contextLength": 1048576
-        },
-        {
-          "id": "minimax-m2.7",
-          "name": "MiniMax M2.7",
-          "kind": "llm",
-          "contextLength": 204800
-        },
-        {
-          "id": "minimax-m2.5",
-          "name": "MiniMax M2.5",
-          "kind": "llm",
-          "contextLength": 204800
-        },
-        {
-          "id": "qwen3.6-plus",
-          "name": "Qwen 3.6 Plus",
-          "kind": "llm",
-          "contextLength": 1000000
-        },
-        {
-          "id": "nemotron-3-super-120b-a12b",
-          "name": "Nemotron 3 Super",
-          "kind": "llm",
-          "contextLength": 1000000
         }
       ]
     },
@@ -2787,49 +2405,6 @@
       ]
     },
     {
-      "id": "groq",
-      "alias": "groq",
-      "format": "openai",
-      "baseUrl": "https://api.groq.com/openai/v1/chat/completions",
-      "models": [
-        {
-          "id": "llama-3.3-70b-versatile",
-          "name": "Llama 3.3 70B",
-          "kind": "llm"
-        },
-        {
-          "id": "meta-llama/llama-4-maverick-17b-128e-instruct",
-          "name": "Llama 4 Maverick",
-          "kind": "llm"
-        },
-        {
-          "id": "qwen/qwen3-32b",
-          "name": "Qwen3 32B",
-          "kind": "llm"
-        },
-        {
-          "id": "openai/gpt-oss-120b",
-          "name": "GPT-OSS 120B",
-          "kind": "llm"
-        },
-        {
-          "id": "whisper-large-v3",
-          "name": "Whisper Large v3",
-          "kind": "llm"
-        },
-        {
-          "id": "whisper-large-v3-turbo",
-          "name": "Whisper Large v3 Turbo",
-          "kind": "llm"
-        },
-        {
-          "id": "distil-whisper-large-v3-en",
-          "name": "Distil Whisper Large v3 EN",
-          "kind": "llm"
-        }
-      ]
-    },
-    {
       "id": "huggingface",
       "alias": "huggingface",
       "models": [
@@ -2852,26 +2427,6 @@
           "id": "openai/whisper-small",
           "name": "Whisper Small (HF)",
           "kind": "llm"
-        }
-      ]
-    },
-    {
-      "id": "tencent",
-      "alias": "hunyuan",
-      "format": "openai",
-      "baseUrl": "https://api.hunyuan.cloud.tencent.com/v1/chat/completions",
-      "models": [
-        {
-          "id": "hunyuan-turbos-latest",
-          "name": "Hunyuan TurboS Latest",
-          "kind": "llm",
-          "contextLength": 200000
-        },
-        {
-          "id": "hunyuan-t1-latest",
-          "name": "Hunyuan T1 Latest",
-          "kind": "llm",
-          "contextLength": 256000
         }
       ]
     },
@@ -3589,48 +3144,6 @@
           "id": "mimo-auto",
           "name": "MiMo Auto",
           "kind": "llm"
-        }
-      ]
-    },
-    {
-      "id": "morph",
-      "alias": "morph",
-      "format": "openai",
-      "baseUrl": "https://api.morphllm.com/v1/chat/completions",
-      "models": [
-        {
-          "id": "morph-v3-large",
-          "name": "Morph v3 Large",
-          "kind": "llm"
-        },
-        {
-          "id": "morph-v3-fast",
-          "name": "Morph v3 Fast",
-          "kind": "llm"
-        },
-        {
-          "id": "morph-qwen35-397b",
-          "name": "Qwen 3.5 397B (Morph)",
-          "kind": "llm",
-          "contextLength": 262144
-        },
-        {
-          "id": "morph-minimax27-230b",
-          "name": "MiniMax M2.7 (Morph)",
-          "kind": "llm",
-          "contextLength": 200704
-        },
-        {
-          "id": "morph-qwen36-27b",
-          "name": "Qwen 3.6 27B (Morph)",
-          "kind": "llm",
-          "contextLength": 262144
-        },
-        {
-          "id": "morph-dsv4flash",
-          "name": "DeepSeek V4 Flash (Morph)",
-          "kind": "llm",
-          "contextLength": 1048576
         }
       ]
     },
@@ -4394,74 +3907,6 @@
       ]
     },
     {
-      "id": "poolside",
-      "alias": "poolside",
-      "format": "openai",
-      "baseUrl": "https://inference.poolside.ai/v1/chat/completions",
-      "models": [
-        {
-          "id": "poolside/laguna-s-2.1",
-          "name": "Laguna S 2.1",
-          "kind": "llm"
-        },
-        {
-          "id": "poolside/laguna-xs-2.1",
-          "name": "Laguna XS 2.1",
-          "kind": "llm"
-        }
-      ]
-    },
-    {
-      "id": "baidu",
-      "alias": "qianfan",
-      "format": "openai",
-      "baseUrl": "https://qianfan.baidubce.com/v2/chat/completions",
-      "models": [
-        {
-          "id": "deepseek-v4-pro",
-          "name": "DeepSeek V4 Pro",
-          "kind": "llm",
-          "contextLength": 1048576
-        },
-        {
-          "id": "deepseek-v4-flash",
-          "name": "DeepSeek V4 Flash",
-          "kind": "llm",
-          "contextLength": 1048576
-        },
-        {
-          "id": "glm-5.2",
-          "name": "GLM 5.2",
-          "kind": "llm",
-          "contextLength": 512000
-        },
-        {
-          "id": "glm-5.1",
-          "name": "GLM 5.1",
-          "kind": "llm",
-          "contextLength": 198000
-        },
-        {
-          "id": "kimi-k2.6",
-          "name": "Kimi K2.6",
-          "kind": "llm",
-          "contextLength": 262144
-        },
-        {
-          "id": "qwen3.5-397b-a17b",
-          "name": "Qwen 3.5 397B A17B",
-          "kind": "llm",
-          "contextLength": 262144
-        },
-        {
-          "id": "qwen3.5-27b",
-          "name": "Qwen 3.5 27B",
-          "kind": "llm",
-          "contextLength": 262144
-        }
-      ]
-    },
-    {
       "id": "recraft",
       "alias": "recraft",
       "models": [
@@ -4562,94 +4007,6 @@
         {
           "id": "kokoro",
           "name": "Kokoro (self-hosted)",
-          "kind": "llm"
-        }
-      ]
-    },
-    {
-      "id": "siliconflow",
-      "alias": "siliconflow",
-      "format": "openai",
-      "baseUrl": "https://api.siliconflow.com/v1/chat/completions",
-      "models": [
-        {
-          "id": "deepseek-ai/DeepSeek-V4-Pro",
-          "name": "DeepSeek V4 Pro",
-          "kind": "llm"
-        },
-        {
-          "id": "deepseek-ai/DeepSeek-V4-Flash",
-          "name": "DeepSeek V4 Flash",
-          "kind": "llm"
-        },
-        {
-          "id": "deepseek-ai/DeepSeek-V3.2",
-          "name": "DeepSeek V3.2",
-          "kind": "llm"
-        },
-        {
-          "id": "deepseek-ai/DeepSeek-V3.2-Exp",
-          "name": "DeepSeek V3.2 Exp",
-          "kind": "llm"
-        },
-        {
-          "id": "deepseek-ai/DeepSeek-V3.1",
-          "name": "DeepSeek V3.1",
-          "kind": "llm"
-        },
-        {
-          "id": "deepseek-ai/DeepSeek-V3.1-Terminus",
-          "name": "DeepSeek V3.1 Terminus",
-          "kind": "llm"
-        },
-        {
-          "id": "deepseek-ai/DeepSeek-R1",
-          "name": "DeepSeek R1",
-          "kind": "llm"
-        },
-        {
-          "id": "Qwen/Qwen3.5-397B-A17B",
-          "name": "Qwen 3.5 397B A17B",
-          "kind": "llm"
-        },
-        {
-          "id": "Qwen/Qwen3.5-122B-A10B",
-          "name": "Qwen 3.5 122B A10B",
-          "kind": "llm"
-        },
-        {
-          "id": "zai-org/GLM-5.1",
-          "name": "GLM 5.1",
-          "kind": "llm"
-        },
-        {
-          "id": "zai-org/GLM-5",
-          "name": "GLM 5",
-          "kind": "llm"
-        },
-        {
-          "id": "moonshotai/Kimi-K2.6",
-          "name": "Kimi K2.6",
-          "kind": "llm"
-        },
-        {
-          "id": "moonshotai/Kimi-K2.5",
-          "name": "Kimi K2.5",
-          "kind": "llm"
-        },
-        {
-          "id": "openai/gpt-oss-120b",
-          "name": "GPT OSS 120B",
-          "kind": "llm"
-        },
-        {
-          "id": "MiniMaxAI/MiniMax-M2.5",
-          "name": "MiniMax M2.5",
-          "kind": "llm"
-        },
-        {
-          "id": "inclusionAI/Ling-flash-2.0",
-          "name": "Ling Flash 2.0",
           "kind": "llm"
         }
       ]

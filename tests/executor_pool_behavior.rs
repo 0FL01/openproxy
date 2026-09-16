@@ -209,14 +209,11 @@ fn default_executor_supports_current_passthrough_provider_matrix() {
     let pool = Arc::new(ClientPool::new());
     let static_providers = [
         ("openai", "https://api.openai.com/v1/chat/completions"),
-        ("blackbox", "https://api.blackbox.ai/v1/chat/completions"),
         (
             "openrouter",
             "https://openrouter.ai/api/v1/chat/completions",
         ),
-        ("api-airforce", "https://api.airforce/v1/chat/completions"),
         ("deepseek", "https://api.deepseek.com/chat/completions"),
-        ("groq", "https://api.groq.com/openai/v1/chat/completions"),
         ("xai", "https://api.x.ai/v1/chat/completions"),
         ("mistral", "https://api.mistral.ai/v1/chat/completions"),
         ("cline", "https://api.cline.bot/api/v1/chat/completions"),
@@ -229,15 +226,10 @@ fn default_executor_supports_current_passthrough_provider_matrix() {
         ("cohere", "https://api.cohere.ai/v1/chat/completions"),
         ("nebius", "https://api.studio.nebius.ai/v1/chat/completions"),
         (
-            "siliconflow",
-            "https://api.siliconflow.com/v1/chat/completions",
-        ),
-        (
             "hyperbolic",
             "https://api.hyperbolic.xyz/v1/chat/completions",
         ),
         ("perplexity", "https://api.perplexity.ai/chat/completions"),
-        ("chutes", "https://llm.chutes.ai/v1/chat/completions"),
         ("gitlab", "https://gitlab.com/api/v4/chat/completions"),
         (
             "codebuddy",
@@ -263,11 +255,6 @@ fn default_executor_supports_current_passthrough_provider_matrix() {
             "alims-intl",
             "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
         ),
-        ("baidu", "https://qianfan.baidubce.com/v2/chat/completions"),
-        (
-            "bluesminds",
-            "https://api.bluesminds.com/v1/chat/completions",
-        ),
         ("clinepass", "https://api.cline.bot/api/v1/chat/completions"),
         (
             "codebuddy-intl",
@@ -283,14 +270,6 @@ fn default_executor_supports_current_passthrough_provider_matrix() {
         ),
         ("perplexity-agent", "https://api.perplexity.ai/v1/responses"),
         (
-            "poolside",
-            "https://inference.poolside.ai/v1/chat/completions",
-        ),
-        (
-            "tencent",
-            "https://api.hunyuan.cloud.tencent.com/v1/chat/completions",
-        ),
-        (
             "tokenrouter",
             "https://api.tokenrouter.com/v1/chat/completions",
         ),
@@ -299,10 +278,6 @@ fn default_executor_supports_current_passthrough_provider_matrix() {
         (
             "volcengine-ark",
             "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions",
-        ),
-        (
-            "byteplus",
-            "https://ark.ap-southeast.bytepluses.com/api/coding/v3/chat/completions",
         ),
         (
             "nvidia",
@@ -352,73 +327,6 @@ fn alims_intl_has_full_endpoint_url() {
             .build_url("qwen3.5-plus", false, &connection("alims-intl"))
             .unwrap(),
         "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
-    );
-}
-
-/// Guard: api-airforce must route through DefaultExecutor with the full
-/// endpoint URL and the exact registry headers. 9router parity:
-/// `open-sse/providers/registry/api-airforce.js` transport.baseUrl =
-/// `https://api.airforce/v1/chat/completions` + headers
-/// HTTP-Referer/X-Title. Header names are case-sensitive in the upstream
-/// registry; HeaderMap lookups here are lowercase (HeaderMap normalizes).
-#[test]
-fn api_airforce_headers_and_url() {
-    let pool = Arc::new(ClientPool::new());
-    let executor =
-        DefaultExecutor::new("api-airforce", pool, None).expect("api-airforce executor config");
-    assert_eq!(
-        executor
-            .build_url(
-                "anthropic/claude-3.7-sonnet",
-                false,
-                &connection("api-airforce")
-            )
-            .unwrap(),
-        "https://api.airforce/v1/chat/completions"
-    );
-    let headers = executor
-        .build_headers(
-            "anthropic/claude-3.7-sonnet",
-            &connection("api-airforce"),
-            true,
-        )
-        .expect("headers");
-    assert_eq!(headers["authorization"], "Bearer sk-test");
-    assert_eq!(headers["http-referer"], "https://endpoint-proxy.local");
-    assert_eq!(headers["x-title"], "Endpoint Proxy");
-}
-
-/// Guard: baidu (Qianfan) must route through DefaultExecutor with the full
-/// v2 chat-completions endpoint. 9router parity: `open-sse/providers/registry/baidu.js`
-/// transport.baseUrl = `https://qianfan.baidubce.com/v2/chat/completions`.
-/// The live key MUST stay "baidu" (the JS provider id + catalog entry id) —
-/// renaming to "qianfan" would break model resolution and keep HTTP 500.
-#[test]
-fn baidu_has_v2_chat_completions_url() {
-    let pool = Arc::new(ClientPool::new());
-    let executor = DefaultExecutor::new("baidu", pool, None).expect("baidu executor config");
-    assert_eq!(
-        executor
-            .build_url("deepseek-v4-pro", false, &connection("baidu"))
-            .unwrap(),
-        "https://qianfan.baidubce.com/v2/chat/completions"
-    );
-}
-
-/// Guard: bluesminds must route through DefaultExecutor with the full
-/// v1 chat-completions endpoint. 9router parity: `open-sse/providers/registry/bluesminds.js`
-/// transport.baseUrl = `https://api.bluesminds.com/v1/chat/completions`,
-/// no transport headers, apikey auth. Note hidden:true is UI-only (no Rust
-/// impact); do NOT treat claude-*/gemini-* model ids as anthropic-compatible.
-#[test]
-fn bluesminds_uses_v1_chat_completions() {
-    let pool = Arc::new(ClientPool::new());
-    let executor = DefaultExecutor::new("bluesminds", pool, None).expect("bluesminds executor");
-    assert_eq!(
-        executor
-            .build_url("gpt-4.1", false, &connection("bluesminds"))
-            .unwrap(),
-        "https://api.bluesminds.com/v1/chat/completions"
     );
 }
 
@@ -501,19 +409,6 @@ fn featherless_has_full_endpoint() {
     );
 }
 
-/// Guard: blackbox must hit /v1/chat/completions (NOT the old /api/... path).
-/// 9router registry/blackbox.js:26 transport.baseUrl.
-#[test]
-fn blackbox_v1_chat_completions_url() {
-    let pool = Arc::new(ClientPool::new());
-    let executor = DefaultExecutor::new("blackbox", pool, None).expect("blackbox executor");
-    let url = executor
-        .build_url("claude-fable-5", false, &connection("blackbox"))
-        .unwrap();
-    assert_eq!(url, "https://api.blackbox.ai/v1/chat/completions");
-    assert_ne!(url, "https://api.blackbox.ai/api/chat/completions");
-}
-
 /// Guard: kilo-gateway must route through DefaultExecutor with the full
 /// /api/gateway/chat/completions endpoint. 9router parity:
 /// `open-sse/providers/registry/kilo-gateway.js` transport.baseUrl =
@@ -548,39 +443,6 @@ fn perplexity_agent_responses_endpoint() {
             .build_url("perplexity/sonar", false, &connection("perplexity-agent"))
             .unwrap(),
         "https://api.perplexity.ai/v1/responses"
-    );
-}
-
-/// Guard: poolside must route through DefaultExecutor with the full
-/// inference endpoint. 9router parity: `open-sse/providers/registry/poolside.js`
-/// transport.baseUrl = `https://inference.poolside.ai/v1/chat/completions`
-/// (freeTier apikey, no transport headers).
-#[test]
-fn poolside_inference_endpoint() {
-    let pool = Arc::new(ClientPool::new());
-    let executor = DefaultExecutor::new("poolside", pool, None).expect("poolside executor");
-    assert_eq!(
-        executor
-            .build_url("poolside/laguna-s-2.1", false, &connection("poolside"))
-            .unwrap(),
-        "https://inference.poolside.ai/v1/chat/completions"
-    );
-}
-
-/// Guard: tencent (Hunyuan) must route through DefaultExecutor with the full
-/// v1 chat-completions endpoint. 9router parity:
-/// `open-sse/providers/registry/tencent.js` transport.baseUrl =
-/// `https://api.hunyuan.cloud.tencent.com/v1/chat/completions`. The live key
-/// MUST be "tencent" (JS provider id); "hunyuan" is only the alias.
-#[test]
-fn tencent_hunyuan_endpoint() {
-    let pool = Arc::new(ClientPool::new());
-    let executor = DefaultExecutor::new("tencent", pool, None).expect("tencent executor");
-    assert_eq!(
-        executor
-            .build_url("hunyuan-turbos-latest", false, &connection("tencent"))
-            .unwrap(),
-        "https://api.hunyuan.cloud.tencent.com/v1/chat/completions"
     );
 }
 
@@ -736,11 +598,12 @@ fn default_executor_builds_expected_headers() {
 fn default_executor_builds_beta_provider_urls_and_special_headers() {
     let pool = Arc::new(ClientPool::new());
 
-    let groq = DefaultExecutor::new("groq", pool.clone(), None).expect("groq executor");
+    let deepseek = DefaultExecutor::new("deepseek", pool.clone(), None).expect("deepseek executor");
     assert_eq!(
-        groq.build_url("llama-3.3-70b", false, &connection("groq"))
-            .expect("groq url"),
-        "https://api.groq.com/openai/v1/chat/completions"
+        deepseek
+            .build_url("deepseek-chat", false, &connection("deepseek"))
+            .expect("deepseek url"),
+        "https://api.deepseek.com/chat/completions"
     );
 
     let glm = DefaultExecutor::new("glm", pool.clone(), None).expect("glm executor");
@@ -813,7 +676,6 @@ fn default_executor_builds_bearer_headers_for_openai_passthrough_matrix() {
         "cerebras",
         "cohere",
         "nebius",
-        "siliconflow",
         "hyperbolic",
         "codebuddy",
         "kilocode",
@@ -821,7 +683,6 @@ fn default_executor_builds_bearer_headers_for_openai_passthrough_matrix() {
         "alicode",
         "alicode-intl",
         "volcengine-ark",
-        "byteplus",
         "nvidia",
     ];
 
@@ -1892,18 +1753,11 @@ fn all_enabled_providers_reachable() {
     let pool = Arc::new(ClientPool::new());
     let enabled = [
         "alims-intl",
-        "api-airforce",
-        "baidu",
-        "blackbox",
-        "bluesminds",
         "clinepass",
         "codebuddy-intl",
         "featherless",
         "kilo-gateway",
         "perplexity-agent",
-        "poolside",
-        "siliconflow",
-        "tencent",
         "tokenrouter",
         "venice",
         "zed",
