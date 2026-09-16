@@ -170,31 +170,6 @@ async fn antigravity_authorize_matches_openproxy_response_shape() {
 }
 
 #[tokio::test]
-async fn iflow_authorize_matches_openproxy_response_shape() {
-    let app = openproxy::build_app(app_state().await);
-    let response = app
-        .oneshot(get_request(
-            "/api/oauth/iflow/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A4624%2Fcallback",
-        ))
-        .await
-        .unwrap();
-
-    let (status, json) = response_json(response).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(json["flowType"], "authorization_code");
-    assert_eq!(json["redirectUri"], "http://localhost:4624/callback");
-    assert_eq!(json["callbackPath"], "/callback");
-
-    let state = json["state"].as_str().expect("state");
-    assert_eq!(
-        json["authUrl"],
-        format!(
-            "https://iflow.cn/oauth?loginMethod=phone&type=phone&redirect=http%3A%2F%2Flocalhost%3A4624%2Fcallback&state={state}&client_id=10009311001"
-        )
-    );
-}
-
-#[tokio::test]
 async fn cline_authorize_matches_openproxy_response_shape() {
     let app = openproxy::build_app(app_state().await);
     let response = app
@@ -449,87 +424,6 @@ async fn antigravity_exchange_matches_openproxy_and_saves_connection() {
     );
     assert_eq!(connection.scope.as_deref(), Some("scope-antigravity"));
     assert_eq!(connection.project_id.as_deref(), Some("ag-project"));
-    assert_eq!(connection.test_status.as_deref(), Some("active"));
-}
-
-#[tokio::test]
-async fn iflow_exchange_matches_openproxy_and_saves_connection() {
-    let _lock = ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let server = MockServer::start().await;
-    let _token_url = EnvVarGuard::set(
-        "OPENPROXY_IFLOW_TOKEN_URL",
-        &format!("{}/oauth/token", server.uri()),
-    );
-    let _user_info_url = EnvVarGuard::set(
-        "OPENPROXY_IFLOW_USER_INFO_URL",
-        &format!("{}/api/oauth/getUserInfo", server.uri()),
-    );
-
-    Mock::given(method("POST"))
-        .and(path("/oauth/token"))
-        .and(header(
-            "authorization",
-            "Basic MTAwMDkzMTEwMDE6NFozWWpYeWNWc1F2eUdGMWV0aU5sSUJCNFJzcVNEdFc=",
-        ))
-        .and(body_string_contains("grant_type=authorization_code"))
-        .and(body_string_contains("code=iflow-code"))
-        .and(body_string_contains(
-            "redirect_uri=http%3A%2F%2Flocalhost%3A4624%2Fcallback",
-        ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "access_token": "iflow-access",
-            "refresh_token": "iflow-refresh",
-            "expires_in": 3600
-        })))
-        .mount(&server)
-        .await;
-
-    Mock::given(method("GET"))
-        .and(path("/api/oauth/getUserInfo"))
-        .and(query_param("accessToken", "iflow-access"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "success": true,
-            "data": {
-                "apiKey": "iflow-api-key",
-                "email": "iflow@example.com",
-                "nickname": "iFlow Name"
-            }
-        })))
-        .mount(&server)
-        .await;
-
-    let state = app_state().await;
-    let app = openproxy::build_app(state.clone());
-    let response = app
-        .oneshot(post_request(
-            "/api/oauth/iflow/exchange",
-            json!({
-                "code": "iflow-code",
-                "redirectUri": "http://localhost:4624/callback",
-                "codeVerifier": "pkce-verifier"
-            }),
-        ))
-        .await
-        .unwrap();
-
-    let (status, json) = response_json(response).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(json["success"], true);
-    assert_eq!(json["connection"]["provider"], "iflow");
-    assert_eq!(json["connection"]["email"], "iflow@example.com");
-    assert_eq!(json["connection"]["displayName"], "iFlow Name");
-
-    let snapshot = state.db.snapshot();
-    let connection = &snapshot.provider_connections[0];
-    assert_eq!(connection.provider, "iflow");
-    assert_eq!(connection.auth_type, "oauth");
-    assert_eq!(connection.display_name.as_deref(), Some("iFlow Name"));
-    assert_eq!(connection.email.as_deref(), Some("iflow@example.com"));
-    assert_eq!(connection.access_token.as_deref(), Some("iflow-access"));
-    assert_eq!(connection.refresh_token.as_deref(), Some("iflow-refresh"));
-    assert_eq!(connection.api_key.as_deref(), Some("iflow-api-key"));
     assert_eq!(connection.test_status.as_deref(), Some("active"));
 }
 

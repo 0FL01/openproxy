@@ -973,11 +973,11 @@ async fn forward_with_provider_fallback(
             CursorExecutionRequest, CursorExecutor, DefaultExecutor, DevinCliExecutor,
             DevinExecutionRequest, ExecutionRequest, GeminiCliExecutionRequest, GeminiCliExecutor,
             GithubExecutionRequest, GithubExecutor, GrokWebExecutionRequest, GrokWebExecutor,
-            IFlowExecutionRequest, IFlowExecutor, KimchiExecutor, KiroExecutionRequest,
-            KiroExecutor, KiroExecutorResponse, OpenCodeExecutionRequest, OpenCodeExecutor,
-            OpenCodeTier, ProviderExecutionRequest, ProviderExecutor, QwenExecutionRequest,
-            QwenExecutor, TraeExecutionRequest, TraeExecutor, VertexExecutionRequest,
-            VertexExecutor, WindsurfExecutionRequest, WindsurfExecutor,
+            KimchiExecutor, KiroExecutionRequest, KiroExecutor, KiroExecutorResponse,
+            OpenCodeExecutionRequest, OpenCodeExecutor, OpenCodeTier, ProviderExecutionRequest,
+            ProviderExecutor, QwenExecutionRequest, QwenExecutor, TraeExecutionRequest,
+            TraeExecutor, VertexExecutionRequest, VertexExecutor, WindsurfExecutionRequest,
+            WindsurfExecutor,
         };
 
         let is_codex_model = provider == "codex";
@@ -1178,36 +1178,6 @@ async fn forward_with_provider_fallback(
                     .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("Qwen execution failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                Ok(KiroExecutorResponse {
-                    response: result.response,
-                    url: result.url,
-                    headers: result.headers,
-                    transformed_body: result.transformed_body,
-                    transport: result.transport,
-                })
-            } else if provider == "iflow" {
-                let executor = IFlowExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("IFlow executor creation failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                let result = executor
-                    .execute_request(IFlowExecutionRequest {
-                        model: model.to_string(),
-                        body: request_body.clone(),
-                        stream,
-                        credentials: connection.clone(),
-                        proxy,
-                    })
-                    .await
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("IFlow execution failed: {:?}", e),
                         retry_after: None,
                         upstream_body: None,
                     })?;

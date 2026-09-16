@@ -164,7 +164,6 @@ pub fn refresh_lead(provider: &str) -> Option<Duration> {
     match provider {
         "codex" => Some(Duration::from_secs(5 * 24 * 60 * 60)),
         "claude" => Some(Duration::from_secs(4 * 60 * 60)),
-        "iflow" => Some(Duration::from_secs(24 * 60 * 60)),
         "qwen" => Some(Duration::from_secs(20 * 60)),
         "kimi-coding" => Some(Duration::from_secs(5 * 60)),
         "antigravity" => Some(Duration::from_secs(5 * 60)),
@@ -202,11 +201,6 @@ pub fn oauth_endpoint(provider: &str) -> Option<OAuthEndpoint> {
         "qwen" => OAuthEndpoint {
             token: "https://qwen.ai/api/v1/oauth2/token",
             auth: "https://qwen.ai/api/v1/oauth2/device/code",
-            device_code: None,
-        },
-        "iflow" => OAuthEndpoint {
-            token: "https://iflow.cn/oauth/token",
-            auth: "https://iflow.cn/oauth",
             device_code: None,
         },
         "github" => OAuthEndpoint {

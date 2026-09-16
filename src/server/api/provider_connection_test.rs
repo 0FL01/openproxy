@@ -1468,15 +1468,6 @@ fn oauth_probe_request(provider: &str, access_token: &str) -> Option<PreparedReq
             ],
             body: None,
         }),
-        "iflow" => Some(PreparedRequest {
-            method: Method::GET,
-            url: format!(
-                "https://iflow.cn/api/oauth/getUserInfo?accessToken={}",
-                url::form_urlencoded::byte_serialize(access_token.as_bytes()).collect::<String>()
-            ),
-            headers: vec![],
-            body: None,
-        }),
         "kilocode" => Some(PreparedRequest {
             method: Method::GET,
             url: "https://api.kilo.ai/api/profile".to_string(),

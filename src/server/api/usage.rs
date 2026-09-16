@@ -76,7 +76,6 @@ pub async fn fetch_oauth_quota(connection: &ProviderConnection) -> Value {
 fn usage_message_for_provider(provider: &str) -> String {
     match provider {
         "qwen" => "Qwen connected. Usage tracked per request.".to_string(),
-        "iflow" => "iFlow connected. Usage tracked per request.".to_string(),
         "ollama" => "Ollama Cloud uses a free tier with light usage limits (resets every 5h & 7d). For detailed usage tracking, visit ollama.com/settings/keys.".to_string(),
         other => format!("Usage API not implemented for {other}"),
     }

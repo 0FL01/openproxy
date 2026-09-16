@@ -80,10 +80,6 @@ const ANTIGRAVITY_LOAD_CODE_ASSIST_API_CLIENT: &str =
     "google-cloud-sdk vscode_cloudshelleditor/0.1";
 const ANTIGRAVITY_LOAD_CODE_ASSIST_CLIENT_METADATA: &str =
     "{\"ideType\":\"IDE_UNSPECIFIED\",\"platform\":\"PLATFORM_UNSPECIFIED\",\"pluginType\":\"GEMINI\"}";
-const IFLOW_CLIENT_ID: &str = "10009311001";
-const IFLOW_AUTHORIZE_URL: &str = "https://iflow.cn/oauth";
-const IFLOW_TOKEN_URL: &str = "https://iflow.cn/oauth/token";
-const IFLOW_USER_INFO_URL: &str = "https://iflow.cn/api/oauth/getUserInfo";
 const CLINE_AUTHORIZE_URL: &str = "https://api.cline.bot/api/v1/auth/authorize";
 const CLINE_TOKEN_URL: &str = "https://api.cline.bot/api/v1/auth/token";
 const KIRO_SOCIAL_REDIRECT_URI: &str = "kiro://kiro.kiroAgent/authenticate-success";
@@ -702,15 +698,6 @@ fn is_device_code_provider(provider: &str) -> bool {
     )
 }
 
-fn iflow_api_base_url() -> String {
-    std::env::var("OPENPROXY_IFLOW_API_BASE_URL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "https://platform.iflow.cn".to_string())
-        .trim_end_matches('/')
-        .to_string()
-}
-
 fn claude_authorize_url() -> String {
     std::env::var("OPENPROXY_CLAUDE_AUTHORIZE_URL")
         .ok()
@@ -879,20 +866,6 @@ fn encode_query_value(value: &str) -> String {
 
 fn encode_component_value(value: &str) -> String {
     encode_query_value(value).replace('+', "%20")
-}
-
-fn iflow_token_url() -> String {
-    std::env::var("OPENPROXY_IFLOW_TOKEN_URL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| IFLOW_TOKEN_URL.to_string())
-}
-
-fn iflow_user_info_url() -> String {
-    std::env::var("OPENPROXY_IFLOW_USER_INFO_URL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| IFLOW_USER_INFO_URL.to_string())
 }
 
 fn cline_token_url() -> String {
@@ -1769,237 +1742,6 @@ fn validate_cursor_import_token(
     }
 
     Ok((access_token.to_string(), machine_id.to_string()))
-}
-
-async fn iflow_cookie_auth(
-    State(state): State<AppState>,
-    request: axum::extract::Request,
-) -> Response {
-    let body = match axum::body::to_bytes(request.into_body(), 64 * 1024).await {
-        Ok(bytes) => bytes,
-        Err(error) => return internal_error_response(error.to_string()),
-    };
-
-    let body: Value = match serde_json::from_slice(&body) {
-        Ok(value) => value,
-        Err(error) => return internal_error_response(error.to_string()),
-    };
-
-    let Some(cookie) = body.get("cookie").and_then(Value::as_str) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "Cookie is required" })),
-        )
-            .into_response();
-    };
-
-    let trimmed = cookie.trim();
-    if !trimmed.contains("BXAuth=") {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "Cookie must contain BXAuth field" })),
-        )
-            .into_response();
-    }
-
-    let mut normalized_cookie = trimmed.to_string();
-    if !normalized_cookie.ends_with(';') {
-        normalized_cookie.push(';');
-    }
-
-    let base_url = iflow_api_base_url();
-    let client = reqwest::Client::new();
-
-    let get_response = match client
-        .get(format!("{base_url}/api/openapi/apikey"))
-        .header("Cookie", normalized_cookie.clone())
-        .header("Accept", "application/json, text/plain, */*")
-        .header(
-            "User-Agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-        )
-        .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-        .header("Accept-Encoding", "gzip, deflate, br")
-        .header("Connection", "keep-alive")
-        .header("Sec-Fetch-Dest", "empty")
-        .header("Sec-Fetch-Mode", "cors")
-        .header("Sec-Fetch-Site", "same-origin")
-        .send()
-        .await
-    {
-        Ok(response) => response,
-        Err(error) => return internal_error_response(error.to_string()),
-    };
-
-    if !get_response.status().is_success() {
-        let status = get_response.status();
-        let error_text = get_response.text().await.unwrap_or_default();
-        return (
-            status,
-            Json(json!({
-                "error": format!("Failed to fetch API key info: {}", error_text)
-            })),
-        )
-            .into_response();
-    }
-
-    let get_result: Value = match get_response.json().await {
-        Ok(value) => value,
-        Err(error) => return internal_error_response(error.to_string()),
-    };
-
-    if get_result.get("success").and_then(Value::as_bool) != Some(true) {
-        let message = get_result
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": format!("API key fetch failed: {message}")
-            })),
-        )
-            .into_response();
-    }
-
-    let key_data = get_result.get("data").cloned().unwrap_or(Value::Null);
-    let Some(key_name) = key_data.get("name").and_then(Value::as_str) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "Missing name in API key info" })),
-        )
-            .into_response();
-    };
-
-    let post_response = match client
-        .post(format!("{base_url}/api/openapi/apikey"))
-        .header("Cookie", normalized_cookie.clone())
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/plain, */*")
-        .header(
-            "User-Agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-        )
-        .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-        .header("Accept-Encoding", "gzip, deflate, br")
-        .header("Connection", "keep-alive")
-        .header("Origin", base_url.clone())
-        .header("Referer", format!("{base_url}/"))
-        .json(&json!({ "name": key_name }))
-        .send()
-        .await
-    {
-        Ok(response) => response,
-        Err(error) => return internal_error_response(error.to_string()),
-    };
-
-    if !post_response.status().is_success() {
-        let status = post_response.status();
-        let error_text = post_response.text().await.unwrap_or_default();
-        return (
-            status,
-            Json(json!({
-                "error": format!("Failed to refresh API key: {}", error_text)
-            })),
-        )
-            .into_response();
-    }
-
-    let post_result: Value = match post_response.json().await {
-        Ok(value) => value,
-        Err(error) => return internal_error_response(error.to_string()),
-    };
-
-    if post_result.get("success").and_then(Value::as_bool) != Some(true) {
-        let message = post_result
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": format!("API key refresh failed: {message}")
-            })),
-        )
-            .into_response();
-    }
-
-    let refreshed_key = post_result.get("data").cloned().unwrap_or(Value::Null);
-    let Some(refreshed_api_key) = refreshed_key.get("apiKey").and_then(Value::as_str) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "Missing API key in response" })),
-        )
-            .into_response();
-    };
-
-    let bx_auth = normalized_cookie
-        .split(';')
-        .find_map(|segment| segment.trim().strip_prefix("BXAuth="))
-        .unwrap_or("");
-    let cookie_to_save = if bx_auth.is_empty() {
-        String::new()
-    } else {
-        format!("BXAuth={bx_auth};")
-    };
-
-    let connection_id = Uuid::new_v4().to_string();
-    let now = chrono::Utc::now().to_rfc3339();
-    let connection_name = refreshed_key
-        .get("name")
-        .and_then(Value::as_str)
-        .unwrap_or(key_name)
-        .to_string();
-    let expire_time = refreshed_key
-        .get("expireTime")
-        .cloned()
-        .unwrap_or(Value::Null);
-
-    let result = state
-        .db
-        .update(|db| {
-            let mut provider_specific_data = std::collections::BTreeMap::new();
-            provider_specific_data
-                .insert("cookie".to_string(), Value::String(cookie_to_save.clone()));
-            provider_specific_data.insert("expireTime".to_string(), expire_time.clone());
-
-            db.provider_connections.push(ProviderConnection {
-                id: connection_id.clone(),
-                provider: "iflow".to_string(),
-                auth_type: "cookie".to_string(),
-                name: Some(connection_name.clone()),
-                is_active: Some(true),
-                created_at: Some(now.clone()),
-                updated_at: Some(now.clone()),
-                email: Some(connection_name.clone()),
-                api_key: Some(refreshed_api_key.to_string()),
-                test_status: Some("active".to_string()),
-                provider_specific_data,
-                ..Default::default()
-            });
-        })
-        .await;
-
-    if let Err(error) = result {
-        return internal_error_response(error.to_string());
-    }
-
-    let masked_api_key = format!(
-        "{}...",
-        refreshed_api_key.chars().take(10).collect::<String>()
-    );
-
-    Json(json!({
-        "success": true,
-        "connection": {
-            "id": connection_id,
-            "provider": "iflow",
-            "email": connection_name,
-            "apiKey": masked_api_key,
-            "expireTime": expire_time
-        }
-    }))
-    .into_response()
 }
 
 async fn gitlab_pat_auth(
@@ -3225,19 +2967,6 @@ fn build_google_auth_url(
     )
 }
 
-fn build_iflow_auth_url(redirect_uri: &str, state: &str) -> String {
-    build_query_url(
-        IFLOW_AUTHORIZE_URL,
-        &[
-            ("loginMethod", "phone".to_string()),
-            ("type", "phone".to_string()),
-            ("redirect", redirect_uri.to_string()),
-            ("state", state.to_string()),
-            ("client_id", IFLOW_CLIENT_ID.to_string()),
-        ],
-    )
-}
-
 fn build_cline_auth_url(redirect_uri: &str) -> String {
     build_query_url(
         CLINE_AUTHORIZE_URL,
@@ -3550,15 +3279,6 @@ async fn authorize_oauth_compat(
                 &redirect_uri,
                 &state,
             ),
-            state,
-            code_verifier,
-            code_challenge,
-            redirect_uri,
-        ),
-        "iflow" => build_auth_compat_response(
-            &provider,
-            "authorization_code",
-            build_iflow_auth_url(&redirect_uri, &state),
             state,
             code_verifier,
             code_challenge,
@@ -4217,106 +3937,6 @@ async fn exchange_gitlab_compat(
     })
 }
 
-async fn exchange_iflow_compat(
-    code: &str,
-    redirect_uri: &str,
-) -> Result<ProviderConnection, String> {
-    let basic_auth = STANDARD.encode(format!(
-        "{IFLOW_CLIENT_ID}:{}",
-        crate::oauth::secret::iflow_client_secret()
-    ));
-    let response = reqwest::Client::new()
-        .post(iflow_token_url())
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .header("Accept", "application/json")
-        .header("Authorization", format!("Basic {basic_auth}"))
-        .form(&[
-            ("grant_type", "authorization_code"),
-            ("code", code),
-            ("redirect_uri", redirect_uri),
-            ("client_id", IFLOW_CLIENT_ID),
-            ("client_secret", crate::oauth::secret::iflow_client_secret()),
-        ])
-        .send()
-        .await
-        .map_err(|error| error.to_string())?;
-
-    if !response.status().is_success() {
-        let error = response.text().await.unwrap_or_default();
-        return Err(format!("Token exchange failed: {error}"));
-    }
-
-    let tokens: Value = response
-        .json()
-        .await
-        .map_err(|error| format!("Token exchange failed: {error}"))?;
-    let access_token = tokens
-        .get("access_token")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let refresh_token = tokens
-        .get("refresh_token")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let expires_in = tokens.get("expires_in").and_then(Value::as_i64);
-
-    let user_info_response = reqwest::Client::new()
-        .get(format!(
-            "{}?accessToken={}",
-            iflow_user_info_url(),
-            encode_component_value(&access_token)
-        ))
-        .header("Accept", "application/json")
-        .send()
-        .await
-        .map_err(|error| error.to_string())?;
-    if !user_info_response.status().is_success() {
-        let error = user_info_response.text().await.unwrap_or_default();
-        return Err(format!("Failed to fetch user info: {error}"));
-    }
-
-    let result: Value = user_info_response
-        .json()
-        .await
-        .map_err(|error| error.to_string())?;
-    if result.get("success").and_then(Value::as_bool) != Some(true) {
-        return Err(format!(
-            "User info request failed: {}",
-            result
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("Unknown error")
-        ));
-    }
-
-    let user_info = result.get("data").cloned().unwrap_or(Value::Null);
-    let api_key = user_info
-        .get("apiKey")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| "Empty API key returned from iFlow".to_string())?;
-    let email = first_nonempty_str(&user_info, &["email", "phone"])
-        .map(str::to_string)
-        .ok_or_else(|| "Missing account email/phone in user info".to_string())?;
-    let display_name = first_nonempty_str(&user_info, &["nickname", "name"]).map(str::to_string);
-
-    Ok(ProviderConnection {
-        provider: "iflow".to_string(),
-        auth_type: "oauth".to_string(),
-        display_name,
-        email: Some(email),
-        access_token: Some(access_token),
-        refresh_token,
-        expires_at: expires_in.map(crate::oauth::expires_at_from_seconds),
-        api_key: Some(api_key),
-        test_status: Some("active".to_string()),
-        ..Default::default()
-    })
-}
-
 async fn exchange_cline_compat(
     code: &str,
     redirect_uri: &str,
@@ -4495,10 +4115,6 @@ async fn exchange_oauth_compat(
             Err(error) => return internal_error_response(error),
         },
         "antigravity" => match exchange_antigravity_compat(code, redirect_uri).await {
-            Ok(value) => value,
-            Err(error) => return internal_error_response(error),
-        },
-        "iflow" => match exchange_iflow_compat(code, redirect_uri).await {
             Ok(value) => value,
             Err(error) => return internal_error_response(error),
         },
@@ -5128,8 +4744,7 @@ pub async fn refresh_token(
 
     // 9router parity (tokenRefresh/providers.js REFRESH_PROFILES): every
     // provider has its own refresh wire format — claude posts JSON to
-    // api.anthropic.com, codex via refreshCodexToken, iflow adds a Basic
-    // auth header, xai/grok use their own client_id. The generic
+    // api.anthropic.com, codex via refreshCodexToken. The generic
     // form-encoded grant with client_id "openproxy" only ever worked for
     // Auth0-style endpoints, so route through the per-provider dispatcher.
     let provider_specific_data = connection
@@ -6666,7 +6281,6 @@ pub fn routes() -> Router<AppState> {
             "/api/oauth/kiro/social-exchange",
             post(kiro_social_exchange),
         )
-        .route("/api/oauth/iflow/cookie", post(iflow_cookie_auth))
         .route("/api/oauth/gitlab/pat", post(gitlab_pat_auth))
         .route("/api/oauth/{provider}/start", get(start_oauth_flow))
         .route("/api/oauth/{provider}/callback", get(oauth_callback))

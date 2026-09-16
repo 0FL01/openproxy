@@ -118,12 +118,6 @@ fn test_refresh_lead_claude_is_4_hours() {
 }
 
 #[test]
-fn test_refresh_lead_iflow_is_1_day() {
-    let lead = crate::core::config::app_constants::refresh_lead("iflow");
-    assert_eq!(lead, Some(Duration::from_secs(24 * 60 * 60)));
-}
-
-#[test]
 fn test_refresh_lead_qwen_is_20_minutes() {
     let lead = crate::core::config::app_constants::refresh_lead("qwen");
     assert_eq!(lead, Some(Duration::from_secs(20 * 60)));

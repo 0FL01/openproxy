@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 // import { useParams, useRouter } from "next/navigation";  // ported: next.js -> Astro+React
 // import Link from "next/link";  // ported: next.js -> Astro+React
 // import Image from "next/image";  // ported: next.js -> Astro+React
-import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, IFlowCookieModal, GitLabAuthModal, Select, EditConnectionModal, NoAuthProxyCard, FreeTierLimits } from "@/shared/components";
+import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, GitLabAuthModal, Select, EditConnectionModal, NoAuthProxyCard, FreeTierLimits } from "@/shared/components";
 import { ConfirmModal } from "@/shared/components/Modal";
 import { useNotificationStore } from "@/store/notificationStore";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS, THINKING_CONFIG } from "@/shared/constants/providers";
@@ -64,7 +64,6 @@ export default function ProviderDetailPageClient() {
   const [providerNode, setProviderNode] = useState(null);
   const [proxyPools, setProxyPools] = useState([]);
   const [showOAuthModal, setShowOAuthModal] = useState(false);
-  const [showIFlowCookieModal, setShowIFlowCookieModal] = useState(false);
   const [showAddApiKeyModal, setShowAddApiKeyModal] = useState(false);
   const [addConnectionError, setAddConnectionError] = useState("");
   const [showEditModal, setShowEditModal] = useState(false);
@@ -644,11 +643,6 @@ export default function ProviderDetailPageClient() {
     await fetchConnections();
     if (providerId === "codex") await reloadCatalog();
     setShowOAuthModal(false);
-  };
-
-  const handleIFlowCookieSuccess = () => {
-    fetchConnections();
-    setShowIFlowCookieModal(false);
   };
 
   const handleSaveApiKey = async (formData) => {
@@ -1468,11 +1462,6 @@ export default function ProviderDetailPageClient() {
                   </>
                 ) : (
                   <>
-                    {!isCompatible && providerId === "iflow" && (
-                      <Button size="sm" icon="cookie" variant="secondary" onClick={() => setShowIFlowCookieModal(true)}>
-                        Cookie
-                      </Button>
-                    )}
                     {!isCompatible && providerId === "codex" && (
                       <Button size="sm" icon="playlist_add" variant="secondary" onClick={() => setShowBulkImportCodex(true)}>
                         Bulk Add
@@ -1483,7 +1472,7 @@ export default function ProviderDetailPageClient() {
                       icon="add"
                       onClick={triggerAddConnection}
                     >
-                      {isCompatible ? "Add API Key" : (providerId === "iflow" ? "OAuth" : "Add Connection")}
+                      {isCompatible ? "Add API Key" : "Add Connection"}
                     </Button>
                   </>
                 )}
@@ -1545,18 +1534,6 @@ export default function ProviderDetailPageClient() {
                     </>
                   ) : (
                     <>
-                      {providerId === "iflow" && (
-                        <Button
-                          size="sm"
-                          icon="cookie"
-                          variant="secondary"
-                          onClick={() => setShowIFlowCookieModal(true)}
-                          title="Add connection using browser cookie"
-                          className="w-full sm:w-auto"
-                        >
-                          Cookie
-                        </Button>
-                      )}
                       {providerId === "codex" && (
                         <Button
                           size="sm"
@@ -1680,13 +1657,6 @@ export default function ProviderDetailPageClient() {
           providerInfo={providerInfo}
           onSuccess={handleOAuthSuccess}
           onClose={() => setShowOAuthModal(false)}
-        />
-      )}
-      {providerId === "iflow" && (
-        <IFlowCookieModal
-          isOpen={showIFlowCookieModal}
-          onSuccess={handleIFlowCookieSuccess}
-          onClose={() => setShowIFlowCookieModal(false)}
         />
       )}
       <AddApiKeyModal

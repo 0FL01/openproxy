@@ -13,7 +13,6 @@ mod gemini_cli;
 mod github;
 mod grok_cli;
 mod grok_web;
-mod iflow;
 mod kimchi;
 mod kiro;
 mod mimo_free;
@@ -76,7 +75,6 @@ pub use grok_cli::{
 pub use grok_web::{
     GrokWebExecutionRequest, GrokWebExecutor, GrokWebExecutorError, GrokWebExecutorResponse,
 };
-pub use iflow::{IFlowExecutionRequest, IFlowExecutor, IFlowExecutorError, IFlowExecutorResponse};
 pub use kimchi::KimchiExecutor;
 pub use kiro::{
     consumed_eventstream_bytes, AwsCredentials, EventStreamDecoder, KiroEvent,

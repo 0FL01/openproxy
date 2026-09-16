@@ -14,7 +14,6 @@ static ALIAS_TO_PROVIDER_ID: Lazy<HashMap<&'static str, &'static str>> = Lazy::n
         ("cx", "codex"),
         ("gc", "gemini-cli"),
         ("qw", "qwen"),
-        ("if", "iflow"),
         ("ag", "antigravity"),
         ("gh", "github"),
         ("kr", "kiro"),

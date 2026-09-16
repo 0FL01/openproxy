@@ -1,7 +1,7 @@
 //! OAuth client-secret resolution.
 //!
 //! Client secrets for OAuth providers are resolved from environment variables
-//! (e.g. `IFLOW_CLIENT_SECRET`) with a hardcoded fallback so existing flows
+//! (e.g. `ANTIGRAVITY_CLIENT_SECRET`) with a hardcoded fallback so existing flows
 //! keep working. Operators should set the env vars to rotate/revoke the
 //! bundled secrets. 9router tracks the same values; the fallbacks here mirror
 //! them so a fresh checkout works out of the box.
@@ -23,11 +23,6 @@ fn resolve(name: &str, fallback: &'static str) -> &'static str {
     leaked
 }
 
-/// iflow OAuth client secret (env `IFLOW_CLIENT_SECRET`).
-pub fn iflow_client_secret() -> &'static str {
-    resolve("IFLOW_CLIENT_SECRET", "4Z3YjXycVsQvyGF1etiNlIBB4RsqSDtW")
-}
-
 /// antigravity OAuth client secret (env `ANTIGRAVITY_CLIENT_SECRET`).
 pub fn antigravity_client_secret() -> &'static str {
     resolve(
@@ -47,16 +42,6 @@ pub fn gemini_cli_client_secret() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn secrets_resolve_from_env_with_fallback() {
-        // The resolver reads the env var at first access (cached thereafter).
-        // Verify the fallback path returns the bundled value (the security fix:
-        // the value is no longer a bare const — it is env-overridable).
-        std::env::remove_var("IFLOW_CLIENT_SECRET");
-        assert_eq!(iflow_client_secret(), "4Z3YjXycVsQvyGF1etiNlIBB4RsqSDtW");
-        std::env::remove_var("IFLOW_CLIENT_SECRET");
-    }
 
     #[test]
     fn antigravity_and_gemini_secrets_resolve() {

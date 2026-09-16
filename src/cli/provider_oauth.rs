@@ -47,11 +47,6 @@ pub enum ProviderOAuthCmd {
         #[arg(long)]
         auto: bool,
     },
-    /// Submit a raw iFlow cookie (read from stdin by default).
-    IflowCookie {
-        #[arg(long, default_value = "-")]
-        cookie: String,
-    },
     /// Submit a GitLab personal access token (read from stdin by default).
     GitlabPat {
         #[arg(long, default_value = "-")]
@@ -84,7 +79,6 @@ pub async fn run(
             refresh_token,
         } => run_refresh(&rt, ctx, &provider, refresh_token).await,
         ProviderOAuthCmd::ImportKiro { auto } => run_import_kiro(&rt, ctx, auto).await,
-        ProviderOAuthCmd::IflowCookie { cookie } => run_iflow_cookie(&rt, ctx, &cookie).await,
         ProviderOAuthCmd::GitlabPat { token } => run_gitlab_pat(&rt, ctx, &token).await,
     }
 }
@@ -216,22 +210,6 @@ async fn run_import_kiro(rt: &Runtime, ctx: OutputCtx, auto: bool) -> anyhow::Re
             }
             Err(e) => rt_error_to_exit(ctx, e),
         }
-    }
-}
-
-async fn run_iflow_cookie(rt: &Runtime, ctx: OutputCtx, source: &str) -> anyhow::Result<i32> {
-    let cookie = read_input(source)?;
-    let body = json!({"cookie": cookie.trim()});
-    match rt.post_json("/api/oauth/iflow/cookie", &body).await {
-        Ok(payload) => {
-            if ctx.is_robot() {
-                emit_robot("openproxy.v1.oauth.iflow_cookie", payload)?;
-            } else {
-                humanln(ctx, "Imported iFlow cookie.");
-            }
-            Ok(0)
-        }
-        Err(e) => rt_error_to_exit(ctx, e),
     }
 }
 

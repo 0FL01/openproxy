@@ -7,18 +7,6 @@
 use once_cell::sync::Lazy;
 use url::form_urlencoded;
 
-/// iflow extra params — client_secret resolved from env at first access.
-/// The Vec is leaked once so its slice is 'static.
-static IFLOW_EXTRA_PARAMS: Lazy<&'static [(&'static str, &'static str)]> = Lazy::new(|| {
-    Box::leak(
-        vec![
-            ("client_secret", crate::oauth::secret::iflow_client_secret()),
-            ("userinfo_url", "https://iflow.cn/api/oauth/getUserInfo"),
-        ]
-        .into_boxed_slice(),
-    )
-});
-
 /// Antigravity extra params — client_secret resolved from env at first access.
 static ANTIGRAVITY_EXTRA_PARAMS: Lazy<&'static [(&'static str, &'static str)]> = Lazy::new(|| {
     Box::leak(
@@ -182,20 +170,6 @@ pub fn qwen() -> OAuthProviderConfig {
         uses_pkce: false,
         extra_params: &[],
         refresh_lead_ms: 0,
-    }
-}
-
-/// iflow — standard OAuth with client_secret (no PKCE).
-pub fn iflow() -> OAuthProviderConfig {
-    OAuthProviderConfig {
-        id: "iflow",
-        client_id: "10009311001",
-        authorize_url: "https://iflow.cn/oauth",
-        token_url: "https://iflow.cn/oauth/token",
-        scopes: &[],
-        uses_pkce: false,
-        extra_params: &IFLOW_EXTRA_PARAMS,
-        refresh_lead_ms: 4 * 60 * 60 * 1000,
     }
 }
 
@@ -525,7 +499,6 @@ pub fn get_config(provider: &str) -> Option<OAuthProviderConfig> {
         "github" => Some(github()),
         "kiro" => Some(kiro()),
         "qwen" => Some(qwen()),
-        "iflow" => Some(iflow()),
         "kimi" => Some(kimi()),
         "kimi-coding" => Some(kimi_coding()),
         "kilocode" => Some(kilocode()),

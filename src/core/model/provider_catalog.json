@@ -5,7 +5,6 @@
   "gemini-cli": "gc",
   "codex": "cx",
   "qwen": "qw",
-  "iflow": "if",
   "antigravity": "ag",
   "openrouter": "openrouter",
   "openai": "openai",
@@ -360,11 +359,6 @@
     {
      "id": "glm-4.7",
      "name": "GLM 4.7",
-     "kind": "llm"
-    },
-    {
-     "id": "iflow-rome-30ba3b",
-     "name": "iFlow ROME",
      "kind": "llm"
     }
    ]
@@ -5260,17 +5254,6 @@
     "hasSearch": false,
     "hasFetch": false
    },
-  {
-   "id": "iflow",
-   "alias": "if",
-   "serviceKinds": [
-    "llm"
-   ],
-   "ttsModels": [],
-   "embeddingModels": [],
-   "hasSearch": false,
-   "hasFetch": false
-  },
   {
    "id": "opencode",
    "alias": "oc",

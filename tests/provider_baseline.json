@@ -49,32 +49,6 @@
     "hasFetch": false
   },
   {
-    "id": "iflow",
-    "alias": "if",
-    "serviceKinds": [
-      "llm"
-    ],
-    "models": [
-      "deepseek-r1",
-      "deepseek-v3",
-      "deepseek-v3.1",
-      "deepseek-v3.2",
-      "glm-4.7",
-      "iflow-rome-30ba3b",
-      "kimi-k2",
-      "qwen3-235b",
-      "qwen3-235b-a22b-instruct",
-      "qwen3-235b-a22b-thinking-2507",
-      "qwen3-32b",
-      "qwen3-coder-plus",
-      "qwen3-max",
-      "qwen3-max-preview",
-      "qwen3-vl-plus"
-    ],
-    "hasSearch": false,
-    "hasFetch": false
-  },
-  {
     "id": "opencode",
     "alias": "oc",
     "serviceKinds": [
