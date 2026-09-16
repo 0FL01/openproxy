@@ -1,0 +1,5 @@
+# Pinned to the 2021 formatting style after the `edition = "2024"` bump
+# (chore/edition-2024): flipping the edition would otherwise reformat
+# imports/asserts repo-wide and blow up the diff. Revisit in a dedicated
+# fmt-only migration; until then `cargo fmt --check` stays green as-is.
+style_edition = "2021"
