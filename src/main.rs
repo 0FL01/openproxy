@@ -25,7 +25,7 @@ async fn main() -> anyhow::Result<()> {
     // env), so promote `$HOST` to `$HOSTNAME` if the latter is unset.
     if std::env::var_os("HOSTNAME").is_none() {
         if let Some(legacy) = std::env::var_os("HOST") {
-            std::env::set_var("HOSTNAME", legacy);
+            unsafe { std::env::set_var("HOSTNAME", legacy) };
         }
     }
 
@@ -37,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
     // Make sure downstream code (server, Db::load, oauth helpers, ...) sees
     // the same DATA_DIR the CLI resolved. Doing this here means a single
     // resolution path: flag > env > config profile > default.
-    std::env::set_var("DATA_DIR", &resolved.data_dir);
+    unsafe { std::env::set_var("DATA_DIR", &resolved.data_dir) };
 
     if let Some(cmd) = &cli.cmd {
         match cmd {

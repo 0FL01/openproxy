@@ -603,10 +603,10 @@ impl AntigravityExecutor {
             }
 
             // Cap maxOutputTokens.
-            let gen = request_obj
+            let r#gen = request_obj
                 .entry("generationConfig".to_string())
                 .or_insert_with(|| Value::Object(Map::new()));
-            if let Some(gen_obj) = gen.as_object_mut() {
+            if let Some(gen_obj) = r#gen.as_object_mut() {
                 let cap = MAX_ANTIGRAVITY_OUTPUT_TOKENS;
                 if let Some(max_out) = gen_obj.get("maxOutputTokens").and_then(|v| v.as_u64()) {
                     if max_out > cap {

@@ -29,9 +29,9 @@ struct PortEnvGuard {
 impl Drop for PortEnvGuard {
     fn drop(&mut self) {
         if let Some(previous) = self.previous.as_deref() {
-            std::env::set_var("PORT", previous);
+            unsafe { std::env::set_var("PORT", previous) };
         } else {
-            std::env::remove_var("PORT");
+            unsafe { std::env::remove_var("PORT") };
         }
     }
 }
@@ -39,7 +39,7 @@ impl Drop for PortEnvGuard {
 async fn set_port_env(port: u16) -> PortEnvGuard {
     let lock = PORT_ENV_LOCK.lock().await;
     let previous = std::env::var("PORT").ok();
-    std::env::set_var("PORT", port.to_string());
+    unsafe { std::env::set_var("PORT", port.to_string()) };
     PortEnvGuard {
         previous,
         _lock: lock,

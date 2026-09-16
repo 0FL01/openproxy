@@ -73,7 +73,7 @@ fn derive_key(key: &str) -> [u8; KEY_LEN] {
 /// Returns `base64(IV || ciphertext)`.
 pub fn encrypt_value(key: &str, plaintext: &str) -> String {
     let key_bytes = derive_key(key);
-    let iv: [u8; IV_LEN] = rand::thread_rng().gen();
+    let iv: [u8; IV_LEN] = rand::thread_rng().r#gen();
 
     // Buffer: plaintext + one AES block for PKCS7 padding (16 bytes).
     let mut buf = vec![0u8; plaintext.len() + IV_LEN];
@@ -188,7 +188,7 @@ fn get_or_create_salt() -> [u8; SALT_LEN] {
     if let Some(existing) = read_salt_file() {
         return existing;
     }
-    let salt: [u8; SALT_LEN] = rand::thread_rng().gen();
+    let salt: [u8; SALT_LEN] = rand::thread_rng().r#gen();
     if let Some(dir) = crypto_salt_path().parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -259,7 +259,7 @@ fn derive_key_v2(raw_key: &str) -> [u8; 32] {
 fn encrypt_value_v2(raw_key: &str, plaintext: &str) -> String {
     let key = derive_key_v2(raw_key);
     let cipher = Aes256Gcm::new_from_slice(&key).expect("AES-256 key length valid");
-    let nonce_bytes: [u8; NONCE_LEN] = rand::thread_rng().gen();
+    let nonce_bytes: [u8; NONCE_LEN] = rand::thread_rng().r#gen();
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let ciphertext = cipher
@@ -884,11 +884,11 @@ mod tests {
     fn salt_is_persisted_and_stable() {
         let _guard = ENV_LOCK.lock().unwrap();
         let temp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("DATA_DIR", temp.path());
+        unsafe { std::env::set_var("DATA_DIR", temp.path()) };
         let s1 = get_or_create_salt();
         let s2 = get_or_create_salt();
         assert_eq!(s1, s2, "salt must be stable across calls within an install");
-        std::env::remove_var("DATA_DIR");
+        unsafe { std::env::remove_var("DATA_DIR") };
     }
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

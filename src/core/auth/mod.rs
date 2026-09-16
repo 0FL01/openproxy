@@ -330,12 +330,12 @@ mod tests {
         // Persist/read round trip (in a temp dir via DATA_DIR).
         let _guard = ENV_LOCK.lock().unwrap();
         let temp = tempfile::tempdir().expect("tempdir");
-        std::env::set_var("DATA_DIR", temp.path());
+        unsafe { std::env::set_var("DATA_DIR", temp.path()) };
         persist_secret_to(api_key_secret_path(), &secret);
         let read =
             read_persisted_secret_from(api_key_secret_path()).expect("persisted secret readable");
         assert_eq!(read, secret);
-        std::env::remove_var("DATA_DIR");
+        unsafe { std::env::remove_var("DATA_DIR") };
     }
 
     #[test]
@@ -358,8 +358,8 @@ mod tests {
     fn dashboard_password_is_random_and_persists() {
         let _guard = ENV_LOCK.lock().unwrap();
         let temp = tempfile::tempdir().expect("tempdir");
-        std::env::remove_var("INITIAL_PASSWORD");
-        std::env::set_var("DATA_DIR", temp.path());
+        unsafe { std::env::remove_var("INITIAL_PASSWORD") };
+        unsafe { std::env::set_var("DATA_DIR", temp.path()) };
 
         // First call generates + persists; second call reads the same value.
         let first = dashboard_initial_password();
@@ -374,7 +374,7 @@ mod tests {
         // Must be ephemeral (no INITIAL_PASSWORD env).
         assert!(dashboard_password_is_ephemeral());
 
-        std::env::remove_var("DATA_DIR");
+        unsafe { std::env::remove_var("DATA_DIR") };
     }
 
     #[test]
@@ -400,8 +400,8 @@ mod tests {
     fn reset_dashboard_initial_password_clears_generated_value() {
         let _guard = ENV_LOCK.lock().unwrap();
         let temp = tempfile::tempdir().expect("tempdir");
-        std::env::remove_var("INITIAL_PASSWORD");
-        std::env::set_var("DATA_DIR", temp.path());
+        unsafe { std::env::remove_var("INITIAL_PASSWORD") };
+        unsafe { std::env::set_var("DATA_DIR", temp.path()) };
 
         // Persist directly so the reset target exists independent of any prior
         // test's generated value.
@@ -410,7 +410,7 @@ mod tests {
         assert!(dashboard_password_is_ephemeral());
         assert!(reset_dashboard_initial_password());
 
-        std::env::remove_var("DATA_DIR");
+        unsafe { std::env::remove_var("DATA_DIR") };
     }
 
     #[test]
@@ -421,8 +421,8 @@ mod tests {
         // until restart. It must now read from disk on every call.
         let _guard = ENV_LOCK.lock().unwrap();
         let temp = tempfile::tempdir().expect("tempdir");
-        std::env::remove_var("INITIAL_PASSWORD");
-        std::env::set_var("DATA_DIR", temp.path());
+        unsafe { std::env::remove_var("INITIAL_PASSWORD") };
+        unsafe { std::env::set_var("DATA_DIR", temp.path()) };
 
         let before = dashboard_initial_password();
         assert!(reset_dashboard_initial_password());
@@ -432,6 +432,6 @@ mod tests {
             "reset must invalidate the previously generated password"
         );
 
-        std::env::remove_var("DATA_DIR");
+        unsafe { std::env::remove_var("DATA_DIR") };
     }
 }

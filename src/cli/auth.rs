@@ -451,7 +451,7 @@ mod tests {
         let _g = crate::cli::test_lock::ENV_LOCK.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let cfg_path = tmp.path().join("config.toml");
-        std::env::set_var("OPENPROXY_CONFIG", &cfg_path);
+        unsafe { std::env::set_var("OPENPROXY_CONFIG", &cfg_path) };
 
         run_login(
             OutputCtx::robot(),
@@ -485,6 +485,6 @@ mod tests {
         assert!(file.profiles.get("p1").is_none());
         assert!(file.default_profile.is_none());
 
-        std::env::remove_var("OPENPROXY_CONFIG");
+        unsafe { std::env::remove_var("OPENPROXY_CONFIG") };
     }
 }

@@ -91,7 +91,7 @@ struct HomeEnvGuard {
 impl HomeEnvGuard {
     fn new(home: &Path) -> Self {
         let old_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", home);
+        unsafe { std::env::set_var("HOME", home) };
         Self { old_home }
     }
 }
@@ -99,9 +99,9 @@ impl HomeEnvGuard {
 impl Drop for HomeEnvGuard {
     fn drop(&mut self) {
         if let Some(value) = self.old_home.take() {
-            std::env::set_var("HOME", value);
+            unsafe { std::env::set_var("HOME", value) };
         } else {
-            std::env::remove_var("HOME");
+            unsafe { std::env::remove_var("HOME") };
         }
     }
 }

@@ -330,7 +330,7 @@ async fn write_jcode_config(body: &SaveJcodeSettingsRequest) -> AnyhowResult<()>
         if !providers.is_table() {
             *providers = TomlValue::Table(TomlMap::new());
         }
-        if let TomlValue::Table(ref mut providers_table) = providers {
+        if let TomlValue::Table(providers_table) = providers {
             providers_table.insert("openproxy".to_string(), provider_entry);
         }
     }

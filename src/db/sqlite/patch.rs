@@ -698,8 +698,10 @@ mod tests {
         // encrypted (prefixed) form, and get_by_id must decrypt back.
         let _guard = ENV_LOCK.lock();
         let temp = TempDir::new().unwrap();
-        std::env::set_var("OPENPROXY_ENCRYPTION_KEY", "test-encryption-key-123");
-        std::env::set_var("DATA_DIR", temp.path());
+        unsafe {
+            std::env::set_var("OPENPROXY_ENCRYPTION_KEY", "test-encryption-key-123");
+            std::env::set_var("DATA_DIR", temp.path());
+        }
 
         let db = open();
         let mut old = AppDb::default();
@@ -731,8 +733,10 @@ mod tests {
             .unwrap();
         assert_eq!(c.api_key.as_deref(), Some("sk-secret"));
 
-        std::env::remove_var("OPENPROXY_ENCRYPTION_KEY");
-        std::env::remove_var("DATA_DIR");
+        unsafe {
+            std::env::remove_var("OPENPROXY_ENCRYPTION_KEY");
+            std::env::remove_var("DATA_DIR");
+        }
     }
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

@@ -19,7 +19,7 @@ static ENV_MUTEX: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::syn
 async fn e2e_write_then_reload() {
     let _env_guard = ENV_MUTEX.lock().await;
     let tmp = TempDir::new().unwrap();
-    std::env::set_var("DATA_DIR", tmp.path());
+    unsafe { std::env::set_var("DATA_DIR", tmp.path()) };
 
     // First load: write some data
     let db = openproxy::db::Db::load().await.unwrap();
@@ -63,7 +63,7 @@ async fn e2e_write_then_reload() {
 async fn e2e_auto_import_legacy_json() {
     let _env_guard = ENV_MUTEX.lock().await;
     let tmp = TempDir::new().unwrap();
-    std::env::set_var("DATA_DIR", tmp.path());
+    unsafe { std::env::set_var("DATA_DIR", tmp.path()) };
 
     // Write a legacy db.json
     let legacy_json = serde_json::json!({
@@ -123,7 +123,7 @@ async fn e2e_auto_import_legacy_json() {
 async fn e2e_integrity_check_on_startup() {
     let _env_guard = ENV_MUTEX.lock().await;
     let tmp = TempDir::new().unwrap();
-    std::env::set_var("DATA_DIR", tmp.path());
+    unsafe { std::env::set_var("DATA_DIR", tmp.path()) };
 
     let db = openproxy::db::Db::load().await.unwrap();
     let sq = db.sqlite_handle();
@@ -135,7 +135,7 @@ async fn e2e_integrity_check_on_startup() {
 async fn e2e_concurrent_writes() {
     let _env_guard = ENV_MUTEX.lock().await;
     let tmp = TempDir::new().unwrap();
-    std::env::set_var("DATA_DIR", tmp.path());
+    unsafe { std::env::set_var("DATA_DIR", tmp.path()) };
 
     let db = Arc::new(openproxy::db::Db::load().await.unwrap());
     let mut handles = Vec::new();
@@ -186,7 +186,7 @@ async fn e2e_concurrent_writes() {
 async fn e2e_export_import_roundtrip() {
     let _env_guard = ENV_MUTEX.lock().await;
     let tmp = TempDir::new().unwrap();
-    std::env::set_var("DATA_DIR", tmp.path());
+    unsafe { std::env::set_var("DATA_DIR", tmp.path()) };
 
     let db = openproxy::db::Db::load().await.unwrap();
     db.update(|app| {
@@ -251,7 +251,7 @@ async fn e2e_export_import_roundtrip() {
 async fn e2e_high_concurrency_stress() {
     let _env_guard = ENV_MUTEX.lock().await;
     let tmp = TempDir::new().unwrap();
-    std::env::set_var("DATA_DIR", tmp.path());
+    unsafe { std::env::set_var("DATA_DIR", tmp.path()) };
 
     let db = Arc::new(openproxy::db::Db::load().await.unwrap());
     let mut handles = Vec::new();

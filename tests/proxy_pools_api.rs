@@ -65,9 +65,9 @@ struct VercelApiEnvGuard {
 impl Drop for VercelApiEnvGuard {
     fn drop(&mut self) {
         if let Some(previous) = self.previous.as_deref() {
-            std::env::set_var("OPENPROXY_VERCEL_API_BASE_URL", previous);
+            unsafe { std::env::set_var("OPENPROXY_VERCEL_API_BASE_URL", previous) };
         } else {
-            std::env::remove_var("OPENPROXY_VERCEL_API_BASE_URL");
+            unsafe { std::env::remove_var("OPENPROXY_VERCEL_API_BASE_URL") };
         }
     }
 }
@@ -75,7 +75,7 @@ impl Drop for VercelApiEnvGuard {
 async fn set_vercel_api_base_url(base_url: &str) -> VercelApiEnvGuard {
     let lock = VERCEL_API_ENV_LOCK.lock().await;
     let previous = std::env::var("OPENPROXY_VERCEL_API_BASE_URL").ok();
-    std::env::set_var("OPENPROXY_VERCEL_API_BASE_URL", base_url);
+    unsafe { std::env::set_var("OPENPROXY_VERCEL_API_BASE_URL", base_url) };
     VercelApiEnvGuard {
         previous,
         _lock: lock,

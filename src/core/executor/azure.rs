@@ -255,7 +255,7 @@ mod tests {
     fn test_build_url_prefers_psd_over_env() {
         let _guard = env_guard();
         clear_azure_url_envs();
-        std::env::set_var("AZURE_ENDPOINT", "https://env.openai.azure.com");
+        unsafe { std::env::set_var("AZURE_ENDPOINT", "https://env.openai.azure.com") };
 
         // psd wins over env.
         let url = executor().build_url(
@@ -303,7 +303,7 @@ mod tests {
         // so a non-empty model always beats the env var.
         let url = executor().build_url(&ProviderConnection::default(), "gpt-4o");
         assert!(url.contains("/deployments/gpt-4o/"), "got: {url}");
-        std::env::set_var("AZURE_DEPLOYMENT", "env-deploy");
+        unsafe { std::env::set_var("AZURE_DEPLOYMENT", "env-deploy") };
         let url = executor().build_url(&ProviderConnection::default(), "gpt-4o");
         assert!(url.contains("/deployments/gpt-4o/"), "got: {url}");
 
@@ -351,7 +351,7 @@ mod tests {
         );
 
         // OPENAI_API_KEY env fallback.
-        std::env::set_var("OPENAI_API_KEY", "env-key");
+        unsafe { std::env::set_var("OPENAI_API_KEY", "env-key") };
         let headers = executor().build_headers(&ProviderConnection::default(), false);
         assert_eq!(
             headers.get("api-key").and_then(|v| v.to_str().ok()),
@@ -372,7 +372,7 @@ mod tests {
         );
 
         // AZURE_ORGANIZATION env fallback.
-        std::env::set_var("AZURE_ORGANIZATION", "env-org");
+        unsafe { std::env::set_var("AZURE_ORGANIZATION", "env-org") };
         let headers = executor().build_headers(&ProviderConnection::default(), false);
         assert_eq!(
             headers

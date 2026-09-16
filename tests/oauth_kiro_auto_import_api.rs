@@ -20,7 +20,7 @@ struct EnvVarGuard {
 impl EnvVarGuard {
     fn set_home(value: &Path) -> Self {
         let old_home = std::env::var("HOME").ok();
-        std::env::set_var("HOME", value);
+        unsafe { std::env::set_var("HOME", value) };
         Self { old_home }
     }
 }
@@ -28,9 +28,9 @@ impl EnvVarGuard {
 impl Drop for EnvVarGuard {
     fn drop(&mut self) {
         if let Some(value) = self.old_home.take() {
-            std::env::set_var("HOME", value);
+            unsafe { std::env::set_var("HOME", value) };
         } else {
-            std::env::remove_var("HOME");
+            unsafe { std::env::remove_var("HOME") };
         }
     }
 }

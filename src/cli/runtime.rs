@@ -204,7 +204,8 @@ impl Runtime {
     pub async fn stream_sse(
         &self,
         path: &str,
-    ) -> Result<impl Stream<Item = Result<Bytes, RuntimeError>> + Send + Unpin, RuntimeError> {
+    ) -> Result<impl Stream<Item = Result<Bytes, RuntimeError>> + Send + Unpin + use<>, RuntimeError>
+    {
         let res = self
             .stream_client()?
             .request(Method::GET, format!("{}{}", self.base_url, path))
@@ -227,7 +228,8 @@ impl Runtime {
         &self,
         path: &str,
         body: &Value,
-    ) -> Result<impl Stream<Item = Result<Bytes, RuntimeError>> + Send + Unpin, RuntimeError> {
+    ) -> Result<impl Stream<Item = Result<Bytes, RuntimeError>> + Send + Unpin + use<>, RuntimeError>
+    {
         let res = self
             .stream_client()?
             .request(Method::POST, format!("{}{}", self.base_url, path))

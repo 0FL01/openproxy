@@ -132,7 +132,7 @@ pub fn is_short_future_action(content: &str) -> bool {
 // English / Chinese future-action detection (kiro.js SHORT_FUTURE_ACTION +
 // companions). Each regex is compiled once and cached process-wide.
 macro_rules! kiro_re {
-    ($name:ident, $pattern:expr) => {
+    ($name:ident, $pattern:expr_2021) => {
         fn $name() -> &'static regex::Regex {
             static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
             RE.get_or_init(|| regex::Regex::new($pattern).expect("static kiro regex"))
@@ -1120,7 +1120,7 @@ fn sha256_hex(data: &[u8]) -> String {
 fn generate_nonce() -> String {
     use rand::Rng;
     let mut rng = rand::thread_rng();
-    let bytes: [u8; 16] = rng.gen();
+    let bytes: [u8; 16] = rng.r#gen();
     hex::encode(bytes)
 }
 

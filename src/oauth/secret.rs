@@ -37,7 +37,7 @@ mod tests {
 
     #[test]
     fn antigravity_secret_resolves() {
-        std::env::remove_var("ANTIGRAVITY_CLIENT_SECRET");
+        unsafe { std::env::remove_var("ANTIGRAVITY_CLIENT_SECRET") };
         assert_eq!(
             antigravity_client_secret(),
             "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"

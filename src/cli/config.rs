@@ -180,19 +180,21 @@ mod tests {
     use crate::cli::test_lock::ENV_LOCK;
 
     fn clear_env() {
-        std::env::remove_var("DATA_DIR");
-        std::env::remove_var("OPENPROXY_DATA_DIR");
-        std::env::remove_var("OPENPROXY_URL");
-        std::env::remove_var("OPENPROXY_API_KEY");
-        std::env::remove_var("OPENPROXY_PROFILE");
-        std::env::remove_var("OPENPROXY_CONFIG");
+        unsafe {
+            std::env::remove_var("DATA_DIR");
+            std::env::remove_var("OPENPROXY_DATA_DIR");
+            std::env::remove_var("OPENPROXY_URL");
+            std::env::remove_var("OPENPROXY_API_KEY");
+            std::env::remove_var("OPENPROXY_PROFILE");
+            std::env::remove_var("OPENPROXY_CONFIG");
+        }
     }
 
     #[test]
     fn flags_override_env_and_defaults() {
         let _g = ENV_LOCK.lock().unwrap();
         clear_env();
-        std::env::set_var("DATA_DIR", "/tmp/from-env");
+        unsafe { std::env::set_var("DATA_DIR", "/tmp/from-env") };
         let resolved = ResolvedConfig::resolve(CliOverrides {
             data_dir: Some(PathBuf::from("/tmp/from-flag")),
             url: Some("http://x".into()),
@@ -212,7 +214,7 @@ mod tests {
     fn env_used_when_no_flag() {
         let _g = ENV_LOCK.lock().unwrap();
         clear_env();
-        std::env::set_var("DATA_DIR", "/tmp/env-only");
+        unsafe { std::env::set_var("DATA_DIR", "/tmp/env-only") };
         let resolved = ResolvedConfig::resolve(CliOverrides::default()).unwrap();
         assert_eq!(resolved.data_dir, PathBuf::from("/tmp/env-only"));
         assert!(resolved.remote_url.is_none());
