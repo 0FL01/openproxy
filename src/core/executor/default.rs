@@ -183,12 +183,6 @@ static PROVIDER_CONFIGS: Lazy<BTreeMap<&'static str, ProviderConfig>> = Lazy::ne
             ProviderConfig::openai("https://cloud.zed.dev/completions"),
         ),
         (
-            "volcengine-ark",
-            ProviderConfig::openai(
-                "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions",
-            ),
-        ),
-        (
             "nvidia",
             ProviderConfig::openai("https://integrate.api.nvidia.com/v1/chat/completions"),
         ),

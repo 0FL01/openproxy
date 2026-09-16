@@ -291,7 +291,7 @@ async fn validate_bearer(
 fn is_openai_compatible(provider: &str) -> bool {
     matches!(
         provider,
-        "custom-openai" | "volcengine-ark" | "glm-cn" | "alicode" | "alicode-intl" | "opencode-go"
+        "custom-openai" | "glm-cn" | "alicode" | "alicode-intl" | "opencode-go"
     )
 }
 

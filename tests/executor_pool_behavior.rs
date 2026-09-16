@@ -275,10 +275,6 @@ fn default_executor_supports_current_passthrough_provider_matrix() {
         ("venice", "https://api.venice.ai/api/v1/chat/completions"),
         ("zed", "https://cloud.zed.dev/completions"),
         (
-            "volcengine-ark",
-            "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions",
-        ),
-        (
             "nvidia",
             "https://integrate.api.nvidia.com/v1/chat/completions",
         ),
@@ -680,7 +676,6 @@ fn default_executor_builds_bearer_headers_for_openai_passthrough_matrix() {
         "glm-cn",
         "alicode",
         "alicode-intl",
-        "volcengine-ark",
         "nvidia",
     ];
 

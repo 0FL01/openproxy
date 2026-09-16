@@ -316,7 +316,6 @@ pub(super) fn supports_models_discovery(provider: &str) -> bool {
                 | "opencode-go"
                 | "alicode"
                 | "alicode-intl"
-                | "volcengine-ark"
                 | "deepseek"
                 | "xai"
                 | "mistral"
@@ -474,13 +473,6 @@ async fn fetch_provider_models_response(
             fetch_first_party_openai_style_models(
                 connection,
                 "https://coding-intl.dashscope.aliyuncs.com/v1/models",
-            )
-            .await
-        }
-        "volcengine-ark" => {
-            fetch_first_party_openai_style_models(
-                connection,
-                "https://ark.cn-beijing.volces.com/api/coding/v3/models",
             )
             .await
         }

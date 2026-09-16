@@ -43,8 +43,6 @@ static ALIAS_TO_PROVIDER_ID: Lazy<HashMap<&'static str, &'static str>> = Lazy::n
         ("nvidia", "nvidia"),
         ("hyp", "hyperbolic"),
         ("hyperbolic", "hyperbolic"),
-        ("ark", "volcengine-ark"),
-        ("volcengine-ark", "volcengine-ark"),
         ("cursor", "cursor"),
         ("vx", "vertex"),
         ("vertex", "vertex"),

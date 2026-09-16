@@ -535,17 +535,6 @@ async fn test_api_key_connection(
             )
             .await
         }
-        "volcengine-ark" => {
-            openai_chat_status_test(
-                state,
-                connection,
-                effective_proxy,
-                "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions",
-                &default_catalog_model("volcengine-ark"),
-                "Invalid API key",
-            )
-            .await
-        }
         "deepseek" => {
             simple_get_bearer_test(
                 state,

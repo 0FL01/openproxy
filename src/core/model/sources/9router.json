@@ -55,7 +55,6 @@
     "vercel-ai-gateway": "vercel-ai-gateway",
     "vertex-partner": "vertex-partner",
     "vertex": "vertex",
-    "volcengine-ark": "volcengine-ark",
     "xai": "xai",
     "xiaomi-mimo": "xiaomi-mimo",
     "xiaomi-tokenplan": "xiaomi-tokenplan",
@@ -4314,59 +4313,6 @@
         {
           "id": "zai-org/glm-5-maas",
           "name": "GLM-5 (Vertex)",
-          "kind": "llm"
-        }
-      ]
-    },
-    {
-      "id": "volcengine-ark",
-      "alias": "volcengine-ark",
-      "format": "openai",
-      "baseUrl": "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions",
-      "models": [
-        {
-          "id": "Doubao-Seed-2.0-Code",
-          "name": "Doubao-Seed-2.0-Code",
-          "kind": "llm"
-        },
-        {
-          "id": "Doubao-Seed-2.0-pro",
-          "name": "Doubao-Seed-2.0-pro",
-          "kind": "llm"
-        },
-        {
-          "id": "Doubao-Seed-2.0-lite",
-          "name": "Doubao-Seed-2.0-lite",
-          "kind": "llm"
-        },
-        {
-          "id": "Doubao-Seed-Code",
-          "name": "Doubao-Seed-Code",
-          "kind": "llm"
-        },
-        {
-          "id": "DeepSeek-V4-Flash",
-          "name": "DeepSeek-V4-Flash",
-          "kind": "llm"
-        },
-        {
-          "id": "DeepSeek-V4-Pro",
-          "name": "DeepSeek-V4-Pro",
-          "kind": "llm"
-        },
-        {
-          "id": "GLM-5.1",
-          "name": "GLM-5.1",
-          "kind": "llm"
-        },
-        {
-          "id": "MiniMax-M2.7",
-          "name": "MiniMax-M2.7",
-          "kind": "llm"
-        },
-        {
-          "id": "Kimi-K2.6",
-          "name": "Kimi-K2.6",
           "kind": "llm"
         }
       ]

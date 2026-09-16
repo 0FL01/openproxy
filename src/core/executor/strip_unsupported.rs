@@ -98,13 +98,6 @@ pub fn strip_unsupported_params(provider: &str, model: &str, body: &mut Value) {
     if provider == "cloudflare-ai" {
         flatten_content(obj);
     }
-
-    // clampToModelMaxOutput / maxOutputCap — volcengine-ark (9router
-    // paramSupport.js:17-23, 57-71): clamp max_tokens / max_completion_tokens
-    // / max_output_tokens to the per-model ceiling when they exceed it.
-    if provider == "volcengine-ark" {
-        clamp_max_output(obj, model);
-    }
 }
 
 /// 9router paramSupport.js flattenContent: collapse a message's content
@@ -132,33 +125,6 @@ fn flatten_content(obj: &mut serde_json::Map<String, Value>) {
             })
             .collect();
         msg["content"] = Value::String(joined);
-    }
-}
-
-/// 9router paramSupport.js clamp: clamp max_tokens / max_completion_tokens /
-/// max_output_tokens to the model ceiling. Only fires when the current value
-/// is a finite number greater than the ceiling (0/null untouched).
-fn clamp_max_output(obj: &mut serde_json::Map<String, Value>, model: &str) {
-    let m = model.to_ascii_lowercase();
-    // volcengine-ark: /glm-5/i → model maxOutput; /kimi/i → 32768 cap.
-    // The Rust catalog has no maxOutput column, so use a documented ceiling
-    // for glm-5 models (256k tokens) and the JS 32768 cap for kimi; Math.min
-    // semantics preserve the smaller.
-    let mut cap: Option<u64> = None;
-    if m.contains("glm-5") {
-        cap = Some(262_144);
-    }
-    if m.contains("kimi") {
-        cap = Some(cap.map_or(32_768, |c| c.min(32_768)));
-    }
-    let Some(ceiling) = cap else { return };
-
-    for key in ["max_tokens", "max_completion_tokens", "max_output_tokens"] {
-        if let Some(n) = obj.get(key).and_then(Value::as_u64) {
-            if n > ceiling {
-                obj.insert(key.to_string(), Value::from(ceiling));
-            }
-        }
     }
 }
 
@@ -232,28 +198,6 @@ mod tests {
         strip_unsupported_params("cloudflare-ai", "@cf/meta/llama-3", &mut body);
         // Array replaced with joined text parts (image_url contributes "").
         assert_eq!(body["messages"][0]["content"], "hi");
-    }
-
-    #[test]
-    fn clamps_kimi_max_tokens_to_32768() {
-        let mut body = json!({
-            "model": "kimi-k2.7-code",
-            "max_tokens": 50000,
-            "messages": [{"role": "user", "content": "hi"}]
-        });
-        strip_unsupported_params("volcengine-ark", "kimi-k2.7-code", &mut body);
-        assert_eq!(body["max_tokens"], 32768);
-    }
-
-    #[test]
-    fn clamp_leaves_values_below_ceiling_untouched() {
-        let mut body = json!({
-            "model": "kimi-k2.7-code",
-            "max_tokens": 1000,
-            "messages": [{"role": "user", "content": "hi"}]
-        });
-        strip_unsupported_params("volcengine-ark", "kimi-k2.7-code", &mut body);
-        assert_eq!(body["max_tokens"], 1000);
     }
 
     #[test]
