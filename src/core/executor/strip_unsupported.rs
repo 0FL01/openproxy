@@ -64,7 +64,7 @@ fn should_strip(provider: &str, model: &str, field: &str) -> bool {
 fn is_anthropic_compatible(provider: &str) -> bool {
     matches!(
         provider,
-        "claude" | "glm" | "kimi" | "kimi-coding" | "minimax" | "minimax-cn"
+        "claude" | "glm" | "kimi" | "kimi-coding" | "minimax"
     )
 }
 

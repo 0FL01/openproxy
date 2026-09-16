@@ -218,7 +218,6 @@ async fn validate_provider(
                     "glm" => "https://api.z.ai/api/anthropic/v1/messages".to_string(),
                     "kimi" => "https://api.kimi.com/coding/v1/messages".to_string(),
                     "minimax" => "https://api.minimax.io/anthropic/v1/messages".to_string(),
-                    "minimax-cn" => "https://api.minimaxi.com/anthropic/v1/messages".to_string(),
                     _ => "https://api.anthropic.com/v1/messages".to_string(),
                 }
             };
@@ -229,7 +228,7 @@ async fn validate_provider(
                 "model": match p {
                     "glm" => "glm-4.5-flash",
                     "kimi" => "kimi-k2.5",
-                    "minimax" | "minimax-cn" => "minimax-m2",
+                    "minimax" => "minimax-m2",
                     _ => "claude-3-5-haiku-20241022",
                 },
                 "max_tokens": 1,
@@ -296,8 +295,5 @@ fn is_openai_compatible(provider: &str) -> bool {
 }
 
 fn is_anthropic_compatible(provider: &str) -> bool {
-    matches!(
-        provider,
-        "custom-anthropic" | "glm" | "kimi" | "minimax" | "minimax-cn"
-    )
+    matches!(provider, "custom-anthropic" | "glm" | "kimi" | "minimax")
 }

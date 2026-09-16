@@ -46,7 +46,7 @@ fn is_adaptive_thinking_unsupported(model: &str) -> bool {
 
 /// Providers whose quirks include dropping `output_config`.
 fn provider_drops_output_config(provider: &str) -> bool {
-    matches!(provider, "minimax" | "minimax-cn")
+    matches!(provider, "minimax")
 }
 
 /// Find the index of the last tool that does NOT have `defer_loading: true`.

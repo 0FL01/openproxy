@@ -27,7 +27,7 @@ fn rule_for(provider: &str, model: &str) -> Option<Scope> {
     }
     // MiniMax cannot disable thinking (thinkingCanDisable: false) — the
     // placeholder here is separate from thinking enablement.
-    if provider == "minimax" || provider == "minimax-cn" {
+    if provider == "minimax" {
         return Some(Scope::All);
     }
     // Model-level fallback rules.
@@ -211,21 +211,6 @@ mod tests {
         });
         inject_reasoning_content("minimax", "MiniMax-M3", &mut body);
         assert_eq!(body["messages"][0]["reasoning_content"], "preset");
-    }
-
-    #[test]
-    fn minimax_cn_injects_on_all_assistant_messages() {
-        let mut body = json!({
-            "model": "MiniMax-M3",
-            "messages": [
-                {"role": "assistant", "content": "x"},
-            ]
-        });
-        inject_reasoning_content("minimax-cn", "MiniMax-M3", &mut body);
-        assert_eq!(
-            body["messages"][0]["reasoning_content"],
-            Value::String(PLACEHOLDER.to_string())
-        );
     }
 
     #[test]

@@ -66,10 +66,6 @@ const MINIMAX_INTL_URLS: &[&str] = &[
     "https://www.minimax.io/v1/token_plan/remains",
     "https://api.minimax.io/v1/api/openplatform/coding_plan/remains",
 ];
-const MINIMAX_CN_URLS: &[&str] = &[
-    "https://www.minimaxi.com/v1/api/openplatform/coding_plan/remains",
-    "https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains",
-];
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -295,17 +291,12 @@ fn minimax_reset_at(
         })
 }
 
-/// Fetch MiniMax token-plan / coding-plan quota. `provider` is one of
-/// `minimax` (intl) or `minimax-cn` (china).
-pub async fn fetch_minimax_quota(api_key: &str, provider: &str) -> Value {
+/// Fetch MiniMax token-plan / coding-plan quota for `minimax` (intl).
+pub async fn fetch_minimax_quota(api_key: &str, _provider: &str) -> Value {
     if api_key.is_empty() {
         return json!({ "message": "MiniMax API key not available." });
     }
-    let urls: &[&str] = if provider == "minimax-cn" {
-        MINIMAX_CN_URLS
-    } else {
-        MINIMAX_INTL_URLS
-    };
+    let urls: &[&str] = MINIMAX_INTL_URLS;
 
     let client = http_client();
     let mut last_error: Option<String> = None;

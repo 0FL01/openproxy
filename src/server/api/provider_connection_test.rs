@@ -491,17 +491,6 @@ async fn test_api_key_connection(
             )
             .await
         }
-        "minimax-cn" => {
-            bearer_anthropic_like_status_test(
-                state,
-                connection,
-                effective_proxy,
-                "https://api.minimaxi.com/anthropic/v1/messages",
-                "minimax-m2",
-                "Invalid API key",
-            )
-            .await
-        }
         "kimi" => {
             anthropic_like_status_test(
                 state,

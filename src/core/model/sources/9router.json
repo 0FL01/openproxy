@@ -36,7 +36,6 @@
     "kimi": "kimi",
     "kiro": "kr",
     "mimo-free": "mmf",
-    "minimax-cn": "minimax-cn",
     "minimax": "minimax",
     "mistral": "mistral",
     "mmf": "mmf",
@@ -2992,74 +2991,6 @@
         {
           "id": "minimax-image-01",
           "name": "MiniMax Image 01",
-          "kind": "llm"
-        },
-        {
-          "id": "speech-2.8-hd",
-          "name": "Speech 2.8 HD",
-          "kind": "llm"
-        },
-        {
-          "id": "speech-2.8-turbo",
-          "name": "Speech 2.8 Turbo",
-          "kind": "llm"
-        },
-        {
-          "id": "speech-2.6-hd",
-          "name": "Speech 2.6 HD",
-          "kind": "llm"
-        },
-        {
-          "id": "speech-2.6-turbo",
-          "name": "Speech 2.6 Turbo",
-          "kind": "llm"
-        },
-        {
-          "id": "speech-02-hd",
-          "name": "Speech 02 HD",
-          "kind": "llm"
-        },
-        {
-          "id": "speech-02-turbo",
-          "name": "Speech 02 Turbo",
-          "kind": "llm"
-        },
-        {
-          "id": "speech-01-hd",
-          "name": "Speech 01 HD",
-          "kind": "llm"
-        },
-        {
-          "id": "speech-01-turbo",
-          "name": "Speech 01 Turbo",
-          "kind": "llm"
-        }
-      ]
-    },
-    {
-      "id": "minimax-cn",
-      "alias": "minimax-cn",
-      "format": "claude",
-      "baseUrl": "https://api.minimaxi.com/anthropic/v1/messages",
-      "models": [
-        {
-          "id": "MiniMax-M3",
-          "name": "MiniMax M3",
-          "kind": "llm"
-        },
-        {
-          "id": "MiniMax-M2.7",
-          "name": "MiniMax M2.7",
-          "kind": "llm"
-        },
-        {
-          "id": "MiniMax-M2.5",
-          "name": "MiniMax M2.5",
-          "kind": "llm"
-        },
-        {
-          "id": "MiniMax-M2.1",
-          "name": "MiniMax M2.1",
           "kind": "llm"
         },
         {

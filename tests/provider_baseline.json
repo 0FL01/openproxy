@@ -393,20 +393,6 @@
     "hasFetch": false
   },
   {
-    "id": "minimax-cn",
-    "alias": "minimax-cn",
-    "serviceKinds": [
-      "llm"
-    ],
-    "models": [
-      "MiniMax-M2.1",
-      "MiniMax-M2.5",
-      "MiniMax-M2.7"
-    ],
-    "hasSearch": false,
-    "hasFetch": false
-  },
-  {
     "id": "alicode",
     "alias": "alicode",
     "serviceKinds": [

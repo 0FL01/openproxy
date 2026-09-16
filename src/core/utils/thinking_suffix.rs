@@ -126,7 +126,7 @@ pub fn resolve_thinking_native(
         "qwen" | "qwen-code" | "dashscope" => return ThinkingNative::Qwen,
         "deepseek" | "ds" => return ThinkingNative::DeepSeek,
         "kimi" | "kimi-coding" | "moonshot" => return ThinkingNative::Kimi,
-        "minimax" | "minimax-cn" => return ThinkingNative::MiniMax,
+        "minimax" => return ThinkingNative::MiniMax,
         "kiro" => return ThinkingNative::Noop,
         _ => {}
     }

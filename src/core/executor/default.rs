@@ -59,10 +59,6 @@ static PROVIDER_CONFIGS: Lazy<BTreeMap<&'static str, ProviderConfig>> = Lazy::ne
             ProviderConfig::claude_compatible("https://api.minimax.io/anthropic/v1/messages"),
         ),
         (
-            "minimax-cn",
-            ProviderConfig::claude_compatible("https://api.minimaxi.com/anthropic/v1/messages"),
-        ),
-        (
             "deepseek",
             ProviderConfig::openai("https://api.deepseek.com/chat/completions"),
         ),
@@ -593,7 +589,7 @@ impl DefaultExecutor {
     fn provider_wants_claude_beta(provider: &str) -> bool {
         matches!(
             provider,
-            "claude" | "anthropic" | "glm" | "kimi" | "kimi-coding" | "minimax" | "minimax-cn"
+            "claude" | "anthropic" | "glm" | "kimi" | "kimi-coding" | "minimax"
         )
     }
 
@@ -676,7 +672,6 @@ impl DefaultExecutor {
                         | "kimi"
                         | "kimi-coding"
                         | "minimax"
-                        | "minimax-cn"
                         | "xiaomi-mimo"
                         | "mimo"
                 ) {
@@ -757,7 +752,7 @@ impl DefaultExecutor {
 
         if matches!(
             self.provider.as_str(),
-            "claude" | "kimi" | "minimax" | "minimax-cn" | "kimi-coding"
+            "claude" | "kimi" | "minimax" | "kimi-coding"
         ) {
             return Ok(format!("{}?beta=true", self.config.base_url));
         }
@@ -881,7 +876,7 @@ impl DefaultExecutor {
 
             if matches!(self.provider.as_str(), "glm" | "kimi") {
                 headers.insert("x-api-key", HeaderValue::from_str(token)?);
-            } else if matches!(self.provider.as_str(), "minimax" | "minimax-cn") {
+            } else if matches!(self.provider.as_str(), "minimax") {
                 headers.insert(
                     AUTHORIZATION,
                     HeaderValue::from_str(&format!("Bearer {token}"))?,
@@ -979,10 +974,7 @@ impl DefaultExecutor {
 
         // Convert OpenAI-format tools to Claude format when the provider
         // uses a Claude-compatible endpoint (minimax, kimi, etc.)
-        if matches!(
-            self.provider.as_str(),
-            "minimax" | "minimax-cn" | "kimi" | "kimi-coding"
-        ) {
+        if matches!(self.provider.as_str(), "minimax" | "kimi" | "kimi-coding") {
             convert_openai_tools_to_claude(&mut body);
         }
 

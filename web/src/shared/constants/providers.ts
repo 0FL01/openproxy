@@ -119,7 +119,6 @@ export const APIKEY_PROVIDERS: Record<string, Provider> = {
   kimi: { id: "kimi", alias: "kimi", name: "Kimi", icon: "psychology", color: "#1E3A8A", textIcon: "KM", website: "https://kimi.moonshot.cn", notice: { apiKeyUrl: "https://platform.moonshot.ai/console/api-keys", signupUrl: "https://www.kimi.com/code" }, serviceKinds: ["llm"], authModes: ["oauth", "apikey"], hasOAuth: true, oauth: { clientId: "17e5f671-d194-4dfb-9706-5516cb48c098", deviceCodeUrl: "https://auth.kimi.com/api/oauth/device_authorization", tokenUrl: "https://auth.kimi.com/api/oauth/token", refreshUrl: "https://auth.kimi.com/api/oauth/token" } },
   kilocode: { id: "kilocode", alias: "kc", name: "Kilo Code", icon: "code", color: "#FF6B35", textIcon: "KC", website: "https://kilocode.ai", notice: { apiKeyUrl: "https://kilocode.ai", signupUrl: "https://kilocode.ai" }, authModes: ["oauth", "apikey"], hasOAuth: true },
   minimax: { id: "minimax", alias: "minimax", name: "Minimax Coding", icon: "memory", color: "#7C3AED", textIcon: "MM", website: "https://www.minimaxi.com", notice: { apiKeyUrl: "https://platform.minimaxi.com/user-center/basic-information/interface-key" }, serviceKinds: ["llm", "imageToText"] },
-  "minimax-cn": { id: "minimax-cn", alias: "minimax-cn", name: "Minimax (China)", icon: "memory", color: "#DC2626", textIcon: "MC", website: "https://www.minimaxi.com", notice: { apiKeyUrl: "https://platform.minimaxi.com/user-center/basic-information/interface-key" }, serviceKinds: ["llm"] },
   alicode: { id: "alicode", alias: "alicode", name: "Alibaba", icon: "cloud", color: "#FF6A00", textIcon: "ALi", website: "https://bailian.console.aliyun.com", notice: { apiKeyUrl: "https://bailian.console.aliyun.com/?apiKey=1" } },
   "alicode-intl": { id: "alicode-intl", alias: "alicode-intl", name: "Alibaba Intl", icon: "cloud", color: "#FF6A00", textIcon: "ALi", website: "https://modelstudio.console.alibabacloud.com", notice: { apiKeyUrl: "https://modelstudio.console.alibabacloud.com/?apiKey=1" } },
   "xiaomi-mimo": { id: "xiaomi-mimo", alias: "mimo", name: "Xiaomi MiMo", icon: "smart_toy", color: "#FF6900", textIcon: "XM", website: "https://xiaomimimo.com", notice: { apiKeyUrl: "https://xiaomimimo.com" } },
@@ -496,7 +495,6 @@ export const USAGE_SUPPORTED_PROVIDERS: string[] = [
   "glm",
   "glm-cn",
   "minimax",
-  "minimax-cn",
 ];
 
 // Subset that uses apikey auth (still surfaced on quota page)
@@ -504,7 +502,6 @@ export const USAGE_APIKEY_PROVIDERS: string[] = [
   "glm",
   "glm-cn",
   "minimax",
-  "minimax-cn",
   "kimi",
   "deepseek",
 ];

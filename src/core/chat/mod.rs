@@ -224,16 +224,6 @@ fn provider_transports(provider: &str) -> Vec<TransportMatch> {
                 base_url: "https://api.minimax.io/anthropic/v1/messages?beta=true".into(),
             },
         ],
-        "minimax-cn" => vec![
-            TransportMatch {
-                format: Format::OpenAi,
-                base_url: "https://api.minimaxi.com/v1/chat/completions".into(),
-            },
-            TransportMatch {
-                format: Format::Claude,
-                base_url: "https://api.minimaxi.com/anthropic/v1/messages?beta=true".into(),
-            },
-        ],
         "xiaomi-mimo" | "mimo" => vec![
             TransportMatch {
                 format: Format::OpenAi,
@@ -501,13 +491,6 @@ mod tests {
         assert_eq!(
             t.base_url,
             "https://api.minimax.io/anthropic/v1/messages?beta=true"
-        );
-        let t = resolve_transport("minimax-cn", Format::OpenAi).expect("minimax-cn openai");
-        assert_eq!(t.base_url, "https://api.minimaxi.com/v1/chat/completions");
-        let t = resolve_transport("minimax-cn", Format::Claude).expect("minimax-cn claude");
-        assert_eq!(
-            t.base_url,
-            "https://api.minimaxi.com/anthropic/v1/messages?beta=true"
         );
     }
 

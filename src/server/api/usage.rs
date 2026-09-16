@@ -30,7 +30,6 @@ fn is_usage_apikey_provider(provider: &str) -> bool {
         "glm"
             | "glm-cn"
             | "minimax"
-            | "minimax-cn"
             | "kimi"
             | "deepseek"
             | "kiro"
@@ -157,7 +156,7 @@ async fn get_connection_usage(
             let psd = connection.provider_specific_data.clone();
             let result = match provider.as_str() {
                 "glm" | "glm-cn" => fetch_glm_quota(api_key, &provider).await,
-                "minimax" | "minimax-cn" => fetch_minimax_quota(api_key, &provider).await,
+                "minimax" => fetch_minimax_quota(api_key, &provider).await,
                 "kimi" => fetch_kimi_usage(api_key).await,
                 "deepseek" => fetch_deepseek_usage(api_key).await,
                 "kiro" => fetch_kiro_quota(api_key, &provider, &psd).await,
@@ -794,7 +793,6 @@ mod tests {
             "glm",
             "glm-cn",
             "minimax",
-            "minimax-cn",
             "kimi",
             "deepseek",
             "kiro",

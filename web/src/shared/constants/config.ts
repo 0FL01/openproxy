@@ -70,7 +70,6 @@ export const PROVIDER_ENDPOINTS = {
   "glm-cn": "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
   kimi: "https://api.kimi.com/coding/v1/messages",
   minimax: "https://api.minimax.io/anthropic/v1/messages",
-  "minimax-cn": "https://api.minimaxi.com/anthropic/v1/messages",
   alicode: "https://coding.dashscope.aliyuncs.com/v1/chat/completions",
   "alicode-intl": "https://coding-intl.dashscope.aliyuncs.com/v1/chat/completions",
   openai: "https://api.openai.com/v1/chat/completions",

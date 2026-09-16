@@ -29,7 +29,6 @@ static ALIAS_TO_PROVIDER_ID: Lazy<HashMap<&'static str, &'static str>> = Lazy::n
         ("glm", "glm"),
         ("kimi", "kimi"),
         ("minimax", "minimax"),
-        ("minimax-cn", "minimax-cn"),
         ("ds", "deepseek"),
         ("deepseek", "deepseek"),
         ("xai", "xai"),

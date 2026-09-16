@@ -295,7 +295,7 @@ fn default_executor_supports_current_passthrough_provider_matrix() {
     // glm switched to the OpenAI coding endpoint (see the glm block in
     // default_executor_builds_expected_provider_urls), so only the Claude
     //-compatible passthrough providers keep the ?beta=true suffix.
-    for provider in ["kimi", "minimax", "minimax-cn"] {
+    for provider in ["kimi", "minimax"] {
         let executor = DefaultExecutor::new(provider, pool.clone(), None)
             .unwrap_or_else(|_| panic!("missing beta provider config for {provider}"));
         let url = executor
@@ -701,7 +701,7 @@ fn default_executor_builds_claude_headers_for_compatible_passthrough_matrix() {
     // an anthropic runtime_transport — covered in
     // default_executor_builds_expected_provider_urls), so the Claude header
     // matrix covers the remaining Claude-compatible passthrough providers.
-    let providers = ["kimi", "minimax", "minimax-cn"];
+    let providers = ["kimi", "minimax"];
 
     for provider in providers {
         let executor =
@@ -710,7 +710,7 @@ fn default_executor_builds_claude_headers_for_compatible_passthrough_matrix() {
             .build_headers("claude-sonnet", &connection(provider), false)
             .expect("claude-compatible headers");
         // Each claude-compatible passthrough provider uses either x-api-key (kimi) or
-        // Bearer auth (minimax, minimax-cn) as their credential header.
+        // Bearer auth (minimax) as their credential header.
         match provider {
             "kimi" => {
                 assert_eq!(
