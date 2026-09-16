@@ -1,6 +1,6 @@
 # Goal: Migrate the dashboard to Leptos
 
-Status: complete
+Status: active
 Source: user-approved RECON plan and audit, 2026-09-16
 Last updated: 2026-09-16
 
@@ -61,8 +61,8 @@ remain satisfied.
   - Source: User: "а потом коммит пуш деплой".
   - Acceptance: Verified changes are committed on the current branch, pushed to `origin`, deployed with the repository production Compose configuration, and `/health` succeeds.
   - Primary evidence: pushed commit SHA, `docker compose ps`, and successful `curl http://127.0.0.1:4623/health`.
-  - Status: verified
-  - Evidence: commit `0f4f6569` was pushed to `origin/main`; production Compose recreated `openproxy-prod-openproxy-1` from `openproxy:prod`; `/health`, Leptos deep link, WASM MIME, and missing-asset 404 checks passed and Compose reports healthy.
+  - Status: in_progress
+  - Evidence: implementation and pre-deploy verification are complete; commit, push, and production replacement remain.
 
 ### Constraints
 
@@ -99,17 +99,17 @@ remain satisfied.
 
 ## Current Checkpoint
 
-- Closes: R1-R6.
-- Smallest next action: none; closure check passed.
-- Expected evidence: recorded below.
-- Stop or replan if: not applicable; objective is complete.
+- Closes: R6.
+- Smallest next action: review and stage only migration files, commit and push, then replace the production Compose service and run health/core dashboard smokes.
+- Expected evidence: pushed commit SHA, healthy Compose service, Leptos deep link and API health responses on port 4623.
+- Stop or replan if: staged secret review fails, push is rejected, or production cannot start against the existing volume.
 
 ## Current State
 
-- Resolved: R1-R6: toolchain, Leptos dashboard/routes, shared model workflow, textarea Translator, Node-free main build, single-binary image, commit/push, and production deployment.
-- Last relevant evidence: production Compose service is healthy on port 4623 and serves the Leptos shell plus hashed WASM; pre-deploy dashboard/backend/Docker/plugin checks are recorded in the prior checkpoint.
+- Resolved: R1-R5: toolchain, Leptos dashboard/routes, shared model workflow, textarea Translator, Node-free main build, and single-binary image.
+- Last relevant evidence: dashboard check + 5 tests + Trunk release; backend check/clippy; OpenCode plugin suite (4 pass, 1 environment skip); Docker build and disposable image/core API smokes (2026-09-16). Full backend lib run passed 1,238 tests and hit the known intermittent SQLite encryption test once; its exact focused rerun passed.
 - Blocker: none.
-- Next: none.
+- Next: commit, push, deploy, and verify production.
 
 ## Material Decisions
 
@@ -124,11 +124,10 @@ remain satisfied.
 - 2026-09-16: Contract frozen from the user-approved audited plan; implementation not yet started.
 - 2026-09-16: R1/R2 foundation checkpoint passed locally: Rust 1.98.1 pinned, backend check green, Leptos CSR release artifact built by Trunk.
 - 2026-09-16: R2-R5 implementation checkpoint passed: Leptos routes and browser flows compile, shared model tests pass, Astro dashboard was removed, and the Node-free production image plus embedded/runtime smokes passed.
-- 2026-09-16: R6 passed: pushed `0f4f6569`, backed up the production volume, retained rollback image `openproxy:rollback-pre-leptos`, recreated production Compose, and verified healthy Leptos static serving.
 
 ## Completion
 
-- Resolved outcomes: R1-R6 verified.
-- Commands and artifacts: Rust/dashboard checks and tests; Trunk release; OpenCode plugin tests; `docker compose build`; disposable image and core API smokes; commit `0f4f6569`; `docker compose up -d --no-build --force-recreate openproxy`; production `/health` and static/deep-link checks.
-- Constraint and diff-scope check: one CSR dashboard and existing Axum API boundary; no schema migration, SSR, dual UI, committed generated dashboard output, local config, or secrets. OpenCode plugin retained.
-- Final status: complete.
+- Resolved outcomes:
+- Commands and artifacts:
+- Constraint and diff-scope check:
+- Final status:
