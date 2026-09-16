@@ -100,9 +100,9 @@ export {
 
 /**
  * Quota auto-ping settings contract (9router parity).
- * Persistence: PATCH /api/settings { claudeAutoPing | codexAutoPing }.
+ * Persistence: PATCH /api/settings { claudeAutoPing | codexAutoPing | glmAutoPing }.
  * Scheduler: Rust POST /api/quota/auto-ping/tick (+ boot interval).
- * Full OAuth warm-ping (synthetic 1-token request) is residual.
+ * Warm-ping sends a tiny provider request after a quota reset.
  */
 export const QUOTA_AUTOPING_CONFIG = {
   tickIntervalMs: 60_000,
@@ -118,10 +118,16 @@ export const QUOTA_AUTOPING_CONFIG = {
       quotaKeys: ["session", "weekly"],
       pingModel: "gpt-5.6-luna",
     },
+    glm: {
+      settingsKey: "glmAutoPing",
+      quotaKeys: ["session", "weekly"],
+      pingModel: "glm-5.3-flash",
+    },
   },
 } as const;
 
 export const AUTO_PING_SETTINGS_KEYS = {
   claude: "claudeAutoPing",
   codex: "codexAutoPing",
+  glm: "glmAutoPing",
 } as const;

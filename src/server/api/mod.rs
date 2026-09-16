@@ -1975,6 +1975,8 @@ struct UpdateSettingsRequest {
     claude_auto_ping: Option<Value>,
     /// Stored in settings.extra so provider-detail UI can PATCH it.
     codex_auto_ping: Option<Value>,
+    /// Stored in settings.extra so provider-detail UI can PATCH it.
+    glm_auto_ping: Option<Value>,
     /// Depth for header-driven Codex hosted search, stored in settings.extra.
     codex_web_search_context_size: Option<String>,
 }
@@ -2081,6 +2083,9 @@ async fn update_settings_api(
             }
             if let Some(v) = req.codex_auto_ping {
                 db.settings.extra.insert("codexAutoPing".into(), v);
+            }
+            if let Some(v) = req.glm_auto_ping {
+                db.settings.extra.insert("glmAutoPing".into(), v);
             }
             if let Some(v) = req.codex_web_search_context_size {
                 db.settings

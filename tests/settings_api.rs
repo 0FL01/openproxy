@@ -108,6 +108,10 @@ async fn patch_settings_updates_values_and_rejects_password_fields() {
                         "cavemanLevel": "ultra",
                         "requireApiKey": false,
                         "codexWebSearchContextSize": "low",
+                        "glmAutoPing": {
+                            "enabled": true,
+                            "connections": {"glm-1": true}
+                        },
                         "providerContextLimits": {
                             "opencode-zen": 450000,
                             "opencode-go": 500000,
@@ -131,6 +135,8 @@ async fn patch_settings_updates_values_and_rejects_password_fields() {
     assert_eq!(json["providerStrategies"]["openai"], "latency");
     assert_eq!(json["requireApiKey"], false);
     assert_eq!(json["codexWebSearchContextSize"], "low");
+    assert_eq!(json["glmAutoPing"]["enabled"], true);
+    assert_eq!(json["glmAutoPing"]["connections"]["glm-1"], true);
     assert_eq!(json["providerContextLimits"]["opencode-zen"], 450000);
     assert_eq!(json["providerContextLimits"]["glm"], 200000);
     assert_eq!(json["hasPassword"], true);

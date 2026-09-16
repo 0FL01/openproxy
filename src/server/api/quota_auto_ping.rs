@@ -1,10 +1,10 @@
 //! Quota auto-ping (9router `quotaAutoPing` parity).
 //!
-//! Keeps the settings contract (`claudeAutoPing` / `codexAutoPing` in settings
+//! Keeps the settings contract (`claudeAutoPing` / `codexAutoPing` / `glmAutoPing` in settings
 //! extra) and runs a 60s tick (dashboard POST + background spawn from `main`).
 //!
-//! On each tick, for enabled OAuth Claude/Codex connections:
-//! 1. Optionally refresh credentials when a refresh token is present
+//! On each tick, for enabled OAuth Claude/Codex or API-key GLM connections:
+//! 1. Optionally refresh OAuth credentials when a refresh token is present
 //! 2. Fetch live quota and decide whether a warm ping is due
 //! 3. Send a minimal synthetic request (Claude messages / Codex responses)
 //! 4. Persist `lastPingedResetAt` / `lastPingedResetKey` / `lastPingAt`
@@ -35,8 +35,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
-use crate::core::executor::{CodexExecutionRequest, CodexExecutor, UpstreamResponse};
+use crate::core::executor::{
+    CodexExecutionRequest, CodexExecutor, DefaultExecutor, ExecutionRequest, UpstreamResponse,
+};
 use crate::core::proxy::resolve_proxy_target;
+use crate::core::usage::quota_fetcher::fetch_glm_quota;
 use crate::oauth::token_refresh::{
     dispatch_oauth_refresh, should_refresh_credentials, REFRESH_LEAD_CODEX_MS,
 };
@@ -52,6 +55,10 @@ const CODEX_RESET_DRIFT_MS: i64 = 30_000;
 const CODEX_MIN_PING_INTERVAL_MS: i64 = 600_000;
 const CODEX_PING_MODEL: &str = "gpt-5.6-luna";
 const CODEX_PENDING_KEY: &str = "codexAutoPingPending";
+const GLM_MIN_PING_INTERVAL_MS: i64 = 600_000;
+const GLM_PING_MODEL: &str = "glm-5.3-flash";
+const GLM_PENDING_KEY: &str = "glmAutoPingPending";
+const GLM_PING_TIMEOUT: Duration = Duration::from_secs(30);
 
 const CLAUDE_PING_URL: &str = "https://api.anthropic.com/v1/messages?beta=true";
 const CLAUDE_PING_MODEL: &str = "claude-haiku-4-5-20251001";
@@ -76,6 +83,12 @@ struct AutoPingState {
     codex_pending: BTreeMap<String, CodexPending>,
     /// Successful Codex generations retained if their DB marker cannot be written.
     codex_completed: BTreeMap<String, String>,
+    /// Last valid GLM quota observation per connection.
+    glm_observations: BTreeMap<String, CodexObservation>,
+    /// Pending GLM reset events, mirrored to connection extra for restart retry.
+    glm_pending: BTreeMap<String, CodexPending>,
+    /// Successful GLM generations retained if their DB marker cannot be written.
+    glm_completed: BTreeMap<String, String>,
     /// Failure timestamps for cooldown.
     failure_cache: BTreeMap<String, Instant>,
 }
@@ -86,6 +99,9 @@ static AUTO_PING_STATE: Lazy<Mutex<AutoPingState>> = Lazy::new(|| {
         codex_observations: BTreeMap::new(),
         codex_pending: BTreeMap::new(),
         codex_completed: BTreeMap::new(),
+        glm_observations: BTreeMap::new(),
+        glm_pending: BTreeMap::new(),
+        glm_completed: BTreeMap::new(),
         failure_cache: BTreeMap::new(),
     })
 });
@@ -103,6 +119,11 @@ const CLAUDE_CFG: ProviderPingConfig = ProviderPingConfig {
 
 const CODEX_CFG: ProviderPingConfig = ProviderPingConfig {
     settings_key: "codexAutoPing",
+    quota_key: "session",
+};
+
+const GLM_CFG: ProviderPingConfig = ProviderPingConfig {
+    settings_key: "glmAutoPing",
     quota_key: "session",
 };
 
@@ -172,7 +193,11 @@ async fn run_tick_inner(state: &AppState) -> Value {
     let mut ping_attempts = 0u32;
     let mut ping_successes = 0u32;
 
-    for (provider, cfg) in [("claude", CLAUDE_CFG), ("codex", CODEX_CFG)] {
+    for (provider, cfg) in [
+        ("claude", CLAUDE_CFG),
+        ("codex", CODEX_CFG),
+        ("glm", GLM_CFG),
+    ] {
         let enabled_map = auto_ping_connections(settings, cfg.settings_key);
         if enabled_map.is_empty() {
             continue;
@@ -181,7 +206,7 @@ async fn run_tick_inner(state: &AppState) -> Value {
         for conn in snapshot
             .provider_connections
             .iter()
-            .filter(|c| c.provider == provider && c.is_active() && c.auth_type == "oauth")
+            .filter(|connection| auto_ping_connection_matches(provider, connection))
         {
             if enabled_map.get(&conn.id) != Some(&true) {
                 continue;
@@ -257,7 +282,7 @@ async fn run_tick_inner(state: &AppState) -> Value {
             "ok": true,
             "targets": 0,
             "results": [],
-            "note": "No claudeAutoPing/codexAutoPing connections enabled",
+            "note": "No claudeAutoPing/codexAutoPing/glmAutoPing connections enabled",
         });
     }
 
@@ -298,6 +323,10 @@ async fn process_connection(
     provider: &str,
     cfg: ProviderPingConfig,
 ) -> TickOutcome {
+    if provider == "glm" {
+        return process_glm_connection(state, conn, cfg).await;
+    }
+
     let key = cache_key(provider, &conn.id);
     let is_codex = provider == "codex";
 
@@ -543,6 +572,222 @@ async fn process_connection(
     }
 }
 
+async fn process_glm_connection(
+    state: &AppState,
+    connection: &ProviderConnection,
+    cfg: ProviderPingConfig,
+) -> TickOutcome {
+    let cache_key = cache_key("glm", &connection.id);
+    let Some(api_key) = connection
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+    else {
+        return TickOutcome::Skip {
+            reason: "missing_api_key".into(),
+            reset_at: None,
+            quota_key: cfg.quota_key.into(),
+            trigger_reason: None,
+        };
+    };
+
+    let usage = fetch_glm_quota(api_key, "glm").await;
+    let quotas = usage.get("quotas").cloned().unwrap_or_else(|| json!({}));
+    let Some(target) = select_glm_target(&quotas) else {
+        return TickOutcome::Skip {
+            reason: usage
+                .get("message")
+                .and_then(Value::as_str)
+                .map(|message| format!("quota_fetch_failed: {message}"))
+                .unwrap_or_else(|| "no_supported_quota".into()),
+            reset_at: None,
+            quota_key: cfg.quota_key.into(),
+            trigger_reason: None,
+        };
+    };
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let persisted_pending = connection
+        .extra
+        .get(GLM_PENDING_KEY)
+        .and_then(|value| serde_json::from_value::<CodexPending>(value.clone()).ok());
+    let persisted_last_key = connection
+        .extra
+        .get("lastPingedResetKey")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let (previous, mut pending, completed_key) = {
+        let mut auto_ping = AUTO_PING_STATE.lock();
+        let previous = auto_ping.glm_observations.get(&cache_key).cloned();
+        if !auto_ping.glm_pending.contains_key(&cache_key) {
+            if let Some(pending) = persisted_pending {
+                auto_ping.glm_pending.insert(cache_key.clone(), pending);
+            }
+        }
+        (
+            previous,
+            auto_ping.glm_pending.get(&cache_key).cloned(),
+            auto_ping.glm_completed.get(&cache_key).cloned(),
+        )
+    };
+
+    let last_key = completed_key.or(persisted_last_key);
+    let accept_observation = should_accept_codex_observation(previous.as_ref(), &target);
+    let detected = previous
+        .as_ref()
+        .filter(|previous| {
+            previous.quota_key == target.quota_key
+                && previous.window_minutes == target.window_minutes
+                && accept_observation
+        })
+        .and_then(|previous| {
+            detect_quota_reset("glm", previous, &target, now_ms, last_key.as_deref())
+        });
+
+    if accept_observation {
+        AUTO_PING_STATE
+            .lock()
+            .glm_observations
+            .insert(cache_key.clone(), target.clone());
+    }
+
+    if let Some(event) = detected {
+        if last_key.as_deref() != Some(event.generation_key.as_str())
+            && pending.as_ref().map(|pending| &pending.generation_key)
+                != Some(&event.generation_key)
+        {
+            AUTO_PING_STATE
+                .lock()
+                .glm_pending
+                .insert(cache_key.clone(), event.clone());
+            pending = Some(event);
+        }
+    }
+
+    let Some(pending_event) = pending else {
+        return TickOutcome::Observe {
+            reset_at: target.reset_at,
+            near_reset: false,
+            quota_key: target.quota_key,
+        };
+    };
+
+    let pending_value = serde_json::to_value(&pending_event).unwrap_or(Value::Null);
+    if connection.extra.get(GLM_PENDING_KEY) != Some(&pending_value) {
+        if let Err(error) =
+            persist_pending(state, &connection.id, GLM_PENDING_KEY, Some(&pending_event)).await
+        {
+            mark_failure(&cache_key);
+            return TickOutcome::Skip {
+                reason: format!("pending_persist_failed: {error}"),
+                reset_at: pending_event.reset_at,
+                quota_key: pending_event.quota_key,
+                trigger_reason: Some(pending_event.trigger_reason),
+            };
+        }
+    }
+
+    if failure_cooldown_active(&cache_key) {
+        return TickOutcome::Skip {
+            reason: "failure_cooldown".into(),
+            reset_at: pending_event.reset_at,
+            quota_key: pending_event.quota_key,
+            trigger_reason: Some(pending_event.trigger_reason),
+        };
+    }
+
+    if weekly_blocks_session(&quotas, now_ms) {
+        return TickOutcome::Skip {
+            reason: "blocking_quota_exhausted".into(),
+            reset_at: pending_event.reset_at,
+            quota_key: pending_event.quota_key,
+            trigger_reason: Some(pending_event.trigger_reason),
+        };
+    }
+
+    if was_pinged_recently(connection, GLM_MIN_PING_INTERVAL_MS, now_ms) {
+        return TickOutcome::Skip {
+            reason: "min_ping_interval".into(),
+            reset_at: pending_event.reset_at,
+            quota_key: pending_event.quota_key,
+            trigger_reason: Some(pending_event.trigger_reason),
+        };
+    }
+
+    match send_glm_ping(state, connection).await {
+        Ok(()) => {
+            clear_failure(&cache_key);
+            let pinged_at = chrono::Utc::now().to_rfc3339();
+            let connection_id = connection.id.clone();
+            let reset_at = pending_event.reset_at.clone();
+            let generation_key = pending_event.generation_key.clone();
+            let update_result = state
+                .db
+                .update(move |db| {
+                    if let Some(connection) = db
+                        .provider_connections
+                        .iter_mut()
+                        .find(|connection| connection.id == connection_id)
+                    {
+                        connection.extra.remove(GLM_PENDING_KEY);
+                        connection
+                            .extra
+                            .insert("lastPingedResetAt".into(), json!(reset_at));
+                        connection
+                            .extra
+                            .insert("lastPingedResetKey".into(), json!(generation_key));
+                        connection
+                            .extra
+                            .insert("lastPingAt".into(), json!(pinged_at));
+                        connection.updated_at = Some(chrono::Utc::now().to_rfc3339());
+                    }
+                })
+                .await;
+            {
+                let mut auto_ping = AUTO_PING_STATE.lock();
+                auto_ping.glm_pending.remove(&cache_key);
+                auto_ping
+                    .glm_completed
+                    .insert(cache_key.clone(), pending_event.generation_key.clone());
+            }
+            if let Err(error) = update_result {
+                warn!(
+                    target: "openproxy::auto_ping",
+                    connection_id = %connection.id,
+                    error = %error,
+                    "quota auto-ping: failed to persist successful GLM ping"
+                );
+            }
+            TickOutcome::Ping {
+                ok: true,
+                reset_at: pending_event.reset_at,
+                error: None,
+                quota_key: pending_event.quota_key,
+                trigger_reason: pending_event.trigger_reason,
+            }
+        }
+        Err(error) => {
+            mark_failure(&cache_key);
+            warn!(
+                target: "openproxy::auto_ping",
+                provider = "glm",
+                connection_id = %connection.id,
+                error = %error,
+                "quota auto-ping: warm ping failed"
+            );
+            TickOutcome::Ping {
+                ok: false,
+                reset_at: pending_event.reset_at,
+                error: Some(error),
+                quota_key: pending_event.quota_key,
+                trigger_reason: pending_event.trigger_reason,
+            }
+        }
+    }
+}
+
 async fn process_codex_quota(
     state: &AppState,
     connection: &ProviderConnection,
@@ -595,7 +840,7 @@ async fn process_codex_quota(
     {
         AUTO_PING_STATE.lock().codex_pending.remove(cache_key);
         pending = None;
-        if let Err(error) = persist_codex_pending(state, &connection.id, None).await {
+        if let Err(error) = persist_pending(state, &connection.id, CODEX_PENDING_KEY, None).await {
             warn!(
                 target: "openproxy::auto_ping",
                 connection_id = %connection.id,
@@ -612,7 +857,8 @@ async fn process_codex_quota(
     let accept_observation = should_accept_codex_observation(previous.as_ref(), &target);
     let detected = (same_window && accept_observation)
         .then(|| {
-            detect_codex_reset(
+            detect_quota_reset(
+                "codex",
                 previous.as_ref().unwrap(),
                 &target,
                 now_ms,
@@ -650,7 +896,13 @@ async fn process_codex_quota(
 
     let pending_value = serde_json::to_value(&pending_event).unwrap_or(Value::Null);
     if connection.extra.get(CODEX_PENDING_KEY) != Some(&pending_value) {
-        if let Err(error) = persist_codex_pending(state, &connection.id, Some(&pending_event)).await
+        if let Err(error) = persist_pending(
+            state,
+            &connection.id,
+            CODEX_PENDING_KEY,
+            Some(&pending_event),
+        )
+        .await
         {
             mark_failure(cache_key);
             return TickOutcome::Skip {
@@ -673,7 +925,7 @@ async fn process_codex_quota(
         }
     }
 
-    if pending_event.quota_key == "session" && codex_weekly_blocks_session(quotas, now_ms) {
+    if pending_event.quota_key == "session" && weekly_blocks_session(quotas, now_ms) {
         return TickOutcome::Skip {
             reason: "blocking_quota_exhausted".into(),
             reset_at: pending_event.reset_at,
@@ -800,6 +1052,24 @@ fn select_codex_target(quotas: &Value) -> Option<CodexObservation> {
         })
 }
 
+fn select_glm_target(quotas: &Value) -> Option<CodexObservation> {
+    let quota = quotas.get("session")?;
+    let window_minutes = quota.get("windowMinutes")?.as_i64()?;
+    if window_minutes != 300 {
+        return None;
+    }
+    Some(CodexObservation {
+        quota_key: "session".into(),
+        window_minutes,
+        used: quota.get("used").and_then(to_finite_number)?,
+        reset_at: quota
+            .get("resetAt")
+            .or_else(|| quota.get("reset_at"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
+}
+
 fn select_codex_ping_model(
     models: &[crate::server::codex_catalog::CodexModelMetadata],
 ) -> Option<crate::server::codex_catalog::CodexModelMetadata> {
@@ -833,7 +1103,8 @@ fn codex_ping_body(model_id: &str) -> Value {
     })
 }
 
-fn detect_codex_reset(
+fn detect_quota_reset(
+    provider: &str,
     previous: &CodexObservation,
     current: &CodexObservation,
     now_ms: i64,
@@ -853,7 +1124,10 @@ fn detect_codex_reset(
 
     if let Some(previous_reset_ms) = previous.reset_at.as_deref().and_then(parse_reset_ms) {
         if now_ms >= previous_reset_ms {
-            let key = format!("codex:{}:deadline:{}", current.quota_key, previous_reset_ms);
+            let key = format!(
+                "{provider}:{}:deadline:{}",
+                current.quota_key, previous_reset_ms
+            );
             // A new WHAM deadline after a successful deadline ping acknowledges
             // the same rollover; it is not another reset generation.
             if last_pinged_key == Some(key.as_str()) {
@@ -871,7 +1145,10 @@ fn detect_codex_reset(
         {
             let current_reset_ms = parse_reset_ms(current_reset)?;
             return Some(pending(
-                format!("codex:{}:window:{}", current.quota_key, current_reset_ms),
+                format!(
+                    "{provider}:{}:window:{}",
+                    current.quota_key, current_reset_ms
+                ),
                 "reset_at_changed",
             ));
         }
@@ -879,7 +1156,7 @@ fn detect_codex_reset(
 
     if previous.used > 0.0 && current.used == 0.0 {
         return Some(pending(
-            format!("codex:{}:usage_reset:{}", current.quota_key, now_ms),
+            format!("{provider}:{}:usage_reset:{}", current.quota_key, now_ms),
             "usage_reset",
         ));
     }
@@ -907,7 +1184,7 @@ fn should_accept_codex_observation(
     }
 }
 
-fn codex_weekly_blocks_session(quotas: &Value, now_ms: i64) -> bool {
+fn weekly_blocks_session(quotas: &Value, now_ms: i64) -> bool {
     let Some(weekly) = quotas.get("weekly") else {
         return false;
     };
@@ -921,9 +1198,10 @@ fn codex_weekly_blocks_session(quotas: &Value, now_ms: i64) -> bool {
         .is_none_or(|reset_ms| reset_ms > now_ms)
 }
 
-async fn persist_codex_pending(
+async fn persist_pending(
     state: &AppState,
     connection_id: &str,
+    pending_key: &'static str,
     pending: Option<&CodexPending>,
 ) -> Result<(), String> {
     let connection_id = connection_id.to_string();
@@ -941,10 +1219,10 @@ async fn persist_codex_pending(
             {
                 match pending {
                     Some(value) => {
-                        connection.extra.insert(CODEX_PENDING_KEY.into(), value);
+                        connection.extra.insert(pending_key.into(), value);
                     }
                     None => {
-                        connection.extra.remove(CODEX_PENDING_KEY);
+                        connection.extra.remove(pending_key);
                     }
                 }
                 connection.updated_at = Some(chrono::Utc::now().to_rfc3339());
@@ -1055,6 +1333,61 @@ async fn send_codex_ping(
     }
 }
 
+fn glm_ping_body() -> Value {
+    json!({
+        "model": GLM_PING_MODEL,
+        "messages": [{ "role": "user", "content": "hi" }],
+        "max_tokens": 1,
+        "stream": false,
+    })
+}
+
+async fn send_glm_ping(state: &AppState, connection: &ProviderConnection) -> Result<(), String> {
+    let snapshot = state.db.snapshot();
+    let proxy = resolve_proxy_target(&snapshot, connection, &snapshot.settings);
+    let executor = DefaultExecutor::new("glm", state.client_pool.clone(), None)
+        .map_err(|error| format!("GLM executor init: {error:?}"))?;
+
+    let mut credentials = connection.clone();
+    credentials.access_token = None;
+    credentials.refresh_token = None;
+    credentials.runtime_transport = None;
+
+    tokio::time::timeout(GLM_PING_TIMEOUT, async move {
+        let result = executor
+            .execute(ExecutionRequest {
+                model: GLM_PING_MODEL.into(),
+                body: glm_ping_body(),
+                stream: false,
+                credentials,
+                proxy,
+            })
+            .await
+            .map_err(|error| format!("GLM ping execute: {error:?}"))?;
+        let status = result.response.status();
+        match result.response {
+            UpstreamResponse::Reqwest(response) => {
+                response
+                    .bytes()
+                    .await
+                    .map_err(|error| format!("GLM ping response: {error}"))?;
+            }
+            UpstreamResponse::Hyper(response) => {
+                http_body_util::BodyExt::collect(response.into_body())
+                    .await
+                    .map_err(|error| format!("GLM ping response: {error}"))?;
+            }
+        }
+        if status.is_success() {
+            Ok(())
+        } else {
+            Err(format!("GLM ping HTTP {}", status.as_u16()))
+        }
+    })
+    .await
+    .map_err(|_| "GLM ping timed out".to_string())?
+}
+
 fn should_ping_for_reset(reset_at: &str, now_ms: i64) -> bool {
     parse_reset_ms(reset_at).is_some_and(|ms| now_ms >= ms - PING_LEAD_MS)
 }
@@ -1127,6 +1460,21 @@ fn is_quota_exhausted(quota: &Value) -> bool {
 
 fn cache_key(provider: &str, connection_id: &str) -> String {
     format!("{provider}:{connection_id}")
+}
+
+fn auto_ping_connection_matches(provider: &str, connection: &ProviderConnection) -> bool {
+    if connection.provider != provider || !connection.is_active() {
+        return false;
+    }
+    if provider == "glm" {
+        let auth_type = connection.auth_type.trim().to_ascii_lowercase();
+        return matches!(auth_type.as_str(), "apikey" | "api_key")
+            && connection
+                .api_key
+                .as_deref()
+                .is_some_and(|key| !key.trim().is_empty());
+    }
+    connection.auth_type == "oauth"
 }
 
 fn should_refresh_for_auto_ping(connection: &ProviderConnection, provider: &str) -> bool {
@@ -1247,6 +1595,61 @@ mod tests {
     }
 
     #[test]
+    fn glm_target_uses_only_five_hour_session() {
+        let quotas = json!({
+            "session": { "used": 20, "windowMinutes": 300 },
+            "weekly": { "used": 40, "windowMinutes": 10_080 },
+            "monthly": { "used": 60, "windowMinutes": 43_200 },
+        });
+
+        let target = select_glm_target(&quotas).unwrap();
+        assert_eq!(target.quota_key, "session");
+        assert_eq!(target.window_minutes, 300);
+    }
+
+    #[test]
+    fn glm_reset_generation_uses_glm_prefix() {
+        let now = chrono::Utc::now().timestamp_millis();
+        let previous = CodexObservation {
+            quota_key: "session".into(),
+            window_minutes: 300,
+            used: 100.0,
+            reset_at: chrono::DateTime::from_timestamp_millis(now).map(|dt| dt.to_rfc3339()),
+        };
+        let current = CodexObservation {
+            used: 0.0,
+            reset_at: chrono::DateTime::from_timestamp_millis(now + 18_000_000)
+                .map(|dt| dt.to_rfc3339()),
+            ..previous.clone()
+        };
+
+        let event = detect_quota_reset("glm", &previous, &current, now, None).unwrap();
+        assert!(event.generation_key.starts_with("glm:session:"));
+    }
+
+    #[test]
+    fn glm_api_key_connection_is_eligible() {
+        let connection = ProviderConnection {
+            provider: "glm".into(),
+            auth_type: "api_key".into(),
+            api_key: Some("key".into()),
+            ..Default::default()
+        };
+
+        assert!(auto_ping_connection_matches("glm", &connection));
+        assert!(!auto_ping_connection_matches("codex", &connection));
+    }
+
+    #[test]
+    fn glm_ping_is_minimal_and_non_streaming() {
+        let body = glm_ping_body();
+        assert_eq!(body["model"], GLM_PING_MODEL);
+        assert_eq!(body["max_tokens"], 1);
+        assert_eq!(body["stream"], false);
+        assert_eq!(body["messages"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
     fn codex_scheduled_reset_and_late_slide_are_one_generation() {
         let now = chrono::Utc::now().timestamp_millis();
         let previous = CodexObservation {
@@ -1262,11 +1665,16 @@ mod tests {
             ..previous.clone()
         };
 
-        let event = detect_codex_reset(&previous, &current, now, None).unwrap();
+        let event = detect_quota_reset("codex", &previous, &current, now, None).unwrap();
         assert_eq!(event.trigger_reason, "scheduled_reset");
-        assert!(
-            detect_codex_reset(&previous, &current, now, Some(&event.generation_key)).is_none()
-        );
+        assert!(detect_quota_reset(
+            "codex",
+            &previous,
+            &current,
+            now,
+            Some(&event.generation_key)
+        )
+        .is_none());
     }
 
     #[test]
@@ -1284,12 +1692,13 @@ mod tests {
             used: 0.0,
             ..before.clone()
         };
-        let first = detect_codex_reset(&before, &after, now, None).unwrap();
+        let first = detect_quota_reset("codex", &before, &after, now, None).unwrap();
         let used_again = CodexObservation {
             used: 12.0,
             ..after.clone()
         };
-        let second = detect_codex_reset(&used_again, &after, now + 86_400_000, None).unwrap();
+        let second =
+            detect_quota_reset("codex", &used_again, &after, now + 86_400_000, None).unwrap();
 
         assert_eq!(first.trigger_reason, "usage_reset");
         assert_eq!(second.trigger_reason, "usage_reset");
@@ -1313,7 +1722,7 @@ mod tests {
             ..before.clone()
         };
 
-        let event = detect_codex_reset(&before, &after, now, None).unwrap();
+        let event = detect_quota_reset("codex", &before, &after, now, None).unwrap();
         assert_eq!(event.trigger_reason, "reset_at_changed");
     }
 
@@ -1391,11 +1800,11 @@ mod tests {
         let future = chrono::DateTime::from_timestamp_millis(now + 60_000)
             .unwrap()
             .to_rfc3339();
-        assert!(!codex_weekly_blocks_session(
+        assert!(!weekly_blocks_session(
             &json!({ "review_weekly": { "remaining": 0, "resetAt": future } }),
             now
         ));
-        assert!(codex_weekly_blocks_session(
+        assert!(weekly_blocks_session(
             &json!({ "weekly": { "remaining": 0, "resetAt": future } }),
             now
         ));

@@ -42,6 +42,7 @@ interface AutoPingProps {
   on: boolean;
   onToggle: (on: boolean) => void;
   provider?: string;
+  saving?: boolean;
 }
 
 interface ConnectionRowProps {
@@ -94,9 +95,10 @@ export default function ConnectionRow({
         ? `Legacy: ${connection.providerSpecificData?.connectionProxyUrl}`
         : "";
 
-  const autoPingTooltip =
-    autoPing?.provider === "codex"
-      ? "Auto-starts the next available Codex quota window after reset with a tiny gpt-5.6-luna request. Consumes a small amount of quota."
+  const autoPingTooltip = autoPing?.provider === "codex"
+    ? "Auto-starts the next available Codex quota window after reset with a tiny gpt-5.6-luna request. Consumes a small amount of quota."
+    : autoPing?.provider === "glm"
+      ? "Auto-starts the next GLM 5-hour window after reset with a tiny glm-5.3-flash request. Consumes a small amount of Coding Plan quota."
       : "When your 5h quota runs out, auto-sends a request the moment it resets so a new window starts right away.";
 
   // Prefer per-connection authType for dual-auth providers (xAI OAuth vs API key).
@@ -354,6 +356,9 @@ export default function ConnectionRow({
             <Tooltip text={autoPingTooltip}>
               <button
                 onClick={() => autoPing.onToggle(!autoPing.on)}
+                disabled={autoPing.saving}
+                aria-pressed={autoPing.on}
+                aria-label={`${autoPing.on ? "Disable" : "Enable"} auto-ping for ${displayName}`}
                 className={`flex w-full flex-col items-center rounded px-2 py-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 ${autoPing.on ? "text-primary" : "text-text-muted hover:text-primary"}`}
               >
                 <span className="material-symbols-outlined text-[18px]">bolt</span>

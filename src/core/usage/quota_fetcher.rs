@@ -125,6 +125,10 @@ pub async fn fetch_glm_quota(api_key: &str, provider: &str) -> Value {
         Err(e) => return json!({ "message": format!("GLM error: {e}") }),
     };
 
+    parse_glm_quota_response(&body)
+}
+
+fn parse_glm_quota_response(body: &Value) -> Value {
     let data = body.get("data").cloned().unwrap_or_else(|| json!({}));
     let limits = data
         .get("limits")
@@ -134,26 +138,47 @@ pub async fn fetch_glm_quota(api_key: &str, provider: &str) -> Value {
 
     let mut quotas = serde_json::Map::new();
     for limit in &limits {
-        if limit.get("type").and_then(|v| v.as_str()) != Some("TOKENS_LIMIT") {
+        if !matches!(
+            limit.get("type").and_then(Value::as_str),
+            Some("TOKENS_LIMIT" | "CREDIT_LIMIT")
+        ) {
             continue;
         }
+        let (quota_key, window_minutes) = match (
+            limit.get("unit").and_then(Value::as_i64),
+            limit.get("number").and_then(Value::as_i64),
+        ) {
+            (Some(3), Some(5)) => ("session", 300),
+            (Some(6), Some(1)) => ("weekly", 10_080),
+            _ => continue,
+        };
         let used_percent = limit
             .get("percentage")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-        let reset_ms = limit
-            .get("nextResetTime")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
-        let remaining = (100.0 - used_percent).max(0.0);
-        let reset_at = if reset_ms > 0 {
-            chrono::DateTime::<chrono::Utc>::from_timestamp_millis(reset_ms)
-                .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
-        } else {
-            None
+            .and_then(Value::as_f64)
+            .or_else(|| {
+                let total = limit.get("usage").and_then(Value::as_f64)?;
+                if total <= 0.0 {
+                    return None;
+                }
+                let used = limit
+                    .get("currentValue")
+                    .and_then(Value::as_f64)
+                    .or_else(|| {
+                        limit
+                            .get("remaining")
+                            .and_then(Value::as_f64)
+                            .map(|remaining| total - remaining)
+                    })?;
+                Some((used / total) * 100.0)
+            })
+            .map(|value| value.clamp(0.0, 100.0));
+        let Some(used_percent) = used_percent else {
+            continue;
         };
+        let remaining = (100.0 - used_percent).max(0.0);
+        let reset_at = limit.get("nextResetTime").and_then(parse_reset_time);
         quotas.insert(
-            "session".to_string(),
+            quota_key.to_string(),
             json!({
                 "used": used_percent,
                 "total": 100,
@@ -161,6 +186,7 @@ pub async fn fetch_glm_quota(api_key: &str, provider: &str) -> Value {
                 "remainingPercentage": remaining,
                 "resetAt": reset_at,
                 "unlimited": false,
+                "windowMinutes": window_minutes,
             }),
         );
     }
@@ -3259,6 +3285,64 @@ pub async fn fetch_ollama_quota(api_key: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn glm_v1_quota_has_only_session_window() {
+        let out = parse_glm_quota_response(&json!({
+            "data": {
+                "level": "pro",
+                "limits": [{
+                    "type": "TOKENS_LIMIT",
+                    "unit": 3,
+                    "number": 5,
+                    "percentage": 25,
+                    "nextResetTime": 1_789_461_188_000_i64
+                }]
+            }
+        }));
+
+        assert_eq!(out["plan"], "Pro");
+        assert_eq!(out["quotas"]["session"]["used"], 25.0);
+        assert_eq!(out["quotas"]["session"]["windowMinutes"], 300);
+        assert!(out["quotas"].get("weekly").is_none());
+    }
+
+    #[test]
+    fn glm_v2_quota_separates_session_and_weekly() {
+        let out = parse_glm_quota_response(&json!({
+            "data": {"limits": [
+                {"type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 20},
+                {"type": "TOKENS_LIMIT", "unit": 6, "number": 1, "percentage": 40},
+                {"type": "TIME_LIMIT", "unit": 5, "number": 1, "percentage": 60}
+            ]}
+        }));
+
+        assert_eq!(out["quotas"]["session"]["used"], 20.0);
+        assert_eq!(out["quotas"]["weekly"]["used"], 40.0);
+        assert_eq!(out["quotas"]["weekly"]["windowMinutes"], 10_080);
+        assert_eq!(out["quotas"].as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn glm_v3_quota_accepts_credit_limits() {
+        let out = parse_glm_quota_response(&json!({
+            "data": {"limits": [
+                {
+                    "type": "CREDIT_LIMIT", "unit": 3, "number": 5,
+                    "usage": 2000, "currentValue": 500, "remaining": 1500
+                },
+                {
+                    "type": "CREDIT_LIMIT", "unit": 6, "number": 1,
+                    "usage": 10000, "remaining": 7500
+                },
+                {"type": "CREDIT_LIMIT", "unit": 4, "number": 1, "percentage": 90}
+            ]}
+        }));
+
+        assert_eq!(out["quotas"]["session"]["used"], 25.0);
+        assert_eq!(out["quotas"]["weekly"]["used"], 25.0);
+        assert_eq!(out["quotas"].as_object().unwrap().len(), 2);
+    }
 
     #[test]
     fn codex_weekly_only_window_is_not_labeled_as_session() {

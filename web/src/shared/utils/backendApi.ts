@@ -38,6 +38,7 @@ export interface Settings {
   cloudEnabled?: boolean;
   claudeAutoPing?: AutoPingConfig;
   codexAutoPing?: AutoPingConfig;
+  glmAutoPing?: AutoPingConfig;
   [key: string]: unknown;
 }
 
