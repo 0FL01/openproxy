@@ -81,7 +81,6 @@ async fn e2e_auto_import_legacy_json() {
         "proxyPools": [],
         "modelAliases": {},
         "customModels": [],
-        "combos": [],
         "apiKeys": [],
         "settings": {},
     });
@@ -225,7 +224,6 @@ async fn e2e_export_import_roundtrip() {
         "providerNodes": [],
         "proxyPools": [],
         "apiKeys": [],
-        "combos": [],
         "modelAliases": {},
         "customModels": [],
     });

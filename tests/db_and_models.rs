@@ -202,7 +202,6 @@ async fn db_preserves_valid_sections_when_legacy_fields_are_null_or_invalid() {
             ],
             "modelAliases": { "draft": { "provider": "openai", "model": "gpt-4.1-mini" } },
             "customModels": [{ "providerAlias": "openai", "id": "gpt-custom", "type": "llm", "name": "Custom" }],
-            "combos": [{ "id": "combo-1", "name": "writer", "models": ["draft"] }],
             "apiKeys": [{ "id": "k1", "name": "Local", "key": "pk-test", "isActive": null }],
             "settings": { "requireLogin": null, "outboundProxyUrl": "http://127.0.0.1:8080" }
         }))

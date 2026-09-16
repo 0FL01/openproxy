@@ -167,7 +167,6 @@ async fn restore_takes_pre_restore_snapshot_and_swaps_db() {
     let cleared = json!({
         "providerConnections": [],
         "providerNodes": [],
-        "combos": [],
         "apiKeys": [],
         "settings": {},
     });
