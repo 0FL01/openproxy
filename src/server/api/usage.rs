@@ -9,9 +9,9 @@ use serde_json::{json, Value};
 use crate::core::usage::quota_fetcher::{
     codex_account_id, consume_codex_rate_limit_reset_credit, fetch_antigravity_quota,
     fetch_claude_quota, fetch_codebuddy_quota, fetch_codex_quota, fetch_deepseek_usage,
-    fetch_gemini_cli_quota, fetch_github_quota, fetch_glm_quota, fetch_grok_cli_quota,
-    fetch_kimi_oauth_usage, fetch_kimi_usage, fetch_kiro_quota, fetch_minimax_quota,
-    fetch_ollama_quota, fetch_vercel_ai_gateway_quota, get_codex_rate_limit_reset_credits,
+    fetch_github_quota, fetch_glm_quota, fetch_grok_cli_quota, fetch_kimi_oauth_usage,
+    fetch_kimi_usage, fetch_kiro_quota, fetch_minimax_quota, fetch_ollama_quota,
+    fetch_vercel_ai_gateway_quota, get_codex_rate_limit_reset_credits,
 };
 use crate::oauth::token_refresh::{dispatch_oauth_refresh, refresh_codex_token};
 use crate::server::state::AppState;
@@ -63,7 +63,6 @@ pub async fn fetch_oauth_quota(connection: &ProviderConnection) -> Value {
             fetch_codex_quota(token, account_id.as_deref()).await
         }
         "kiro" => fetch_kiro_quota(token, provider, psd).await,
-        "gemini-cli" => fetch_gemini_cli_quota(token, provider, psd).await,
         "antigravity" => fetch_antigravity_quota(token, provider).await,
         "grok-cli" => fetch_grok_cli_quota(token).await,
         "ollama" => fetch_ollama_quota(token).await,

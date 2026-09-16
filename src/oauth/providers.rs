@@ -253,24 +253,6 @@ pub fn xai() -> OAuthProviderConfig {
     }
 }
 
-/// Gemini CLI — PKCE auth-code flow (Google OAuth).
-pub fn gemini_cli() -> OAuthProviderConfig {
-    OAuthProviderConfig {
-        id: "gemini-cli",
-        client_id: "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com",
-        authorize_url: "https://accounts.google.com/o/oauth2/v2/auth",
-        token_url: "https://oauth2.googleapis.com/token",
-        scopes: &[
-            "https://www.googleapis.com/auth/cloud-platform",
-            "https://www.googleapis.com/auth/userinfo.email",
-            "https://www.googleapis.com/auth/userinfo.profile",
-        ],
-        uses_pkce: true,
-        extra_params: &[],
-        refresh_lead_ms: 4 * 60 * 60 * 1000,
-    }
-}
-
 pub fn clinepass() -> OAuthProviderConfig {
     OAuthProviderConfig {
         id: "clinepass",
@@ -509,7 +491,6 @@ pub fn get_config(provider: &str) -> Option<OAuthProviderConfig> {
         "codebuddy" => Some(codebuddy()),
         "openai-native" => Some(openai_native()),
         "xai" => Some(xai()),
-        "gemini-cli" => Some(gemini_cli()),
         "kimchi" => Some(kimchi()),
         "cursor" => Some(cursor()),
         "antigravity" => Some(antigravity()),

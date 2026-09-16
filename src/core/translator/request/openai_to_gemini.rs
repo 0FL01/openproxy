@@ -674,9 +674,6 @@ pub(crate) fn clean_json_schema(schema: &Value) -> Value {
 /// Default thinking signature for antigravity (mirrors DEFAULT_THINKING_AG_SIGNATURE in JS).
 pub const DEFAULT_THINKING_AG_SIGNATURE: &str = "EuwGCukGAXLI2nxwZIq54WWSoL/YN0P3TsDZ7zRnLi8g0S4aVr2HUGxvaHKySuY6HAVzcE0GPGjXrytLIldxthSvfxgUlJh6Qa9Z+Oj5QZBlYdg6HaJ6yuY5R7waE6rdwBsRf7Ft2j3DJ9rMi9qhWFqApewYtPhls3VHtuvND3l8Rm09+lbAXQs6KKWEWrxNLKTBkfpMgXhRERc/TQRMZu1twAablm6/Zk1tsYRvfWKLsNbeKF+CCojJdXJKvnR/8Ouuoa+Y2Ti20hcW7aZIIjZDFYPU//k6Ybmhg69J/imbFai2ckhfLaisqdDkdoIiBJScTOUvYqP6AE9d4MsydSC+UlhIMk4hoP76R8vUSCZRMkjOaDXstf/QoVZKbt94wyRZgAJ1G0BqI8L5ow86kLpA4wJEtxsRGymOE4bKUvApveBakYDNM9APkf+LbtbzWSseGjoZcSlycF9iN8Q2XNYKRrHbv3Lr5Y8JjdH/5y/6SHkNehTEZugaeGnSPSyCTWto1kQgHpxdWmhkLfJGNUGLmue7Mesj4TSms4J33mRpYVhNB/J333FCqIP0hr/E7BkkjEn7yZ4X7SQlh+xKPurapsnHRwiKmtsilmEFrnTE9iQr+pMr6M29qqFNv1tr5yumbaJw8JW9sB15tNsRv+dW6BjNanbsKz7HCgKUBc8tGy+7YuhXzAfViyRefcjK7eZW0Fbyt7AbybJTKz78W8NH7ye6LAwzOebXpeZ4D43fNIt8bKh26qgduSQv/7o+pAflkuqHZ99YWgHQ8h8OkZFi3eOiSYjsjhdZ/czWOdoPI/OnqIldzMPF5YlrKBLFX8VhRKVmqgsmWf5PHGulHhMkVlS+XG2UIseGy69ARa93D78Gsa+1n1kJr7EEB7Rh+27vUMxVYLdz1yMSvE5nalTAlg/ZeG8+XQ0cHuAI3KbQpHW2Q++RdXfm5JzD5WdJZUU+Zn8t8UUn85BH4RxZLeE0qJikgSsKoYVBc6YhiMjhPgkR95ReimY4Z0xCJdRo1gjexOFeODZMpQF6Yxnoic7IrdgsFA3iePTbFnPp3IAM1fAThWhXJUn3QInUOTd5o1qmTmn6REbL15g/JQNl+dqUoPkhleeb2V3kjqp1okmO3wMZbPknR3S1LZNmlS72/iBQUm+n2b/RCn4PjmM2";
 
-/// Default thinking signature for gemini-cli (mirrors DEFAULT_THINKING_GEMINI_CLI_SIGNATURE in JS).
-pub const DEFAULT_THINKING_GEMINI_CLI_SIGNATURE: &str = "CiQBjz1rX/AlslZWMe5RgBt4Tv9j4+YNZTTez+JH2/+5oAlICygKXgGPPWtf7/Sux9eLYap/bmYAdPqFThLXj+l7o0DLu/hdgU98MA9ZrlRDNHXx+T0tuY8AcnjPZbiDyOq2bE11Fjhsk6p5axqayaapC/Pt9GczcgIQf1z15WTxCeKWAPYKYQGPPWtfDYj0nlNFNoTlU39RC91Z16xFKJ2MLEmkm+NvimsoOJ6be3g2BssNPtJ/9BKDXRA5cVs17tBeeW72lH8TMB5999udtxHM2SiUsnWsrHlfVuGSCpNQQ+5REw8HNvEKkgEBjz1rXzBNWrqZGbjun55K+vgYPBhJO2qZ67uRWXUA5/qcU12U/mbi5XoA3swoxYE8LEXfZvFFC9WG/W28QNCA0Qd4Trk/WkWiAwZmB8a84Fs14rkv3wqyxwFavPkJorqurAfd2XzGiFy0sB0ITCOPYi1HzDGV5WfXk6b9k+jT66/RuzGa8EcSOWo/QtC3Bkhgowo4AY89a1/f/tw8A02zjIoK7JVDAbf8WUfmbApJJhwXIiGtu1M0JItObx7g2reYqT+HHL2Q/R4VDc=";
-
 /// Core: Convert OpenAI request to Gemini format.
 fn openai_to_gemini_base(model: &str, body: &Value, stream: bool, signature: &str) -> Value {
     let _ = model;
@@ -955,62 +952,6 @@ pub fn openai_to_gemini_request(
 ) -> bool {
     let result = openai_to_gemini_base(model, body, stream, DEFAULT_THINKING_AG_SIGNATURE);
     *body = result;
-    true
-}
-
-/// OpenAI to Gemini CLI request (uses different thinking signature).
-pub fn openai_to_gemini_cli_request(
-    model: &str,
-    body: &mut Value,
-    stream: bool,
-    _credentials: Option<&Value>,
-) -> bool {
-    let mut gemini =
-        openai_to_gemini_base(model, body, stream, DEFAULT_THINKING_GEMINI_CLI_SIGNATURE);
-
-    // Add thinking config for CLI
-    if let Some(reasoning_effort) = body.get("reasoning_effort").and_then(|v| v.as_str()) {
-        let budget = match reasoning_effort {
-            "low" => 1024,
-            "high" => 32768,
-            _ => 8192, // medium
-        };
-        gemini["generationConfig"]["thinkingConfig"] = serde_json::json!({
-            "thinkingBudget": budget,
-            "includeThoughts": true
-        });
-    }
-
-    // Thinking config from Claude format
-    if let Some(thinking) = body.get("thinking") {
-        if thinking.get("type").and_then(|v| v.as_str()) == Some("enabled") {
-            if let Some(budget) = thinking.get("budget_tokens").and_then(|v| v.as_u64()) {
-                gemini["generationConfig"]["thinkingConfig"] = serde_json::json!({
-                    "thinkingBudget": budget,
-                    "includeThoughts": true
-                });
-            }
-        }
-    }
-
-    // Clean schema for tools
-    if let Some(tools_arr) = gemini.get_mut("tools").and_then(|v| v.as_array_mut()) {
-        if let Some(first_tool) = tools_arr.first_mut() {
-            if let Some(func_decls) = first_tool
-                .get_mut("functionDeclarations")
-                .and_then(|v| v.as_array_mut())
-            {
-                for fn_decl in func_decls {
-                    if let Some(params) = fn_decl.get_mut("parameters") {
-                        let cleaned = clean_json_schema(params);
-                        *params = cleaned;
-                    }
-                }
-            }
-        }
-    }
-
-    *body = gemini;
     true
 }
 

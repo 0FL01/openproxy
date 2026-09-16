@@ -31,7 +31,6 @@ pub enum Format {
     OpenAiResponse,
     Claude,
     Gemini,
-    GeminiCli,
     Vertex,
     Codex,
     Antigravity,
@@ -50,7 +49,6 @@ impl Format {
             "openai-response" => Some(Self::OpenAiResponse),
             "claude" => Some(Self::Claude),
             "gemini" => Some(Self::Gemini),
-            "gemini-cli" => Some(Self::GeminiCli),
             "vertex" => Some(Self::Vertex),
             "codex" => Some(Self::Codex),
             "antigravity" => Some(Self::Antigravity),
@@ -69,7 +67,6 @@ impl Format {
             Self::OpenAiResponse => "openai-response",
             Self::Claude => "claude",
             Self::Gemini => "gemini",
-            Self::GeminiCli => "gemini-cli",
             Self::Vertex => "vertex",
             Self::Codex => "codex",
             Self::Antigravity => "antigravity",
@@ -94,7 +91,6 @@ impl Format {
         matches!(
             self,
             Self::Gemini
-                | Self::GeminiCli
                 | Self::Vertex
                 | Self::Ollama
                 | Self::CommandCode
@@ -364,7 +360,6 @@ pub fn get_target_format_for_provider(provider: &str) -> Format {
         }
         "glm" => Format::OpenAi,
         "gemini" => Format::Gemini,
-        "gemini-cli" => Format::GeminiCli,
         "vertex" | "vertex-partner" => Format::Vertex,
         "codex" | "grok-cli" | "gcli" | "gb" | "perplexity-agent" => Format::OpenAiResponses,
         "cursor" | "cu" => Format::Cursor,
@@ -957,7 +952,6 @@ pub fn global_registry() -> &'static TranslationRegistry {
     use crate::core::translator::request::openai_to_commandcode::openai_to_commandcode_request;
     use crate::core::translator::request::openai_to_cursor::openai_to_cursor_request;
     use crate::core::translator::request::openai_to_gemini::openai_to_antigravity_request;
-    use crate::core::translator::request::openai_to_gemini::openai_to_gemini_cli_request;
     use crate::core::translator::request::openai_to_gemini::openai_to_gemini_request;
     use crate::core::translator::request::openai_to_kiro::openai_to_kiro_request;
     use crate::core::translator::request::openai_to_ollama::openai_to_ollama_request;
@@ -1007,11 +1001,6 @@ pub fn global_registry() -> &'static TranslationRegistry {
             gemini_to_openai_request as RequestTransformFn,
         );
         reg.register_request(
-            Format::GeminiCli,
-            Format::OpenAi,
-            gemini_to_openai_request as RequestTransformFn,
-        );
-        reg.register_request(
             Format::OpenAi,
             Format::Ollama,
             openai_to_ollama_request as RequestTransformFn,
@@ -1020,11 +1009,6 @@ pub fn global_registry() -> &'static TranslationRegistry {
             Format::OpenAi,
             Format::Gemini,
             openai_to_gemini_request as RequestTransformFn,
-        );
-        reg.register_request(
-            Format::OpenAi,
-            Format::GeminiCli,
-            openai_to_gemini_cli_request as RequestTransformFn,
         );
         reg.register_request(
             Format::OpenAi,
@@ -1132,12 +1116,7 @@ pub fn global_registry() -> &'static TranslationRegistry {
             Format::Antigravity,
             openai_to_antigravity_streaming as ResponseTransformFn,
         );
-        // Gemini-family aliases (JS multi-register gemini/cli/vertex/antigravity → openai)
-        reg.register_response(
-            Format::GeminiCli,
-            Format::OpenAi,
-            gemini_to_openai_streaming as ResponseTransformFn,
-        );
+        // Gemini-family aliases (JS multi-register gemini/vertex/antigravity → openai)
         reg.register_response(
             Format::Vertex,
             Format::OpenAi,
@@ -1210,7 +1189,6 @@ mod parity_tests {
         assert!(reg.has_response_transform(Format::Kiro, Format::Claude));
         assert!(reg.has_request_transform(Format::OpenAi, Format::Antigravity));
         assert!(reg.has_response_transform(Format::OpenAi, Format::Claude));
-        assert!(reg.has_response_transform(Format::GeminiCli, Format::OpenAi));
     }
 
     #[test]

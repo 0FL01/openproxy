@@ -12,7 +12,6 @@ static ALIAS_TO_PROVIDER_ID: Lazy<HashMap<&'static str, &'static str>> = Lazy::n
     HashMap::from([
         ("cc", "claude"),
         ("cx", "codex"),
-        ("gc", "gemini-cli"),
         ("qw", "qwen"),
         ("ag", "antigravity"),
         ("gh", "github"),

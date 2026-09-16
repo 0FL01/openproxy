@@ -44,12 +44,6 @@ const GEMINI_API_MODELS_URL: &str = "https://generativelanguage.googleapis.com/v
 const GEMINI_API_MODELS_PAGE_SIZE: &str = "1000";
 const GEMINI_API_MODELS_MAX_PAGES: usize = 10;
 
-const GEMINI_CLIENT_ID: &str =
-    "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com";
-const GEMINI_CLI_MODELS_URL: &str =
-    "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
-const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
-
 const KIRO_AUTH_SERVICE: &str = "https://prod.us-east-1.auth.desktop.kiro.dev";
 const KIRO_MODELS_URL: &str = "https://codewhisperer.us-east-1.amazonaws.com";
 const KIRO_MODELS_TARGET: &str = "AmazonCodeWhispererService.ListAvailableModels";
@@ -307,7 +301,6 @@ pub(super) fn supports_models_discovery(provider: &str) -> bool {
         || matches!(
             provider,
             "kiro"
-                | "gemini-cli"
                 | "ollama-local"
                 | "claude"
                 | "anthropic"
@@ -423,7 +416,6 @@ async fn fetch_provider_models_response(
 
     match connection.provider.as_str() {
         "kiro" => fetch_kiro_models_with_fallback(state, connection).await,
-        "gemini-cli" => fetch_gemini_cli_models_with_fallback(state, connection).await,
         "ollama-local" => fetch_ollama_local_models(connection).await,
         "claude" | "anthropic" => {
             let token = primary_token(connection)
@@ -1255,63 +1247,6 @@ async fn fetch_kiro_models_with_fallback(
     Ok(response_with_models(connection, Vec::new(), warning))
 }
 
-async fn fetch_gemini_cli_models_with_fallback(
-    state: &AppState,
-    connection: &ProviderConnection,
-) -> Result<ProviderModelsResponse, RouteError> {
-    let Some(access_token) = connection.access_token.clone() else {
-        return Err(RouteError::unauthorized("No valid token found"));
-    };
-
-    let project_id = connection
-        .project_id
-        .clone()
-        .or_else(|| provider_specific_string(connection, "projectId"));
-
-    let mut response = send_gemini_cli_models_request(&access_token, project_id.as_deref()).await;
-
-    if matches!(response, Err(FetchJsonError::Http(status, _)) if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN)
-    {
-        if let Some(refresh_token) = connection.refresh_token.as_deref() {
-            if let Ok(refreshed) = refresh_google_token(
-                refresh_token,
-                GEMINI_CLIENT_ID,
-                crate::oauth::secret::gemini_cli_client_secret(),
-            )
-            .await
-            {
-                persist_refreshed_credentials(state, connection, &refreshed).await;
-                response =
-                    send_gemini_cli_models_request(&refreshed.access_token, project_id.as_deref())
-                        .await;
-            }
-        }
-    }
-
-    match response {
-        Ok(payload) => {
-            let models = parse_gemini_cli_models(&payload);
-            Ok(response_with_models(connection, models, None))
-        }
-        Err(FetchJsonError::Http(status, body)) => Ok(response_with_models(
-            connection,
-            Vec::new(),
-            Some(format!(
-                "Failed to fetch Gemini CLI models: {} {}",
-                status.as_u16(),
-                body
-            )),
-        )),
-        Err(FetchJsonError::Network(message)) | Err(FetchJsonError::Decode(message)) => {
-            Ok(response_with_models(
-                connection,
-                Vec::new(),
-                Some(format!("Failed to fetch Gemini CLI models: {message}")),
-            ))
-        }
-    }
-}
-
 async fn fetch_ollama_local_models(
     connection: &ProviderConnection,
 ) -> Result<ProviderModelsResponse, RouteError> {
@@ -1447,64 +1382,6 @@ async fn fetch_kiro_models(
     Ok(expand_kiro_model_variants(models))
 }
 
-async fn send_gemini_cli_models_request(
-    access_token: &str,
-    project_id: Option<&str>,
-) -> Result<Value, FetchJsonError> {
-    let client = http_client().map_err(|error| FetchJsonError::Network(error.message))?;
-    let body = project_id
-        .map(|project| json!({ "project": project }))
-        .unwrap_or_else(|| json!({}));
-    let request = client
-        .post(GEMINI_CLI_MODELS_URL)
-        .header(CONTENT_TYPE, "application/json")
-        .header(AUTHORIZATION, format!("Bearer {access_token}"))
-        .header("User-Agent", "google-api-nodejs-client/9.15.1")
-        .header(
-            "X-Goog-Api-Client",
-            "google-cloud-sdk vscode_cloudshelleditor/0.1",
-        )
-        .json(&body);
-    fetch_json(request).await
-}
-
-async fn refresh_google_token(
-    refresh_token: &str,
-    client_id: &str,
-    client_secret: &str,
-) -> Result<RefreshResult, String> {
-    let client = http_client().map_err(|error| error.message)?;
-    let request = client
-        .post(GOOGLE_TOKEN_URL)
-        .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
-        .header(ACCEPT, "application/json")
-        .form(&[
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token),
-            ("client_id", client_id),
-            ("client_secret", client_secret),
-        ]);
-
-    let payload = fetch_json(request)
-        .await
-        .map_err(fetch_json_error_message)?;
-    let access_token = payload
-        .get("access_token")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-        .ok_or_else(|| "Google refresh response did not include access_token".to_string())?;
-
-    Ok(RefreshResult {
-        access_token: access_token.to_string(),
-        refresh_token: payload
-            .get("refresh_token")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        expires_in: payload.get("expires_in").and_then(Value::as_i64),
-    })
-}
-
 async fn refresh_kiro_token(
     refresh_token: &str,
     provider_specific_data: &BTreeMap<String, Value>,
@@ -1617,69 +1494,6 @@ fn parse_array_models(value: Option<&Value>) -> Vec<ProviderModel> {
     value
         .and_then(Value::as_array)
         .map(|items| items.iter().filter_map(provider_model_from_value).collect())
-        .unwrap_or_default()
-}
-
-fn parse_gemini_cli_models(payload: &Value) -> Vec<ProviderModel> {
-    if let Some(items) = payload.get("models").and_then(Value::as_array) {
-        return items
-            .iter()
-            .filter_map(|item| {
-                let id = item
-                    .get("id")
-                    .or_else(|| item.get("model"))
-                    .or_else(|| item.get("name"))
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|id| !id.is_empty())?;
-
-                let mut extra = BTreeMap::new();
-                if let Some(display_name) = item.get("displayName") {
-                    extra.insert("displayName".to_string(), display_name.clone());
-                }
-
-                Some(ProviderModel {
-                    id: id.to_string(),
-                    name: item
-                        .get("displayName")
-                        .or_else(|| item.get("name"))
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|name| !name.is_empty())
-                        .unwrap_or(id)
-                        .to_string(),
-                    extra,
-                })
-            })
-            .collect();
-    }
-
-    payload
-        .get("models")
-        .and_then(Value::as_object)
-        .map(|items| {
-            items
-                .iter()
-                .filter(|(_, info)| {
-                    !info
-                        .get("isInternal")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false)
-                })
-                .map(|(id, info)| ProviderModel {
-                    id: id.to_string(),
-                    name: info
-                        .get("displayName")
-                        .or_else(|| info.get("name"))
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|name| !name.is_empty())
-                        .unwrap_or(id)
-                        .to_string(),
-                    extra: BTreeMap::new(),
-                })
-                .collect()
-        })
         .unwrap_or_default()
 }
 
@@ -2257,26 +2071,6 @@ mod tests {
         assert_eq!(
             resolve_qwen_models_url(&connection),
             "https://tenant.qwen.ai/base/models"
-        );
-    }
-
-    #[test]
-    fn parse_gemini_cli_models_filters_internal_entries() {
-        let payload = json!({
-            "models": {
-                "gemini-2.5-pro": { "displayName": "Gemini 2.5 Pro", "isInternal": false },
-                "internal-model": { "displayName": "Internal", "isInternal": true }
-            }
-        });
-
-        let models = parse_gemini_cli_models(&payload);
-        assert_eq!(
-            models,
-            vec![ProviderModel {
-                id: "gemini-2.5-pro".to_string(),
-                name: "Gemini 2.5 Pro".to_string(),
-                extra: BTreeMap::new(),
-            }]
         );
     }
 

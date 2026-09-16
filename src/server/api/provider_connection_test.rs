@@ -28,8 +28,6 @@ const CLAUDE_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const CLAUDE_TOKEN_URL: &str = "https://api.anthropic.com/v1/oauth/token";
 const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CODEX_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
-const GEMINI_CLIENT_ID: &str =
-    "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com";
 const ANTIGRAVITY_CLIENT_ID: &str =
     "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
 const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
@@ -1201,15 +1199,6 @@ async fn refresh_oauth_token(
     effective_proxy: &EffectiveProxy,
 ) -> Result<RefreshResult, String> {
     match connection.provider.as_str() {
-        "gemini-cli" => {
-            refresh_google_token(
-                refresh_token,
-                GEMINI_CLIENT_ID,
-                crate::oauth::secret::gemini_cli_client_secret(),
-                effective_proxy,
-            )
-            .await
-        }
         "antigravity" => {
             refresh_google_token(
                 refresh_token,
@@ -1443,7 +1432,7 @@ async fn probe_cline_access_token(
 
 fn oauth_probe_request(provider: &str, access_token: &str) -> Option<PreparedRequest> {
     match provider {
-        "gemini-cli" | "antigravity" => Some(PreparedRequest {
+        "antigravity" => Some(PreparedRequest {
             method: Method::GET,
             url: "https://www.googleapis.com/oauth2/v1/userinfo?alt=json".to_string(),
             headers: vec![(
@@ -1770,7 +1759,7 @@ fn is_token_expired(connection: &ProviderConnection) -> bool {
 fn is_refreshable_provider(provider: &str) -> bool {
     matches!(
         provider,
-        "claude" | "codex" | "gemini-cli" | "antigravity" | "qwen" | "kiro" | "cline"
+        "claude" | "codex" | "antigravity" | "qwen" | "kiro" | "cline"
     )
 }
 

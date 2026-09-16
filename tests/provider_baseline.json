@@ -36,19 +36,6 @@
     "hasFetch": false
   },
   {
-    "id": "gemini-cli",
-    "alias": "gc",
-    "serviceKinds": [
-      "llm"
-    ],
-    "models": [
-      "gemini-3-flash-preview",
-      "gemini-3-pro-preview"
-    ],
-    "hasSearch": false,
-    "hasFetch": false
-  },
-  {
     "id": "opencode",
     "alias": "oc",
     "serviceKinds": [

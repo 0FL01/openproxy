@@ -2,7 +2,6 @@
  "providerIdToAlias": {
   "claude": "cc",
   "gemini": "gemini",
-  "gemini-cli": "gc",
   "codex": "cx",
   "qwen": "qw",
   "antigravity": "ag",
@@ -5232,17 +5231,6 @@
    "hasSearch": false,
    "hasFetch": false
   },
-   {
-    "id": "gemini-cli",
-    "alias": "gc",
-    "serviceKinds": [
-     "llm"
-    ],
-    "ttsModels": [],
-    "embeddingModels": [],
-    "hasSearch": false,
-    "hasFetch": false
-   },
    {
     "id": "agentrouter",
     "alias": "ar",

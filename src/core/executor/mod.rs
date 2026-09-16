@@ -9,7 +9,6 @@ mod commandcode;
 mod cursor;
 mod default;
 mod devin_cli;
-mod gemini_cli;
 mod github;
 mod grok_cli;
 mod grok_web;
@@ -61,9 +60,6 @@ pub use default::{
     ExecutionResponse, ExecutorError, ProviderConfig, TransportKind, UpstreamResponse,
 };
 pub use devin_cli::{DevinCliExecutor, DevinExecutionRequest, DevinExecutorResponse};
-pub use gemini_cli::{
-    GeminiCliExecutionRequest, GeminiCliExecutor, GeminiCliExecutorError, GeminiCliExecutorResponse,
-};
 pub use github::{
     GithubExecutionRequest, GithubExecutor, GithubExecutorError, GithubExecutorResponse,
 };

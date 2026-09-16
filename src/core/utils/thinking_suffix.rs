@@ -142,14 +142,7 @@ pub fn resolve_thinking_native(
                 ThinkingNative::ClaudeBudget
             }
         }
-        Format::Gemini | Format::Vertex => {
-            if is_gemini_level_model(&m) {
-                ThinkingNative::GeminiLevel
-            } else {
-                ThinkingNative::GeminiBudget
-            }
-        }
-        Format::GeminiCli | Format::Antigravity => {
+        Format::Gemini | Format::Vertex | Format::Antigravity => {
             if is_gemini_level_model(&m) {
                 ThinkingNative::GeminiLevel
             } else {

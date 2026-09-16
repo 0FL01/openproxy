@@ -57,14 +57,8 @@ const XAI_CALLBACK_PATH: &str = "/callback";
 const XAI_PROXY_TIMEOUT_MS: u64 = 300_000;
 const XAI_TOKEN_URL_DEFAULT: &str = "https://auth.x.ai/oauth2/token";
 const XAI_AUTHORIZE_URL_DEFAULT: &str = "https://auth.x.ai/oauth2/authorize";
-const GEMINI_CLIENT_ID: &str =
-    "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com";
-const GEMINI_AUTHORIZE_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const GEMINI_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const GEMINI_USER_INFO_URL: &str = "https://www.googleapis.com/oauth2/v1/userinfo";
-const GEMINI_LOAD_CODE_ASSIST_ENDPOINT: &str =
-    "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
-const GEMINI_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile";
 const ANTIGRAVITY_CLIENT_ID: &str =
     "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
 const ANTIGRAVITY_AUTHORIZE_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -738,13 +732,6 @@ fn gemini_user_info_url() -> String {
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| GEMINI_USER_INFO_URL.to_string())
-}
-
-fn gemini_load_code_assist_endpoint() -> String {
-    std::env::var("OPENPROXY_GEMINI_LOAD_CODE_ASSIST_ENDPOINT")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| GEMINI_LOAD_CODE_ASSIST_ENDPOINT.to_string())
 }
 
 fn antigravity_token_url() -> String {
@@ -3254,21 +3241,6 @@ async fn authorize_oauth_compat(
             code_challenge,
             redirect_uri,
         ),
-        "gemini-cli" => build_auth_compat_response(
-            &provider,
-            "authorization_code",
-            build_google_auth_url(
-                GEMINI_AUTHORIZE_URL,
-                GEMINI_CLIENT_ID,
-                GEMINI_SCOPE,
-                &redirect_uri,
-                &state,
-            ),
-            state,
-            code_verifier,
-            code_challenge,
-            redirect_uri,
-        ),
         "antigravity" => build_auth_compat_response(
             &provider,
             "authorization_code",
@@ -3607,81 +3579,6 @@ async fn exchange_google_token(
         .await
         .map_err(|error| format!("Token exchange failed: {error}"))
 }
-
-async fn exchange_gemini_compat(
-    code: &str,
-    redirect_uri: &str,
-) -> Result<ProviderConnection, String> {
-    let tokens = exchange_google_token(
-        GEMINI_CLIENT_ID,
-        crate::oauth::secret::gemini_cli_client_secret(),
-        gemini_token_url(),
-        code,
-        redirect_uri,
-    )
-    .await?;
-    let access_token = tokens
-        .get("access_token")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let refresh_token = tokens
-        .get("refresh_token")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let expires_in = tokens.get("expires_in").and_then(Value::as_i64);
-    let scope = tokens
-        .get("scope")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-
-    let user_info = match reqwest::Client::new()
-        .get(format!("{}?alt=json", gemini_user_info_url()))
-        .header("Authorization", format!("Bearer {access_token}"))
-        .send()
-        .await
-    {
-        Ok(response) if response.status().is_success() => {
-            response.json().await.unwrap_or(Value::Null)
-        }
-        _ => Value::Null,
-    };
-
-    let mut project_id = None;
-    if let Ok(response) = reqwest::Client::new()
-        .post(gemini_load_code_assist_endpoint())
-        .header("Authorization", format!("Bearer {access_token}"))
-        .header("Content-Type", "application/json")
-        .json(&json!({
-            "metadata": google_oauth_client_metadata(),
-            "mode": 1,
-        }))
-        .send()
-        .await
-    {
-        if response.status().is_success() {
-            let payload = response.json().await.unwrap_or(Value::Null);
-            project_id = extract_google_project_id(&payload);
-        }
-    }
-
-    Ok(ProviderConnection {
-        provider: "gemini-cli".to_string(),
-        auth_type: "oauth".to_string(),
-        email: user_info
-            .get("email")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        access_token: Some(access_token),
-        refresh_token,
-        expires_at: expires_in.map(crate::oauth::expires_at_from_seconds),
-        scope,
-        project_id,
-        test_status: Some("active".to_string()),
-        ..Default::default()
-    })
-}
-
 async fn exchange_antigravity_compat(
     code: &str,
     redirect_uri: &str,
@@ -4107,10 +4004,6 @@ async fn exchange_oauth_compat(
             Err(error) => return internal_error_response(error),
         },
         "gitlab" => match exchange_gitlab_compat(code, redirect_uri, code_verifier, meta).await {
-            Ok(value) => value,
-            Err(error) => return internal_error_response(error),
-        },
-        "gemini-cli" => match exchange_gemini_compat(code, redirect_uri).await {
             Ok(value) => value,
             Err(error) => return internal_error_response(error),
         },

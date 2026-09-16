@@ -51,11 +51,8 @@ pub fn resolve_stream_flags(
 ) -> StreamPlan {
     let provider_forced = provider_requires_streaming(provider);
 
-    let client_requested_streaming = body_stream == Some(true)
-        || matches!(
-            source_format,
-            Format::Antigravity | Format::Gemini | Format::GeminiCli
-        );
+    let client_requested_streaming =
+        body_stream == Some(true) || matches!(source_format, Format::Antigravity | Format::Gemini);
 
     // Base: forceStream ? true : (stream !== false)
     let mut stream = if provider_forced {

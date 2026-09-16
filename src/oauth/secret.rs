@@ -31,29 +31,16 @@ pub fn antigravity_client_secret() -> &'static str {
     )
 }
 
-/// gemini-cli OAuth client secret (env `GEMINI_CLIENT_SECRET`).
-pub fn gemini_cli_client_secret() -> &'static str {
-    resolve(
-        "GEMINI_CLIENT_SECRET",
-        "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",
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn antigravity_and_gemini_secrets_resolve() {
+    fn antigravity_secret_resolves() {
         std::env::remove_var("ANTIGRAVITY_CLIENT_SECRET");
-        std::env::remove_var("GEMINI_CLIENT_SECRET");
         assert_eq!(
             antigravity_client_secret(),
             "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"
-        );
-        assert_eq!(
-            gemini_cli_client_secret(),
-            "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"
         );
     }
 }

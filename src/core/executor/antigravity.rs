@@ -690,7 +690,7 @@ impl AntigravityExecutor {
             })?
             .to_string();
 
-        // The translator pipeline (OpenAi -> openai_to_gemini_cli_request) produces a flat
+        // The translator pipeline (OpenAi -> openai_to_antigravity_request) produces a flat
         // body {contents, tools, ...}.  Antigravity's Cloud Code endpoint requires the
         // Gemini-like body wrapped in a {"request": body} envelope.  If the body doesn't
         // already have a "request" key, wrap it here.

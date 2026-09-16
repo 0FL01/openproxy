@@ -642,7 +642,6 @@ const USAGE_SUPPORTED_PROVIDERS: &[&str] = &[
     "kimi-coding",
     "deepseek",
     "ollama",
-    "gemini-cli",
     "grok-cli",
     "glm",
     "glm-cn",

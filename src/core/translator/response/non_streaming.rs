@@ -141,7 +141,7 @@ pub fn claude_to_openai_non_streaming(response: &mut Value) -> bool {
 
 /// Gemini -> OpenAI chat.completion (non-streaming).
 ///
-/// Handles both standard Gemini and GeminiCli / Antigravity formats.
+/// Handles both standard Gemini and Antigravity formats.
 pub fn gemini_to_openai_non_streaming(response: &mut Value) -> bool {
     if response.get("object").and_then(|v| v.as_str()) == Some("chat.completion") {
         return false;

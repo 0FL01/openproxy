@@ -10,7 +10,6 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientTool {
     Claude,
-    GeminiCli,
     Antigravity,
     Codex,
     GithubCopilot,
@@ -21,7 +20,6 @@ impl ClientTool {
     pub fn as_str(self) -> &'static str {
         match self {
             ClientTool::Claude => "claude",
-            ClientTool::GeminiCli => "gemini-cli",
             ClientTool::Antigravity => "antigravity",
             ClientTool::Codex => "codex",
             ClientTool::GithubCopilot => "github-copilot",
@@ -74,10 +72,6 @@ pub fn detect_client_tool(headers: &HashMap<String, String>, body: &Value) -> Op
         return Some(ClientTool::Claude);
     }
 
-    if ua.contains("gemini-cli") {
-        return Some(ClientTool::GeminiCli);
-    }
-
     // 9router clientDetector.js:43-44 — match codex-tui, codex-cli,
     // codex_cli_rs, "codex desktop", or an originator starting with "codex_"
     // (catches codex_work_desktop etc.). Missing these meant Codex Desktop and
@@ -102,7 +96,6 @@ pub fn detect_client_tool(headers: &HashMap<String, String>, body: &Value) -> Op
 fn native_providers(tool: ClientTool) -> &'static [&'static str] {
     match tool {
         ClientTool::Claude => &["claude", "anthropic"],
-        ClientTool::GeminiCli => &["gemini-cli"],
         ClientTool::Antigravity => &["antigravity"],
         ClientTool::Codex => &["codex"],
         _ => &[],

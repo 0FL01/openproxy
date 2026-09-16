@@ -176,9 +176,6 @@ pub const REFRESH_LEAD_QWEN_MS: u64 = 20 * 60 * 1000; // 20 minutes
 pub const REFRESH_LEAD_KIMI_CODING_MS: u64 = 5 * 60 * 1000; // 5 minutes
 pub const REFRESH_LEAD_ANTIGRAVITY_MS: u64 = 5 * 60 * 1000; // 5 minutes
 pub const REFRESH_LEAD_XAI_MS: u64 = 5 * 60 * 1000; // 5 minutes
-/// Gemini CLI uses a lead time returned by its own token response, so this is
-/// a fallback default.
-pub const REFRESH_LEAD_GEMINI_CLI_DEFAULT_MS: u64 = 5 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Constants shared by refresh functions
@@ -190,8 +187,6 @@ pub(crate) const CLAUDE_TOKEN_URL: &str = "https://api.anthropic.com/v1/oauth/to
 const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CODEX_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 
-const GEMINI_CLIENT_ID: &str =
-    "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com";
 const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 
 const ANTIGRAVITY_CLIENT_ID: &str =
@@ -348,7 +343,7 @@ pub fn needs_refresh(expires_at: &Option<String>) -> bool {
 }
 
 /// Check whether an access token needs refreshing with a provider-specific
-/// lead time.  Used by openai.rs, xai.rs, gemini_cli.rs, and antigravity.rs.
+/// lead time.  Used by openai.rs, xai.rs, and antigravity.rs.
 pub fn needs_refresh_with_lead(expires_at: &Option<String>, lead_ms: u64) -> bool {
     let Some(expires_at) = expires_at else {
         return false;
@@ -437,7 +432,7 @@ fn codex_token_url() -> String {
         .unwrap_or_else(|| CODEX_TOKEN_URL.to_string())
 }
 
-/// Refresh a Google OAuth token (used by both gemini-cli and antigravity).
+/// Refresh a Google OAuth token (used by antigravity).
 pub async fn refresh_google_token(
     refresh_token: &str,
     client_id: &str,
@@ -1055,16 +1050,6 @@ pub async fn dispatch_oauth_refresh(
             dedup_refresh(provider, refresh_token, move || {
                 let rt = rt.clone();
                 async move { refresh_codex_token(&rt).await }
-            })
-            .await
-        }
-        "gemini-cli" => {
-            let rt = refresh_token.to_string();
-            let cid = GEMINI_CLIENT_ID.to_string();
-            let csec = crate::oauth::secret::gemini_cli_client_secret().to_string();
-            dedup_refresh(provider, refresh_token, move || {
-                let (rt, cid, csec) = (rt.clone(), cid.clone(), csec.clone());
-                async move { refresh_google_token(&rt, &cid, &csec).await }
             })
             .await
         }

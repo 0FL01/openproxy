@@ -11,7 +11,6 @@ import type {
 export const FREE_PROVIDERS: Record<string, Provider> = {
   kiro: { id: "kiro", alias: "kr", name: "Kiro AI", icon: "psychology_alt", color: "#FF6B35", website: "https://kiro.dev", notice: { signupUrl: "https://kiro.dev" } },
   qwen: { id: "qwen", alias: "qw", name: "Qwen Code", icon: "psychology", color: "#10B981", deprecated: true, deprecationNotice: "Qwen OAuth free tier was discontinued by Alibaba on 2026-04-15. New connections will not work.", website: "https://chat.qwen.ai", notice: { signupUrl: "https://chat.qwen.ai" }, serviceKinds: ["llm"] },
-  "gemini-cli": { id: "gemini-cli", alias: "gc", name: "Gemini CLI", icon: "terminal", color: "#4285F4", deprecated: true, deprecationNotice: "Gemini CLI is designed exclusively for Gemini CLI. Using it with other tools (OpenClaw, Claude, Codex...) may result in account restrictions or bans.", website: "https://github.com/google-gemini/gemini-cli", notice: { signupUrl: "https://github.com/google-gemini/gemini-cli" } },
   // gitlab: { id: "gitlab", alias: "gl", name: "GitLab Duo", icon: "code", color: "#FC6D26" },
   // codebuddy: { id: "codebuddy", alias: "cb", name: "CodeBuddy", icon: "smart_toy", color: "#006EFF" },
   "opencode-zen": { id: "opencode-zen", alias: "opencode-zen", name: "OpenCode Zen", icon: "terminal", color: "#E87040", textIcon: "OC", noAuth: true, passthroughModels: true },
@@ -553,7 +552,6 @@ export const USAGE_SUPPORTED_PROVIDERS: string[] = [
   "kimi-coding",
   "deepseek",
   "ollama",
-  "gemini-cli",
   "grok-cli",
   "glm",
   "glm-cn",
@@ -579,7 +577,6 @@ export const SUPPORTS_MODELS_DISCOVERY: string[] = [
   "anthropic",
   "claude",
   "gemini",
-  "gemini-cli",
   "nvidia",
   "llm7",
   "deepseek",
