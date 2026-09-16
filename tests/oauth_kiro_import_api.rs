@@ -177,9 +177,12 @@ async fn kiro_import_route_validates_missing_and_invalid_tokens_like_openproxy()
         .unwrap();
     let (status, json) = response_json(invalid).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    // Non-prefixed tokens are not rejected up front (IDC / external_idp
+    // tokens have no aorAAAAAG prefix); they fall through to refresh
+    // validation, which fails here with no mock upstream.
     assert_eq!(
         json,
-        json!({ "error": "Invalid token format. Token should start with aorAAAAAG..." })
+        json!({ "error": "Token validation failed: Token refresh failed: " })
     );
 }
 
