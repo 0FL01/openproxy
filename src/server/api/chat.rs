@@ -975,9 +975,8 @@ async fn forward_with_provider_fallback(
             GithubExecutionRequest, GithubExecutor, GrokWebExecutionRequest, GrokWebExecutor,
             IFlowExecutionRequest, IFlowExecutor, KimchiExecutor, KiroExecutionRequest,
             KiroExecutor, KiroExecutorResponse, OpenCodeExecutionRequest, OpenCodeExecutor,
-            OpenCodeTier, PerplexityWebExecutionRequest, PerplexityWebExecutor,
-            ProviderExecutionRequest, ProviderExecutor, QoderExecutionRequest, QoderExecutor,
-            QwenExecutionRequest, QwenExecutor, TraeExecutionRequest, TraeExecutor,
+            OpenCodeTier, ProviderExecutionRequest, ProviderExecutor, QoderExecutionRequest,
+            QoderExecutor, QwenExecutionRequest, QwenExecutor, TraeExecutionRequest, TraeExecutor,
             VertexExecutionRequest, VertexExecutor, WindsurfExecutionRequest, WindsurfExecutor,
         };
 
@@ -1391,30 +1390,6 @@ async fn forward_with_provider_fallback(
                     .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("GrokWeb execution failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                Ok(KiroExecutorResponse {
-                    response: result.response,
-                    url: result.url,
-                    headers: result.headers,
-                    transformed_body: result.transformed_body,
-                    transport: result.transport,
-                })
-            } else if provider == "perplexity-web" {
-                let executor = PerplexityWebExecutor::new(state.client_pool.clone());
-                let result = executor
-                    .execute_request(PerplexityWebExecutionRequest {
-                        model: model.to_string(),
-                        body: request_body.clone(),
-                        stream,
-                        credentials: connection.clone(),
-                        proxy,
-                    })
-                    .await
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("PerplexityWeb execution failed: {:?}", e),
                         retry_after: None,
                         upstream_body: None,
                     })?;
@@ -2038,7 +2013,7 @@ fn select_connection_with_supporters(
 fn is_no_auth_provider(provider: &str) -> bool {
     matches!(
         provider,
-        "opencode" | "opencode-zen" | "ollama-local" | "grok-web" | "perplexity-web"
+        "opencode" | "opencode-zen" | "ollama-local" | "grok-web"
     )
 }
 

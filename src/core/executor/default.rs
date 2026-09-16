@@ -276,10 +276,6 @@ static PROVIDER_CONFIGS: Lazy<BTreeMap<&'static str, ProviderConfig>> = Lazy::ne
             ProviderConfig::openai("https://grok.com/rest/app-chat/conversations/new"),
         ),
         (
-            "perplexity-web",
-            ProviderConfig::openai("https://www.perplexity.ai"),
-        ),
-        (
             "xiaomi-mimo",
             ProviderConfig::openai("https://api.xiaomimimo.com/v1/chat/completions"),
         ),

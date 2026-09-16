@@ -528,16 +528,6 @@ export const PROVIDER_MODELS = {
     { id: "grok-4.1-thinking", name: "Grok 4.1 Thinking" },
     { id: "grok-4.2", name: "Grok 4.2 (4.20 Beta)" },
   ],
-  "perplexity-web": [
-    { id: "pplx-auto", name: "Perplexity Auto (Free)" },
-    { id: "pplx-sonar", name: "Perplexity Sonar" },
-    { id: "pplx-gpt", name: "GPT-5.4 (via Perplexity)" },
-    { id: "pplx-gemini", name: "Gemini 3.1 Pro (via Perplexity)" },
-    { id: "pplx-sonnet", name: "Claude Sonnet 4.6 (via Perplexity)" },
-    { id: "pplx-opus", name: "Claude Opus 4.6 (via Perplexity)" },
-    { id: "pplx-nemotron", name: "Nemotron 3 Super (via Perplexity)" },
-  ],
-
   // TTS entries are loaded from ttsModels.js via buildTtsProviderModels()
   ...buildTtsProviderModels(),
 

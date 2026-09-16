@@ -728,9 +728,6 @@ async fn test_api_key_connection(
             .await
         }
         "grok-web" => test_grok_web_connection(state, connection, effective_proxy).await,
-        "perplexity-web" => {
-            test_perplexity_web_connection(state, connection, effective_proxy).await
-        }
         "opencode-go" => {
             openai_chat_status_test(
                 state,
@@ -973,53 +970,6 @@ async fn test_grok_web_connection(
                 },
                 refreshed: false,
                 new_tokens: None,
-            }
-        }
-        Err(error) => invalid(&error),
-    }
-}
-
-async fn test_perplexity_web_connection(
-    state: &AppState,
-    connection: &ProviderConnection,
-    effective_proxy: &EffectiveProxy,
-) -> ConnectionTestResult {
-    let mut session_token = connection.api_key.clone().unwrap_or_default();
-    if let Some(value) = session_token.strip_prefix("__Secure-next-auth.session-token=") {
-        session_token = value.to_string();
-    }
-
-    let request = PreparedRequest {
-        method: Method::GET,
-        url: "https://www.perplexity.ai/api/auth/session".to_string(),
-        headers: vec![
-            (
-                "User-Agent".to_string(),
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36".to_string(),
-            ),
-            (
-                "Cookie".to_string(),
-                format!("__Secure-next-auth.session-token={session_token}"),
-            ),
-        ],
-        body: None,
-    };
-
-    match execute_request(state, &connection.provider, effective_proxy, request).await {
-        Ok(response) => {
-            if !response.status().is_success() {
-                return invalid("Invalid session cookie");
-            }
-
-            match response.json::<Value>().await {
-                Ok(payload) if payload.get("user").is_some() => ConnectionTestResult {
-                    valid: true,
-                    error: None,
-                    refreshed: false,
-                    new_tokens: None,
-                },
-                Ok(_) => invalid("Session expired — re-paste cookie"),
-                Err(error) => invalid(&error.to_string()),
             }
         }
         Err(error) => invalid(&error),

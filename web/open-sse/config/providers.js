@@ -357,11 +357,6 @@ export const PROVIDERS = {
     format: "grok-web",
     authType: "cookie"
   },
-  "perplexity-web": {
-    baseUrl: "https://www.perplexity.ai/rest/sse/perplexity_ask",
-    format: "perplexity-web",
-    authType: "cookie"
-  },
   azure: {
     baseUrl: "",
     format: "openai",

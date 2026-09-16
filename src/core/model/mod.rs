@@ -61,8 +61,6 @@ static ALIAS_TO_PROVIDER_ID: Lazy<HashMap<&'static str, &'static str>> = Lazy::n
         ("vertex-partner", "vertex-partner"),
         ("gw", "grok-web"),
         ("grok-web", "grok-web"),
-        ("pw", "perplexity-web"),
-        ("perplexity-web", "perplexity-web"),
         // ── Enterprise & Cloud ──
         ("databricks", "databricks"),
         ("snowflake", "snowflake"),

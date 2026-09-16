@@ -76,8 +76,6 @@ pub use grok_cli::{
 };
 pub use grok_web::{
     GrokWebExecutionRequest, GrokWebExecutor, GrokWebExecutorError, GrokWebExecutorResponse,
-    PerplexityWebExecutionRequest, PerplexityWebExecutor, PerplexityWebExecutorError,
-    PerplexityWebExecutorResponse,
 };
 pub use iflow::{IFlowExecutionRequest, IFlowExecutor, IFlowExecutorError, IFlowExecutorResponse};
 pub use kimchi::KimchiExecutor;

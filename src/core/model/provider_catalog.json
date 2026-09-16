@@ -54,7 +54,6 @@
   "mimo-free": "mmf",
   "opencode-go": "opencode-go",
   "grok-web": "grok-web",
-  "perplexity-web": "perplexity-web",
   "azure": "azure",
   "cloudflare-ai": "cloudflare-ai",
   "xiaomi-mimo": "xiaomi-mimo",
@@ -2675,46 +2674,6 @@
     {
      "id": "grok-4.2",
      "name": "Grok 4.2 (4.20 Beta)",
-     "kind": "llm"
-    }
-   ]
-  },
-  {
-   "alias": "perplexity-web",
-   "models": [
-    {
-     "id": "pplx-auto",
-     "name": "Perplexity Auto (Free)",
-     "kind": "llm"
-    },
-    {
-     "id": "pplx-sonar",
-     "name": "Perplexity Sonar",
-     "kind": "llm"
-    },
-    {
-     "id": "pplx-gpt",
-     "name": "GPT-5.4 (via Perplexity)",
-     "kind": "llm"
-    },
-    {
-     "id": "pplx-gemini",
-     "name": "Gemini 3.1 Pro (via Perplexity)",
-     "kind": "llm"
-    },
-    {
-     "id": "pplx-sonnet",
-     "name": "Claude Sonnet 4.6 (via Perplexity)",
-     "kind": "llm"
-    },
-    {
-     "id": "pplx-opus",
-     "name": "Claude Opus 4.6 (via Perplexity)",
-     "kind": "llm"
-    },
-    {
-     "id": "pplx-nemotron",
-     "name": "Nemotron 3 Super (via Perplexity)",
      "kind": "llm"
     }
    ]
@@ -6319,17 +6278,6 @@
   {
    "id": "grok-web",
    "alias": "gw",
-   "serviceKinds": [
-    "llm"
-   ],
-   "ttsModels": [],
-   "embeddingModels": [],
-   "hasSearch": false,
-   "hasFetch": false
-  },
-  {
-   "id": "perplexity-web",
-   "alias": "pw",
    "serviceKinds": [
     "llm"
    ],

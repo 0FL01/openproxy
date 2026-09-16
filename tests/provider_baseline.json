@@ -1262,16 +1262,6 @@
     "hasFetch": false
   },
   {
-    "id": "perplexity-web",
-    "alias": "pw",
-    "serviceKinds": [
-      "llm"
-    ],
-    "models": [],
-    "hasSearch": false,
-    "hasFetch": false
-  },
-  {
     "id": "inference-net",
     "alias": "inference-net",
     "serviceKinds": [
