@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::{Notify, RwLock};
 
-use crate::core::account_fallback::AccountRegistry;
 use crate::core::circuit_breaker::CircuitBreakerRegistry;
 use crate::core::executor::ClientPool;
 use crate::core::health::{health_registry, HealthRegistry};
@@ -30,7 +29,6 @@ pub struct AppState {
     pub db: Arc<Db>,
     pub client_pool: Arc<ClientPool>,
     pub pending_flows: PendingFlowStore,
-    pub account_registry: Arc<AccountRegistry>,
     pub console_logs: Arc<ConsoleLogBuffer>,
     pub sessions: Arc<RwLock<HashMap<String, SessionInfo>>>,
     pub codex_proxy: Arc<CodexProxyState>,
@@ -91,7 +89,6 @@ impl AppState {
             db: db.clone(),
             client_pool: Arc::new(ClientPool::new()),
             pending_flows: PendingFlowStore::new(),
-            account_registry: Arc::new(AccountRegistry::default()),
             console_logs: shared_console_log_buffer(),
             sessions: Arc::new(RwLock::new(HashMap::new())),
             codex_proxy: Arc::new(CodexProxyState::new()),

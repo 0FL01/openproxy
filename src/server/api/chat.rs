@@ -15,7 +15,6 @@ use serde_json::{json, Value};
 
 use crate::core::account_fallback::{
     build_model_lock_update, check_fallback_error, filter_available_accounts, ProviderAttemptError,
-    StrategyType,
 };
 use crate::core::chat::RequestPlan;
 use crate::core::executor::UpstreamResponse;
@@ -93,10 +92,6 @@ fn strip_forwarding_headers(headers: &mut HeaderMap) {
 /// Anthropic every ~60s, Gemini every ~30s — 180s is well past any of them).
 const SSE_STALL_TIMEOUT: Duration = Duration::from_secs(180);
 
-/// Maximum number of concurrent in-flight requests per provider account.
-///
-/// Used as the per-account slot cap inside [`forward_with_provider_fallback`].
-const MAX_IN_FLIGHT_PER_ACCOUNT: usize = 10;
 pub(super) const CODEX_WEB_SEARCH_HEADER: &str = "x-openproxy-codex-web-search";
 const CODEX_WEB_SEARCH_CONTEXT_SIZE_KEY: &str = "codexWebSearchContextSize";
 
@@ -795,7 +790,6 @@ async fn forward_with_provider_fallback(
     let mut excluded = HashSet::new();
     let mut last_error: Option<ProviderAttemptError> = None;
     let mut reloaded = false;
-    let registry = &state.account_registry;
     let codex_supporters = if provider == "codex" {
         let snapshot = state.db.snapshot();
         state
@@ -834,7 +828,6 @@ async fn forward_with_provider_fallback(
             provider,
             model,
             &excluded,
-            Some(registry),
             codex_supporters.as_ref(),
         ) else {
             let retry_after = earliest_retry_after(&snapshot, provider, model, &excluded);
@@ -953,19 +946,6 @@ async fn forward_with_provider_fallback(
             })
             .cloned();
         let proxy = resolve_proxy_target(&snapshot, &connection, &snapshot.settings);
-
-        let (rate_limit_remaining, rate_limit_reset) = registry.rate_limit_info(&connection.id);
-        let slot = registry.acquire_slot(
-            &connection.id,
-            MAX_IN_FLIGHT_PER_ACCOUNT,
-            rate_limit_remaining,
-            rate_limit_reset,
-        );
-
-        let Some(_slot) = slot else {
-            excluded.insert(connection.id.clone());
-            continue;
-        };
 
         let dashboard_stream = request_body
             .get("__dashboard_stream")
@@ -1760,11 +1740,6 @@ async fn forward_with_provider_fallback(
             Ok(result) => {
                 let status = result.response.status();
                 if status.is_success() {
-                    if let Some(retry_after) = retry_after_from_headers(result.response.headers()) {
-                        let remaining = 0;
-                        let reset = retry_after.timestamp();
-                        registry.update_rate_limit(&connection.id, remaining, reset);
-                    }
                     clear_connection_error_for_model(state, &connection.id, Some(model)).await;
                     if dashboard_stream {
                         let response = proxy_dashboard_sse(result.response, attempt_log).await;
@@ -2010,9 +1985,8 @@ fn select_connection(
     provider: &str,
     model: &str,
     excluded: &HashSet<String>,
-    registry: Option<&crate::core::account_fallback::AccountRegistry>,
 ) -> Option<ProviderConnection> {
-    select_connection_with_supporters(snapshot, provider, model, excluded, registry, None)
+    select_connection_with_supporters(snapshot, provider, model, excluded, None)
 }
 
 fn select_connection_with_supporters(
@@ -2020,7 +1994,6 @@ fn select_connection_with_supporters(
     provider: &str,
     model: &str,
     excluded: &HashSet<String>,
-    registry: Option<&crate::core::account_fallback::AccountRegistry>,
     discovered_supporters: Option<&HashSet<String>>,
 ) -> Option<ProviderConnection> {
     let now = Utc::now();
@@ -2055,80 +2028,11 @@ fn select_connection_with_supporters(
         return None;
     }
 
-    // Determine strategy for this provider.
-    // Uses provider_strategies map, then the account-level fallbackStrategy,
-    // finally FillFirst.
-    let provider_override = snapshot.settings.provider_strategies.get(provider).cloned();
-    let strategy = provider_override
-        .as_ref()
-        .and_then(|entry| entry.fallback_strategy())
-        .and_then(|s| s.parse::<StrategyType>().ok())
-        .or_else(|| {
-            snapshot
-                .settings
-                .fallback_strategy
-                .parse::<StrategyType>()
-                .ok()
-        })
-        .unwrap_or(StrategyType::FillFirst);
-    // 9router stickyRoundRobinLimit: per-provider override → settings default (3).
-    let sticky_limit = provider_override
-        .as_ref()
-        .and_then(|e| e.sticky_round_robin_limit())
-        .unwrap_or(snapshot.settings.sticky_round_robin_limit);
-
-    match strategy {
-        StrategyType::FillFirst | StrategyType::LeastLoaded => {
-            if let Some(reg) = registry {
-                let refs: Vec<&ProviderConnection> = candidates.iter().collect();
-                if let Some(idx) = reg.select_account_by_strategy(&refs, strategy, None, 300) {
-                    if let Some(conn) = candidates.get(idx).cloned() {
-                        return Some(conn);
-                    }
-                }
-            }
-            // Fallback: sort by priority
-            candidates.sort_by_key(|connection| connection.priority.unwrap_or(999));
-            candidates.into_iter().next()
-        }
-        StrategyType::RoundRobin => {
-            if let Some(reg) = registry {
-                let refs: Vec<&ProviderConnection> = candidates.iter().collect();
-                let combo_id = format!("provider_{}", provider);
-                if let Some(idx) = reg.select_with_sticky_limit(
-                    &refs,
-                    StrategyType::RoundRobin,
-                    Some(&combo_id),
-                    300,
-                    sticky_limit.max(1),
-                ) {
-                    if let Some(conn) = candidates.get(idx).cloned() {
-                        return Some(conn);
-                    }
-                }
-            }
-            candidates.sort_by_key(|connection| connection.priority.unwrap_or(999));
-            candidates.into_iter().next()
-        }
-        StrategyType::Sticky => {
-            if let Some(reg) = registry {
-                let refs: Vec<&ProviderConnection> = candidates.iter().collect();
-                let combo_id = format!("provider_{}", provider);
-                if let Some(idx) = reg.select_account_by_strategy(
-                    &refs,
-                    StrategyType::Sticky,
-                    Some(&combo_id),
-                    300,
-                ) {
-                    if let Some(conn) = candidates.get(idx).cloned() {
-                        return Some(conn);
-                    }
-                }
-            }
-            candidates.sort_by_key(|connection| connection.priority.unwrap_or(999));
-            candidates.into_iter().next()
-        }
-    }
+    candidates.sort_by(|left, right| {
+        (left.priority.unwrap_or(u32::MAX), left.id.as_str())
+            .cmp(&(right.priority.unwrap_or(u32::MAX), right.id.as_str()))
+    });
+    candidates.into_iter().next()
 }
 
 fn is_no_auth_provider(provider: &str) -> bool {
@@ -4002,7 +3906,7 @@ mod tests {
         };
 
         let excluded = HashSet::from([excluded_connection.id]);
-        let selected = select_connection(&snapshot, "openai", "gpt-4.1", &excluded, None)
+        let selected = select_connection(&snapshot, "openai", "gpt-4.1", &excluded)
             .expect("third account should remain selectable");
 
         assert_eq!(selected.id, chosen_connection.id);
@@ -4027,7 +3931,6 @@ mod tests {
             "codex",
             "gpt-discovered",
             &HashSet::new(),
-            None,
             Some(&supporters),
         )
         .expect("supporting account should be selected");
@@ -4072,7 +3975,7 @@ mod tests {
             ..AppDb::default()
         };
 
-        let selected = select_connection(&snapshot, "openai", "gpt-4.1", &HashSet::new(), None)
+        let selected = select_connection(&snapshot, "openai", "gpt-4.1", &HashSet::new())
             .expect("should select an account");
 
         assert_eq!(selected.id, "available");
@@ -4093,7 +3996,7 @@ mod tests {
             ..AppDb::default()
         };
 
-        let selected = select_connection(&snapshot, "openai", "gpt-4.1", &HashSet::new(), None)
+        let selected = select_connection(&snapshot, "openai", "gpt-4.1", &HashSet::new())
             .expect("should select an account");
 
         assert_eq!(selected.id, "available");
@@ -4114,7 +4017,7 @@ mod tests {
             ..AppDb::default()
         };
 
-        let selected = select_connection(&snapshot, "openai", "gpt-4.1", &HashSet::new(), None)
+        let selected = select_connection(&snapshot, "openai", "gpt-4.1", &HashSet::new())
             .expect("should select an account");
 
         assert_eq!(selected.id, "available");
@@ -4132,7 +4035,7 @@ mod tests {
             ..AppDb::default()
         };
 
-        let selected = select_connection(&snapshot, "openai", "gpt-4.1", &HashSet::new(), None)
+        let selected = select_connection(&snapshot, "openai", "gpt-4.1", &HashSet::new())
             .expect("should select an account");
 
         assert_eq!(selected.id, "active");
@@ -4151,7 +4054,7 @@ mod tests {
             ..AppDb::default()
         };
 
-        let selected = select_connection(&snapshot, "openai", "gpt-4.1", &HashSet::new(), None)
+        let selected = select_connection(&snapshot, "openai", "gpt-4.1", &HashSet::new())
             .expect("should select an account");
 
         assert_eq!(selected.id, "with-creds");
@@ -4167,7 +4070,7 @@ mod tests {
             ..AppDb::default()
         };
 
-        let selected = select_connection(&snapshot, "openai", "gpt-4.1", &HashSet::new(), None)
+        let selected = select_connection(&snapshot, "openai", "gpt-4.1", &HashSet::new())
             .expect("should select an account");
 
         assert_eq!(selected.id, "high-priority");
@@ -4192,7 +4095,7 @@ mod tests {
             ..AppDb::default()
         };
 
-        let selected = select_connection(&snapshot, "openai", "gpt-4.1", &HashSet::new(), None)
+        let selected = select_connection(&snapshot, "openai", "gpt-4.1", &HashSet::new())
             .expect("should select an account");
 
         assert_eq!(selected.id, "conn-b");
@@ -4212,7 +4115,7 @@ mod tests {
             .into_iter()
             .collect();
 
-        let selected = select_connection(&snapshot, "openai", "gpt-4.1", &excluded, None);
+        let selected = select_connection(&snapshot, "openai", "gpt-4.1", &excluded);
         assert!(
             selected.is_none(),
             "should return None when all accounts excluded"
@@ -4223,7 +4126,7 @@ mod tests {
     fn select_connection_returns_none_when_no_connections_match() {
         let snapshot = AppDb::default();
 
-        let selected = select_connection(&snapshot, "openai", "gpt-4.1", &HashSet::new(), None);
+        let selected = select_connection(&snapshot, "openai", "gpt-4.1", &HashSet::new());
         assert!(
             selected.is_none(),
             "should return None when no connections exist"

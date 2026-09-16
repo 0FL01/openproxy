@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -393,6 +394,86 @@ async fn chat_completions_falls_back_to_next_account_on_retryable_error() {
     assert!(!logs
         .iter()
         .any(|log| log.data.to_string().contains("valid-bearer")));
+}
+
+#[tokio::test]
+async fn chat_completions_keeps_concurrent_requests_on_preferred_account() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(200))
+                .set_body_json(json!({
+                    "id": "chatcmpl-affinity",
+                    "object": "chat.completion",
+                    "choices": [{
+                        "index": 0,
+                        "message": { "role": "assistant", "content": "ok" },
+                        "finish_reason": "stop"
+                    }]
+                })),
+        )
+        .expect(11)
+        .mount(&upstream)
+        .await;
+
+    let state = seeded_state(
+        vec![provider_node(
+            "node-openai",
+            "custom",
+            &format!("{}/v1", upstream.uri()),
+        )],
+        vec![
+            connection("conn-b", "node-openai", 1, "second-key"),
+            connection("conn-a", "node-openai", 1, "preferred-key"),
+        ],
+    )
+    .await;
+    let app = openproxy::build_app(state);
+
+    let mut tasks = Vec::new();
+    for _ in 0..11 {
+        let app = app.clone();
+        tasks.push(tokio::spawn(async move {
+            app.oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("authorization", "Bearer valid-bearer")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "model": "custom/gpt-4o-mini",
+                            "messages": [{"role": "user", "content": "hi"}],
+                            "stream": false
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+        }));
+    }
+
+    for task in tasks {
+        assert_eq!(task.await.unwrap(), StatusCode::OK);
+    }
+
+    let requests = upstream
+        .received_requests()
+        .await
+        .expect("received requests");
+    assert_eq!(requests.len(), 11);
+    assert!(requests.iter().all(|request| {
+        request
+            .headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            == Some("Bearer preferred-key")
+    }));
 }
 
 #[tokio::test]

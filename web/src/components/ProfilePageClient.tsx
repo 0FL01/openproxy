@@ -17,9 +17,6 @@ interface Settings {
   outboundProxyEnabled?: boolean;
   outboundProxyUrl?: string;
   outboundNoProxy?: string;
-  stickyRoundRobinLimit?: number;
-  /** Account-level fallback strategy: "fill-first" | "round-robin" */
-  fallbackStrategy?: string;
   /** Concrete DB path from the API */
   databasePath?: string;
   /** Data directory path from the API (fallback display) */
@@ -86,8 +83,6 @@ export default function ProfilePageClient() {
   const [proxyLoading, setProxyLoading] = useState(false);
   const [proxyTestLoading, setProxyTestLoading] = useState(false);
 
-  const [accountStickyLimitInput, setAccountStickyLimitInput] = useState("3");
-
   const importFileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -109,7 +104,6 @@ export default function ProfilePageClient() {
         outboundProxyUrl: data.outboundProxyUrl ?? "",
         outboundNoProxy: data.outboundNoProxy ?? "",
       });
-      setAccountStickyLimitInput(String(data.stickyRoundRobinLimit ?? 3));
     } catch (err) {
       console.error("Failed to fetch settings:", err);
     } finally {
@@ -211,29 +205,6 @@ export default function ProfilePageClient() {
       if (data) setSettings((prev) => ({ ...prev, ...data }));
     } catch (err) {
       console.error("Failed to update observability:", err);
-    }
-  };
-
-  const updateFallbackStrategy = async (strategy: string) => {
-    try {
-      const data = await patchSettings({ fallbackStrategy: strategy });
-      if (data) setSettings((prev) => ({ ...prev, ...data }));
-    } catch (err) {
-      console.error("Failed to update fallback strategy:", err);
-    }
-  };
-
-  const updateAccountStickyLimit = async (raw: string) => {
-    const num = parseInt(raw, 10);
-    if (isNaN(num) || num < 1) return;
-    try {
-      const data = await patchSettings({ stickyRoundRobinLimit: num });
-      if (data) {
-        setSettings((prev) => ({ ...prev, ...data }));
-        setAccountStickyLimitInput(String(num));
-      }
-    } catch (err) {
-      console.error("Failed to update sticky limit:", err);
     }
   };
 
@@ -432,8 +403,6 @@ export default function ProfilePageClient() {
   const hasPassword = settings.hasPassword === true;
   const observabilityEnabled = settings.observabilityEnabled === true;
   const outboundProxyEnabled = settings.outboundProxyEnabled === true;
-  const accountRoundRobin = settings.fallbackStrategy === "round-robin";
-  const accountStickyLimit = settings.stickyRoundRobinLimit ?? 3;
   const dbPath =
     (typeof settings.databasePath === "string" && settings.databasePath) ||
     (typeof settings.dataDir === "string" && settings.dataDir) ||
@@ -581,59 +550,6 @@ export default function ProfilePageClient() {
                 </div>
               </form>
             )}
-          </div>
-        </Card>
-
-        {/* ── Routing Preferences ─────────────────────────────────── */}
-        <Card>
-          <div className="flex items-center gap-3 mb-4">
-            <div className="size-10 rounded-lg bg-blue-500/10 text-blue-500 flex items-center justify-center shrink-0">
-              <span className="material-symbols-outlined text-[20px]">route</span>
-            </div>
-            <h3 className="text-base sm:text-lg font-semibold">Routing Strategy</h3>
-          </div>
-          <div className="flex flex-col gap-4">
-            {/* Account Round Robin */}
-            <div className="flex items-start sm:items-center justify-between gap-4">
-              <div className="flex-1 min-w-0">
-                <p className="font-medium text-sm">Account Round Robin</p>
-                <p className="text-xs text-muted-soft">
-                  Cycle through accounts to distribute load instead of always picking the first
-                </p>
-              </div>
-              <Toggle
-                checked={accountRoundRobin}
-                onChange={() =>
-                  updateFallbackStrategy(accountRoundRobin ? "fill-first" : "round-robin")
-                }
-                disabled={loading}
-              />
-            </div>
-
-            {accountRoundRobin && (
-              <div className="flex items-start sm:items-center justify-between gap-4 pt-2 border-t border-hairline-soft">
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium text-sm">Account Sticky Limit</p>
-                  <p className="text-xs text-muted-soft">Requests per account before switching</p>
-                </div>
-                <Input
-                  type="number"
-                  min="1"
-                  max="10"
-                  value={accountStickyLimitInput}
-                  onChange={(e) => setAccountStickyLimitInput(e.target.value)}
-                  onBlur={() => updateAccountStickyLimit(accountStickyLimitInput)}
-                  disabled={loading}
-                  className="w-16 sm:w-20 text-center shrink-0"
-                />
-              </div>
-            )}
-
-            <p className="text-xs text-muted-soft italic pt-2 border-t border-hairline-soft">
-              {accountRoundRobin
-                ? `Accounts use round-robin with up to ${accountStickyLimit} request${accountStickyLimit === 1 ? "" : "s"} per account.`
-                : "Accounts use fill-first (priority order)."}
-            </p>
           </div>
         </Card>
 

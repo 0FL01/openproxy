@@ -605,6 +605,12 @@ pub(crate) fn safe_settings_payload_with_db_path(
                 .and_then(|value| value.as_str())
                 .is_some_and(|value| !value.is_empty());
         fields.insert("hasPassword".to_string(), Value::Bool(has_password));
+        fields.insert(
+            "fallbackStrategy".to_string(),
+            Value::String("fill-first".to_string()),
+        );
+        fields.insert("stickyRoundRobinLimit".to_string(), Value::Number(3.into()));
+        fields.insert("providerStrategies".to_string(), json!({}));
 
         if let Some(path) = db_path {
             fields.insert("databasePath".to_string(), Value::String(path.to_string()));
@@ -1741,8 +1747,6 @@ async fn get_settings_api(State(state): State<AppState>, headers: HeaderMap) -> 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UpdateSettingsRequest {
-    sticky_round_robin_limit: Option<u32>,
-    provider_strategies: Option<BTreeMap<String, crate::types::ProviderStrategyEntry>>,
     provider_context_limits: Option<BTreeMap<String, u32>>,
     require_api_key: Option<bool>,
     require_login: Option<bool>,
@@ -1754,7 +1758,6 @@ struct UpdateSettingsRequest {
     outbound_no_proxy: Option<String>,
     new_password: Option<String>,
     current_password: Option<String>,
-    fallback_strategy: Option<String>,
     client_ping_url: Option<String>,
     client_ping_any: Option<bool>,
     /// Stored in settings.extra so provider-detail UI can PATCH it.
@@ -1820,12 +1823,6 @@ async fn update_settings_api(
     let result = state
         .db
         .update(|db| {
-            if let Some(v) = req.sticky_round_robin_limit {
-                db.settings.sticky_round_robin_limit = v.max(1);
-            }
-            if let Some(v) = req.provider_strategies {
-                db.settings.provider_strategies = v;
-            }
             if let Some(v) = req.provider_context_limits {
                 db.settings.provider_context_limits = v;
             }
@@ -1852,9 +1849,6 @@ async fn update_settings_api(
             }
             if let Some(v) = req.outbound_no_proxy {
                 db.settings.outbound_no_proxy = v;
-            }
-            if let Some(v) = req.fallback_strategy {
-                db.settings.fallback_strategy = v;
             }
             if let Some(v) = req.client_ping_url {
                 db.settings.client_ping_url = v;
@@ -2015,9 +2009,6 @@ fn merge_settings(target: &mut crate::types::Settings, source: &crate::types::Se
     if source.require_login != target.require_login {
         target.require_login = source.require_login;
     }
-    if source.provider_strategies != target.provider_strategies {
-        target.provider_strategies = source.provider_strategies.clone();
-    }
     if source.provider_context_limits != target.provider_context_limits {
         target.provider_context_limits = source.provider_context_limits.clone();
     }
@@ -2032,12 +2023,6 @@ fn merge_settings(target: &mut crate::types::Settings, source: &crate::types::Se
     }
     if source.outbound_no_proxy != target.outbound_no_proxy {
         target.outbound_no_proxy = source.outbound_no_proxy.clone();
-    }
-    if source.sticky_round_robin_limit != target.sticky_round_robin_limit {
-        target.sticky_round_robin_limit = source.sticky_round_robin_limit;
-    }
-    if source.fallback_strategy != target.fallback_strategy {
-        target.fallback_strategy = source.fallback_strategy.clone();
     }
     if source.client_ping_url != target.client_ping_url {
         target.client_ping_url = source.client_ping_url.clone();

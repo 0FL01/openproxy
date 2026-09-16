@@ -152,8 +152,6 @@ async fn execute_single_fetch(
 
     // Get credentials for this provider (with fallback loop)
     let mut excluded = HashSet::new();
-    let registry = &state.account_registry;
-
     loop {
         let connection = select_fetch_connection(&snapshot, &provider_id, &excluded);
 
@@ -162,15 +160,6 @@ async fn execute_single_fetch(
                 status: 400,
                 message: format!("No credentials for provider: {}", provider_id),
             });
-        };
-
-        let (rate_limit_remaining, rate_limit_reset) = registry.rate_limit_info(&connection.id);
-        let slot =
-            registry.acquire_slot(&connection.id, 10, rate_limit_remaining, rate_limit_reset);
-
-        let Some(_slot) = slot else {
-            excluded.insert(connection.id.clone());
-            continue;
         };
 
         match do_fetch(state, &provider_id, &connection, url, format, max_chars).await {
@@ -593,7 +582,10 @@ fn select_fetch_connection(
                 && connection_has_credentials(c)
                 && !excluded.contains(&c.id)
         })
-        .min_by_key(|c| c.priority.unwrap_or(999))
+        .min_by(|left, right| {
+            (left.priority.unwrap_or(u32::MAX), left.id.as_str())
+                .cmp(&(right.priority.unwrap_or(u32::MAX), right.id.as_str()))
+        })
         .cloned()
 }
 

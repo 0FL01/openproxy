@@ -6,7 +6,6 @@ use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 use serde_json::Value;
 
-use crate::core::account_fallback::AccountRegistry;
 use crate::core::executor::{ClientPool, DefaultExecutor, ExecutionRequest};
 use crate::core::model::get_model_info;
 use crate::core::proxy::resolve_proxy_target;
@@ -1335,13 +1334,11 @@ pub async fn run_pool(cmd: PoolCmd, db: &Db, ctx: output::OutputCtx) -> anyhow::
 
 async fn run_route(model: String, prompt: String, stream: bool, json: bool) -> anyhow::Result<()> {
     let pool = Arc::new(ClientPool::new());
-    let registry = AccountRegistry::default();
-    run_direct_route(pool, registry, &model, &prompt, stream, json).await
+    run_direct_route(pool, &model, &prompt, stream, json).await
 }
 
 async fn run_direct_route(
     pool: Arc<ClientPool>,
-    registry: AccountRegistry,
     model_str: &str,
     prompt: &str,
     stream: bool,
@@ -1390,15 +1387,6 @@ async fn run_direct_route(
             .cloned();
 
         let proxy = resolve_proxy_target(&snapshot, &connection, &snapshot.settings);
-
-        let (rate_limit_remaining, rate_limit_reset) = registry.rate_limit_info(&connection.id);
-        let slot =
-            registry.acquire_slot(&connection.id, 10, rate_limit_remaining, rate_limit_reset);
-
-        let Some(_slot) = slot else {
-            excluded.insert(connection.id.clone());
-            continue;
-        };
 
         let executor = match DefaultExecutor::new(provider.clone(), pool.clone(), provider_node) {
             Ok(ex) => ex,
@@ -1489,7 +1477,10 @@ fn select_connection_cli(
         .cloned()
         .collect();
 
-    candidates.sort_by_key(|connection| connection.priority.unwrap_or(999));
+    candidates.sort_by(|left, right| {
+        (left.priority.unwrap_or(u32::MAX), left.id.as_str())
+            .cmp(&(right.priority.unwrap_or(u32::MAX), right.id.as_str()))
+    });
     candidates.into_iter().next()
 }
 

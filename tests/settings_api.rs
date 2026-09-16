@@ -100,9 +100,6 @@ async fn patch_settings_updates_values_and_rejects_password_fields() {
                 .body(Body::from(
                     json!({
                         "requireLogin": false,
-                        "providerStrategies": {
-                            "openai": "latency"
-                        },
                         "requireApiKey": false,
                         "codexWebSearchContextSize": "low",
                         "glmAutoPing": {
@@ -129,7 +126,6 @@ async fn patch_settings_updates_values_and_rejects_password_fields() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["requireLogin"], false);
-    assert_eq!(json["providerStrategies"]["openai"], "latency");
     assert_eq!(json["requireApiKey"], false);
     assert_eq!(json["codexWebSearchContextSize"], "low");
     assert_eq!(json["glmAutoPing"]["enabled"], true);
