@@ -35,8 +35,9 @@ export default function ApplicationLogDrawer({ log, onClose }: Props) {
 
           <div className="rounded-lg border border-border bg-bg-subtle p-4">
             <h3 className="mb-3 text-sm font-semibold text-text-main">Tokens</h3>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
               <Field label="Input" value={(log.inputTokens ?? 0).toLocaleString()} />
+              <Field label="Cache Read" value={log.cachedTokens?.toLocaleString() ?? null} />
               <Field label="Output" value={(log.outputTokens ?? 0).toLocaleString()} />
             </div>
           </div>

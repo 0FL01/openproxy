@@ -44,6 +44,7 @@ impl RequestLogContext {
             "durationMs": 0,
             "inputTokens": Value::Null,
             "outputTokens": Value::Null,
+            "cachedTokens": Value::Null,
         });
         let sqlite = self.db.sqlite.clone();
         let record_id = id.clone();
@@ -132,6 +133,10 @@ impl AttemptLog {
             "outputTokens".into(),
             json!(tokens.and_then(|tokens| tokens.completion_tokens.or(tokens.output_tokens))),
         );
+        data.insert(
+            "cachedTokens".into(),
+            json!(tokens.and_then(|tokens| tokens.cached_tokens.or(tokens.cache_read_input_tokens))),
+        );
         Value::Object(data)
     }
 }
@@ -218,6 +223,7 @@ struct RequestLogRecord {
     duration_ms: u64,
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
+    cached_tokens: Option<u64>,
     api_key_id: Option<String>,
     api_key_name: Option<String>,
 }
@@ -327,6 +333,7 @@ fn request_log_from_row(row: request_repo::RequestDetailRow) -> RequestLogRecord
             .unwrap_or_default(),
         input_tokens: row.data.get("inputTokens").and_then(Value::as_u64),
         output_tokens: row.data.get("outputTokens").and_then(Value::as_u64),
+        cached_tokens: row.data.get("cachedTokens").and_then(Value::as_u64),
         api_key_id: row.api_key_id,
         api_key_name: row.api_key_name,
     }
@@ -354,6 +361,7 @@ mod tests {
                 "durationMs": 42,
                 "inputTokens": 10,
                 "outputTokens": 20,
+                "cachedTokens": 7,
                 "request": "secret prompt",
                 "response": "secret response"
             }),
@@ -363,6 +371,7 @@ mod tests {
         assert_eq!(value["requestId"], "request-1");
         assert_eq!(value["route"], "work");
         assert_eq!(value["inputTokens"], 10);
+        assert_eq!(value["cachedTokens"], 7);
         assert_eq!(value["apiKeyId"], "key-1");
         assert_eq!(value["apiKeyName"], "OpenCode");
         let serialized = value.to_string();

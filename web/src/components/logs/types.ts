@@ -9,6 +9,7 @@ export interface ApplicationLog {
   durationMs: number;
   inputTokens?: number;
   outputTokens?: number;
+  cachedTokens?: number;
   apiKeyId?: string;
   apiKeyName?: string;
 }
