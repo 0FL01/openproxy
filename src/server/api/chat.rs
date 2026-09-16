@@ -279,6 +279,25 @@ fn provider_connection_supports_model(connection: &ProviderConnection, model: &s
         })
 }
 
+/// Strip ASCII control characters (except tab, LF, CR) from every
+/// `messages[].content` string in a chat request body before forwarding.
+///
+/// Raw NUL/DEL bytes break strict upstreams and exact-body mocks; tab and
+/// newline are legitimate prompt formatting and must survive.
+fn strip_message_control_chars(body: &mut Value) {
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for message in messages {
+        let Some(content) = message.get_mut("content") else {
+            continue;
+        };
+        if let Value::String(text) = content {
+            text.retain(|c| !c.is_control() || matches!(c, '\t' | '\n' | '\r'));
+        }
+    }
+}
+
 pub async fn chat_completions_for_endpoint(
     state: AppState,
     headers: HeaderMap,
@@ -345,6 +364,10 @@ async fn chat_completions_impl(
             }
         }
     }
+
+    // Sanitize message content before model resolution/forwarding (see
+    // `strip_message_control_chars`).
+    strip_message_control_chars(&mut body);
 
     let Some(model_str) = body
         .get("model")

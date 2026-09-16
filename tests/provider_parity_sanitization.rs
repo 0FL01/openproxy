@@ -163,7 +163,7 @@ async fn input_sanitization_strips_control_chars_before_upstream() {
         text.contains("sanitized"),
         "upstream content reached client: {text}"
     );
-    assert!(text.contains("data: [DONE]"), "streaming finished cleanly");
+    assert!(text.contains("\"done\":true"), "streaming finished cleanly");
 }
 
 #[tokio::test]
