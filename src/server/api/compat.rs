@@ -82,10 +82,13 @@ pub async fn responses_compact(
     response
 }
 
-pub async fn count_tokens(body: Result<Json<Value>, JsonRejection>) -> Response {
+pub async fn count_tokens(
+    headers: HeaderMap,
+    body: Result<Json<Value>, JsonRejection>,
+) -> Response {
     let Json(body) = match body {
         Ok(body) => body,
-        Err(_) => return invalid_json_response(),
+        Err(error) => return invalid_json_response(error, &headers, "/v1/messages/count_tokens"),
     };
 
     let total_chars = count_request_chars(&body);
@@ -106,9 +109,14 @@ async fn forward_compat(
     body: Result<Json<Value>, JsonRejection>,
     mode: CompatMode,
 ) -> Response {
+    let endpoint = match mode {
+        CompatMode::Messages => "/v1/messages",
+        CompatMode::Responses { compact: false } => "/v1/responses",
+        CompatMode::Responses { compact: true } => "/v1/responses/compact",
+    };
     let Json(body) = match body {
         Ok(body) => body,
-        Err(_) => return invalid_json_response(),
+        Err(error) => return invalid_json_response(error, &headers, endpoint),
     };
 
     let normalized = normalize_body(body, mode);
@@ -116,13 +124,9 @@ async fn forward_compat(
         .get("stream")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let endpoint = match mode {
-        CompatMode::Messages => Some("/v1/messages"),
-        CompatMode::Responses { compact: false } => Some("/v1/responses"),
-        CompatMode::Responses { compact: true } => Some("/v1/responses/compact"),
-    };
     let response =
-        chat::chat_completions_for_endpoint(state, headers, Ok(Json(normalized)), endpoint).await;
+        chat::chat_completions_for_endpoint(state, headers, Ok(Json(normalized)), Some(endpoint))
+            .await;
 
     match mode {
         CompatMode::Responses { .. } => {
@@ -2246,14 +2250,45 @@ fn count_chars(value: &Value) -> usize {
     }
 }
 
-fn invalid_json_response() -> Response {
-    with_cors_response(
-        (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "Invalid JSON body" })),
-        )
-            .into_response(),
-    )
+fn invalid_json_response(
+    error: JsonRejection,
+    headers: &HeaderMap,
+    endpoint: &'static str,
+) -> Response {
+    let status = error.status();
+    let rejection = match &error {
+        JsonRejection::JsonDataError(_) => "json_data",
+        JsonRejection::JsonSyntaxError(_) => "json_syntax",
+        JsonRejection::MissingJsonContentType(_) => "content_type",
+        JsonRejection::BytesRejection(_) if status == StatusCode::PAYLOAD_TOO_LARGE => {
+            "body_too_large"
+        }
+        JsonRejection::BytesRejection(_) => "body_read",
+        _ => "unknown",
+    };
+    let content_length = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("unknown");
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("missing");
+    tracing::warn!(
+        endpoint,
+        rejection,
+        status = status.as_u16(),
+        content_length,
+        content_type,
+        "request JSON rejected"
+    );
+
+    let message = match status {
+        StatusCode::PAYLOAD_TOO_LARGE => "Request body too large",
+        StatusCode::UNSUPPORTED_MEDIA_TYPE => "Content-Type must be application/json",
+        _ => "Invalid JSON body",
+    };
+    with_cors_response((status, Json(json!({ "error": message }))).into_response())
 }
 
 fn with_cors_response(mut response: Response) -> Response {

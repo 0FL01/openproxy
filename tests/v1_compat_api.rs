@@ -139,6 +139,44 @@ async fn compat_count_tokens_matches_js_estimate_and_sets_cors_headers() {
 }
 
 #[tokio::test]
+async fn responses_reports_oversized_json_as_payload_too_large() {
+    let app = openproxy::build_app(seeded_state(Vec::new(), Vec::new()).await);
+    let oversized_input = "x".repeat(8 * 1024 * 1024);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("authorization", "Bearer valid-bearer")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "compat/gpt-4o-mini",
+                        "input": oversized_input
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .unwrap(),
+        "*"
+    );
+    let body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["error"], "Request body too large");
+}
+
+#[tokio::test]
 async fn messages_route_promotes_system_field_before_forwarding() {
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
