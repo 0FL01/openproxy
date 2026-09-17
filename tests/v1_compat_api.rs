@@ -141,7 +141,7 @@ async fn compat_count_tokens_matches_js_estimate_and_sets_cors_headers() {
 #[tokio::test]
 async fn responses_reports_oversized_json_as_payload_too_large() {
     let app = openproxy::build_app(seeded_state(Vec::new(), Vec::new()).await);
-    let oversized_input = "x".repeat(8 * 1024 * 1024);
+    let oversized_input = "x".repeat(12 * 1024 * 1024);
     let response = app
         .oneshot(
             Request::builder()

@@ -25,7 +25,6 @@ import {
 import { getErrorBadgeLabel, getErrorCode, getRelativeTime } from "@/shared/utils";
 import { useNotificationStore } from "@/store/notificationStore";
 import { useHeaderSearchStore } from "@/store/headerSearchStore";
-import ModelAvailabilityBadge from "@/components/providers/ModelAvailabilityBadge";
 import AddApiKeyModal from "@/components/providers/AddApiKeyModal";
 
 function getStatusDisplay(connected, error, errorCode, total = 0) {
@@ -224,23 +223,13 @@ export default function ProvidersPageClient() {
       (c) => c.provider === providerId && authTypes.includes(c.authType),
     );
 
-    const getEffectiveStatus = (conn) => {
-      const isCooldown = Object.entries(conn).some(
-        ([k, v]) =>
-          k.startsWith("modelLock_") && v && new Date(v).getTime() > Date.now(),
-      );
-      return conn.testStatus === "unavailable" && !isCooldown
-        ? "active"
-        : conn.testStatus;
-    };
-
     const connected = providerConnections.filter((c) => {
-      const status = getEffectiveStatus(c);
+      const status = c.testStatus;
       return status === "active" || status === "success";
     }).length;
 
     const errorConns = providerConnections.filter((c) => {
-      const status = getEffectiveStatus(c);
+      const status = c.testStatus;
       return (
         status === "error" || status === "expired" || status === "unavailable"
       );
@@ -605,7 +594,6 @@ export default function ProvidersPageClient() {
             OAuth Providers
           </h2>
           <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-            <ModelAvailabilityBadge />
             <button
               onClick={() => handleBatchTest("oauth")}
               disabled={!!testingMode}

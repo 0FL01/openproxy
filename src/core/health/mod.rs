@@ -3,10 +3,8 @@
 //! A background daemon ([`daemon::spawn_health_daemon`]) probes every active
 //! API-key provider connection on a fixed interval and feeds the observed HTTP
 //! status into a process-global [`registry::HealthRegistry`]. The registry maps
-//! the status onto a *degrade window*: while a connection is degraded it is
-//! skipped by account fallback (via `degradedUntil` persisted on the
-//! connection) and — when every connection of a provider is degraded — by the
-//! account fallback path.
+//! the status onto a *degrade window* used for health diagnostics. The persisted
+//! `degradedUntil` value is informational and does not suppress routing.
 //!
 //! # Degrade timing (OmniRoute `credentialHealth` parity)
 //!
@@ -42,7 +40,7 @@ pub use probe::{probe_connection, ProbeOutcome};
 pub use registry::{HealthRegistry, HealthSummary, ProviderHealthSummary};
 
 /// `ProviderConnection.extra` key holding the RFC3339 instant until which the
-/// connection is degraded. Read by `account_fallback::is_account_unavailable`.
+/// connection is degraded. Retained as diagnostic and compatibility metadata.
 pub const DEGRADED_UNTIL_KEY: &str = "degradedUntil";
 /// `ProviderConnection.extra` key holding the last observed [`HealthStatus`].
 pub const HEALTH_STATUS_KEY: &str = "healthStatus";

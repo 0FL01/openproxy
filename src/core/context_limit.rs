@@ -68,9 +68,41 @@ pub fn estimate_input_tokens(body: &Value) -> u64 {
     let bytes: usize = PROMPT_FIELDS
         .into_iter()
         .filter_map(|field| body.get(field))
-        .map(|value| serde_json::to_vec(value).map_or(0, |encoded| encoded.len()))
+        .map(|value| {
+            let mut prompt = value.clone();
+            remove_inline_binary_payloads(&mut prompt);
+            serde_json::to_vec(&prompt).map_or(0, |encoded| encoded.len())
+        })
         .sum();
     (bytes as u64).div_ceil(4)
+}
+
+fn remove_inline_binary_payloads(value: &mut Value) {
+    match value {
+        Value::String(text) => {
+            if text.starts_with("data:") {
+                if let Some(index) = text.find(";base64,") {
+                    text.truncate(index + ";base64,".len());
+                }
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                remove_inline_binary_payloads(value);
+            }
+        }
+        Value::Object(object) => {
+            if object.get("type").and_then(Value::as_str) == Some("base64") {
+                if let Some(Value::String(data)) = object.get_mut("data") {
+                    data.clear();
+                }
+            }
+            for value in object.values_mut() {
+                remove_inline_binary_payloads(value);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]
@@ -106,5 +138,43 @@ mod tests {
             "tools": [{"type": "function", "function": {"name": "lookup", "description": "long schema"}}]
         }));
         assert!(with_tools > base);
+    }
+
+    #[test]
+    fn estimate_ignores_inline_image_payloads() {
+        let small = estimate_input_tokens(&json!({
+            "input": [{
+                "role": "user",
+                "content": [{
+                    "type": "input_image",
+                    "image_url": "data:image/png;base64,A"
+                }]
+            }]
+        }));
+        let large = estimate_input_tokens(&json!({
+            "input": [{
+                "role": "user",
+                "content": [{
+                    "type": "input_image",
+                    "image_url": format!("data:image/png;base64,{}", "A".repeat(1_000_000))
+                }]
+            }]
+        }));
+        let claude = estimate_input_tokens(&json!({
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "A".repeat(1_000_000)
+                    }
+                }]
+            }]
+        }));
+
+        assert_eq!(large, small);
+        assert!(claude < 100);
     }
 }

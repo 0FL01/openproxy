@@ -138,7 +138,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
             "/v1/v1/responses/compact",
             post(compat::responses_compact).options(compat::cors_options),
         )
-        .layer(DefaultBodyLimit::max(8 * 1024 * 1024));
+        .layer(DefaultBodyLimit::max(12 * 1024 * 1024));
 
     // ── PROTECTED: valid API key required ──
     let protected = Router::new()
@@ -189,7 +189,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .merge(oauth::routes())
         .route(
             "/api/dashboard/chat/completions",
-            post(chat::dashboard_chat_completions).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
+            post(chat::dashboard_chat_completions).layer(DefaultBodyLimit::max(12 * 1024 * 1024)),
         )
         .route("/api/providers", get(list_providers_api))
         .route("/api/providers", post(create_provider_api))

@@ -247,7 +247,7 @@ The same instructions in machine-readable form live at [`.agents/skills/openprox
 | API key | OpenAI, Anthropic, Gemini, OpenRouter, GLM, Kimi, MiniMax, DeepSeek, Groq, xAI, Mistral, Perplexity, Together, Fireworks, Cerebras, Cohere, NVIDIA, SiliconFlow, Nebius, Chutes, Hyperbolic, custom OpenAI/Anthropic-compatible endpoints | API key | 40+ supported. |
 | Free | Kiro AI (Claude 4.5 + GLM-5 + MiniMax), OpenCode Free, Vertex AI ($300 trial credits) | OAuth / no auth / GCP service account | Best for fallback tiers. |
 
-Configure providers from the dashboard (`Providers` tab) or via `openproxy provider` CLI subcommands. Each provider supports multiple accounts; OpenProxy prefers the lowest-priority-number account and falls back after an upstream failure or cooldown.
+Configure providers from the dashboard (`Providers` tab) or via `openproxy provider` CLI subcommands. Each provider supports multiple accounts; OpenProxy prefers the lowest-priority-number account and tries each remaining account once after an upstream failure. Every new client request starts with the preferred account; upstream `Retry-After` is forwarded to the client rather than enforced by the proxy.
 
 ---
 

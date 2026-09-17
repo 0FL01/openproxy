@@ -8,15 +8,15 @@ Single-binary AI router: OpenAI-compatible endpoint → provider executors.
 2. Plan streaming (`forceStream`, Accept header, image-gen).
 3. Apply provider thinking, strip lists, tool dedupe.
 4. Execute via specialized executor or `DefaultExecutor`.
-5. On 401/403 refresh once, on 429 try next fallback URL.
-6. Proxy SSE/JSON back; selective model-lock clear on success.
+5. On 401/403 refresh once; after an upstream failure try each remaining eligible account once.
+6. Proxy SSE/JSON back, or return the final upstream status and `Retry-After` without a cross-request proxy cooldown.
 
 ## Intentional behavior
 
 - SSRF checks on image prefetch.
 - Missing credentials fail loud (no `Bearer undefined`).
 - Refresh dedup does not cache null failures.
-- Account cooldowns and model locks keep known-bad credentials out of fallback attempts.
+- Every request independently tries active configured accounts; persisted legacy cooldown and health-degrade fields are diagnostic only and never suppress routing.
 - Secrets encrypted in SQLite WAL.
 - No token-saver passes (PXPIPE/RTK/Headroom/Caveman/Ponytail
   removed) — the proxy forwards bodies unmutated.

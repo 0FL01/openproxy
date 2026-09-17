@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useRef } from "react";
 import { Badge, Toggle, Tooltip } from "@/shared/components";
-import CooldownTimer from "./CooldownTimer";
 
 interface ProxyPool {
   id: string;
@@ -17,7 +16,6 @@ interface Connection {
   name?: string;
   email?: string;
   displayName?: string;
-  modelLockUntil?: string;
   testStatus?: string;
   isActive?: boolean;
   lastError?: string;
@@ -30,7 +28,7 @@ interface Connection {
     connectionProxyUrl?: string;
     connectionNoProxy?: string;
   };
-  [key: string]: any; // For modelLock_ dynamic properties
+  [key: string]: any;
 }
 
 interface OneByOneStatus {
@@ -168,40 +166,7 @@ export default function ConnectionRow({
         ? connection.displayName.trim()
         : null;
 
-  // Use useState + useEffect for impure Date.now() to avoid calling during render
-  const [isCooldown, setIsCooldown] = useState<boolean>(false);
-
-  // Get earliest model lock timestamp (useEffect handles the Date.now() comparison)
-  const modelLockUntil =
-    Object.entries(connection)
-      .filter(([k]) => k.startsWith("modelLock_"))
-      .map(([, v]) => v)
-      .filter((v) => !!v)
-      .sort()[0] || null;
-
-  useEffect(() => {
-    const checkCooldown = () => {
-      const until =
-        Object.entries(connection)
-          .filter(([k]) => k.startsWith("modelLock_"))
-          .map(([, v]) => v)
-          .filter((v) => v && new Date(v as string).getTime() > Date.now())
-          .sort()[0] || null;
-      setIsCooldown(!!until);
-    };
-
-    checkCooldown();
-    const interval = modelLockUntil ? setInterval(checkCooldown, 1000) : null;
-    return () => {
-      if (interval) clearInterval(interval);
-    };
-  }, [modelLockUntil, connection]);
-
-  // Determine effective status (override unavailable if cooldown expired)
-  const effectiveStatus =
-    connection.testStatus === "unavailable" && !isCooldown
-      ? "active" // Cooldown expired → treat as active
-      : connection.testStatus;
+  const effectiveStatus = connection.testStatus;
 
   const getStatusVariant = (): "default" | "success" | "error" => {
     if (connection.isActive === false) return "default";
@@ -272,7 +237,6 @@ export default function ConnectionRow({
                 Proxy
               </Badge>
             )}
-            {isCooldown && connection.isActive !== false && <CooldownTimer until={modelLockUntil} />}
             {connection.lastError && connection.isActive !== false && (
               <span
                 className="max-w-full truncate text-xs text-red-500 sm:max-w-[300px]"

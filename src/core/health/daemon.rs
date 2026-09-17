@@ -5,8 +5,7 @@
 //! records the observed status in [`crate::core::health::HealthRegistry`].
 //!
 //! OAuth connections are **not** actively probed: their liveness check would
-//! consume subscription quota and can trigger token-refresh side effects. They
-//! are still covered by the existing rate-limit / model-lock cooldowns.
+//! consume subscription quota and can trigger token-refresh side effects.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -171,9 +170,8 @@ pub fn breaker_key(provider: &str, connection_id: &str) -> String {
     CircuitBreakerRegistry::key(&format!("{provider}:{connection_id}"), BREAKER_ENDPOINT)
 }
 
-/// Persist status transitions onto the connection's `extra` map so
-/// `account_fallback::is_account_unavailable` can gate dispatch without
-/// consulting in-process state, and so the dashboard can show the cause.
+/// Persist status transitions onto the connection's `extra` map so diagnostics
+/// can show the last observed state. Dispatch deliberately ignores these fields.
 async fn persist_records(state: &AppState, pending: Vec<(String, HealthRecord)>) {
     let now = Utc::now().to_rfc3339();
     let _ = state

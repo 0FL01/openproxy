@@ -14,7 +14,6 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::core::account_fallback::check_fallback_error;
 use crate::server::state::AppState;
 use crate::types::ProviderConnection;
 
@@ -152,14 +151,15 @@ async fn execute_single_fetch(
 
     // Get credentials for this provider (with fallback loop)
     let mut excluded = HashSet::new();
+    let mut last_error = None;
     loop {
         let connection = select_fetch_connection(&snapshot, &provider_id, &excluded);
 
         let Some(connection) = connection else {
-            return Err(FetchError {
+            return Err(last_error.unwrap_or_else(|| FetchError {
                 status: 400,
                 message: format!("No credentials for provider: {}", provider_id),
-            });
+            }));
         };
 
         match do_fetch(state, &provider_id, &connection, url, format, max_chars).await {
@@ -168,27 +168,9 @@ async fn execute_single_fetch(
                 return Ok(cors_json_response(StatusCode::OK, response));
             }
             Err(e) => {
-                let status = e.status;
-                let message = e.message.clone();
-                let current_backoff = connection.backoff_level.unwrap_or(0);
-                let decision = check_fallback_error(status, &message, current_backoff);
-                let cooldown = decision.cooldown;
-                let backoff_level = decision.new_backoff_level.unwrap_or(current_backoff + 1);
-
-                if decision.should_fallback {
-                    mark_connection_unavailable(
-                        state,
-                        &connection.id,
-                        status,
-                        &message,
-                        cooldown,
-                        backoff_level,
-                    )
-                    .await;
-                    excluded.insert(connection.id.clone());
-                    continue;
-                }
-                return Err(e);
+                last_error = Some(e);
+                excluded.insert(connection.id.clone());
+                continue;
             }
         }
     }
@@ -600,44 +582,6 @@ fn connection_has_credentials(c: &ProviderConnection) -> bool {
             .map(str::trim)
             .filter(|v| !v.is_empty())
             .is_some()
-}
-
-async fn mark_connection_unavailable(
-    state: &AppState,
-    connection_id: &str,
-    status: u16,
-    message: &str,
-    cooldown: std::time::Duration,
-    backoff_level: u32,
-) {
-    use chrono::{Duration as ChronoDuration, Utc};
-    let until = ChronoDuration::from_std(cooldown)
-        .map(|d| Utc::now() + d)
-        .unwrap_or_else(|_| Utc::now());
-    let until_rfc = until.to_rfc3339();
-    let connection_id = connection_id.to_string();
-    let message = message.to_string();
-    let _ = state
-        .db
-        .update(move |db| {
-            if let Some(c) = db
-                .provider_connections
-                .iter_mut()
-                .find(|c| c.id == connection_id)
-            {
-                c.last_error = Some(message);
-                c.last_error_at = Some(Utc::now().to_rfc3339());
-                c.error_code = Some(status.to_string());
-                c.backoff_level = Some(backoff_level);
-                c.consecutive_errors = c
-                    .consecutive_errors
-                    .map(|e| e.saturating_add(1))
-                    .or(Some(1));
-                c.test_status = Some("unavailable".into());
-                c.rate_limited_until = Some(until_rfc);
-            }
-        })
-        .await;
 }
 
 async fn clear_connection_error(state: &AppState, connection_id: &str) {

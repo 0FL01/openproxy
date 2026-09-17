@@ -6,33 +6,6 @@ import { getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/c
 import { ConfirmModal } from "@/shared/components/Modal";
 import { useNotificationStore } from "@/store/notificationStore";
 
-// ── CooldownTimer ──────────────────────────────────────────────
-interface CooldownTimerProps {
-  until: string | null;
-}
-
-function CooldownTimer({ until }: CooldownTimerProps) {
-  const [remaining, setRemaining] = useState<string>("");
-
-  useEffect(() => {
-    if (!until) return;
-    const update = () => {
-      const diff = new Date(until).getTime() - Date.now();
-      if (diff <= 0) { setRemaining(""); return; }
-      const s = Math.floor(diff / 1000);
-      if (s < 60) setRemaining(`${s}s`);
-      else if (s < 3600) setRemaining(`${Math.floor(s / 60)}m ${s % 60}s`);
-      else setRemaining(`${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`);
-    };
-    update();
-    const t = setInterval(update, 1000);
-    return () => clearInterval(t);
-  }, [until]);
-
-  if (!remaining) return null;
-  return <span className="text-xs text-orange-500 font-mono">⏱ {remaining}</span>;
-}
-
 // ── ConnectionRow ──────────────────────────────────────────────
 interface ProxyPool {
   id: string;
@@ -77,7 +50,6 @@ interface ConnectionRowProps {
 function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onEdit, onDelete }: ConnectionRowProps) {
   const [showProxyDropdown, setShowProxyDropdown] = useState<boolean>(false);
   const [updatingProxy, setUpdatingProxy] = useState<boolean>(false);
-  const [isCooldown, setIsCooldown] = useState<boolean>(false);
   const proxyDropdownRef = useRef<HTMLDivElement>(null);
 
   const proxyPoolMap = new Map((proxyPools || []).map((p) => [p.id, p]));
@@ -103,22 +75,6 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
   const noProxyText = boundProxyPool?.noProxy || connection.providerSpecificData?.connectionNoProxy || "";
   const proxyBadgeVariant: "default" | "success" | "error" = boundProxyPool?.isActive === true ? "success" : (boundProxyPoolId || hasLegacyProxy) ? "error" : "default";
 
-  const modelLockUntil = Object.entries(connection)
-    .filter(([k]) => k.startsWith("modelLock_"))
-    .map(([, v]) => v).filter(Boolean).sort()[0] || null;
-
-  useEffect(() => {
-    const check = () => {
-      const until = Object.entries(connection)
-        .filter(([k]) => k.startsWith("modelLock_"))
-        .map(([, v]) => v).filter(v => v && new Date(v).getTime() > Date.now()).sort()[0] || null;
-      setIsCooldown(!!until);
-    };
-    check();
-    const t = modelLockUntil ? setInterval(check, 1000) : null;
-    return () => { if (t) clearInterval(t); };
-  }, [modelLockUntil]);
-
   useEffect(() => {
     if (!showProxyDropdown) return;
     const handler = (e: MouseEvent) => {
@@ -129,7 +85,7 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
     return () => document.removeEventListener("mousedown", handler);
   }, [showProxyDropdown]);
 
-  const effectiveStatus = connection.testStatus === "unavailable" && !isCooldown ? "active" : connection.testStatus;
+  const effectiveStatus = connection.testStatus;
 
   const getStatusVariant = (): "default" | "success" | "error" =>
     getConnectionStatusVariant(connection.isActive, effectiveStatus);
@@ -163,7 +119,6 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
               {connection.isActive === false ? "disabled" : (effectiveStatus || "Unknown")}
             </Badge>
             {hasAnyProxy && <Badge variant={proxyBadgeVariant} size="sm">Proxy</Badge>}
-            {isCooldown && connection.isActive !== false && <CooldownTimer until={modelLockUntil} />}
             {connection.lastError && connection.isActive !== false && (
               <span className="text-xs text-red-500 truncate max-w-[300px]" title={connection.lastError}>{connection.lastError}</span>
             )}

@@ -196,7 +196,7 @@ async fn context_limit_rejects_before_provider_dispatch() {
     let state = seeded_state_with_settings(Vec::new(), Vec::new(), settings).await;
     let app = openproxy::build_app(state);
     // Exceeds Axum's default 2 MiB JSON limit, but remains below OpenProxy's
-    // fixed 8 MiB LLM-route ceiling so the semantic context guard handles it.
+    // fixed 12 MiB LLM-route ceiling so the semantic context guard handles it.
     let oversized_prompt = "x".repeat(2 * 1024 * 1024 + 100);
 
     let response = app
@@ -378,8 +378,8 @@ async fn chat_completions_falls_back_to_next_account_on_retryable_error() {
         .iter()
         .find(|connection| connection.id == "conn-bad")
         .unwrap();
-    assert!(first.extra.contains_key("modelLock_gpt-4o-mini"));
-    assert_eq!(first.error_code.as_deref(), Some("429"));
+    assert!(!first.extra.contains_key("modelLock_gpt-4o-mini"));
+    assert_eq!(first.error_code, None);
 
     let logs = state
         .db
@@ -548,7 +548,7 @@ async fn chat_completions_skips_accounts_that_do_not_advertise_requested_model()
 }
 
 #[tokio::test]
-async fn chat_completions_returns_retry_after_while_model_is_cooling_down() {
+async fn chat_completions_retries_upstream_on_the_next_request() {
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
@@ -561,7 +561,7 @@ async fn chat_completions_returns_retry_after_while_model_is_cooling_down() {
                     "error": { "message": "rate limit exceeded" }
                 })),
         )
-        .expect(1)
+        .expect(2)
         .mount(&upstream)
         .await;
 
@@ -599,7 +599,7 @@ async fn chat_completions_returns_retry_after_while_model_is_cooling_down() {
     if parts.status != StatusCode::TOO_MANY_REQUESTS {
         let b = axum::body::to_bytes(body, usize::MAX).await.unwrap();
         panic!(
-            "cooling test: status={}; body={}",
+            "retry-after test: status={}; body={}",
             parts.status,
             String::from_utf8_lossy(&b)
         );
@@ -611,7 +611,7 @@ async fn chat_completions_returns_retry_after_while_model_is_cooling_down() {
     let first_retry_after: i64 = retry_hdr.unwrap().to_str().unwrap().parse().unwrap();
     assert!(first_retry_after >= 100);
 
-    let app = openproxy::build_app(state);
+    let app = openproxy::build_app(state.clone());
     let second = app
         .oneshot(
             Request::builder()
@@ -625,7 +625,7 @@ async fn chat_completions_returns_retry_after_while_model_is_cooling_down() {
         .await
         .unwrap();
 
-    assert_eq!(second.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
     let second_retry_after: i64 = second
         .headers()
         .get("retry-after")
@@ -635,18 +635,13 @@ async fn chat_completions_returns_retry_after_while_model_is_cooling_down() {
         .parse()
         .unwrap();
     assert!(second_retry_after >= 100);
-    let body = axum::body::to_bytes(second.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert!(json["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("cooling down"));
+    let stored = &state.db.snapshot().provider_connections[0];
+    assert!(!stored.extra.contains_key("modelLock_gpt-4o-mini"));
+    assert_eq!(stored.rate_limited_until, None);
 }
 
 #[tokio::test]
-async fn chat_completions_does_not_cool_down_entire_connection_for_model_specific_404() {
+async fn chat_completions_retries_model_after_upstream_404() {
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
@@ -655,23 +650,7 @@ async fn chat_completions_does_not_cool_down_entire_connection_for_model_specifi
         .respond_with(ResponseTemplate::new(404).set_body_json(json!({
             "error": { "message": "model not found" }
         })))
-        .expect(1)
-        .mount(&upstream)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
-        .and(header("authorization", "Bearer upstream-key"))
-        .and(body_partial_json(json!({ "model": "gpt-ok" })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "id": "chatcmpl-ok",
-            "object": "chat.completion",
-            "choices": [{
-                "index": 0,
-                "message": { "role": "assistant", "content": "ok" },
-                "finish_reason": "stop"
-            }]
-        })))
-        .expect(1)
+        .expect(2)
         .mount(&upstream)
         .await;
 
@@ -679,7 +658,7 @@ async fn chat_completions_does_not_cool_down_entire_connection_for_model_specifi
     connection.default_model = None;
     connection
         .provider_specific_data
-        .insert("enabledModels".into(), json!(["gpt-missing", "gpt-ok"]));
+        .insert("enabledModels".into(), json!(["gpt-missing"]));
 
     let state = seeded_state(
         vec![provider_node(
@@ -719,11 +698,11 @@ async fn chat_completions_does_not_cool_down_entire_connection_for_model_specifi
         .iter()
         .find(|connection| connection.id == "conn-1")
         .expect("stored connection");
-    assert!(stored.extra.contains_key("modelLock_gpt-missing"));
+    assert!(!stored.extra.contains_key("modelLock_gpt-missing"));
     assert!(stored.rate_limited_until.is_none());
 
     let app = openproxy::build_app(state);
-    let ok = app
+    let second = app
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -732,7 +711,7 @@ async fn chat_completions_does_not_cool_down_entire_connection_for_model_specifi
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "custom/gpt-ok",
+                        "model": "custom/gpt-missing",
                         "messages": [{ "role": "user", "content": "hi again" }],
                         "stream": false,
                     })
@@ -743,7 +722,7 @@ async fn chat_completions_does_not_cool_down_entire_connection_for_model_specifi
         .await
         .unwrap();
 
-    assert_eq!(ok.status(), StatusCode::OK);
+    assert_eq!(second.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -814,7 +793,7 @@ async fn chat_completions_supports_enabled_models_with_nested_slashes() {
 }
 
 #[tokio::test]
-async fn chat_completions_preserves_earliest_retry_after_when_all_accounts_fail() {
+async fn chat_completions_returns_the_last_upstream_error_when_all_accounts_fail() {
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
@@ -876,15 +855,15 @@ async fn chat_completions_preserves_earliest_retry_after_when_all_accounts_fail(
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let retry_after: i64 = response
-        .headers()
-        .get("retry-after")
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .parse()
+    assert!(response.headers().get("retry-after").is_none());
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
         .unwrap();
-    assert!((20..=40).contains(&retry_after));
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json,
+        json!({"error": {"message": "temporary upstream issue"}})
+    );
 }
 
 #[tokio::test]

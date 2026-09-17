@@ -1459,9 +1459,6 @@ fn select_connection_cli(
     model: &str,
     excluded: &HashSet<String>,
 ) -> Option<ProviderConnection> {
-    use chrono::Utc;
-
-    let now = Utc::now();
     let mut candidates: Vec<_> = snapshot
         .provider_connections
         .iter()
@@ -1471,8 +1468,6 @@ fn select_connection_cli(
                 && connection_has_credentials(connection)
                 && !excluded.contains(&connection.id)
                 && connection_supports_model(connection, model)
-                && !is_connection_rate_limited(connection, now)
-                && !is_model_locked(connection, model, now)
         })
         .cloned()
         .collect();
@@ -1497,36 +1492,6 @@ fn connection_has_credentials(connection: &ProviderConnection) -> bool {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .is_some()
-}
-
-fn is_connection_rate_limited(
-    connection: &ProviderConnection,
-    now: chrono::DateTime<chrono::Utc>,
-) -> bool {
-    connection
-        .rate_limited_until
-        .as_deref()
-        .and_then(parse_timestamp)
-        .is_some_and(|until| until > now)
-}
-
-fn is_model_locked(
-    connection: &ProviderConnection,
-    model: &str,
-    now: chrono::DateTime<chrono::Utc>,
-) -> bool {
-    [format!("modelLock_{model}"), "modelLock___all".to_string()]
-        .into_iter()
-        .filter_map(|key| connection.extra.get(&key))
-        .filter_map(Value::as_str)
-        .filter_map(parse_timestamp)
-        .any(|until| until > now)
-}
-
-fn parse_timestamp(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
-    chrono::DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|dt| dt.with_timezone(&chrono::Utc))
 }
 
 fn connection_supports_model(connection: &ProviderConnection, model: &str) -> bool {

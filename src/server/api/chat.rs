@@ -13,9 +13,7 @@ use futures_util::TryStreamExt;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 
-use crate::core::account_fallback::{
-    build_model_lock_update, check_fallback_error, filter_available_accounts, ProviderAttemptError,
-};
+use crate::core::account_fallback::ProviderAttemptError;
 use crate::core::chat::RequestPlan;
 use crate::core::executor::UpstreamResponse;
 use crate::core::model::get_model_info;
@@ -854,18 +852,14 @@ async fn forward_with_provider_fallback(
             &excluded,
             codex_supporters.as_ref(),
         ) else {
-            let retry_after = earliest_retry_after(&snapshot, provider, model, &excluded);
-            if let Some(mut error) = last_error {
-                if retry_after.is_some() {
-                    error.retry_after = retry_after;
-                }
+            if let Some(error) = last_error {
                 return Err(error);
             }
 
             // Stale-snapshot recovery: if the CLI added a provider
             // connection while the server was running, the in-memory
             // snapshot won't have it. Reload from SQLite once and retry.
-            if !reloaded && retry_after.is_none() {
+            if !reloaded {
                 reloaded = true;
                 if state.db.reload_snapshot().await.is_ok() {
                     continue;
@@ -873,13 +867,9 @@ async fn forward_with_provider_fallback(
             }
 
             return Err(ProviderAttemptError {
-                status: if retry_after.is_some() { 503 } else { 400 },
-                message: if retry_after.is_some() {
-                    format!("All accounts for {provider}/{model} are cooling down")
-                } else {
-                    format!("No credentials for provider: {provider}")
-                },
-                retry_after,
+                status: 400,
+                message: format!("No credentials for provider: {provider}"),
+                retry_after: None,
                 upstream_body: None,
             });
         };
@@ -1694,42 +1684,23 @@ async fn forward_with_provider_fallback(
                 // OR the error JSON body (errorBody.retryAfter). Header wins; the
                 // body is the fallback when a provider returns it only in JSON.
                 let header_retry_after = retry_after_from_headers(result.response.headers());
-                let (message, body_retry_after) =
-                    extract_error_message_and_retry_after(result.response).await;
+                let (message, upstream_body) =
+                    extract_upstream_error_with_body(result.response).await;
+                let body_retry_after = upstream_body
+                    .as_deref()
+                    .and_then(crate::core::account_fallback::parse_retry_after_from_body);
                 if let Some(attempt_log) = attempt_log {
                     attempt_log
                         .finish("error", Some(status.as_u16()), None)
                         .await;
                 }
                 let retry_after = header_retry_after.or(body_retry_after);
-                let current_backoff = connection.backoff_level.unwrap_or(0);
-                let decision = check_fallback_error(status.as_u16(), &message, current_backoff);
-                let cooldown = retry_after
-                    .map(|timestamp| (timestamp - Utc::now()).to_std().unwrap_or_default())
-                    .unwrap_or(decision.cooldown);
                 last_error = Some(ProviderAttemptError {
                     status: status.as_u16(),
                     message: message.clone(),
                     retry_after,
-                    upstream_body: None,
+                    upstream_body,
                 });
-
-                // 404 (model not found) should set a model-specific lock without
-                // excluding the connection — other models on the same connection
-                // should still be routable.
-                if status.as_u16() == 404 {
-                    let model_cooldown = std::time::Duration::from_secs(300);
-                    mark_connection_unavailable(
-                        state,
-                        &connection.id,
-                        model,
-                        status.as_u16(),
-                        &message,
-                        model_cooldown,
-                        current_backoff,
-                    )
-                    .await;
-                }
 
                 // Token refresh: on 401/403, try to refresh the access token
                 // before giving up on this connection (9router parity).
@@ -1784,77 +1755,16 @@ async fn forward_with_provider_fallback(
                     }
                 }
 
-                if decision.should_fallback {
-                    // 9router githubMonthlyResetMs: a GitHub 402 with the
-                    // monthly-usage-limit message locks the ACCOUNT (model="")
-                    // until the first of next month, and resets backoff to 0.
-                    let github_reset = crate::core::account_fallback::github_monthly_reset_ms(
-                        status.as_u16(),
-                        &message,
-                        &plan.provider,
-                    );
-                    if let Some(reset_at) = github_reset {
-                        let cooldown_ms = (reset_at - Utc::now()).to_std().unwrap_or_default();
-                        mark_connection_unavailable(
-                            state,
-                            &connection.id,
-                            "",
-                            status.as_u16(),
-                            &message,
-                            cooldown_ms,
-                            0,
-                        )
-                        .await;
-                        excluded.insert(connection.id.clone());
-                        continue;
-                    }
-                    mark_connection_unavailable(
-                        state,
-                        &connection.id,
-                        model,
-                        status.as_u16(),
-                        &message,
-                        cooldown,
-                        decision.new_backoff_level.unwrap_or(current_backoff + 1),
-                    )
-                    .await;
-                    excluded.insert(connection.id.clone());
-                    continue;
-                }
-
-                return Err(last_error.unwrap_or_else(|| {
-                    ProviderAttemptError::new(
-                        502,
-                        "provider error after exhausting all connections",
-                    )
-                }));
+                excluded.insert(connection.id.clone());
+                continue;
             }
             Err(error) => {
-                let message = format!("{:?}", error);
                 if let Some(attempt_log) = attempt_log {
                     attempt_log.finish("error", Some(error.status), None).await;
                 }
-                let current_backoff = connection.backoff_level.unwrap_or(0);
-                let decision = check_fallback_error(502, &message, current_backoff);
-                let error_for_return = ProviderAttemptError::new(502, message.clone());
                 last_error = Some(error);
-
-                if decision.should_fallback {
-                    mark_connection_unavailable(
-                        state,
-                        &connection.id,
-                        model,
-                        502,
-                        &message,
-                        decision.cooldown,
-                        decision.new_backoff_level.unwrap_or(current_backoff + 1),
-                    )
-                    .await;
-                    excluded.insert(connection.id.clone());
-                    continue;
-                }
-
-                return Err(last_error.unwrap_or(error_for_return));
+                excluded.insert(connection.id.clone());
+                continue;
             }
         }
     }
@@ -1904,21 +1814,13 @@ fn select_connection_with_supporters(
     excluded: &HashSet<String>,
     discovered_supporters: Option<&HashSet<String>>,
 ) -> Option<ProviderConnection> {
-    let now = Utc::now();
-
-    // First: use filter_available_accounts to get accounts not in cooldown / not locked.
-    let available =
-        filter_available_accounts(&snapshot.provider_connections, provider, model, None, now);
-
-    // Then: apply remaining filters that filter_available_accounts does not cover:
-    //   - credentials presence
-    //   - model support
-    //   - excluded set (the call above passes None for exclude_id since we need
-    //     to apply it separately alongside the other per-request filters)
-    let mut candidates: Vec<_> = available
-        .into_iter()
+    let mut candidates: Vec<_> = snapshot
+        .provider_connections
+        .iter()
         .filter(|connection| {
-            connection_has_credentials(connection)
+            connection.provider == provider
+                && connection.is_active()
+                && connection_has_credentials(connection)
                 && !excluded.contains(&connection.id)
                 && connection_supports_model(connection, model)
                 && discovered_supporters
@@ -1973,23 +1875,6 @@ fn connection_has_credentials(connection: &ProviderConnection) -> bool {
             .is_some()
 }
 
-fn is_connection_rate_limited(connection: &ProviderConnection, now: DateTime<Utc>) -> bool {
-    connection
-        .rate_limited_until
-        .as_deref()
-        .and_then(parse_timestamp)
-        .is_some_and(|until| until > now)
-}
-
-fn is_model_locked(connection: &ProviderConnection, model: &str, now: DateTime<Utc>) -> bool {
-    [format!("modelLock_{model}"), "modelLock___all".to_string()]
-        .into_iter()
-        .filter_map(|key| connection.extra.get(&key))
-        .filter_map(Value::as_str)
-        .filter_map(parse_timestamp)
-        .any(|until| until > now)
-}
-
 fn connection_supports_model(connection: &ProviderConnection, model: &str) -> bool {
     let enabled_models: Vec<_> = connection
         .provider_specific_data
@@ -2022,88 +1907,6 @@ fn model_ids_match(advertised: &str, requested: &str) -> bool {
     let requested = requested.trim();
 
     advertised == requested || advertised.ends_with(&format!("/{requested}"))
-}
-
-fn earliest_retry_after(
-    snapshot: &AppDb,
-    provider: &str,
-    model: &str,
-    _excluded: &HashSet<String>,
-) -> Option<DateTime<Utc>> {
-    let now = Utc::now();
-    snapshot
-        .provider_connections
-        .iter()
-        .filter(|connection| {
-            connection.provider == provider
-                && connection.is_active()
-                && connection_has_credentials(connection)
-                && connection_supports_model(connection, model)
-        })
-        .flat_map(|connection| {
-            let mut retry_after = Vec::new();
-            if let Some(until) = connection
-                .rate_limited_until
-                .as_deref()
-                .and_then(parse_timestamp)
-            {
-                retry_after.push(until);
-            }
-            for key in [format!("modelLock_{model}"), "modelLock___all".to_string()] {
-                if let Some(until) = connection
-                    .extra
-                    .get(&key)
-                    .and_then(Value::as_str)
-                    .and_then(parse_timestamp)
-                {
-                    retry_after.push(until);
-                }
-            }
-            retry_after
-        })
-        .filter(|until| *until > now)
-        .min()
-}
-
-async fn mark_connection_unavailable(
-    state: &AppState,
-    connection_id: &str,
-    model: &str,
-    status: u16,
-    message: &str,
-    cooldown: std::time::Duration,
-    backoff_level: u32,
-) {
-    let connection_id = connection_id.to_string();
-    let (model_lock_key, until_str) = build_model_lock_update(model, cooldown.as_secs() as i64);
-    let message = message.to_string();
-    let _ = state
-        .db
-        .update(move |db| {
-            if let Some(connection) = db
-                .provider_connections
-                .iter_mut()
-                .find(|connection| connection.id == connection_id)
-            {
-                connection
-                    .extra
-                    .insert(model_lock_key, Value::String(until_str));
-                connection.last_error = Some(message.clone());
-                connection.last_error_at = Some(Utc::now().to_rfc3339());
-                connection.error_code = Some(status.to_string());
-                connection.backoff_level = Some(backoff_level);
-                connection.consecutive_errors = connection
-                    .consecutive_errors
-                    .map(|e| e.saturating_add(1))
-                    .or(Some(1));
-                connection.test_status = Some("unavailable".into());
-            }
-        })
-        .await;
-}
-
-async fn clear_connection_error(state: &AppState, connection_id: &str) {
-    clear_connection_error_for_model(state, connection_id, None).await;
 }
 
 /// Clear error state; only remove expired model locks and optionally the
@@ -3287,50 +3090,6 @@ async fn extract_upstream_error_with_body(response: UpstreamResponse) -> (String
     (message, raw_body)
 }
 
-/// Read the error response body once and return both the extracted message and
-/// a body-based `retryAfter` (accepted as an ISO date or seconds).
-async fn extract_error_message_and_retry_after(
-    response: UpstreamResponse,
-) -> (String, Option<DateTime<Utc>>) {
-    let status = response.status();
-    let text = match response {
-        UpstreamResponse::Reqwest(response) => response.text().await.unwrap_or_default(),
-        UpstreamResponse::Hyper(response) => {
-            let (_, body) = response.into_parts();
-            body.collect()
-                .await
-                .map(|collected| String::from_utf8_lossy(&collected.to_bytes()).into_owned())
-                .unwrap_or_default()
-        }
-    };
-    let retry_after = crate::core::account_fallback::parse_retry_after_from_body(text.as_bytes());
-    let message = {
-        if let Ok(value) = serde_json::from_str::<Value>(&text) {
-            if let Some(message) = value
-                .get("error")
-                .and_then(|error| error.get("message").or(Some(error)))
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                message.to_string()
-            } else if let Some(message) = value
-                .get("message")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                message.to_string()
-            } else {
-                fallback_error_text(status, &text)
-            }
-        } else {
-            fallback_error_text(status, &text)
-        }
-    };
-    (message, retry_after)
-}
-
 fn fallback_error_text(status: StatusCode, text: &str) -> String {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -3409,12 +3168,6 @@ fn connection_header_tokens(headers: &reqwest::header::HeaderMap) -> HashSet<Str
         .filter(|value| !value.is_empty())
         .map(str::to_ascii_lowercase)
         .collect()
-}
-
-fn parse_timestamp(value: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(value)
-        .map(|timestamp| timestamp.with_timezone(&Utc))
-        .ok()
 }
 
 fn attempt_error_response(error: ProviderAttemptError) -> Response {
@@ -3533,7 +3286,7 @@ mod tests {
 
     use super::{
         build_dashboard_sse_response, build_proxied_response, codex_models_support_search,
-        codex_web_search_context_size, codex_web_search_is_injected, earliest_retry_after,
+        codex_web_search_context_size, codex_web_search_is_injected,
         mark_codex_web_search_injected, requests_codex_web_search, responses_stream_completed,
         select_connection, select_connection_with_supporters, CodexWebSearchInjected,
     };
@@ -3665,32 +3418,29 @@ mod tests {
     }
 
     #[test]
-    fn select_connection_skips_excluded_and_locked_accounts() {
+    fn select_connection_ignores_persisted_routing_cooldowns() {
         let locked_until = (Utc::now() + ChronoDuration::seconds(90)).to_rfc3339();
-        let mut excluded_connection = connection("excluded", 1);
-        excluded_connection.default_model = Some("gpt-4.1".into());
-
-        let mut locked_connection = connection("locked", 2);
-        locked_connection
+        let mut preferred = connection("preferred", 1);
+        preferred.rate_limited_until = Some(locked_until.clone());
+        preferred.extra.insert(
+            "modelLock_gpt-4.1".into(),
+            Value::String(locked_until.clone()),
+        );
+        preferred
             .extra
-            .insert("modelLock_gpt-4.1".into(), Value::String(locked_until));
+            .insert("degradedUntil".into(), Value::String(locked_until));
 
-        let chosen_connection = connection("chosen", 3);
+        let fallback = connection("fallback", 2);
 
         let snapshot = AppDb {
-            provider_connections: vec![
-                excluded_connection.clone(),
-                locked_connection,
-                chosen_connection.clone(),
-            ],
+            provider_connections: vec![preferred.clone(), fallback],
             ..AppDb::default()
         };
 
-        let excluded = HashSet::from([excluded_connection.id]);
-        let selected = select_connection(&snapshot, "openai", "gpt-4.1", &excluded)
-            .expect("third account should remain selectable");
+        let selected = select_connection(&snapshot, "openai", "gpt-4.1", &HashSet::new())
+            .expect("legacy cooldown fields must not suppress routing");
 
-        assert_eq!(selected.id, chosen_connection.id);
+        assert_eq!(selected.id, preferred.id);
     }
 
     #[test]
@@ -3717,91 +3467,6 @@ mod tests {
         .expect("supporting account should be selected");
 
         assert_eq!(selected.id, supporting.id);
-    }
-
-    #[test]
-    fn earliest_retry_after_reports_locked_model_deadline() {
-        let early = Utc::now() + ChronoDuration::seconds(30);
-        let late = Utc::now() + ChronoDuration::seconds(90);
-        let mut early_locked = connection("early", 1);
-        early_locked.extra.insert(
-            "modelLock_gpt-4.1".into(),
-            Value::String(early.to_rfc3339()),
-        );
-
-        let mut late_rate_limited = connection("late", 2);
-        late_rate_limited.rate_limited_until = Some(late.to_rfc3339());
-
-        let snapshot = AppDb {
-            provider_connections: vec![late_rate_limited, early_locked],
-            ..AppDb::default()
-        };
-
-        let retry_after = earliest_retry_after(&snapshot, "openai", "gpt-4.1", &HashSet::new())
-            .expect("retry-after should be derived from the earliest blocked account");
-
-        assert!(retry_after <= early + ChronoDuration::seconds(1));
-    }
-
-    #[test]
-    fn select_connection_skips_rate_limited_accounts() {
-        let future = (Utc::now() + ChronoDuration::seconds(60)).to_rfc3339();
-        let mut rate_limited = connection("rate-limited", 1);
-        rate_limited.rate_limited_until = Some(future);
-
-        let available = connection("available", 2);
-
-        let snapshot = AppDb {
-            provider_connections: vec![rate_limited, available.clone()],
-            ..AppDb::default()
-        };
-
-        let selected = select_connection(&snapshot, "openai", "gpt-4.1", &HashSet::new())
-            .expect("should select an account");
-
-        assert_eq!(selected.id, "available");
-    }
-
-    #[test]
-    fn select_connection_respects_model_locks_for_specific_model() {
-        let future = (Utc::now() + ChronoDuration::seconds(60)).to_rfc3339();
-        let mut locked = connection("locked-model", 1);
-        locked
-            .extra
-            .insert("modelLock_gpt-4.1".into(), Value::String(future));
-
-        let available = connection("available", 2);
-
-        let snapshot = AppDb {
-            provider_connections: vec![locked, available.clone()],
-            ..AppDb::default()
-        };
-
-        let selected = select_connection(&snapshot, "openai", "gpt-4.1", &HashSet::new())
-            .expect("should select an account");
-
-        assert_eq!(selected.id, "available");
-    }
-
-    #[test]
-    fn select_connection_skips_account_level_lock() {
-        let future = (Utc::now() + ChronoDuration::seconds(60)).to_rfc3339();
-        let mut all_locked = connection("all-locked", 1);
-        all_locked
-            .extra
-            .insert("modelLock___all".into(), Value::String(future));
-
-        let available = connection("available", 2);
-
-        let snapshot = AppDb {
-            provider_connections: vec![all_locked, available.clone()],
-            ..AppDb::default()
-        };
-
-        let selected = select_connection(&snapshot, "openai", "gpt-4.1", &HashSet::new())
-            .expect("should select an account");
-
-        assert_eq!(selected.id, "available");
     }
 
     #[test]
@@ -3911,79 +3576,6 @@ mod tests {
         assert!(
             selected.is_none(),
             "should return None when no connections exist"
-        );
-    }
-
-    #[test]
-    fn is_connection_rate_limited_detects_expired_timestamp() {
-        let past = (Utc::now() - ChronoDuration::seconds(10)).to_rfc3339();
-        let mut conn = connection("conn", 1);
-        conn.rate_limited_until = Some(past);
-
-        assert!(
-            !super::is_connection_rate_limited(&conn, Utc::now()),
-            "expired rate_limited_until should not block connection"
-        );
-    }
-
-    #[test]
-    fn is_connection_rate_limited_allows_null_timestamp() {
-        let conn = connection("conn", 1);
-        assert!(
-            !super::is_connection_rate_limited(&conn, Utc::now()),
-            "null rate_limited_until should not block connection"
-        );
-    }
-
-    #[test]
-    fn is_model_locked_returns_false_when_no_lock() {
-        let conn = connection("conn", 1);
-        assert!(
-            !super::is_model_locked(&conn, "gpt-4.1", Utc::now()),
-            "connection without lock should not be locked"
-        );
-    }
-
-    #[test]
-    fn is_model_locked_checks_specific_model_key() {
-        let future = (Utc::now() + ChronoDuration::seconds(60)).to_rfc3339();
-        let mut conn = connection("conn", 1);
-        conn.extra
-            .insert("modelLock_gpt-4.1".into(), Value::String(future));
-
-        assert!(
-            super::is_model_locked(&conn, "gpt-4.1", Utc::now()),
-            "specific model lock should block that model"
-        );
-        assert!(
-            !super::is_model_locked(&conn, "gpt-4o", Utc::now()),
-            "specific model lock should not block different model"
-        );
-    }
-
-    #[test]
-    fn is_model_locked_checks_account_level_all_key() {
-        let future = (Utc::now() + ChronoDuration::seconds(60)).to_rfc3339();
-        let mut conn = connection("conn", 1);
-        conn.extra
-            .insert("modelLock___all".into(), Value::String(future));
-
-        assert!(
-            super::is_model_locked(&conn, "any-model", Utc::now()),
-            "account-level lock should block any model"
-        );
-    }
-
-    #[test]
-    fn is_model_locked_expired_lock_allows_connection() {
-        let past = (Utc::now() - ChronoDuration::seconds(10)).to_rfc3339();
-        let mut conn = connection("conn", 1);
-        conn.extra
-            .insert("modelLock_gpt-4.1".into(), Value::String(past));
-
-        assert!(
-            !super::is_model_locked(&conn, "gpt-4.1", Utc::now()),
-            "expired model lock should not block"
         );
     }
 
