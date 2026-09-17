@@ -23,8 +23,8 @@ pub struct ProviderConnectionFilter {
 pub struct Db {
     pub data_dir: PathBuf,
     pub sqlite: sqlite::SqliteDb,
-    pub snapshot: ArcSwap<AppDb>,
-    write_lock: RwLock<()>,
+    pub snapshot: Arc<ArcSwap<AppDb>>,
+    write_lock: Arc<RwLock<()>>,
 }
 
 /// Decrypt every provider connection in an `AppDb` built from a SQLite
@@ -156,8 +156,8 @@ impl Db {
         Ok(Self {
             data_dir,
             sqlite,
-            snapshot: ArcSwap::from_pointee(app_db),
-            write_lock: RwLock::new(()),
+            snapshot: Arc::new(ArcSwap::from_pointee(app_db)),
+            write_lock: Arc::new(RwLock::new(())),
         })
     }
 
@@ -248,29 +248,36 @@ impl Db {
     where
         F: FnOnce(&mut AppDb),
     {
-        let _guard = self.write_lock.write().await;
-        let prev = (*self.snapshot()).clone();
-        let mut next = prev.clone();
+        let guard = Arc::clone(&self.write_lock).write_owned().await;
+        let prev = self.snapshot.load_full();
+        let mut next = (*prev).clone();
         updater(&mut next);
         next.normalize();
 
-        if next != prev {
-            let sq = self.sqlite.clone();
-            let prev = prev.clone();
-            let next = next.clone();
-            tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-                sq.with_transaction(|conn| {
-                    crate::db::sqlite::patch::apply_app_db_diff(conn, &prev, &next)
-                })
-                .map_err(|e| anyhow::anyhow!("SQLite incremental write failed: {e}"))?;
-                Ok(())
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("spawn_blocking for update: {e}"))??;
+        if next == *prev {
+            return Ok(prev);
         }
+
+        let sq = self.sqlite.clone();
+        let snapshot = Arc::clone(&self.snapshot);
+        let prev_for_db = Arc::clone(&prev);
         let next = Arc::new(next);
-        self.snapshot.store(next.clone());
-        Ok(next)
+        let next_for_db = Arc::clone(&next);
+
+        tokio::task::spawn_blocking(move || -> anyhow::Result<Arc<AppDb>> {
+            // The owned guard and snapshot handle make a started update
+            // cancellation-safe: if its async caller is dropped, this blocking
+            // task still commits, publishes, and only then unlocks the writer.
+            let _guard = guard;
+            sq.with_transaction(|conn| {
+                crate::db::sqlite::patch::apply_app_db_diff(conn, &prev_for_db, &next_for_db)
+            })
+            .map_err(|e| anyhow::anyhow!("SQLite incremental write failed: {e}"))?;
+            snapshot.store(Arc::clone(&next_for_db));
+            Ok(next_for_db)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("spawn_blocking for update: {e}"))?
     }
 
     /// Targeted settings update — mutates only the `settings` row in SQLite

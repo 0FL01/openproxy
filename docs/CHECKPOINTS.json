@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C15",
+  "next_checkpoint": "C06",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c14_cargo_1.98.1",
+    "rust_verification": "passed_through_c15_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -518,7 +518,7 @@
     {
       "id": "C15",
       "title": "Уменьшить копирование настоящих Db::update",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C14"
       ],
@@ -530,7 +530,28 @@
       "change": "Сохранить prev как Arc<AppDb>; одна изменяемая копия для легитимного обновления вместо цепочки deep clones. В blocking persistence передавать разделяемые снимки. При равенстве вернуть прежний Arc без публикации нового. Publish только после успешной транзакции, с прежней корректной сериализацией writers.",
       "tests": "No-op update, реальное изменение, ошибка SQLite, конкурентные writers и читатели, отмена вызова в процессе blocking commit. Отдельно установить существующую семантику cancellation; не допустить незамеченного расхождения committed DB и published snapshot.",
       "acceptance": "No-op не публикует новое состояние; реальное изменение не создаёт лишние полные копии для передачи в spawn_blocking. Persistence и линейность обновлений сохранены.",
-      "rollback": "Откат одной Db правки; никаких необратимых schema изменений здесь."
+      "rollback": "Откат одной Db правки; никаких необратимых schema изменений здесь.",
+      "result": {
+        "completed": "2026-09-17",
+        "files": [
+          "src/db/mod.rs",
+          "tests/lean_proxy_c15.rs"
+        ],
+        "behavior": "Db::update now retains the previous Arc<AppDb>, makes exactly one mutable full copy, passes shared Arc snapshots into blocking persistence, and returns the original Arc without publishing on equality. A real update publishes only after its SQLite transaction succeeds.",
+        "cancellation_semantics": "An owned writer guard and ArcSwap handle move into the blocking commit. Once persistence starts, cancellation of the async caller has commit-wins semantics: the detached blocking task completes the transaction, publishes the matching snapshot, and only then releases the writer lock. This prevents committed SQLite state from diverging from the in-memory snapshot or being overwritten by a stale next writer.",
+        "tests": [
+          "cargo test --test lean_proxy_c15 -- --nocapture: 5 passed",
+          "cargo test --test db_and_models --test db_sqlite_e2e -- --nocapture: 11 passed",
+          "cargo test --lib db:: --all-features -- --nocapture: 69 passed",
+          "cargo test --lib --all-features: 1223 passed",
+          "cargo clippy --test lean_proxy_c15 --all-features -- -D warnings -A clippy::let-and-return -A clippy::needless-return: passed",
+          "cargo clippy --all-targets --all-features: passed with 7 pre-existing warnings",
+          "cargo fmt --all -- --check and git diff --check: passed"
+        ],
+        "acceptance_evidence": "No-op updates preserve Arc identity. Real updates match a fresh SQLite reload. An injected transactional failure rolls back without publication and allows retry. Thirty-two concurrent writers plus lock-free readers retain every update. A caller cancelled while persistence is blocked cannot orphan committed state; SQLite and the published snapshot converge before the writer lock is released.",
+        "schema_and_data": "No schema, serialized field, encryption boundary, dependency, or production data changed.",
+        "rollback": "Revert the C15 commit; no data migration is required."
+      }
     },
     {
       "id": "C16",
