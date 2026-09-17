@@ -10,8 +10,6 @@ use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD},
     Engine,
 };
-use once_cell::sync::Lazy;
-use parking_lot::Mutex as LockMutex;
 use rand::RngCore;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
@@ -93,11 +91,6 @@ const KIRO_GRANT_TYPES: &[&str] = &[
     "refresh_token",
 ];
 const CODEX_PROXY_TIMEOUT_MS: u64 = 300_000;
-
-/// Per-provider refresh locks to prevent Auth0 `refresh_token_reused` errors.
-/// Key = `"{provider}:{connection_id}"`, value = mutex for mutual exclusion.
-pub(crate) static REFRESH_LOCKS: Lazy<LockMutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
-    Lazy::new(|| LockMutex::new(HashMap::new()));
 
 #[derive(Clone, Default)]
 pub struct CodexProxyState {
@@ -666,10 +659,6 @@ fn generate_state() -> String {
 
 fn get_provider_config(provider: &str) -> Option<OAuthProviderConfig> {
     providers::get_config(provider)
-}
-
-pub(crate) fn get_refresh_lock_key(provider: &str, stable_id: &str) -> String {
-    format!("{}:{}", provider, stable_id)
 }
 
 fn is_pkce_provider(provider: &str) -> bool {
@@ -4605,11 +4594,13 @@ pub async fn refresh_token(
     let connection = snapshot
         .provider_connections
         .iter()
-        .find(|conn| conn.provider == provider && conn.id.contains(&account_id));
+        .find(|conn| conn.provider == provider && conn.id.contains(&account_id))
+        .cloned();
 
     let refresh_token = match body.refresh_token {
         Some(ref token) => token.clone(),
         None => connection
+            .as_ref()
             .and_then(|c| c.refresh_token.clone())
             .unwrap_or_default(),
     };
@@ -4623,70 +4614,90 @@ pub async fn refresh_token(
         );
     }
 
-    // Per-token lock prevents Auth0 `refresh_token_reused` errors from concurrent refreshes
-    let stable_id = connection.map(|c| c.id.clone()).unwrap_or_default();
-    let lock_key = get_refresh_lock_key(&provider, &stable_id);
-    let lock_arc = {
-        let mut locks = REFRESH_LOCKS.lock();
-        locks
-            .entry(lock_key)
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .clone()
-    };
-    let _permit = lock_arc.lock().await;
-
     // 9router parity (tokenRefresh/providers.js REFRESH_PROFILES): every
     // provider has its own refresh wire format — claude posts JSON to
     // api.anthropic.com, codex via refreshCodexToken. The generic
     // form-encoded grant with client_id "openproxy" only ever worked for
     // Auth0-style endpoints, so route through the per-provider dispatcher.
     let provider_specific_data = connection
+        .as_ref()
         .map(|c| c.provider_specific_data.clone())
         .unwrap_or_default();
-
-    let refreshed = match crate::oauth::token_refresh::dispatch_oauth_refresh(
-        &provider,
-        &refresh_token,
-        &provider_specific_data,
-    )
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => {
+    let token_response = if let Some(configured) = connection.as_ref() {
+        let observed = crate::oauth::token_refresh::connection_credential_generation(configured);
+        let coordinated = match crate::oauth::token_refresh::CONNECTION_REFRESH_COORDINATOR
+            .refresh_connection_with_token(
+                state.db.clone(),
+                &provider,
+                &configured.id,
+                observed,
+                Some(refresh_token.clone()),
+            )
+            .await
+        {
+            Ok(result) => result.connection,
+            Err(e) => {
+                return make_error_response(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("Refresh failed: {}", e),
+                    "refresh_failed",
+                    &provider,
+                );
+            }
+        };
+        TokenResponse {
+            access_token: coordinated.access_token.unwrap_or_default(),
+            expires_in: coordinated.expires_in,
+            refresh_token: coordinated.refresh_token,
+            id_token: coordinated.id_token,
+            token_type: coordinated.token_type,
+            scope: coordinated.scope,
+        }
+    } else {
+        // Bootstrap compatibility: there is no configured connection identity
+        // to coordinate yet. The result is persisted immediately below.
+        let refreshed = match crate::oauth::token_refresh::refresh_unconfigured_connection(
+            &provider,
+            &refresh_token,
+            &provider_specific_data,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(e) => {
+                return make_error_response(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("Refresh failed: {}", e),
+                    "refresh_failed",
+                    &provider,
+                );
+            }
+        };
+        let response = TokenResponse {
+            access_token: refreshed.access_token,
+            expires_in: refreshed.expires_in,
+            refresh_token: refreshed.refresh_token,
+            id_token: None,
+            token_type: None,
+            scope: None,
+        };
+        if let Err(e) = store_connection(&state.db, &account_id, &provider, &response, None).await {
             return make_error_response(
-                StatusCode::BAD_GATEWAY,
-                &format!("Refresh failed: {}", e),
-                "refresh_failed",
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Failed to store connection: {}", e),
+                "storage_error",
                 &provider,
             );
         }
+        response
     };
-
-    let token_response = TokenResponse {
-        access_token: refreshed.access_token,
-        expires_in: refreshed.expires_in,
-        refresh_token: refreshed.refresh_token,
-        id_token: None,
-        token_type: None,
-        scope: None,
-    };
-
-    if let Err(e) = store_connection(&state.db, &account_id, &provider, &token_response, None).await
-    {
-        return make_error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &format!("Failed to store connection: {}", e),
-            "storage_error",
-            &provider,
-        );
-    }
 
     // When the antigravity access token is refreshed the cached project ID
     // may become stale (e.g. if the underlying GCP project changed or the
     // token scope was updated).  Invalidate it so the next executor call
     // re-fetches from the loadCodeAssist endpoint.
     if provider == "antigravity" {
-        if let Some(conn) = connection {
+        if let Some(conn) = connection.as_ref() {
             project_id_cache::invalidate_cached_project_id(&conn.id);
         }
     }

@@ -2,7 +2,6 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::{routing, Json, Router};
-use chrono::{Duration as ChronoDuration, Utc};
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -13,7 +12,9 @@ use crate::core::usage::quota_fetcher::{
     fetch_kimi_usage, fetch_kiro_quota, fetch_minimax_quota, fetch_ollama_quota,
     fetch_opencode_go_quota, fetch_vercel_ai_gateway_quota, get_codex_rate_limit_reset_credits,
 };
-use crate::oauth::token_refresh::{dispatch_oauth_refresh, refresh_codex_token};
+use crate::oauth::token_refresh::{
+    connection_credential_generation, CONNECTION_REFRESH_COORDINATOR,
+};
 use crate::server::state::AppState;
 use crate::types::ProviderConnection;
 
@@ -183,7 +184,7 @@ async fn get_connection_usage(
     if is_oauth {
         // 9router route.js:158-183 — refresh credentials before the quota
         // call and force-retry once on an auth-expired message.
-        let result = fetch_oauth_quota_with_refresh(connection).await;
+        let result = fetch_oauth_quota_with_refresh(&state, connection).await;
         if let Some(quotas) = result.get("quotas") {
             live_quotas = quotas.clone();
         }
@@ -249,10 +250,11 @@ fn is_auth_expired_message(message: &str) -> bool {
 /// original connection untouched on refresh failure (JS keeps the stale
 /// accessToken when one exists).
 async fn refresh_oauth_connection(
+    state: &AppState,
     connection: &ProviderConnection,
     force: bool,
 ) -> Result<ProviderConnection, String> {
-    let Some(refresh_token) = connection
+    let Some(_refresh_token) = connection
         .refresh_token
         .as_deref()
         .map(str::trim)
@@ -278,28 +280,27 @@ async fn refresh_oauth_connection(
         return Ok(connection.clone());
     }
 
-    let provider = connection.provider.clone();
-    let psd = connection.provider_specific_data.clone();
-    let result = dispatch_oauth_refresh(&provider, refresh_token, &psd).await?;
-
-    let mut updated = connection.clone();
-    updated.access_token = Some(result.access_token);
-    if let Some(new_refresh) = result.refresh_token {
-        updated.refresh_token = Some(new_refresh);
-    }
-    if let Some(expires_in) = result.expires_in {
-        let expiry = Utc::now() + ChronoDuration::seconds(expires_in);
-        updated.expires_at = Some(expiry.to_rfc3339());
-    }
-    Ok(updated)
+    let observed_generation = connection_credential_generation(connection);
+    CONNECTION_REFRESH_COORDINATOR
+        .refresh_connection(
+            state.db.clone(),
+            &connection.provider,
+            &connection.id,
+            observed_generation,
+        )
+        .await
+        .map(|result| result.connection)
 }
 
 /// Fetch the OAuth quota, refreshing credentials first if stale/expired and
 /// force-retrying once when the quota response reports an auth-expired
 /// message. 9router route.js:158-183 parity.
-async fn fetch_oauth_quota_with_refresh(connection: &ProviderConnection) -> Value {
+async fn fetch_oauth_quota_with_refresh(
+    state: &AppState,
+    connection: &ProviderConnection,
+) -> Value {
     // 1. Refresh before the fetch when needed.
-    let connection = match refresh_oauth_connection(connection, false).await {
+    let connection = match refresh_oauth_connection(state, connection, false).await {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(
@@ -318,7 +319,7 @@ async fn fetch_oauth_quota_with_refresh(connection: &ProviderConnection) -> Valu
     // 3. Force-retry once if the quota response signals auth-expired.
     let msg = result.get("message").and_then(|v| v.as_str()).unwrap_or("");
     if is_auth_expired_message(msg) && connection.refresh_token.is_some() {
-        if let Ok(retried_conn) = refresh_oauth_connection(&connection, true).await {
+        if let Ok(retried_conn) = refresh_oauth_connection(state, &connection, true).await {
             let retry = fetch_oauth_quota(&retried_conn).await;
             if retry
                 .get("message")
@@ -353,39 +354,6 @@ fn is_auth_expired_consume_result(
         values.push("401".to_string());
     }
     values.iter().any(|v| is_auth_expired_message(v))
-}
-
-async fn persist_codex_tokens(
-    state: &AppState,
-    connection_id: &str,
-    access_token: &str,
-    refresh_token: Option<&str>,
-    expires_in: Option<i64>,
-) -> Result<(), String> {
-    state
-        .db
-        .update(|db| {
-            if let Some(conn) = db
-                .provider_connections
-                .iter_mut()
-                .find(|entry| entry.id == connection_id)
-            {
-                conn.access_token = Some(access_token.to_string());
-                if let Some(rt) = refresh_token.map(str::trim).filter(|s| !s.is_empty()) {
-                    conn.refresh_token = Some(rt.to_string());
-                }
-                if let Some(secs) = expires_in {
-                    conn.expires_in = Some(secs);
-                    conn.expires_at = Some(
-                        (chrono::Utc::now() + ChronoDuration::seconds(secs.max(0))).to_rfc3339(),
-                    );
-                }
-                conn.updated_at = Some(chrono::Utc::now().to_rfc3339());
-            }
-        })
-        .await
-        .map(|_| ())
-        .map_err(|e| e.to_string())
 }
 
 async fn clear_local_codex_rate_limit(state: &AppState, connection_id: &str) -> Result<(), String> {
@@ -508,42 +476,22 @@ async fn get_connection_codex_reset_credits(
     }
 
     let is_oauth = connection.auth_type.eq_ignore_ascii_case("oauth");
-    if is_oauth {
-        if let Some(refresh_token) = connection
+    if is_oauth
+        && connection
             .refresh_token
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
-        {
-            match refresh_codex_token(refresh_token).await {
-                Ok(refreshed) => {
-                    if let Err(e) = persist_codex_tokens(
-                        &state,
-                        &connection_id,
-                        &refreshed.access_token,
-                        refreshed.refresh_token.as_deref(),
-                        refreshed.expires_in,
-                    )
-                    .await
-                    {
-                        return (
-                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(json!({ "error": e })),
-                        )
-                            .into_response();
-                    }
-                    connection.access_token = Some(refreshed.access_token);
-                    if let Some(rt) = refreshed.refresh_token {
-                        connection.refresh_token = Some(rt);
-                    }
-                }
-                Err(e) => {
-                    return (
-                        axum::http::StatusCode::UNAUTHORIZED,
-                        Json(json!({ "error": format!("Credential refresh failed: {e}") })),
-                    )
-                        .into_response();
-                }
+            .is_some()
+    {
+        match refresh_oauth_connection(&state, &connection, true).await {
+            Ok(refreshed) => connection = refreshed,
+            Err(e) => {
+                return (
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    Json(json!({ "error": format!("Credential refresh failed: {e}") })),
+                )
+                    .into_response();
             }
         }
     }
@@ -574,22 +522,12 @@ async fn get_connection_codex_reset_credits(
                 .map(str::trim)
                 .is_some_and(|s| !s.is_empty())
         {
-            if let Some(refresh_token) = connection.refresh_token.clone() {
-                if let Ok(refreshed) = refresh_codex_token(&refresh_token).await {
-                    let _ = persist_codex_tokens(
-                        &state,
-                        &connection_id,
-                        &refreshed.access_token,
-                        refreshed.refresh_token.as_deref(),
-                        refreshed.expires_in,
-                    )
-                    .await;
-                    result = get_codex_rate_limit_reset_credits(
-                        &refreshed.access_token,
-                        account_id.as_deref(),
-                    )
-                    .await;
-                }
+            if let Ok(refreshed) = refresh_oauth_connection(&state, &connection, true).await {
+                result = get_codex_rate_limit_reset_credits(
+                    refreshed.access_token.as_deref().unwrap_or_default(),
+                    account_id.as_deref(),
+                )
+                .await;
             }
         }
     }
@@ -652,42 +590,22 @@ async fn reset_connection_credits(
     }
 
     let is_oauth = connection.auth_type.eq_ignore_ascii_case("oauth");
-    if is_oauth {
-        if let Some(refresh_token) = connection
+    if is_oauth
+        && connection
             .refresh_token
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
-        {
-            match refresh_codex_token(refresh_token).await {
-                Ok(refreshed) => {
-                    if let Err(e) = persist_codex_tokens(
-                        &state,
-                        &connection_id,
-                        &refreshed.access_token,
-                        refreshed.refresh_token.as_deref(),
-                        refreshed.expires_in,
-                    )
-                    .await
-                    {
-                        return (
-                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(json!({ "error": e })),
-                        )
-                            .into_response();
-                    }
-                    connection.access_token = Some(refreshed.access_token);
-                    if let Some(rt) = refreshed.refresh_token {
-                        connection.refresh_token = Some(rt);
-                    }
-                }
-                Err(e) => {
-                    return (
-                        axum::http::StatusCode::UNAUTHORIZED,
-                        Json(json!({ "error": format!("Credential refresh failed: {e}") })),
-                    )
-                        .into_response();
-                }
+            .is_some()
+    {
+        match refresh_oauth_connection(&state, &connection, true).await {
+            Ok(refreshed) => connection = refreshed,
+            Err(e) => {
+                return (
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    Json(json!({ "error": format!("Credential refresh failed: {e}") })),
+                )
+                    .into_response();
             }
         }
     }
@@ -741,33 +659,23 @@ async fn reset_connection_credits(
             .map(str::trim)
             .is_some_and(|s| !s.is_empty())
     {
-        if let Some(refresh_token) = connection.refresh_token.clone() {
-            match refresh_codex_token(&refresh_token).await {
-                Ok(refreshed) => {
-                    let _ = persist_codex_tokens(
-                        &state,
-                        &connection_id,
-                        &refreshed.access_token,
-                        refreshed.refresh_token.as_deref(),
-                        refreshed.expires_in,
-                    )
-                    .await;
-                    if let Ok(retry) = consume_codex_rate_limit_reset_credit(
-                        &refreshed.access_token,
-                        &redeem_request_id,
-                    )
-                    .await
-                    {
-                        consume_result = retry;
-                    }
+        match refresh_oauth_connection(&state, &connection, true).await {
+            Ok(refreshed) => {
+                if let Ok(retry) = consume_codex_rate_limit_reset_credit(
+                    refreshed.access_token.as_deref().unwrap_or_default(),
+                    &redeem_request_id,
+                )
+                .await
+                {
+                    consume_result = retry;
                 }
-                Err(e) => {
-                    tracing::warn!(
-                        provider = "codex",
-                        error = %e,
-                        "Codex reset credits force refresh failed"
-                    );
-                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    provider = "codex",
+                    error = %e,
+                    "Codex reset credits force refresh failed"
+                );
             }
         }
     }

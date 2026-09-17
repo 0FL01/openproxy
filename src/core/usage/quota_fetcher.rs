@@ -35,26 +35,18 @@
 //! These fetchers are called from **two concurrent paths**:
 //!
 //! 1. **Auto-ping background loop** (`quota_auto_ping::process_connection`):
-//!    refreshes due OAuth credentials via `dispatch_oauth_refresh` before
-//!    calling `fetch_oauth_quota`. A fresh token is used in the same tick.
+//!    joins connection-scoped refresh coordination before calling
+//!    `fetch_oauth_quota`. A fresh canonical token is used in the same tick.
 //!
 //! 2. **HTTP handler** (`usage::get_connection_usage`): reads a DB snapshot
-//!    and calls `fetch_oauth_quota` without an intervening credential
-//!    refresh.
+//!    and joins the same coordinator when refresh is due or the first quota
+//!    response reports expired authentication.
 //!
-//! Because (1) updates the DB with a new token and (2) may have loaded its
-//! snapshot *before* the write landed, (2) can call a fetcher with a stale
-//! (possibly expired) token while a fresh token has already been written to
-//! the DB by (1).  This is the **quota fetcher concurrent refresh race**.
-//!
-//! The race is benign:
-//! - A stale-token request either succeeds or returns 401/403, which callers
-//!   translate to `{ "message": "invalid/expired token" }`.
-//! - The dashboard treats that message as "connected, but quota unavailable"
-//!   and degrades gracefully.
-//! - Connection-scoped refresh coordination is owned by the callers. C17B
-//!   migrates these quota/control-plane paths to the shared coordinator; this
-//!   module itself never retains or refreshes credentials.
+//! C17B makes refresh generation-safe across both paths: current waiters share
+//! one operation, and a stale result cannot overwrite newer canonical tokens.
+//! The stateless quota fetch itself may still receive a token that expires
+//! after selection; callers retain fail-open dashboard behavior for that
+//! ordinary network race. This module never retains or refreshes credentials.
 
 use serde_json::{json, Value};
 use std::time::Duration;

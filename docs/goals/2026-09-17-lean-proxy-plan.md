@@ -93,17 +93,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R4 / C17B.
-- Smallest next action: Migrate manual, proactive, quota, catalog/model-discovery, and connection-test OAuth refresh callers to the same connection/generation coordinator without losing provider-specific proxy behavior.
-- Expected evidence: Foreground 401, proactive refresh, model/catalog or quota access race on one generation and share one refresh; no legacy direct dispatch or token-specific refresh bypass remains outside the coordinator.
-- Stop or replan if: A control-plane operation has no stable configured connection identity or requires a proxy-aware provider refresh seam; isolate that caller rather than bypassing coordination.
+- Closes: R4 / C18.
+- Smallest next action: Delete the legacy token-keyed completed-result refresh cache (`RefreshDedup`, `DedupEntry`, TTL, old-token keying, and dead wrapper exports) now that every configured caller uses connection/generation coordination.
+- Expected evidence: Tens of thousands of unique rotations, stale post-completion callers, mass cancellation, and idle-state checks retain no completed results or old token keys while same-generation callers still singleflight.
+- Stop or replan if: A remaining live caller still depends on the legacy dedup wrapper; migrate that caller rather than retaining a second cache.
 
 ## Current State
 
-- Resolved: R1 / C00, R2 / C01-C02, R3 / C03-C14, plus C15-C17A within R4. Proxy-owned semantic/header/history replay, heuristic context policy, client-identity passthrough gating, all three executor temporal retry schedulers, and successful-response legacy housekeeping are gone. C13 provides the single bounded request-scoped generation/account/auth planner; C16 provides the connection-scoped refresh service; C17A routes all foreground recovery through it and removes duplicate executor/manager owners.
-- Last relevant evidence: Sixteen simultaneous foreground 401s share one token refresh and each consume exactly one counted follow-up generation; invalid-grant, structured non-token 403, waiter cancellation, canonical publication, and the C13 budget remain covered. Codex catalog refresh uses the same coordinator.
+- Resolved: R1 / C00, R2 / C01-C02, R3 / C03-C14, plus C15-C17B within R4. Proxy-owned semantic/header/history replay, heuristic context policy, client-identity passthrough gating, all three executor temporal retry schedulers, and successful-response legacy housekeeping are gone. C13 provides the single bounded request-scoped generation/account/auth planner; C16 provides the connection-scoped refresh service; C17A-C17B route every configured foreground/control/background caller through it.
+- Last relevant evidence: A simultaneous proactive tick, quota request, and foreground 401 share one refresh for the needed generation; a stale background result cannot roll back a newer canonical pair; provider connection-test refresh remains proxy-aware inside the coordinator; idle coordinator state returns to zero.
 - Blocker: None; the prompt explicitly allows independent safe work when external harness/version evidence is unavailable.
-- Next: C17B control/background OAuth caller migration.
+- Next: C18 legacy completed-result refresh cache deletion.
 
 ## Material Decisions
 
@@ -132,6 +132,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-09-18: C13 passed. Added one request-scoped generation budget over eligible accounts and bounded protocol endpoint surfaces plus one auth follow-up; made chat the sole 401/403 recovery owner; stopped 400/422 account fan-out; removed Default and Mimo recovery multipliers; and preserved final raw errors, cancellation, pooled transports, and the no-post-commit rule. R3 is verified and C16 is next.
 - 2026-09-18: C16 passed. Added an in-flight-only connection/generation refresh coordinator with canonical re-read, compare-before-persist, shared success/error, detached persistence-safe lifecycle, graceful drain, and zero idle entries. One hundred-way concurrency, same-token connection isolation, stale generation, failure, SQLite rollback, cancellation, delete/recreate, and shutdown are covered. Legacy callers remain untouched for C17A/C17B; C17A is next.
 - 2026-09-18: C17A passed. Chat 401 and structured token-authentication 403 recovery plus the foreground Codex catalog helper now use the connection/generation coordinator and fresh canonical snapshots under C13's existing attempt budget. Sixteen parallel requests share one refresh, invalid grants remain one-per-request, permission 403 does not rotate, cancellation cannot lose issued tokens, and duplicate executor/CredentialManager refresh owners were removed. C17B is next.
+- 2026-09-18: C17B passed. Proactive, quota/auto-ping, usage/reset-credit, manual configured-account, Kiro model-discovery, and proxy-aware connection-test refresh callers now share the connection/generation coordinator. Concurrent proactive, quota, and foreground recovery issue one refresh; stale background completion cannot overwrite a newer canonical pair; idle active state returns to zero. C18 is next.
 
 ## Completion
 

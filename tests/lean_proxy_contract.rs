@@ -167,4 +167,20 @@ fn contract_freezes_preservation_and_removal_lists() {
         manifest["refresh_coordination"]["non_token_forbidden_triggers_refresh"],
         false
     );
+    assert_eq!(
+        manifest["refresh_coordination"]["control_background_migrated_checkpoint"],
+        "C17B"
+    );
+    assert_eq!(
+        manifest["refresh_coordination"]["control_background_direct_dispatch_calls"],
+        false
+    );
+    assert_eq!(
+        manifest["refresh_coordination"]["stale_background_result_can_overwrite_newer_generation"],
+        false
+    );
+    assert_eq!(
+        manifest["refresh_coordination"]["idle_coordinator_entries"],
+        0
+    );
 }

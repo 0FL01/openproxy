@@ -190,7 +190,15 @@
     "non_token_forbidden_triggers_refresh": false,
     "codex_catalog_shared_refresh_helper_migrated": true,
     "duplicate_executor_credential_manager_removed": true,
-    "remaining_control_background_migration": "C17B",
+    "remaining_control_background_migration": "completed_in_C17B",
+    "control_background_migrated_checkpoint": "C17B",
+    "control_background_owner": "connection_refresh_coordinator",
+    "control_background_direct_dispatch_calls": false,
+    "configured_callers_share_generation_singleflight": true,
+    "stale_background_result_can_overwrite_newer_generation": false,
+    "provider_connection_test_proxy_refresh_coordinated": true,
+    "idle_coordinator_entries": 0,
+    "manual_unconfigured_bootstrap_is_explicit": true,
     "legacy_callers_migrate_in": [
       "C17A",
       "C17B"

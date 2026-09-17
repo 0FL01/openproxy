@@ -7,11 +7,14 @@
 //! - Tick every 5 minutes, first pass after 10 seconds.
 //! - Select active OAuth connections with a refresh token whose access token
 //!   expires within `max(provider lead, BACKGROUND_REFRESH_LEAD_MS)` (30 min).
-//! - Dispatch through the same per-provider `dispatch_oauth_refresh` used by
-//!   the request path, then persist the new tokens.
+//! - Join the same connection/generation refresh coordinator used by the
+//!   request path. The coordinator persists before admitting another refresh.
 
-use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::oauth::token_refresh::{
+    connection_credential_generation, CONNECTION_REFRESH_COORDINATOR,
+};
 
 /// Refresh when expiry is within 30 minutes (or the provider on-request
 /// lead, whichever is larger) — JS BACKGROUND_REFRESH_LEAD_MS.
@@ -77,7 +80,8 @@ pub fn select_connections_needing_refresh(
 }
 
 /// One scheduler tick. Fail-open at top level and per connection.
-async fn run_tick(state: &crate::server::state::AppState) {
+#[doc(hidden)]
+pub async fn run_tick(state: &crate::server::state::AppState) {
     if TICK_RUNNING.swap(true, Ordering::SeqCst) {
         tracing::debug!(target: "openproxy::bg_token_refresh", "tick already running, skip");
         return;
@@ -92,18 +96,20 @@ async fn run_tick(state: &crate::server::state::AppState) {
     tracing::info!(target: "openproxy::bg_token_refresh", "refreshing {} due OAuth connection(s)", due.len());
 
     for conn in &due {
-        let Some(refresh_token) = conn.refresh_token.clone() else {
+        if conn.refresh_token.is_none() {
             continue;
-        };
-        match crate::oauth::token_refresh::dispatch_oauth_refresh(
-            &conn.provider,
-            &refresh_token,
-            &conn.provider_specific_data,
-        )
-        .await
+        }
+        let observed_generation = connection_credential_generation(conn);
+        match CONNECTION_REFRESH_COORDINATOR
+            .refresh_connection(
+                state.db.clone(),
+                &conn.provider,
+                &conn.id,
+                observed_generation,
+            )
+            .await
         {
-            Ok(result) => {
-                persist_refresh(state, &conn.id, &result).await;
+            Ok(_) => {
                 tracing::info!(target: "openproxy::bg_token_refresh",
                     "connection {} ({}) refreshed", conn.id, conn.provider);
             }
@@ -121,35 +127,6 @@ impl Drop for TickGuard {
     fn drop(&mut self) {
         TICK_RUNNING.store(false, Ordering::SeqCst);
     }
-}
-
-async fn persist_refresh(
-    state: &crate::server::state::AppState,
-    connection_id: &str,
-    result: &crate::oauth::token_refresh::RefreshResult,
-) {
-    let expires_at = result
-        .expires_in
-        .map(|secs| (chrono::Utc::now() + chrono::Duration::seconds(secs)).to_rfc3339());
-    let id = connection_id.to_string();
-    let access = result.access_token.clone();
-    let refresh = result.refresh_token.clone();
-    let _ = state
-        .db
-        .update(move |db| {
-            if let Some(conn) = db.provider_connections.iter_mut().find(|c| c.id == id) {
-                conn.access_token = Some(access);
-                if let Some(rt) = refresh {
-                    conn.refresh_token = Some(rt);
-                }
-                conn.expires_at = expires_at.or_else(|| conn.expires_at.clone());
-                conn.provider_specific_data.insert(
-                    "lastRefreshAt".to_string(),
-                    Value::String(chrono::Utc::now().to_rfc3339()),
-                );
-            }
-        })
-        .await;
 }
 
 fn now_ms() -> i64 {

@@ -7,7 +7,7 @@ use axum::{
     Json,
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use chrono::{Duration as ChronoDuration, Utc};
+use chrono::Utc;
 use rand::RngCore;
 use reqwest::{Client, Proxy, RequestBuilder};
 use serde::Serialize;
@@ -16,6 +16,9 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::core::model::catalog::provider_catalog;
+use crate::oauth::token_refresh::{
+    connection_credential_generation, CONNECTION_REFRESH_COORDINATOR,
+};
 use crate::server::state::AppState;
 use crate::types::ProviderConnection;
 
@@ -64,7 +67,6 @@ struct ConnectionTestResult {
     valid: bool,
     error: Option<String>,
     refreshed: bool,
-    new_tokens: Option<RefreshResult>,
 }
 
 #[derive(Debug)]
@@ -118,7 +120,6 @@ pub(super) async fn test_provider_connection(
                     valid: false,
                     error: Some(error.clone()),
                     refreshed: false,
-                    new_tokens: None,
                 },
             )
             .await;
@@ -149,7 +150,6 @@ async fn persist_test_result(
 ) -> Response {
     let error = result.error.clone();
     let refreshed = result.refreshed;
-    let new_tokens = result.new_tokens.clone();
 
     let connection_id = connection_id.to_string();
     let _ = state
@@ -172,18 +172,6 @@ async fn persist_test_result(
                 Some(Utc::now().to_rfc3339())
             };
             connection.updated_at = Some(Utc::now().to_rfc3339());
-
-            if let Some(tokens) = &new_tokens {
-                connection.access_token = Some(tokens.access_token.clone());
-                if let Some(refresh_token) = &tokens.refresh_token {
-                    connection.refresh_token = Some(refresh_token.clone());
-                }
-                if let Some(expires_in) = tokens.expires_in {
-                    connection.expires_in = Some(expires_in);
-                    connection.expires_at =
-                        Some((Utc::now() + ChronoDuration::seconds(expires_in)).to_rfc3339());
-                }
-            }
         })
         .await;
 
@@ -210,7 +198,6 @@ async fn test_oauth_connection(
                 valid: true,
                 error: None,
                 refreshed: false,
-                new_tokens: None,
             },
             Err(error) => invalid(&error.message),
         };
@@ -229,7 +216,6 @@ async fn test_oauth_connection(
     let token_expired = is_token_expired(connection);
     let mut access_token = connection.access_token.clone().unwrap_or_default();
     let mut refreshed = false;
-    let mut new_tokens = None;
 
     if is_refreshable_provider(&connection.provider) && token_expired {
         if let Some(refresh_token) = connection
@@ -238,11 +224,10 @@ async fn test_oauth_connection(
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            match refresh_oauth_token(connection, refresh_token, effective_proxy).await {
-                Ok(tokens) => {
-                    access_token = tokens.access_token.clone();
-                    refreshed = true;
-                    new_tokens = Some(tokens);
+            match refresh_connection_for_test(state, connection, effective_proxy).await {
+                Ok(result) => {
+                    access_token = result.connection.access_token.unwrap_or_default();
+                    refreshed = result.refreshed;
                 }
                 Err(_) if is_check_expiry_provider(&connection.provider) => {
                     return invalid("Token expired and refresh failed");
@@ -260,7 +245,6 @@ async fn test_oauth_connection(
                 valid: true,
                 error: None,
                 refreshed,
-                new_tokens,
             };
         }
 
@@ -272,7 +256,6 @@ async fn test_oauth_connection(
             valid: true,
             error: None,
             refreshed: false,
-            new_tokens: None,
         };
     }
 
@@ -281,7 +264,6 @@ async fn test_oauth_connection(
             valid: true,
             error: None,
             refreshed,
-            new_tokens,
         };
     }
 
@@ -292,7 +274,6 @@ async fn test_oauth_connection(
                 valid: initial.valid,
                 error: initial.error,
                 refreshed,
-                new_tokens,
             };
         }
 
@@ -306,19 +287,18 @@ async fn test_oauth_connection(
                 valid: false,
                 error: Some("Token invalid or revoked".to_string()),
                 refreshed,
-                new_tokens,
             };
         };
 
-        match refresh_cline_token(refresh_token, effective_proxy).await {
-            Ok(tokens) => {
-                let access_token = tokens.access_token.clone();
+        let _ = refresh_token;
+        match refresh_connection_for_test(state, connection, effective_proxy).await {
+            Ok(result) => {
+                let access_token = result.connection.access_token.unwrap_or_default();
                 let retry = probe_cline_access_token(state, effective_proxy, &access_token).await;
                 ConnectionTestResult {
                     valid: retry.valid,
                     error: retry.error,
                     refreshed: retry.valid,
-                    new_tokens: if retry.valid { Some(tokens) } else { None },
                 }
             }
             Err(_) => invalid("Token invalid or revoked"),
@@ -349,7 +329,6 @@ async fn test_oauth_connection(
                         valid: true,
                         error: None,
                         refreshed,
-                        new_tokens,
                     };
                 }
 
@@ -363,7 +342,6 @@ async fn test_oauth_connection(
                     valid: false,
                     error: Some(error),
                     refreshed,
-                    new_tokens,
                 }
             }
             None => invalid("Provider test not supported"),
@@ -704,7 +682,6 @@ async fn test_cloudflare_ai_connection(
                     Some("Invalid API token or Account ID".to_string())
                 },
                 refreshed: false,
-                new_tokens: None,
             }
         }
         Err(error) => invalid(&error),
@@ -763,7 +740,6 @@ async fn test_azure_connection(
                     Some("Invalid API key or Azure configuration".to_string())
                 },
                 refreshed: false,
-                new_tokens: None,
             }
         }
         Err(error) => invalid(&error),
@@ -791,7 +767,6 @@ async fn test_gemini_api_key_connection(
                 Some("Invalid API key".to_string())
             },
             refreshed: false,
-            new_tokens: None,
         },
         Err(error) => invalid(&error),
     }
@@ -855,7 +830,6 @@ async fn test_grok_web_connection(
                     Some("Invalid SSO cookie".to_string())
                 },
                 refreshed: false,
-                new_tokens: None,
             }
         }
         Err(error) => invalid(&error),
@@ -910,7 +884,6 @@ async fn simple_get_token_test(
                 Some(error_message.to_string())
             },
             refreshed: false,
-            new_tokens: None,
         },
         Err(error) => invalid(&error),
     }
@@ -950,7 +923,6 @@ async fn anthropic_first_party_test(
                     Some("Invalid API key".to_string())
                 },
                 refreshed: false,
-                new_tokens: None,
             }
         }
         Err(error) => invalid(&error),
@@ -1074,11 +1046,41 @@ async fn status_test_excluding(
                     Some(error_message.to_string())
                 },
                 refreshed: false,
-                new_tokens: None,
             }
         }
         Err(error) => invalid(&error),
     }
+}
+
+async fn refresh_connection_for_test(
+    state: &AppState,
+    connection: &ProviderConnection,
+    effective_proxy: &EffectiveProxy,
+) -> Result<crate::oauth::token_refresh::CoordinatedRefreshResult, String> {
+    let observed_generation = connection_credential_generation(connection);
+    let provider = connection.provider.clone();
+    let connection_id = connection.id.clone();
+    let proxy = effective_proxy.clone();
+    CONNECTION_REFRESH_COORDINATOR
+        .refresh(
+            state.db.clone(),
+            &provider,
+            &connection_id,
+            observed_generation,
+            move |canonical| async move {
+                let refresh_token = canonical
+                    .refresh_token
+                    .clone()
+                    .ok_or_else(|| "connection has no refresh token".to_string())?;
+                let result = refresh_oauth_token(&canonical, &refresh_token, &proxy).await?;
+                Ok(crate::oauth::token_refresh::RefreshResult {
+                    access_token: result.access_token,
+                    refresh_token: result.refresh_token,
+                    expires_in: result.expires_in,
+                })
+            },
+        )
+        .await
 }
 
 async fn refresh_oauth_token(
@@ -1120,7 +1122,7 @@ async fn refresh_oauth_token(
             )
             .await
         }
-        "kiro" => refresh_kiro_token(connection, refresh_token, effective_proxy).await,
+        "kiro" => refresh_kiro_credentials(connection, refresh_token, effective_proxy).await,
         "qwen" => {
             refresh_form_token(
                 QWEN_TOKEN_URL,
@@ -1157,18 +1159,15 @@ async fn refresh_google_token(
     .await
 }
 
-async fn refresh_kiro_token(
+async fn refresh_kiro_credentials(
     connection: &ProviderConnection,
-    refresh_token: &str,
+    _refresh_token: &str,
     _effective_proxy: &EffectiveProxy,
 ) -> Result<RefreshResult, String> {
     // Shared path covers external_idp (Microsoft form-POST), AWS OIDC, and
     // Cognito social/imported. Proxy routing for this path is residual.
-    let result = crate::oauth::token_refresh::refresh_kiro_token(
-        refresh_token,
-        &connection.provider_specific_data,
-    )
-    .await?;
+    let result =
+        crate::oauth::token_refresh::refresh_provider_connection_credentials(connection).await?;
     Ok(RefreshResult {
         access_token: result.access_token,
         refresh_token: result.refresh_token,
@@ -1307,7 +1306,6 @@ async fn probe_cline_access_token(
             valid: true,
             error: None,
             refreshed: false,
-            new_tokens: None,
         },
         Ok(response) if response.status() == StatusCode::UNAUTHORIZED => {
             invalid("Token invalid or revoked")
@@ -1717,7 +1715,6 @@ fn compatible_result(
                 Some(error_message.to_string())
             },
             refreshed: false,
-            new_tokens: None,
         },
         Err(error) => invalid(&error),
     }
@@ -1728,6 +1725,5 @@ fn invalid(error: &str) -> ConnectionTestResult {
         valid: false,
         error: Some(error.to_string()),
         refreshed: false,
-        new_tokens: None,
     }
 }

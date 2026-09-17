@@ -4,12 +4,14 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use chrono::{Duration as ChronoDuration, Utc};
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
+use crate::oauth::token_refresh::{
+    connection_credential_generation, CONNECTION_REFRESH_COORDINATOR,
+};
 use crate::server::api::models_metadata::{ModelMetadataFacts, OpenCodeModelConfig};
 use crate::server::state::AppState;
 use crate::types::{CustomModel, ProviderConnection};
@@ -379,13 +381,6 @@ enum FetchJsonError {
     Http(StatusCode, String),
     Network(String),
     Decode(String),
-}
-
-#[derive(Debug)]
-struct RefreshResult {
-    access_token: String,
-    refresh_token: Option<String>,
-    expires_in: Option<i64>,
 }
 
 async fn fetch_provider_models_response(
@@ -1142,12 +1137,26 @@ async fn fetch_kiro_models_with_fallback(
             Ok(models) => return Ok(response_with_models(connection, models, None)),
             Err(error) if error.contains("AccessDeniedException") && refresh_token.is_some() => {
                 if let Some(refresh_token) = refresh_token.as_deref() {
-                    if let Ok(refreshed) =
-                        refresh_kiro_token(refresh_token, &connection.provider_specific_data).await
+                    let _ = refresh_token;
+                    let observed_generation = connection_credential_generation(connection);
+                    if let Ok(refreshed) = CONNECTION_REFRESH_COORDINATOR
+                        .refresh_connection(
+                            state.db.clone(),
+                            "kiro",
+                            &connection.id,
+                            observed_generation,
+                        )
+                        .await
                     {
-                        persist_refreshed_credentials(state, connection, &refreshed).await;
-                        if let Ok(models) =
-                            fetch_kiro_models(&refreshed.access_token, &profile_arn).await
+                        if let Ok(models) = fetch_kiro_models(
+                            refreshed
+                                .connection
+                                .access_token
+                                .as_deref()
+                                .unwrap_or_default(),
+                            &profile_arn,
+                        )
+                        .await
                         {
                             return Ok(response_with_models(connection, models, None));
                         }
@@ -1281,57 +1290,6 @@ async fn fetch_kiro_models(
         })
         .collect();
     Ok(expand_kiro_model_variants(models))
-}
-
-async fn refresh_kiro_token(
-    refresh_token: &str,
-    provider_specific_data: &BTreeMap<String, Value>,
-) -> Result<RefreshResult, String> {
-    // Delegate to the shared OAuth refresh path so external_idp / OIDC /
-    // Cognito branches stay in lockstep with chat + credential manager.
-    let result =
-        crate::oauth::token_refresh::refresh_kiro_token(refresh_token, provider_specific_data)
-            .await?;
-    Ok(RefreshResult {
-        access_token: result.access_token,
-        refresh_token: result.refresh_token,
-        expires_in: result.expires_in,
-    })
-}
-
-async fn persist_refreshed_credentials(
-    state: &AppState,
-    connection: &ProviderConnection,
-    refresh: &RefreshResult,
-) {
-    let connection_id = connection.id.clone();
-    let access_token = refresh.access_token.clone();
-    let refresh_token = refresh.refresh_token.clone();
-    let expires_in = refresh.expires_in;
-
-    let _ = state
-        .db
-        .update(|db| {
-            let Some(target) = db
-                .provider_connections
-                .iter_mut()
-                .find(|candidate| candidate.id == connection_id)
-            else {
-                return;
-            };
-
-            target.access_token = Some(access_token.clone());
-            if let Some(refresh_token) = &refresh_token {
-                target.refresh_token = Some(refresh_token.clone());
-            }
-            if let Some(expires_in) = expires_in {
-                target.expires_in = Some(expires_in);
-                target.expires_at =
-                    Some((Utc::now() + ChronoDuration::seconds(expires_in)).to_rfc3339());
-            }
-            target.updated_at = Some(Utc::now().to_rfc3339());
-        })
-        .await;
 }
 
 fn parse_openai_style_models(payload: &Value) -> Vec<ProviderModel> {

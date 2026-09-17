@@ -1,8 +1,7 @@
 //! Token refresh and connection-scoped coordination.
 //!
-//! Provides a `RefreshDedup` concurrent-safe dedup layer plus a set of
-//! per-provider refresh functions that each wrap the upstream token-refresh
-//! API for that provider.
+//! Provides connection/generation-scoped singleflight plus the provider wire
+//! functions that call each upstream token-refresh API.
 //!
 //! # Dedup guarantees (H28 — verified correct)
 //!
@@ -23,15 +22,11 @@
 //! `HashMap` behind a `parking_lot::Mutex`, so the critical section is
 //! brief (map insertion). Success results are cached for 10 s; errors are
 //! NOT cached so retries (via `refresh_with_retry`) can make additional
-//! attempts. All per-provider refresh functions route through
-//! `dispatch_oauth_refresh` which calls `dedup_refresh`, and the sole
-//! call site (`chat.rs` 401/403 retry in `forward_with_provider_fallback`)
-//! invokes `dispatch_oauth_refresh` with the correct provider/token values.
-//! C16 adds an in-flight-only coordinator keyed by configured connection and
-//! credential generation. Existing callers deliberately remain on the legacy
-//! token-keyed path until C17A/C17B migrate them; C18 then removes that cache.
+//! attempts. Every configured caller now enters through the C16 connection
+//! coordinator; `dispatch_oauth_refresh` is its provider-wire adapter. The
+//! legacy token-keyed completed-result cache remains only until C18 deletes it.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -195,6 +190,7 @@ pub fn connection_credential_generation(connection: &ProviderConnection) -> Cred
         &connection.access_token,
         &connection.refresh_token,
         &connection.expires_at,
+        &connection.expires_in,
         &connection.created_at,
         &connection.updated_at,
         &connection.token_type,
@@ -364,6 +360,21 @@ impl ConnectionRefreshCoordinator {
         connection_id: &str,
         observed_generation: CredentialGeneration,
     ) -> SharedRefreshResult {
+        self.refresh_connection_with_token(db, provider, connection_id, observed_generation, None)
+            .await
+    }
+
+    /// Refresh a configured connection while allowing an explicit manual
+    /// refresh token. The configured connection still supplies identity,
+    /// provider-specific refresh metadata, generation checks, and persistence.
+    pub async fn refresh_connection_with_token(
+        self: &Arc<Self>,
+        db: Arc<Db>,
+        provider: &str,
+        connection_id: &str,
+        observed_generation: CredentialGeneration,
+        refresh_token_override: Option<String>,
+    ) -> SharedRefreshResult {
         let refresh_provider = provider.to_string();
         self.refresh(
             db,
@@ -371,9 +382,9 @@ impl ConnectionRefreshCoordinator {
             connection_id,
             observed_generation,
             move |connection| async move {
-                let refresh_token = connection
-                    .refresh_token
+                let refresh_token = refresh_token_override
                     .as_deref()
+                    .or(connection.refresh_token.as_deref())
                     .ok_or_else(|| "connection has no refresh token".to_string())?;
                 dispatch_oauth_refresh(
                     &refresh_provider,
@@ -413,6 +424,8 @@ impl ConnectionRefreshCoordinator {
             .expires_in
             .map(|seconds| (chrono::Utc::now() + chrono::Duration::seconds(seconds)).to_rfc3339());
         let last_refresh_at = chrono::Utc::now().to_rfc3339();
+        let updated_at = last_refresh_at.clone();
+        let expires_in = refreshed.expires_in;
         let connection_id = key.connection_id.clone();
         let provider = key.provider.clone();
         let applied = Arc::new(AtomicBool::new(false));
@@ -436,6 +449,10 @@ impl ConnectionRefreshCoordinator {
                 if let Some(expires_at) = new_expires_at {
                     connection.expires_at = Some(expires_at);
                 }
+                if let Some(expires_in) = expires_in {
+                    connection.expires_in = Some(expires_in);
+                }
+                connection.updated_at = Some(updated_at);
                 connection
                     .provider_specific_data
                     .insert("lastRefreshAt".into(), Value::String(last_refresh_at));
@@ -498,6 +515,11 @@ impl Default for ConnectionRefreshCoordinator {
 pub(crate) static CONNECTION_REFRESH_COORDINATOR: Lazy<Arc<ConnectionRefreshCoordinator>> =
     Lazy::new(|| Arc::new(ConnectionRefreshCoordinator::new()));
 
+#[doc(hidden)]
+pub fn active_connection_refresh_count() -> usize {
+    CONNECTION_REFRESH_COORDINATOR.active_count()
+}
+
 fn canonical_connection(db: &Db, key: &ConnectionRefreshKey) -> Result<ProviderConnection, String> {
     db.snapshot()
         .provider_connections
@@ -505,6 +527,36 @@ fn canonical_connection(db: &Db, key: &ConnectionRefreshKey) -> Result<ProviderC
         .find(|candidate| candidate.id == key.connection_id && candidate.provider == key.provider)
         .cloned()
         .ok_or_else(|| format!("connection {} is not configured", key.connection_id))
+}
+
+/// Bootstrap-only refresh for a manual control-plane request that has no
+/// configured connection identity yet. Configured connections must always use
+/// [`ConnectionRefreshCoordinator`]. The caller must persist a newly created
+/// connection before exposing the result.
+pub async fn refresh_unconfigured_connection(
+    provider: &str,
+    refresh_token: &str,
+    provider_specific_data: &BTreeMap<String, Value>,
+) -> Result<RefreshResult, String> {
+    dispatch_oauth_refresh(provider, refresh_token, provider_specific_data).await
+}
+
+/// Execute the provider-specific refresh wire protocol for a canonical
+/// configured connection. Coordination and persistence remain the caller's
+/// responsibility; production callers normally use `refresh_connection`.
+pub async fn refresh_provider_connection_credentials(
+    connection: &ProviderConnection,
+) -> Result<RefreshResult, String> {
+    let refresh_token = connection
+        .refresh_token
+        .as_deref()
+        .ok_or_else(|| "connection has no refresh token".to_string())?;
+    dispatch_oauth_refresh(
+        &connection.provider,
+        refresh_token,
+        &connection.provider_specific_data,
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------

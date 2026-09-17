@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C17B",
+  "next_checkpoint": "C18",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c17a_cargo_1.98.1",
+    "rust_verification": "passed_through_c17b_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -881,7 +881,7 @@
     {
       "id": "C17B",
       "title": "Перевести control/background OAuth callers",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C17A"
       ],
@@ -895,7 +895,48 @@
       "change": "Перевести оставшихся потребителей на тот же connection-scoped coordinator. Proactive refresh, если он сохранён для активных OAuth connections, не должен гоняться с первым chat/с обновлением каталога. Не заменять его таймером на каждый клиентский session.",
       "tests": "Одовременно proactive refresh, запрос /models или quota и foreground 401. Проверить один refresh нужного поколения и отсутствие rollback новых токенов старым background result.",
       "acceptance": "Call-site census не оставляет обходов shared refresh; idle credentials/task count ограничены числом настроенных подключений.",
-      "rollback": "Откат control-plane миграции отдельно от foreground; старый механизм удаляется только следующим checkpoint."
+      "rollback": "Откат control-plane миграции отдельно от foreground; старый механизм удаляется только следующим checkpoint.",
+      "result": {
+        "completed_at": "2026-09-18",
+        "files": [
+          "src/oauth/token_refresh.rs",
+          "src/oauth/background_refresh.rs",
+          "src/server/api/quota_auto_ping.rs",
+          "src/server/api/usage.rs",
+          "src/server/api/oauth.rs",
+          "src/server/api/provider_models.rs",
+          "src/server/api/provider_connection_test.rs",
+          "tests/lean_proxy_refresh_c17b.rs",
+          "tests/lean_proxy_contract.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json"
+        ],
+        "caller_census": {
+          "migrated": [
+            "background proactive OAuth refresh",
+            "quota auto-ping refresh",
+            "usage and Codex reset-credit refresh",
+            "manual refresh for configured connections",
+            "Kiro model-discovery refresh",
+            "proxy-aware provider connection-test refresh"
+          ],
+          "already_migrated_shared_helper": [
+            "Codex catalog proactive and reactive refresh"
+          ],
+          "explicit_nonconfigured_case": "Manual refresh with no existing configured connection uses a bootstrap-only dispatcher wrapper and persists the new connection immediately; no stable configured identity exists before that write.",
+          "remaining_direct_configured_bypasses": 0
+        },
+        "behavior": "All configured foreground, control-plane, catalog, quota, model-discovery, connection-test, and proactive refresh paths join one provider/connection/generation singleflight. Canonical generation is checked again before persistence, so a stale background result cannot roll back a newer pair. Connection tests execute their existing proxy/relay-aware wire request inside the coordinator rather than bypassing it.",
+        "tests": [
+          "cargo test --test lean_proxy_refresh_c17b -- --nocapture: 3 passed",
+          "cargo test --test lean_proxy_refresh_c16 --test lean_proxy_refresh_c17a --test lean_proxy_budget_c13 --test lean_proxy_contract -- --nocapture: 19 passed",
+          "cargo test --lib --all-features -- --test-threads=1: 1211 passed",
+          "cargo fmt --all -- --check and git diff --check: passed"
+        ],
+        "acceptance_evidence": "A simultaneous proactive tick, quota request, and foreground 401 for one expiring XAI connection made one token refresh and one counted foreground follow-up generation. A blocked stale proactive result could not overwrite a concurrent canonical token rotation. Source census proves no configured control/background caller invokes dispatch_oauth_refresh, refresh_codex_token, or refresh_kiro_token directly; the global coordinator is empty after completion.",
+        "schema_and_data": "No route, request/response field, SQLite schema, encryption boundary, provider format, dependency, or saved opt-in changed. Canonical refresh persistence now consistently records expiresIn/updatedAt in addition to the existing token pair, expiresAt, lastRefreshAt, and cleared stale error diagnostics.",
+        "rollback": "Revert this control/background migration while retaining C16-C17A. Do not restore an unbounded manual lock map alongside the coordinator. C18 removes the legacy token-keyed cache only after this checkpoint."
+      }
     },
     {
       "id": "C18",

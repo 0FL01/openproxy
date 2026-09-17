@@ -41,7 +41,8 @@ use crate::core::executor::{
 use crate::core::proxy::resolve_proxy_target;
 use crate::core::usage::quota_fetcher::fetch_glm_quota;
 use crate::oauth::token_refresh::{
-    dispatch_oauth_refresh, should_refresh_credentials, REFRESH_LEAD_CODEX_MS,
+    connection_credential_generation, should_refresh_credentials, CONNECTION_REFRESH_COORDINATOR,
+    REFRESH_LEAD_CODEX_MS,
 };
 use crate::server::api::usage::fetch_oauth_quota;
 use crate::server::state::AppState;
@@ -366,58 +367,28 @@ async fn process_connection(
     // Claude retains the upstream always-refresh behavior. Codex refreshes only
     // when due so quota observation does not rotate a healthy credential.
     let mut connection = conn.clone();
-    if let Some(rt) = connection
+    if connection
         .refresh_token
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
+        .is_some()
     {
         let refresh_due = should_refresh_for_auto_ping(&connection, provider);
         let refresh_cooling_down = is_codex && failure_cooldown_active(&key);
         if refresh_due && !refresh_cooling_down {
-            match dispatch_oauth_refresh(provider, rt, &connection.provider_specific_data).await {
+            let observed_generation = connection_credential_generation(&connection);
+            match CONNECTION_REFRESH_COORDINATOR
+                .refresh_connection(
+                    state.db.clone(),
+                    provider,
+                    &connection.id,
+                    observed_generation,
+                )
+                .await
+            {
                 Ok(result) => {
-                    let conn_id = connection.id.clone();
-                    let new_access = result.access_token.clone();
-                    let new_refresh = result.refresh_token.clone();
-                    let expires_at = result.expires_in.map(|secs| {
-                        (chrono::Utc::now() + chrono::Duration::seconds(secs)).to_rfc3339()
-                    });
-                    let last_refresh_at = chrono::Utc::now().to_rfc3339();
-                    let _ = state
-                        .db
-                        .update({
-                            let conn_id = conn_id.clone();
-                            let new_access = new_access.clone();
-                            let new_refresh = new_refresh.clone();
-                            let expires_at = expires_at.clone();
-                            let last_refresh_at = last_refresh_at.clone();
-                            move |db| {
-                                if let Some(c) =
-                                    db.provider_connections.iter_mut().find(|c| c.id == conn_id)
-                                {
-                                    c.access_token = Some(new_access);
-                                    if let Some(rt) = new_refresh {
-                                        c.refresh_token = Some(rt);
-                                    }
-                                    if let Some(exp) = expires_at {
-                                        c.expires_at = Some(exp);
-                                    }
-                                    c.provider_specific_data.insert(
-                                        "lastRefreshAt".into(),
-                                        Value::String(last_refresh_at),
-                                    );
-                                }
-                            }
-                        })
-                        .await;
-                    connection.access_token = Some(result.access_token);
-                    if let Some(rt) = result.refresh_token {
-                        connection.refresh_token = Some(rt);
-                    }
-                    if let Some(exp) = expires_at {
-                        connection.expires_at = Some(exp);
-                    }
+                    connection = result.connection;
                 }
                 Err(e) => {
                     mark_failure(&key);
