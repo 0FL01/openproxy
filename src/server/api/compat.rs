@@ -2284,7 +2284,7 @@ fn invalid_json_response(
     );
 
     let message = match status {
-        StatusCode::PAYLOAD_TOO_LARGE => "Request body too large",
+        StatusCode::PAYLOAD_TOO_LARGE => super::LLM_BODY_TOO_LARGE_MESSAGE,
         StatusCode::UNSUPPORTED_MEDIA_TYPE => "Content-Type must be application/json",
         _ => "Invalid JSON body",
     };

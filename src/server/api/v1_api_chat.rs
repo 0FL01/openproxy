@@ -36,6 +36,12 @@ async fn handle_ollama_chat(
 ) -> Response {
     let Json(mut request_body) = match body {
         Ok(body) => body,
+        Err(error) if error.status() == StatusCode::PAYLOAD_TOO_LARGE => {
+            return with_cors_json(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                json!({ "error": super::LLM_BODY_TOO_LARGE_MESSAGE }),
+            )
+        }
         Err(_) => {
             return with_cors_json(
                 StatusCode::BAD_REQUEST,

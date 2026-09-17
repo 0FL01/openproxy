@@ -340,6 +340,12 @@ async fn chat_completions_impl(
 
     let Json(mut body) = match body {
         Ok(body) => body,
+        Err(error) if error.status() == StatusCode::PAYLOAD_TOO_LARGE => {
+            return json_error_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                super::LLM_BODY_TOO_LARGE_MESSAGE,
+            )
+        }
         Err(_) => return json_error_response(StatusCode::BAD_REQUEST, "Invalid JSON body"),
     };
 

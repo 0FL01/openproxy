@@ -56,6 +56,9 @@ use crate::types::{AppDb, HealthResponse, ProviderConnection};
 /// Header carrying the dashboard password for sensitive re-auth (export/import).
 /// Accepts the OpenProxy name and the legacy 9router name for compatibility.
 const DB_PASSWORD_HEADERS: &[&str] = &["x-op-password", "x-9r-password"];
+const LLM_BODY_LIMIT_MIB: usize = 32;
+const LLM_BODY_LIMIT_BYTES: usize = LLM_BODY_LIMIT_MIB * 1024 * 1024;
+const LLM_BODY_TOO_LARGE_MESSAGE: &str = "Request body exceeds 32 MiB limit";
 
 pub fn routes(state: AppState) -> Router<AppState> {
     use axum::{extract::DefaultBodyLimit, middleware};
@@ -138,7 +141,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
             "/v1/v1/responses/compact",
             post(compat::responses_compact).options(compat::cors_options),
         )
-        .layer(DefaultBodyLimit::max(12 * 1024 * 1024));
+        .layer(DefaultBodyLimit::max(LLM_BODY_LIMIT_BYTES));
 
     // ── PROTECTED: valid API key required ──
     let protected = Router::new()
@@ -189,7 +192,8 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .merge(oauth::routes())
         .route(
             "/api/dashboard/chat/completions",
-            post(chat::dashboard_chat_completions).layer(DefaultBodyLimit::max(12 * 1024 * 1024)),
+            post(chat::dashboard_chat_completions)
+                .layer(DefaultBodyLimit::max(LLM_BODY_LIMIT_BYTES)),
         )
         .route("/api/providers", get(list_providers_api))
         .route("/api/providers", post(create_provider_api))

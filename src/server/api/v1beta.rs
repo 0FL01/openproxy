@@ -102,6 +102,17 @@ async fn handle_gemini_models_path(
 ) -> Response {
     let request_body = match body {
         Ok(Json(body)) => body,
+        Err(error) if error.status() == StatusCode::PAYLOAD_TOO_LARGE => {
+            return with_cors_json(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                json!({
+                    "error": {
+                        "message": super::LLM_BODY_TOO_LARGE_MESSAGE,
+                        "code": 413
+                    }
+                }),
+            )
+        }
         Err(_) => {
             return with_cors_json(
                 StatusCode::BAD_REQUEST,

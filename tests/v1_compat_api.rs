@@ -141,7 +141,7 @@ async fn compat_count_tokens_matches_js_estimate_and_sets_cors_headers() {
 #[tokio::test]
 async fn responses_reports_oversized_json_as_payload_too_large() {
     let app = openproxy::build_app(seeded_state(Vec::new(), Vec::new()).await);
-    let oversized_input = "x".repeat(12 * 1024 * 1024);
+    let oversized_input = "x".repeat(32 * 1024 * 1024);
     let response = app
         .oneshot(
             Request::builder()
@@ -173,7 +173,57 @@ async fn responses_reports_oversized_json_as_payload_too_large() {
         .await
         .unwrap();
     let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(body["error"], "Request body too large");
+    assert_eq!(body["error"], "Request body exceeds 32 MiB limit");
+}
+
+#[tokio::test]
+async fn responses_accepts_300k_prompt_with_20_mib_inline_file() {
+    let app = openproxy::build_app(
+        seeded_state(
+            vec![provider_node("node-1", "compat", "http://127.0.0.1:9")],
+            Vec::new(),
+        )
+        .await,
+    );
+    let decoded_file_bytes: usize = 20 * 1024 * 1024;
+    let base64_bytes = decoded_file_bytes.div_ceil(3) * 4;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("authorization", "Bearer valid-bearer")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "compat/gpt-4o-mini",
+                        "input": [{
+                            "role": "user",
+                            "content": [
+                                { "type": "input_text", "text": "x".repeat(1_200_000) },
+                                {
+                                    "type": "input_file",
+                                    "filename": "document.pdf",
+                                    "file_data": format!(
+                                        "data:application/pdf;base64,{}",
+                                        "A".repeat(base64_bytes)
+                                    )
+                                }
+                            ]
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
+    assert!(String::from_utf8_lossy(&body).contains("No credentials"));
 }
 
 #[tokio::test]
