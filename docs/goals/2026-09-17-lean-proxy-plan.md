@@ -93,17 +93,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R4 / C21.
-- Smallest next action: Replace competing Antigravity projectId TTL caches with canonical connection metadata and lifecycle-scoped discovery without adding project lookup to warm generation.
-- Expected evidence: Warm chat performs zero project discovery; identity changes/deletion cannot reuse stale project metadata; coordinated first discovery is bounded and reports failure explicitly.
-- Stop or replan if: The provider requires per-request project discovery; preserve current canonical metadata and expose setup failure rather than hiding a network lookup in generation.
+- Closes: R4 / C22.
+- Smallest next action: Move Antigravity onboarding out of every generation request into a bounded connection/configuration lifecycle keyed by canonical identity generation, with deletion and shutdown cleanup.
+- Expected evidence: One hundred chats do not create onboarding workers; one configured identity performs bounded setup once; failure/retry, deletion, and shutdown leave no active task.
+- Stop or replan if: Onboarding is provably required for every generation; preserve explicit setup failure instead of retaining detached per-request polling.
 
 ## Current State
 
-- Resolved: R1 / C00, R2 / C01-C02, R3 / C03-C14, plus C15-C20 within R4. Proxy-owned semantic/header/history replay, heuristic context policy, client-identity passthrough gating, all three executor temporal retry schedulers, successful-response legacy housekeeping, token-keyed completed refresh results, and generation-path remote catalog waits are gone. C13 provides the single bounded request-scoped generation/account/auth planner; C16-C18 provide one active-only connection/generation refresh service used by every configured caller; C19-C20 publish immutable OpenCode and Codex model metadata outside generation.
-- Last relevant evidence: While explicit Codex catalog HTTP is held open, a known-model chat selects its already-published supporting account and returns immediately; failed refresh preserves the exact prior publication, cold unknown models issue zero generation requests, and disabled/configured/custom model changes reconcile without network or per-request union rebuilds.
+- Resolved: R1 / C00, R2 / C01-C02, R3 / C03-C14, plus C15-C21 within R4. Proxy-owned semantic/header/history replay, heuristic context policy, client-identity passthrough gating, all three executor temporal retry schedulers, successful-response legacy housekeeping, token-keyed completed refresh results, generation-path remote catalog waits, and both process-wide Antigravity project maps are gone. C13 provides the single bounded request-scoped generation/account/auth planner; C16-C18 provide one active-only connection/generation refresh service used by every configured caller; C19-C20 publish immutable OpenCode and Codex model metadata outside generation; C21 makes project metadata a pure canonical connection read.
+- Last relevant evidence: Thirty-two concurrent first Antigravity generation requests with missing project metadata reached only the configured generation endpoint, with no loadCodeAssist request or project lock. Delete/recreate cannot resurrect the previous project, legacy provider-specific values remain readable, and setup discovery failure is stored explicitly without losing OAuth credentials.
 - Blocker: None; the prompt explicitly allows independent safe work when external harness/version evidence is unavailable.
-- Next: C21 canonical Antigravity projectId metadata and deletion of duplicate TTL caches.
+- Next: C22 bounded Antigravity onboarding lifecycle outside generation.
 
 ## Material Decisions
 
@@ -136,6 +136,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-09-18: C18 passed. Deleted the token-keyed `RefreshDedup` completed-result/TTL map, old-token keys, `OnceCell` wrapper, dead provider refresh exports, and obsolete tests without replacement. Twenty thousand historical generations and 512 cancelled waiters leave zero idle state while existing same-generation singleflight remains correct. C19 is next.
 - 2026-09-18: C19 passed. Replaced the models.dev read/refresh mutex with an ArcSwap-published immutable snapshot seeded from bundled validated Zen/Go metadata. Generation, `/api/catalog`, and `/v1/models` perform immediate local reads; only one bounded process task and explicit provider discovery refresh remotely, and failures preserve the prior Arc. Hung/failed refresh, atomic publication, cold start, enabled/custom/disabled rows, advertised limits, and canonical source are covered. C20 is next.
 - 2026-09-18: C20 passed. Replaced Codex per-connection read/HTTP mutexes with an ArcSwap-published supporter index and pre-merged active union. Generation and metadata routes read synchronously; one bounded process task plus explicit discovery/test actions refresh remotely and publish atomically. Known chats ignore held refresh, failed refresh retains the prior Arc, inactive/deleted/identity-changed connections reconcile away, and cold unknown models cannot route to arbitrary accounts. C21 is next.
+- 2026-09-18: C21 passed. Deleted the active connection-id TTL project cache and the proven-dead token-keyed duplicate, consolidated canonical/legacy project parsing, and made Antigravity generation read only the selected connection snapshot with no loadCodeAssist or project lock. Concurrent first uses stay local, delete/recreate cannot restore old metadata, and setup discovery failure is explicit while credentials remain durable. C22 is next.
 
 ## Completion
 

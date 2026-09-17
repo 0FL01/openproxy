@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C21",
+  "next_checkpoint": "C22",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c20_cargo_1.98.1",
+    "rust_verification": "passed_through_c21_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -1100,7 +1100,7 @@
     {
       "id": "C21",
       "title": "Убрать projectId TTL-кэш, сохранив canonical metadata",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C17B"
       ],
@@ -1112,7 +1112,42 @@
       "change": "Использовать существующее место provider-specific metadata для projectId, связанного с canonical connection и identity generation. Обнаружение выполнять на connect/явном refresh/обоснованной инвалидизации. Удалить активный дублирующий TTL-кэш и после call-site проверки мёртвый одноимённый executor module. Не заменять удалённый cache сетевым loadCodeAssist на каждом chat.",
       "tests": "Warm chat не вызывает project lookup; удаление/смена identity не использует старый project. Ошибка discovery явно отражается в настройке подключения; одновременное первое использование координируется без бесконечной очереди.",
       "acceptance": "Один источник projectId вместо конкурирующих caches; нет дополнительного RTT на каждый запрос. Мёртвый module не объявлен runtime утечкой задним числом.",
-      "rollback": "Версионировать/инвалидировать новое metadata состояние; не терять существующие credentials."
+      "rollback": "Версионировать/инвалидировать новое metadata состояние; не терять существующие credentials.",
+      "result": {
+        "files": [
+          "src/core/utils/antigravity_project.rs",
+          "src/core/utils/project_id_cache.rs (deleted)",
+          "src/core/executor/project_id_cache.rs (deleted)",
+          "src/core/executor/antigravity.rs",
+          "src/core/utils/mod.rs",
+          "src/core/executor/mod.rs",
+          "src/oauth/antigravity.rs",
+          "src/server/api/oauth.rs",
+          "tests/lean_proxy_project_c21.rs",
+          "tests/lean_proxy_antigravity_c12.rs",
+          "tests/oauth_non_pkce_auth_code_compat_api.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json"
+        ],
+        "canonical_metadata": "Generation reads the selected canonical ProviderConnection synchronously, preferring typed project_id and retaining providerSpecificData.projectId/project as read-only legacy fallbacks. project_id and provider-specific data remain part of the existing credential-generation digest; no new persisted field or schema was introduced.",
+        "removed_state": "Deleted the active process-wide connection-id TTL ProjectIdCache and the proven-dead executor-local full-access-token map/module after exhaustive caller census. No replacement TTL, LRU, cleanup timer, historical entry map, or deletion hook was added.",
+        "generation_path": "Antigravity generation no longer calls loadCodeAssist, creates a discovery client, waits on a project lock, or derives project identity from email. Missing metadata remains an explicit empty project envelope compatible with the previous failed-discovery behavior; setup/control-plane owns discovery.",
+        "setup_error_state": "Antigravity OAuth setup validates loadCodeAssist before persisting project_id. HTTP, transport, parse, or missing-project failures preserve access/refresh credentials while persisting testStatus=error, lastError, and lastErrorAt; successful setup remains active. The shared pure response parser now has one implementation.",
+        "tests": [
+          "cargo test --test lean_proxy_project_c21 -- --nocapture: 3 passed",
+          "cargo test --test oauth_non_pkce_auth_code_compat_api antigravity -- --nocapture: 3 passed",
+          "cargo test --test lean_proxy_antigravity_c12 -- --nocapture: 3 passed",
+          "cargo test --lib antigravity --all-features -- --nocapture: 26 passed",
+          "cargo test --test lean_proxy_project_c21 --test lean_proxy_antigravity_c12 --test oauth_non_pkce_auth_code_compat_api --test lean_proxy_refresh_c16 --test lean_proxy_refresh_c17a --test lean_proxy_refresh_c17b --test lean_proxy_refresh_c18 --test lean_proxy_budget_c13 --test lean_proxy_contract -- --nocapture: 36 passed",
+          "cargo test --lib --all-features -- --test-threads=1: 1191 passed",
+          "focused clippy with -D warnings and two lint-class allowances for the three documented unrelated production warnings: passed",
+          "cargo clippy --all-targets --all-features: passed with 3 pre-existing production style warnings",
+          "cargo fmt --all -- --check, JSON parse, source census, and git diff --check: passed"
+        ],
+        "acceptance_evidence": "Thirty-two concurrent first warm uses with missing project metadata each reached only the configured generation endpoint within the local timeout, emitted the explicit empty project, and performed no project discovery or lock wait. Canonical field/legacy precedence, delete/recreate with the same id and email, credential-generation change, and unknown-field round-trip are covered. A loopback OAuth setup 503 persisted explicit project-discovery error state while retaining both OAuth tokens.",
+        "schema_and_data": "No route, SQLite schema, encryption boundary, dependency, openproxy.v1 field, credential field, or provider wire format changed. Existing project_id, providerSpecificData.projectId/project, and all unknown provider-specific values are preserved and remain rollback-readable. The deleted executor module had no production caller and is recorded as dead code, not a historical runtime leak.",
+        "rollback": "Revert the C21 canonical-read/cache-deletion commit without clearing project_id, providerSpecificData, or credentials. Never restore warm generation loadCodeAssist or either process-wide project map; use explicit setup/control-plane discovery for correction. Onboarding remains separately owned by C22."
+      }
     },
     {
       "id": "C22",

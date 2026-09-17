@@ -8,10 +8,9 @@ use once_cell::sync::Lazy;
 use openproxy::db::Db;
 use openproxy::server::state::AppState;
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use tempfile::tempdir;
 use tower::util::ServiceExt;
-use wiremock::matchers::{body_json, body_string_contains, header, method, path, query_param};
+use wiremock::matchers::{body_string_contains, header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
@@ -86,28 +85,6 @@ async fn response_json(response: axum::response::Response) -> (StatusCode, serde
         .unwrap();
     let json = serde_json::from_slice(&bytes).unwrap();
     (status, json)
-}
-
-fn expected_google_platform_enum() -> i64 {
-    let is_arm64 = matches!(std::env::consts::ARCH, "aarch64" | "arm64");
-    match std::env::consts::OS {
-        "macos" => {
-            if is_arm64 {
-                2
-            } else {
-                1
-            }
-        }
-        "linux" => {
-            if is_arm64 {
-                4
-            } else {
-                3
-            }
-        }
-        "windows" => 5,
-        _ => 0,
-    }
 }
 
 fn cline_code(payload: serde_json::Value) -> String {
@@ -298,6 +275,88 @@ async fn antigravity_exchange_matches_openproxy_and_saves_connection() {
     assert_eq!(connection.scope.as_deref(), Some("scope-antigravity"));
     assert_eq!(connection.project_id.as_deref(), Some("ag-project"));
     assert_eq!(connection.test_status.as_deref(), Some("active"));
+}
+
+#[tokio::test]
+async fn antigravity_project_discovery_failure_is_saved_explicitly() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let server = MockServer::start().await;
+    let _token_url = EnvVarGuard::set(
+        "OPENPROXY_ANTIGRAVITY_TOKEN_URL",
+        &format!("{}/token", server.uri()),
+    );
+    let _user_info_url = EnvVarGuard::set(
+        "OPENPROXY_ANTIGRAVITY_USER_INFO_URL",
+        &format!("{}/userinfo", server.uri()),
+    );
+    let _load_url = EnvVarGuard::set(
+        "OPENPROXY_ANTIGRAVITY_LOAD_CODE_ASSIST_ENDPOINT",
+        &format!("{}/v1internal:loadCodeAssist", server.uri()),
+    );
+
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "antigravity-error-access",
+            "refresh_token": "antigravity-error-refresh",
+            "expires_in": 3600
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/userinfo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "email": "project-error@example.com"
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1internal:loadCodeAssist"))
+        .respond_with(ResponseTemplate::new(503).set_body_json(json!({
+            "error": "temporarily unavailable"
+        })))
+        .mount(&server)
+        .await;
+
+    let state = app_state().await;
+    let response = openproxy::build_app(state.clone())
+        .oneshot(post_request(
+            "/api/oauth/antigravity/exchange",
+            json!({
+                "code": "auth-code",
+                "redirectUri": "http://localhost:4624/callback",
+                "codeVerifier": "pkce-verifier"
+            }),
+        ))
+        .await
+        .expect("Antigravity exchange response");
+    let (status, body) = response_json(response).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["success"], true);
+
+    let snapshot = state.db.snapshot();
+    let connection = snapshot
+        .provider_connections
+        .iter()
+        .find(|connection| connection.provider == "antigravity")
+        .expect("saved Antigravity connection");
+    assert!(connection.project_id.is_none());
+    assert_eq!(connection.test_status.as_deref(), Some("error"));
+    assert_eq!(
+        connection.last_error.as_deref(),
+        Some("Antigravity project discovery failed with HTTP 503 Service Unavailable")
+    );
+    assert!(connection.last_error_at.is_some());
+    assert_eq!(
+        connection.access_token.as_deref(),
+        Some("antigravity-error-access")
+    );
+    assert_eq!(
+        connection.refresh_token.as_deref(),
+        Some("antigravity-error-refresh")
+    );
 }
 
 #[tokio::test]

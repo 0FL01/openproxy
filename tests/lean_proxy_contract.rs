@@ -231,4 +231,25 @@ fn contract_freezes_preservation_and_removal_lists() {
         manifest["codex_catalog_publication"]["union_rebuilt_per_incoming_request"],
         false
     );
+    assert_eq!(
+        manifest["antigravity_project_metadata"]["generation_remote_project_lookup"],
+        false
+    );
+    assert_eq!(
+        manifest["antigravity_project_metadata"]["connection_id_ttl_cache_present"],
+        false
+    );
+    assert_eq!(
+        manifest["antigravity_project_metadata"]["token_keyed_project_cache_present"],
+        false
+    );
+    assert_eq!(
+        manifest["antigravity_project_metadata"]
+            ["setup_discovery_failure_is_explicit_connection_state"],
+        true
+    );
+    assert_eq!(
+        manifest["antigravity_project_metadata"]["onboarding_lifecycle_owner"],
+        "C22"
+    );
 }

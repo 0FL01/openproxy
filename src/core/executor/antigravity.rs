@@ -30,7 +30,7 @@ use crate::core::config::app_constants::{
     INTERNAL_REQUEST_HEADER_VALUE,
 };
 use crate::core::proxy::ProxyTarget;
-use crate::core::utils::project_id_cache;
+use crate::core::utils::antigravity_project::antigravity_project_id;
 use crate::core::utils::session_manager::derive_session_id;
 use crate::types::{ProviderConnection, ProviderNode};
 
@@ -297,55 +297,6 @@ impl AntigravityExecutor {
             HeaderValue::from_str(&serde_json::to_string(&metadata)?)?,
         );
         Ok(headers)
-    }
-
-    /// Resolve the project ID for the given Antigravity connection.
-    ///
-    /// 1. Check the [`ProjectIdCache`] first (5-minute TTL).
-    /// 2. On cache miss: POST `loadCodeAssist`, extract the project id
-    ///    from the response, cache it, and return.
-    /// 3. Returns an empty string if the lookup fails (caller should
-    ///    proceed without a project id in that case).
-    pub async fn get_project_id(connection_id: &str, access_token: &str) -> String {
-        // Check cache.
-        if let Some(pid) = project_id_cache::get_cached_project_id(connection_id) {
-            return pid;
-        }
-
-        // Cache miss: call loadCodeAssist.
-        let client = reqwest::Client::new();
-        let metadata = load_code_assist_metadata();
-        let metadata_json = serde_json::to_string(&metadata).unwrap_or_default();
-
-        let response = client
-            .post(cloud_code_api::LOAD_CODE_ASSIST)
-            .header("Authorization", format!("Bearer {access_token}"))
-            .header("Content-Type", "application/json")
-            .header("User-Agent", "google-api-nodejs-client/9.15.1")
-            .header(
-                "X-Goog-Api-Client",
-                "google-cloud-sdk vscode_cloudshelleditor/0.1",
-            )
-            .header("Client-Metadata", &metadata_json)
-            .json(&json!({ "metadata": metadata }))
-            .send()
-            .await;
-
-        match response {
-            Ok(resp) if resp.status().is_success() => {
-                if let Ok(payload) = resp.json::<Value>().await {
-                    if let Some(pid) =
-                        crate::core::utils::project_id_cache::extract_google_project_id(&payload)
-                    {
-                        project_id_cache::set_cached_project_id(connection_id, pid.clone());
-                        return pid;
-                    }
-                }
-            }
-            _ => {}
-        }
-
-        String::new()
     }
 
     /// POST `onboardUser` and poll (5 s interval, up to 10 attempts) until
@@ -676,14 +627,10 @@ impl AntigravityExecutor {
             request.body = json!({"request": inner});
         }
 
-        // Resolve the project ID (cached or via loadCodeAssist).
-        let connection_id = request
-            .credentials
-            .email
-            .as_deref()
-            .or_else(|| request.credentials.id.as_str().into())
-            .unwrap_or("");
-        let project_id = Self::get_project_id(connection_id, &access_token).await;
+        // C21: project metadata belongs to the canonical selected connection.
+        // Generation is a pure local read; discovery is restricted to
+        // setup/control-plane operations and never adds a warm-path RTT.
+        let project_id = antigravity_project_id(&request.credentials).unwrap_or_default();
 
         // Spawn best-effort onboardUser notification in the background so
         // it does not block the critical path.

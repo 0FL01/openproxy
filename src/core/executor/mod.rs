@@ -17,7 +17,6 @@ mod kiro;
 mod mimo_free;
 mod ollama;
 mod opencode;
-mod project_id_cache;
 mod provider;
 mod qwen;
 mod strip_unsupported;

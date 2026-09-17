@@ -35,7 +35,7 @@ use crate::server::auth::{extract_api_key, require_api_key_with_reload};
 use crate::server::state::AppState;
 use crate::types::ProviderConnection;
 
-use crate::core::utils::project_id_cache;
+use crate::core::utils::antigravity_project::extract_google_project_id;
 
 const PKCE_FLOW_TTL_SECS: i64 = 600;
 const DEVICE_FLOW_TTL_SECS: i64 = 900;
@@ -912,17 +912,6 @@ fn antigravity_load_metadata() -> Value {
         "platform": "PLATFORM_UNSPECIFIED",
         "pluginType": "GEMINI",
     })
-}
-
-fn extract_google_project_id(payload: &Value) -> Option<String> {
-    let project = payload.get("cloudaicompanionProject")?;
-    project
-        .get("id")
-        .and_then(Value::as_str)
-        .or_else(|| project.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
 }
 
 fn first_nonempty_str<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
@@ -3609,8 +3598,9 @@ async fn exchange_antigravity_compat(
     };
 
     let mut project_id = None;
+    let mut project_discovery_error = None;
     let mut tier_id = "legacy-tier".to_string();
-    if let Ok(response) = reqwest::Client::new()
+    match reqwest::Client::new()
         .post(antigravity_load_code_assist_endpoint())
         .header("Authorization", format!("Bearer {access_token}"))
         .header("Content-Type", "application/json")
@@ -3625,28 +3615,49 @@ async fn exchange_antigravity_compat(
         .send()
         .await
     {
-        if response.status().is_success() {
-            let payload = response.json().await.unwrap_or(Value::Null);
-            project_id = extract_google_project_id(&payload);
-            if let Some(default_tier) = payload
-                .get("allowedTiers")
-                .and_then(Value::as_array)
-                .and_then(|tiers| {
-                    tiers.iter().find_map(|tier| {
-                        if tier.get("isDefault").and_then(Value::as_bool) == Some(true) {
-                            tier.get("id")
-                                .and_then(Value::as_str)
-                                .map(str::trim)
-                                .filter(|value| !value.is_empty())
-                                .map(str::to_string)
-                        } else {
-                            None
-                        }
+        Ok(response) if response.status().is_success() => match response.json::<Value>().await {
+            Ok(payload) => {
+                project_id = extract_google_project_id(&payload);
+                if project_id.is_none() {
+                    project_discovery_error =
+                        Some("Antigravity project discovery returned no project id".to_string());
+                }
+                if let Some(default_tier) = payload
+                    .get("allowedTiers")
+                    .and_then(Value::as_array)
+                    .and_then(|tiers| {
+                        tiers.iter().find_map(|tier| {
+                            if tier.get("isDefault").and_then(Value::as_bool) == Some(true) {
+                                tier.get("id")
+                                    .and_then(Value::as_str)
+                                    .map(str::trim)
+                                    .filter(|value| !value.is_empty())
+                                    .map(str::to_string)
+                            } else {
+                                None
+                            }
+                        })
                     })
-                })
-            {
-                tier_id = default_tier;
+                {
+                    tier_id = default_tier;
+                }
             }
+            Err(error) => {
+                project_discovery_error = Some(format!(
+                    "Antigravity project discovery response was invalid: {error}"
+                ));
+            }
+        },
+        Ok(response) => {
+            project_discovery_error = Some(format!(
+                "Antigravity project discovery failed with HTTP {}",
+                response.status()
+            ));
+        }
+        Err(error) => {
+            project_discovery_error = Some(format!(
+                "Antigravity project discovery request failed: {error}"
+            ));
         }
     }
 
@@ -3692,6 +3703,7 @@ async fn exchange_antigravity_compat(
         });
     }
 
+    let discovery_failed = project_discovery_error.is_some();
     Ok(ProviderConnection {
         provider: "antigravity".to_string(),
         auth_type: "oauth".to_string(),
@@ -3704,7 +3716,9 @@ async fn exchange_antigravity_compat(
         expires_at: expires_in.map(crate::oauth::expires_at_from_seconds),
         scope,
         project_id,
-        test_status: Some("active".to_string()),
+        test_status: Some(if discovery_failed { "error" } else { "active" }.to_string()),
+        last_error: project_discovery_error,
+        last_error_at: discovery_failed.then(|| chrono::Utc::now().to_rfc3339()),
         ..Default::default()
     })
 }
@@ -4691,16 +4705,6 @@ pub async fn refresh_token(
         }
         response
     };
-
-    // When the antigravity access token is refreshed the cached project ID
-    // may become stale (e.g. if the underlying GCP project changed or the
-    // token scope was updated).  Invalidate it so the next executor call
-    // re-fetches from the loadCodeAssist endpoint.
-    if provider == "antigravity" {
-        if let Some(conn) = connection.as_ref() {
-            project_id_cache::invalidate_cached_project_id(&conn.id);
-        }
-    }
 
     Json(RefreshResponse {
         success: true,

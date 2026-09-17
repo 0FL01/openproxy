@@ -9,7 +9,6 @@ use futures_util::StreamExt;
 use openproxy::core::executor::{
     AntigravityExecutionRequest, AntigravityExecutor, ClientPool, UpstreamResponse,
 };
-use openproxy::core::utils::project_id_cache;
 use openproxy::types::{ProviderConnection, ProviderNode};
 use serde_json::json;
 use tokio::sync::Notify;
@@ -54,23 +53,18 @@ async fn execute_against(
     connection_id: &str,
     stream: bool,
 ) -> openproxy::core::executor::AntigravityExecutorResponse {
-    // C21 owns project discovery. An explicit empty cache value keeps this C12
-    // test on the generation endpoint and suppresses onboarding traffic.
-    project_id_cache::set_cached_project_id(connection_id, String::new());
     let executor = AntigravityExecutor::new(
         Arc::new(ClientPool::new()),
         Some(antigravity_node(upstream.url("/alternate"))),
     )
     .expect("Antigravity C12 executor");
-    let result = tokio::time::timeout(
+    tokio::time::timeout(
         Duration::from_millis(500),
         executor.execute_request(antigravity_request(connection_id, stream)),
     )
     .await
     .expect("Antigravity generation must not wait for a temporal retry delay")
-    .expect("Antigravity C12 response");
-    project_id_cache::invalidate_cached_project_id(connection_id);
-    result
+    .expect("Antigravity C12 response")
 }
 
 #[tokio::test]

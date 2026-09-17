@@ -247,6 +247,25 @@
     "authenticated_v1_models_preserved": true,
     "opencode_discovery_plugin_preserved": true
   },
+  "antigravity_project_metadata": {
+    "checkpoint": "C21",
+    "canonical_source": "selected_provider_connection_snapshot",
+    "canonical_precedence": [
+      "project_id",
+      "provider_specific_data.projectId",
+      "provider_specific_data.project"
+    ],
+    "generation_remote_project_lookup": false,
+    "generation_project_lock_wait": false,
+    "connection_id_ttl_cache_present": false,
+    "token_keyed_project_cache_present": false,
+    "historical_project_entries_retained": 0,
+    "setup_discovery_publishes_validated_project": true,
+    "setup_discovery_failure_is_explicit_connection_state": true,
+    "legacy_project_values_preserved": true,
+    "credentials_preserved_on_discovery_failure": true,
+    "onboarding_lifecycle_owner": "C22"
+  },
   "versions": {
     "opencode": "1.18.31",
     "custom_harness": "unknown"

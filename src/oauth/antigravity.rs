@@ -3,9 +3,10 @@
 //! - Google OAuth with extended scopes
 //! - loadCodeAssist + onboardUser (poll 5s x 10 retries)
 //! - Numeric Client-Metadata headers for EVERY call
-//! - ProjectId caching per connection
+//! - ProjectId discovery during connection setup
 //! - connect_antigravity(), refresh_antigravity()
 
+use crate::core::utils::antigravity_project::extract_google_project_id;
 use crate::oauth::TokenResponse;
 use base64::Engine;
 use rand::RngCore;
@@ -172,17 +173,6 @@ async fn fetch_user_info(access_token: &str) -> Value {
 // ---------------------------------------------------------------------------
 // loadCodeAssist
 // ---------------------------------------------------------------------------
-
-fn extract_google_project_id(payload: &Value) -> Option<String> {
-    let project = payload.get("cloudaicompanionProject")?;
-    project
-        .get("id")
-        .and_then(Value::as_str)
-        .or_else(|| project.as_str())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(str::to_string)
-}
 
 async fn call_load_code_assist(
     access_token: &str,
