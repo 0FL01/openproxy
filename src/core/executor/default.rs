@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::io;
 use std::sync::Arc;
-use std::time::Duration;
 
 use http_body_util::Full;
 use hyper::body::Incoming as HyperIncoming;
@@ -1112,8 +1111,8 @@ impl DefaultExecutor {
         &self,
         mut request: ExecutionRequest,
     ) -> Result<ExecutionResponse, ExecutorError> {
-        // Build headers and transformed body once, reused across retries and
-        // fallback URLs.
+        // Build headers and transformed body once, reused across distinct
+        // fallback URLs. Generation requests are never temporally retried here.
         let mut headers = self.build_headers_for_request(
             &request.model,
             &request.credentials,
@@ -1135,156 +1134,36 @@ impl DefaultExecutor {
             None
         };
 
-        for url in &urls {
+        for (url_index, url) in urls.iter().enumerate() {
             let use_hyper = self.use_hyper_transport(&request, url);
+            let mut upstream = self
+                .send_one(url, &headers, &transformed_body, &request, use_hyper)
+                .await?;
+            let mut status = upstream.status();
 
-            // The retry loop for this URL.
-            for retry in 0..3 {
-                let upstream = self
-                    .send_one(url, &headers, &transformed_body, &request, use_hyper)
-                    .await?;
-                let status = upstream.status();
-
-                // Success: return immediately.
-                if status.is_success() {
-                    return Ok(ExecutionResponse {
-                        response: upstream,
-                        url: url.clone(),
-                        headers,
-                        transformed_body,
-                        transport: if use_hyper {
-                            TransportKind::Hyper
-                        } else {
-                            TransportKind::Reqwest
-                        },
-                    });
+            // Credential recovery is intentionally distinct from generation
+            // retry policy until C13 moves it into the request-scoped planner.
+            // At most one refreshed-credential attempt is made for this URL.
+            if matches!(
+                status,
+                http::StatusCode::UNAUTHORIZED | http::StatusCode::FORBIDDEN
+            ) {
+                if let Some(new_creds) = self.try_refresh_credentials(&request.credentials).await {
+                    request.credentials = new_creds;
+                    headers = self.build_headers_for_request(
+                        &request.model,
+                        &request.credentials,
+                        request.stream,
+                        &request.client_headers,
+                    )?;
+                    upstream = self
+                        .send_one(url, &headers, &transformed_body, &request, use_hyper)
+                        .await?;
+                    status = upstream.status();
                 }
+            }
 
-                // 401 / 403: try credential refresh and retry once with new creds.
-                if status == http::StatusCode::UNAUTHORIZED || status == http::StatusCode::FORBIDDEN
-                {
-                    if retry == 0 {
-                        if let Some(new_creds) =
-                            self.try_refresh_credentials(&request.credentials).await
-                        {
-                            request.credentials = new_creds;
-                            headers = self.build_headers_for_request(
-                                &request.model,
-                                &request.credentials,
-                                request.stream,
-                                &request.client_headers,
-                            )?;
-                            // Retry immediately with refreshed credentials.
-                            let retry_resp = self
-                                .send_one(url, &headers, &transformed_body, &request, use_hyper)
-                                .await?;
-                            if retry_resp.status().is_success() {
-                                return Ok(ExecutionResponse {
-                                    response: retry_resp,
-                                    url: url.clone(),
-                                    headers,
-                                    transformed_body,
-                                    transport: if use_hyper {
-                                        TransportKind::Hyper
-                                    } else {
-                                        TransportKind::Reqwest
-                                    },
-                                });
-                            }
-                        }
-                    }
-                    // No refresh or refresh didn't help — try next fallback URL.
-                    break;
-                }
-
-                // 429: tokenrouter free models get exponential backoff; other 429/404
-                // follow 9router BaseExecutor.shouldRetry — retry only when another
-                // fallback URL exists, otherwise surface raw response for retry-after
-                // extraction and model-specific lock handling (404 modelLock_*).
-                if matches!(
-                    status,
-                    http::StatusCode::TOO_MANY_REQUESTS | http::StatusCode::NOT_FOUND
-                ) {
-                    let is_tokenrouter_free = self.provider == "tokenrouter"
-                        && (request.model == "qwen/qwen3.8-max-free"
-                            || request.model == "moonshotai/kimi-k3-free");
-                    if is_tokenrouter_free
-                        && status == http::StatusCode::TOO_MANY_REQUESTS
-                        && retry < 2
-                    {
-                        let delay_secs = 2u64.pow(retry as u32);
-                        tokio::time::sleep(Duration::from_secs(delay_secs)).await;
-                        continue;
-                    }
-                    let has_next_url = urls.len() > 1 && url != urls.last().unwrap();
-                    if !has_next_url {
-                        return Ok(ExecutionResponse {
-                            response: upstream,
-                            url: url.clone(),
-                            headers,
-                            transformed_body,
-                            transport: if use_hyper {
-                                TransportKind::Hyper
-                            } else {
-                                TransportKind::Reqwest
-                            },
-                        });
-                    }
-                    break;
-                }
-
-                // 502 Bad Gateway: 3 retries x 3s, then surface the raw 502.
-                if status == http::StatusCode::BAD_GATEWAY {
-                    if retry < 2 && url == urls.last().unwrap() {
-                        tokio::time::sleep(Duration::from_secs(3)).await;
-                        continue;
-                    }
-                    return Ok(ExecutionResponse {
-                        response: upstream,
-                        url: url.clone(),
-                        headers,
-                        transformed_body,
-                        transport: if use_hyper {
-                            TransportKind::Hyper
-                        } else {
-                            TransportKind::Reqwest
-                        },
-                    });
-                }
-
-                // 503 Service Unavailable: 3 retries x 2s, then surface the raw 503.
-                if status == http::StatusCode::SERVICE_UNAVAILABLE {
-                    if retry < 2 && url == urls.last().unwrap() {
-                        tokio::time::sleep(Duration::from_secs(2)).await;
-                        continue;
-                    }
-                    return Ok(ExecutionResponse {
-                        response: upstream,
-                        url: url.clone(),
-                        headers,
-                        transformed_body,
-                        transport: if use_hyper {
-                            TransportKind::Hyper
-                        } else {
-                            TransportKind::Reqwest
-                        },
-                    });
-                }
-
-                // 504 Gateway Timeout: 2 retries x 3s
-                if status == http::StatusCode::GATEWAY_TIMEOUT {
-                    if retry < 1 {
-                        tokio::time::sleep(Duration::from_secs(3)).await;
-                        continue;
-                    }
-                    // After 2 retries, fall through to next fallback URL.
-                    break;
-                }
-
-                // Other non-success statuses are provider decisions, not
-                // executor failures. Preserve the raw response so the routing
-                // layer can inspect it and return the upstream status/body
-                // verbatim when no account fallback succeeds.
+            if status.is_success() {
                 return Ok(ExecutionResponse {
                     response: upstream,
                     url: url.clone(),
@@ -1297,6 +1176,35 @@ impl DefaultExecutor {
                     },
                 });
             }
+
+            let has_next_url = url_index + 1 < urls.len();
+            let may_try_distinct_url = has_next_url
+                && matches!(
+                    status,
+                    http::StatusCode::UNAUTHORIZED
+                        | http::StatusCode::FORBIDDEN
+                        | http::StatusCode::TOO_MANY_REQUESTS
+                        | http::StatusCode::NOT_FOUND
+                        | http::StatusCode::GATEWAY_TIMEOUT
+                );
+            if may_try_distinct_url {
+                continue;
+            }
+
+            // Provider decisions are not executor failures. Preserve the raw
+            // response so the request-scoped routing layer can retain status,
+            // body, and Retry-After while deciding account fallback.
+            return Ok(ExecutionResponse {
+                response: upstream,
+                url: url.clone(),
+                headers,
+                transformed_body,
+                transport: if use_hyper {
+                    TransportKind::Hyper
+                } else {
+                    TransportKind::Reqwest
+                },
+            });
         }
 
         Err(ExecutorError::MaxRetriesExhausted(

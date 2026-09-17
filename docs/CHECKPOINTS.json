@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C10",
+  "next_checkpoint": "C11",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c09_cargo_1.98.1",
+    "rust_verification": "passed_through_c10_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -521,7 +521,7 @@
     {
       "id": "C10",
       "title": "Убрать sleeps и повторную генерацию из DefaultExecutor",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C02"
       ],
@@ -533,7 +533,31 @@
       "change": "Убрать циклы повторения generation-запроса по 429/502/503/504 с задержками. Сохранить статус/тело/Retry-After для верхнего слоя. Credential recovery оставить только до миграции в единый механизм C13, чётко учитывая его отдельно от retry генерации. Не удалять transport connection reuse.",
       "tests": "Управляемые часы: mock 429/502/503/504 не требует advance на секунды для возврата executor. На неизменённом аккаунте/URL нет повторного generation request из этого слоя. Успех, redirect policy и request body fixtures прежние.",
       "acceptance": "DefaultExecutor не является вторым scheduler поверх harness. Число фактических попыток видно в тестовом счётчике.",
-      "rollback": "Откат только executor commit; не возвращать старые sleeps под видом таймаутов."
+      "rollback": "Откат только executor commit; не возвращать старые sleeps под видом таймаутов.",
+      "result": {
+        "completed": "2026-09-17",
+        "files": [
+          "src/core/executor/default.rs",
+          "tests/lean_proxy_retry_c10.rs",
+          "tests/chat_completions.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json"
+        ],
+        "scheduler": "DefaultExecutor now sends at most one generation request per unchanged URL and credentials. 429/502/503/504 return immediately without a fixed sleep or same-URL temporal retry. Distinct configured URL alternatives remain separate attempts.",
+        "error_contract": "Raw non-success responses retain status, body, headers, and Retry-After for the request-scoped account planner. The tokenrouter free-model semaphore and reqwest/hyper ClientPool reuse remain unchanged.",
+        "credential_recovery": "A 401/403 may still cause exactly one refreshed-credential attempt for that URL. It is explicitly classified as transitional auth recovery, not temporal generation retry, pending the unified C13 budget.",
+        "tests": [
+          "cargo test --test lean_proxy_retry_c10 -- --nocapture: 2 passed",
+          "cargo test --test chat_completions --test executor_pool_behavior --test lean_proxy_context_c08 --test lean_proxy_retry_c10 -- --nocapture: 52 passed",
+          "cargo test --lib --all-features -- --test-threads=1: 1226 passed",
+          "cargo test --test lean_proxy_contract --test lean_proxy_retry_c10 -- --nocapture: 6 passed",
+          "cargo clippy --test lean_proxy_retry_c10 --test executor_pool_behavior --all-features -- -D warnings -A clippy::let-and-return -A clippy::needless-return: passed",
+          "cargo clippy --all-targets --all-features: passed with 7 pre-existing warnings",
+          "cargo fmt --all -- --check, JSON parse, and git diff --check: passed"
+        ],
+        "acceptance_evidence": "Loopback 429 (including tokenrouter free model), 502, 503, and 504 each returned their exact body plus Retry-After within 500 ms and issued exactly one upstream request. A two-account 429/503 test now observes one request per account rather than an executor multiplier. Source guards prohibit retry loops and sleeps in DefaultExecutor::execute while confirming both pooled transports remain.",
+        "rollback": "Revert the C10 commit only. Do not restore fixed sleeps under timeout or backoff names."
+      }
     },
     {
       "id": "C11",

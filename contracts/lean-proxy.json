@@ -148,6 +148,14 @@
     "documented_adapter_wire_guards_preserved": true,
     "incompatible_formats_use_registered_translator": true
   },
+  "generation_retry_policy": {
+    "temporal_retry_owner": "client_or_harness",
+    "default_executor_same_url_retries": false,
+    "raw_error_status_body_and_retry_after_preserved": true,
+    "distinct_configured_url_fallback_preserved": true,
+    "pooled_transport_reuse_preserved": true,
+    "transitional_401_403_credential_recovery": "one_attempt_pending_C13"
+  },
   "versions": {
     "opencode": "1.18.31",
     "custom_harness": "unknown"

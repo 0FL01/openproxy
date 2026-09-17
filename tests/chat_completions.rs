@@ -810,7 +810,9 @@ async fn chat_completions_returns_the_last_upstream_error_when_all_accounts_fail
         .respond_with(ResponseTemplate::new(503).set_body_json(json!({
             "error": { "message": "temporary upstream issue" }
         })))
-        .expect(3)
+        // C10: the request-scoped account planner may try this account once;
+        // DefaultExecutor must not multiply it with local 503 retries.
+        .expect(1)
         .mount(&upstream)
         .await;
 
