@@ -122,4 +122,16 @@ fn contract_freezes_preservation_and_removal_lists() {
         manifest["generation_retry_policy"]["antigravity_executor_same_request_retries"],
         false
     );
+    assert_eq!(
+        manifest["generation_retry_policy"]["auth_recovery_owner"],
+        "request_scoped_planner"
+    );
+    assert_eq!(
+        manifest["generation_retry_policy"]["auth_recovery_attempts_per_incoming_request"],
+        1
+    );
+    assert_eq!(
+        manifest["generation_retry_policy"]["cross_request_cooldown_routing"],
+        false
+    );
 }

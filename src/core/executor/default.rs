@@ -15,7 +15,6 @@ use tokio::sync::{self, Semaphore};
 use crate::core::proxy::ProxyTarget;
 use crate::core::translator::helpers::openai_helper::normalize_developer_role;
 use crate::core::utils::reasoning_content_injector::inject_reasoning_content;
-use crate::oauth::token_refresh::dispatch_oauth_refresh;
 use crate::types::{ProviderConnection, ProviderNode};
 
 use super::strip_unsupported::strip_unsupported_params;
@@ -1109,20 +1108,16 @@ impl DefaultExecutor {
 
     pub async fn execute(
         &self,
-        mut request: ExecutionRequest,
+        request: ExecutionRequest,
     ) -> Result<ExecutionResponse, ExecutorError> {
-        // Build headers and transformed body once, reused across distinct
-        // fallback URLs. Generation requests are never temporally retried here.
-        let mut headers = self.build_headers_for_request(
+        let headers = self.build_headers_for_request(
             &request.model,
             &request.credentials,
             request.stream,
             &request.client_headers,
         )?;
         let transformed_body = self.transform_request(&request.body, &request.model);
-
-        // Try primary then fallback URLs.
-        let urls = self.resolve_urls(&request.model, request.stream, &request.credentials);
+        let url = self.build_url(&request.model, request.stream, &request.credentials)?;
 
         // Acquire semaphore for tokenrouter free models to limit concurrent requests to 1
         let _tokenrouter_permit = if self.provider == "tokenrouter"
@@ -1134,82 +1129,24 @@ impl DefaultExecutor {
             None
         };
 
-        for (url_index, url) in urls.iter().enumerate() {
-            let use_hyper = self.use_hyper_transport(&request, url);
-            let mut upstream = self
-                .send_one(url, &headers, &transformed_body, &request, use_hyper)
-                .await?;
-            let mut status = upstream.status();
+        let use_hyper = self.use_hyper_transport(&request, &url);
+        let upstream = self
+            .send_one(&url, &headers, &transformed_body, &request, use_hyper)
+            .await?;
 
-            // Credential recovery is intentionally distinct from generation
-            // retry policy until C13 moves it into the request-scoped planner.
-            // At most one refreshed-credential attempt is made for this URL.
-            if matches!(
-                status,
-                http::StatusCode::UNAUTHORIZED | http::StatusCode::FORBIDDEN
-            ) {
-                if let Some(new_creds) = self.try_refresh_credentials(&request.credentials).await {
-                    request.credentials = new_creds;
-                    headers = self.build_headers_for_request(
-                        &request.model,
-                        &request.credentials,
-                        request.stream,
-                        &request.client_headers,
-                    )?;
-                    upstream = self
-                        .send_one(url, &headers, &transformed_body, &request, use_hyper)
-                        .await?;
-                    status = upstream.status();
-                }
-            }
-
-            if status.is_success() {
-                return Ok(ExecutionResponse {
-                    response: upstream,
-                    url: url.clone(),
-                    headers,
-                    transformed_body,
-                    transport: if use_hyper {
-                        TransportKind::Hyper
-                    } else {
-                        TransportKind::Reqwest
-                    },
-                });
-            }
-
-            let has_next_url = url_index + 1 < urls.len();
-            let may_try_distinct_url = has_next_url
-                && matches!(
-                    status,
-                    http::StatusCode::UNAUTHORIZED
-                        | http::StatusCode::FORBIDDEN
-                        | http::StatusCode::TOO_MANY_REQUESTS
-                        | http::StatusCode::NOT_FOUND
-                        | http::StatusCode::GATEWAY_TIMEOUT
-                );
-            if may_try_distinct_url {
-                continue;
-            }
-
-            // Provider decisions are not executor failures. Preserve the raw
-            // response so the request-scoped routing layer can retain status,
-            // body, and Retry-After while deciding account fallback.
-            return Ok(ExecutionResponse {
-                response: upstream,
-                url: url.clone(),
-                headers,
-                transformed_body,
-                transport: if use_hyper {
-                    TransportKind::Hyper
-                } else {
-                    TransportKind::Reqwest
-                },
-            });
-        }
-
-        Err(ExecutorError::MaxRetriesExhausted(
-            "all retries and fallback URLs exhausted".into(),
-        ))
+        // C13: account selection and the sole 401/403 recovery live in the
+        // request-scoped planner. Preserve the raw response for that owner.
+        Ok(ExecutionResponse {
+            response: upstream,
+            url,
+            headers,
+            transformed_body,
+            transport: if use_hyper {
+                TransportKind::Hyper
+            } else {
+                TransportKind::Reqwest
+            },
+        })
     }
 
     /// Send a single request without retries, returning the raw upstream response.
@@ -1242,101 +1179,6 @@ impl DefaultExecutor {
                 .await
                 .map_err(ExecutorError::Request)
                 .map(UpstreamResponse::Reqwest)
-        }
-    }
-
-    /// Resolve primary and fallback URLs for the given request.
-    fn resolve_urls(
-        &self,
-        model: &str,
-        stream: bool,
-        credentials: &ProviderConnection,
-    ) -> Vec<String> {
-        let primary = match self.build_url(model, stream, credentials) {
-            Ok(url) => url,
-            Err(_) => return Vec::new(),
-        };
-        let mut urls = vec![primary];
-        urls.extend(self.config.fallback_urls.clone());
-        urls
-    }
-
-    /// Try to refresh OAuth credentials when the upstream returns 401/403.
-    /// Returns `Some(updated_creds)` on success, `None` on failure.
-    /// Refresh credentials with retry, rotating the refresh_token between
-    /// attempts (ported from 9router v0.5.45 fix(refresh): rotate refresh_token
-    /// between retry attempts). Rotating-RT providers (xAI/grok-cli) issue a
-    /// new refresh_token on every refresh; without in-place rotation the 2nd/3rd
-    /// retry reuses the already-consumed RT → invalid_grant → auth_failed.
-    async fn try_refresh_credentials(
-        &self,
-        credentials: &ProviderConnection,
-    ) -> Option<ProviderConnection> {
-        let mut working = credentials.clone();
-        if working.refresh_token.as_deref().unwrap_or("").is_empty() {
-            return None;
-        }
-
-        let provider = self.provider.clone();
-        // Working copies of the rotated RT/AT, behind Arc<Mutex> so the Fn
-        // closure can rotate them between retry attempts without moving fields
-        // out of `working`; read back after the retry loop completes.
-        let refresh_holder =
-            std::sync::Arc::new(std::sync::Mutex::new(working.refresh_token.clone()));
-        let access_holder =
-            std::sync::Arc::new(std::sync::Mutex::new(working.access_token.clone()));
-        let refresh_holder_inner = refresh_holder.clone();
-        let access_holder_inner = access_holder.clone();
-        let psd_for_attempt = working.provider_specific_data.clone();
-        let attempt = move || {
-            let provider = provider.clone();
-            let refresh_holder = refresh_holder_inner.clone();
-            let access_holder = access_holder_inner.clone();
-            let psd = psd_for_attempt.clone();
-            async move {
-                let refresh_token = refresh_holder
-                    .lock()
-                    .map(|g| g.clone().unwrap_or_default())
-                    .unwrap_or_default();
-                let prior_refresh = refresh_holder.lock().map(|g| g.clone()).unwrap_or_default();
-                let result = dispatch_oauth_refresh(&provider, &refresh_token, &psd).await?;
-                if let Some(new_refresh) = result.refresh_token.clone() {
-                    if Some(&new_refresh) != prior_refresh.as_ref() {
-                        if let Ok(mut guard) = refresh_holder.lock() {
-                            *guard = Some(new_refresh);
-                        }
-                        if let Ok(mut guard) = access_holder.lock() {
-                            *guard = Some(result.access_token.clone());
-                        }
-                    }
-                }
-                Ok(result)
-            }
-        };
-
-        match crate::oauth::token_refresh::refresh_with_retry(attempt).await {
-            Ok(result) => {
-                // The closure may have rotated credentials mid-loop; prefer the
-                // freshest values from the holders.
-                let rotated_access = access_holder.lock().ok().and_then(|g| g.clone());
-                let rotated_refresh = refresh_holder.lock().ok().and_then(|g| g.clone());
-                let mut updated = working;
-                updated.access_token = rotated_access.or(Some(result.access_token));
-                updated.refresh_token = result.refresh_token.clone().or(rotated_refresh);
-                if let Some(expires_in) = result.expires_in {
-                    let expiry = chrono::Utc::now() + chrono::Duration::seconds(expires_in);
-                    updated.expires_at = Some(expiry.to_rfc3339());
-                }
-                Some(updated)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "credential refresh failed for provider {}: {}",
-                    self.provider,
-                    e
-                );
-                None
-            }
         }
     }
 

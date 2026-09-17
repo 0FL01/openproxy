@@ -9,8 +9,9 @@
 //!    `X-Mimo-Source: mimocode-cli-free` and `x-session-affinity`.
 //!
 //! The JWT is cached in-memory (per fingerprint) with its `exp` claim minus a
-//! 300s buffer (fallback TTL 3000s); re-auth happens when the token expires or
-//! the server returns 401/403 (retry once).
+//! 300s buffer (fallback TTL 3000s). A 401/403 invalidates the cached JWT so a
+//! later client-owned request can bootstrap again; this executor never repeats
+//! the generation request.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -449,53 +450,12 @@ impl MimoFreeExecutor {
             .send()
             .await?;
 
-        let status = response.status();
-
-        // Auto-rebootstrap on 401 or 403 — invalidate the cached JWT and retry
-        // exactly once.
-        if status.as_u16() == 401 || status.as_u16() == 403 {
-            tracing::info!(
-                "mimo-free: got HTTP {} — invalidating JWT and re-bootstrapping",
-                status.as_u16()
-            );
+        if matches!(response.status().as_u16(), 401 | 403) {
+            // C13: invalidate stale derived credentials, but preserve the raw
+            // response. The request-scoped planner is the only generation
+            // recovery owner and this no-refresh-token provider cannot retry
+            // the same request invisibly.
             self.invalidate_jwt(&fingerprint);
-
-            // Re-bootstrap.
-            let jwt = match self.bootstrap_jwt(&fingerprint).await {
-                Ok(j) => j,
-                Err(e) => {
-                    // Return the original error response if re-bootstrap fails.
-                    return Ok(MimoFreeExecutorResponse {
-                        response: UpstreamResponse::Reqwest(response),
-                        url,
-                        headers,
-                        transformed_body: request.body,
-                        transport: TransportKind::Reqwest,
-                    });
-                }
-            };
-
-            let new_session_id = Self::generate_session_id();
-            let new_user_agent = self.next_user_agent();
-            let new_headers =
-                Self::build_headers(&jwt, request.stream, new_user_agent, &new_session_id)?;
-            let new_body_bytes = serde_json::to_vec(&request.body)?;
-
-            let client = self.pool.get("mimo-free", request.proxy.as_ref())?;
-            let retry_response = client
-                .post(&url)
-                .headers(new_headers.clone())
-                .body(new_body_bytes)
-                .send()
-                .await?;
-
-            return Ok(MimoFreeExecutorResponse {
-                response: UpstreamResponse::Reqwest(retry_response),
-                url,
-                headers: new_headers,
-                transformed_body: request.body,
-                transport: TransportKind::Reqwest,
-            });
         }
 
         Ok(MimoFreeExecutorResponse {

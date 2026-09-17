@@ -2,7 +2,7 @@
 
 Status: active
 Source: [user instruction](../AGENT-PROMPT.md), [checkpoint tracker](../CHECKPOINTS.json), and the user request of 2026-09-17 to execute every checkpoint iteratively on a new branch with commits after major changes
-Last updated: 2026-09-17
+Last updated: 2026-09-18
 
 ## Objective
 
@@ -34,8 +34,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: `docs/CHECKPOINTS.json` C03-C14.
   - Acceptance: Every checkpoint acceptance statement C03-C14 is met in dependency order, including an evidence-backed disposition for conditional C06 and a single documented attempt budget.
   - Primary evidence: Each checkpoint's targeted mock tests and affected routing/translator regression gates.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: C03-C13 and C14 are complete. Semantic repair/history and header replay are deleted; session identifiers are stateless; context metadata is separated from client-owned policy; heuristic rejection is gone; passthrough is protocol-keyed; Default, Codex, and Antigravity temporal loops are gone; and C13 proves one request-scoped account/auth generation budget with terminal client errors, one counted auth recovery, raw error preservation, cancellation, and no post-commit retry.
 
 - R4: Bound persistence, OAuth coordination, catalogs, control-plane state, and background work by configured connections rather than request/token history (C15-C25).
   - Source: `docs/CHECKPOINTS.json` C15-C25.
@@ -93,17 +93,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R3 / C13.
-- Smallest next action: Make the request-scoped chat planner the sole owner of account fallback and credential recovery, with one documented generation-attempt budget and no retry after downstream commitment.
-- Expected evidence: A status/account/auth matrix proves the exact upper attempt bound, one credential recovery owner, preserved raw errors and Retry-After, cancellation, and no executor multiplier.
-- Stop or replan if: A provider requires a protocol-mandated distinct endpoint exchange; count it explicitly without restoring temporal backoff or cross-request cooldown.
+- Closes: R4 / C16.
+- Smallest next action: Replace token-keyed completed-result refresh deduplication with connection-identity/generation singleflight and no long-lived completed-result cache.
+- Expected evidence: Concurrent same-connection refreshes coalesce; different connections/tokens do not cross; rotation, failure, cancellation, and generation changes have deterministic bounded state.
+- Stop or replan if: A caller lacks stable configured connection identity; record it for C17 migration rather than retaining an old-token key.
 
 ## Current State
 
-- Resolved: R1 / C00, R2 / C01-C02, C03-C12 and C14 within R3, plus C15 within R4. Kiro semantic repair/history replay, global Claude header replay, process-wide session/continuation maps, client-identity passthrough gating/cache re-anchoring, DefaultExecutor/Codex/Antigravity temporal retries, successful-response legacy housekeeping, redundant `Db::update` snapshot copies, and default chat context estimation/rejection are gone; context metadata remains independent.
-- Last relevant evidence: Antigravity 429/malformed/401 responses retained exact status, body, and headers after one request with no sleep; configured endpoint routing and live SSE cancellation remained intact while project discovery/onboarding stayed unchanged.
+- Resolved: R1 / C00, R2 / C01-C02, R3 / C03-C14, plus C15 within R4. Proxy-owned semantic/header/history replay, heuristic context policy, client-identity passthrough gating, all three executor temporal retry schedulers, and successful-response legacy housekeeping are gone. C13 provides the single bounded request-scoped generation/account/auth planner.
+- Last relevant evidence: The C13 status/account matrix proved its exact attempt count, terminal 400 behavior, raw Retry-After/body, one persisted xAI recovery with one counted follow-up, and no fallback after stream commitment or cancellation.
 - Blocker: None; the prompt explicitly allows independent safe work when external harness/version evidence is unavailable.
-- Next: C13 unified request-scoped account fallback and credential recovery budget.
+- Next: C16 connection-scoped refresh singleflight.
 
 ## Material Decisions
 
@@ -129,6 +129,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-09-17: C10 passed. Deleted DefaultExecutor's same-URL retry loop and fixed sleeps for tokenrouter 429 plus 502/503/504, while preserving raw errors, distinct URL alternatives, pooled transports, and one separately identified transitional credential recovery. Controlled loopback counters show one request per unchanged URL; C11 is next.
 - 2026-09-18: C11 passed. Deleted Codex's three-attempt first-SSE-error retry loop, fixed sleeps, and 256 KiB user-output window. A bounded one-event structured preflight now hands an initial overload/rate-limit failure to the request-scoped planner before commitment, while normal and post-delta events stay live and can never trigger another generation. C12 is next.
 - 2026-09-18: C12 passed. Deleted Antigravity's three-attempt generation retry loop, Retry-After sleeps, jitter, and free-text body classifier. Raw errors now reach the request-scoped planner after one configured-endpoint request; pooled transport, protocol transformation, successful live SSE, and separate project/onboarding behavior remain. C13 is next.
+- 2026-09-18: C13 passed. Added one request-scoped generation budget over eligible accounts and bounded protocol endpoint surfaces plus one auth follow-up; made chat the sole 401/403 recovery owner; stopped 400/422 account fan-out; removed Default and Mimo recovery multipliers; and preserved final raw errors, cancellation, pooled transports, and the no-post-commit rule. R3 is verified and C16 is next.
 
 ## Completion
 

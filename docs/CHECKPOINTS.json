@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C13",
+  "next_checkpoint": "C16",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c12_cargo_1.98.1",
+    "rust_verification": "passed_through_c13_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -642,7 +642,7 @@
     {
       "id": "C13",
       "title": "Единый бюджет account fallback и credential recovery",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C10",
         "C11",
@@ -660,7 +660,37 @@
       "change": "В одном месте учитывать попытки в рамках входящего запроса. Каждый допустимый аккаунт пробовать ограниченно; определить ровно одну разрешённую auth recovery для устаревших credentials и учесть её в лимите. Не восстанавливать cross-request cooldown. Временной backoff генерации принадлежит клиенту. Не гонять заведомо client-invalid body по всем аккаунтам без обоснования. Ретраи после downstream commitment запрещены.",
       "tests": "Матрица 400/401/403/429/5xx, разные аккаунты и URL, сохранённый Retry-After, клиентская отмена, заголовки уже отправлены. Установленный OpenCode может ретраить входящий запрос: проверить отсутствие независимых множителей внутри proxy; собственный harness проверяется по доступному контракту.",
       "acceptance": "Документированная верхняя граница generation attempts на входящий запрос, один владелец recovery, нет лишнего sleep. Не обещать повторяемость произвольных model/tool запросов после неизвестного результата.",
-      "rollback": "Откат planner вместе с его тестами; не оставить часть старых циклов и новый общий бюджет одновременно."
+      "rollback": "Откат planner вместе с его тестами; не оставить часть старых циклов и новый общий бюджет одновременно.",
+      "result": {
+        "completed": "2026-09-18",
+        "files": [
+          "src/core/account_fallback/mod.rs",
+          "src/server/api/chat.rs",
+          "src/core/executor/default.rs",
+          "src/core/executor/kiro.rs",
+          "src/core/executor/mimo_free.rs",
+          "src/core/executor/mod.rs",
+          "tests/lean_proxy_budget_c13.rs",
+          "tests/lean_proxy_retry_c10.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json"
+        ],
+        "budget": "The request-scoped planner owns a shared atomic generation budget: eligible accounts multiplied by the provider's bounded protocol endpoint surfaces, plus exactly one post-refresh generation attempt. Normal accounts are selected once; Kiro's three static endpoint surfaces reserve from the same budget.",
+        "auth_recovery": "DefaultExecutor credential refresh and Mimo same-request rebootstrap were removed. Chat owns one global 401/403 refresh invocation per incoming request, persists it, and its follow-up generation consumes the shared budget. Mimo invalidates stale derived JWT state but returns the original response for a later client-owned request.",
+        "status_policy": "Upstream 400/422 is terminal and is not replayed across accounts. Auth failures without the one permitted recovery, 429, 5xx, other account-specific failures, and transport errors may advance only to another eligible account with no sleep. Final raw status/body/Retry-After are preserved. Success immediately hands off the response, after which fallback cannot resume.",
+        "tests": [
+          "cargo test --test lean_proxy_budget_c13 -- --nocapture: 4 passed",
+          "cargo test --lib account_fallback --all-features -- --nocapture: 14 passed",
+          "cargo test --test lean_proxy_contract --test lean_proxy_budget_c13 --test lean_proxy_retry_c10 --test lean_proxy_codex_c11 --test lean_proxy_antigravity_c12 --test chat_completions -- --nocapture: 28 passed",
+          "cargo test --test executor_pool_behavior -- --nocapture: 37 passed",
+          "cargo test --lib --all-features -- --test-threads=1: 1222 passed",
+          "cargo clippy --test lean_proxy_budget_c13 --all-features -- -D warnings -A clippy::let-and-return -A clippy::needless-return: passed",
+          "cargo clippy --all-targets --all-features: passed with 7 pre-existing warnings",
+          "cargo fmt --all -- --check, JSON parse, and git diff --check: passed"
+        ],
+        "acceptance_evidence": "The 400/401/403/429/500/502/503/504 matrix used three accounts and observed exactly one attempt for terminal 400 or one per eligible account otherwise, with final Retry-After/body preserved. One xAI 401 triggered exactly one token request and one counted follow-up generation using persisted rotated credentials. A held successful stream committed one account and downstream cancellation dropped it without starting another. Source guards prove no Default/Mimo recovery multiplier, no planner sleep/cooldown routing, and shared Kiro endpoint accounting. Installed OpenCode remains version 1.18.31; no external model request was made or reported as compatibility evidence.",
+        "rollback": "Revert the complete C13 planner/executor commit with its tests. Never leave executor-local refresh/retry loops enabled alongside the shared planner budget."
+      }
     },
     {
       "id": "C14",

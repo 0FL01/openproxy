@@ -124,8 +124,8 @@ fn default_executor_contains_no_temporal_generation_scheduler() {
         );
     }
     assert!(
-        execute.contains("try_refresh_credentials"),
-        "transitional credential recovery must remain explicit until C13"
+        !execute.contains("try_refresh_credentials"),
+        "C13 moved the sole credential recovery into the request-scoped planner"
     );
     assert!(
         source.contains("self.pool.get(&self.provider")

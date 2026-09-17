@@ -2,6 +2,8 @@
 //!
 //! Provides persisted cooldown, model-lock, and fallback error handling.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -27,6 +29,41 @@ impl ProviderAttemptError {
             retry_after: None,
             upstream_body: None,
         }
+    }
+}
+
+/// Request-scoped generation-attempt budget shared by the account planner and
+/// the small number of protocol executors with distinct endpoint surfaces.
+/// It has no process-global state and never sleeps.
+#[derive(Debug, Clone)]
+pub struct GenerationAttemptBudget {
+    max: usize,
+    used: Arc<AtomicUsize>,
+}
+
+impl GenerationAttemptBudget {
+    pub fn new(max: usize) -> Self {
+        Self {
+            max: max.max(1),
+            used: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// Reserve one generation request before any upstream bytes are sent.
+    pub fn try_acquire(&self) -> bool {
+        self.used
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                (used < self.max).then_some(used + 1)
+            })
+            .is_ok()
+    }
+
+    pub fn used(&self) -> usize {
+        self.used.load(Ordering::Acquire)
+    }
+
+    pub fn max(&self) -> usize {
+        self.max
     }
 }
 
@@ -416,6 +453,18 @@ fn parse_timestamp(value: &str) -> Option<DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generation_attempt_budget_is_shared_and_strictly_bounded() {
+        let budget = GenerationAttemptBudget::new(3);
+        let clone = budget.clone();
+        assert!(budget.try_acquire());
+        assert!(clone.try_acquire());
+        assert!(budget.try_acquire());
+        assert!(!clone.try_acquire());
+        assert_eq!(budget.used(), 3);
+        assert_eq!(budget.max(), 3);
+    }
 
     fn make_connection(id: &str) -> ProviderConnection {
         use serde_json::Value;

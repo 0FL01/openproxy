@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 /// Maximum total AWS EventStream message length (1 MiB).
 const MAX_EVENTSTREAM_MESSAGE_LENGTH: usize = 1024 * 1024;
 
+use crate::core::account_fallback::GenerationAttemptBudget;
 use crate::core::proxy::ProxyTarget;
 use crate::types::{ProviderConnection, ProviderNode};
 
@@ -30,6 +31,7 @@ const KIRO_BASE_URLS: &[&str] = &[
     "https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse",
     "https://q.us-east-1.amazonaws.com/generateAssistantResponse",
 ];
+pub const MAX_KIRO_ENDPOINT_ATTEMPTS: usize = KIRO_BASE_URLS.len();
 
 /// 9router `KIRO_CODEWHISPERER_TARGET` (config/kiroConstants.js).
 const KIRO_CODEWHISPERER_TARGET: &str =
@@ -456,7 +458,27 @@ impl KiroExecutor {
 
     pub async fn execute_request(
         &self,
+        request: KiroExecutionRequest,
+    ) -> Result<KiroExecutorResponse, KiroExecutorError> {
+        self.execute_request_inner(request, None).await
+    }
+
+    /// Execute under the request-scoped planner budget. The planner reserves
+    /// the first endpoint attempt; this method reserves each additional Kiro
+    /// protocol surface before sending it.
+    pub async fn execute_request_with_budget(
+        &self,
+        request: KiroExecutionRequest,
+        attempt_budget: GenerationAttemptBudget,
+    ) -> Result<KiroExecutorResponse, KiroExecutorError> {
+        self.execute_request_inner(request, Some(attempt_budget))
+            .await
+    }
+
+    async fn execute_request_inner(
+        &self,
         mut request: KiroExecutionRequest,
+        attempt_budget: Option<GenerationAttemptBudget>,
     ) -> Result<KiroExecutorResponse, KiroExecutorError> {
         if request
             .credentials
@@ -483,6 +505,14 @@ impl KiroExecutor {
             {
                 Ok(pair) => pair,
                 Err(e) => {
+                    let has_fallback = url_index + 1 < urls.len();
+                    let can_try_fallback = has_fallback
+                        && attempt_budget
+                            .as_ref()
+                            .is_none_or(GenerationAttemptBudget::try_acquire);
+                    if !can_try_fallback {
+                        return Err(e);
+                    }
                     last_error = Some(e);
                     continue;
                 }
@@ -497,7 +527,12 @@ impl KiroExecutor {
                 let status = response.status().as_u16();
                 let is_fallback_status = status == 401 || status == 403 || status == 404;
                 let has_fallback = url_index + 1 < urls.len();
-                if is_fallback_status && has_fallback {
+                let can_try_fallback = is_fallback_status
+                    && has_fallback
+                    && attempt_budget
+                        .as_ref()
+                        .is_none_or(GenerationAttemptBudget::try_acquire);
+                if can_try_fallback {
                     last_error = Some(KiroExecutorError::EndpointStatus {
                         status,
                         url: url.clone(),

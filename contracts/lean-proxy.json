@@ -156,10 +156,20 @@
     "codex_first_event_preflight_max_inspected_bytes": 65536,
     "codex_structured_first_event_failure_reaches_planner": true,
     "codex_retries_after_downstream_commitment": false,
+    "request_scoped_planner_owner": true,
+    "generation_attempt_upper_bound": "eligible_accounts_times_protocol_endpoint_surfaces_plus_one_auth_followup",
+    "auth_recovery_owner": "request_scoped_planner",
+    "auth_recovery_attempts_per_incoming_request": 1,
+    "client_invalid_terminal_statuses": [
+      400,
+      422
+    ],
+    "cross_request_cooldown_routing": false,
+    "retries_after_downstream_commitment": false,
     "raw_error_status_body_and_retry_after_preserved": true,
     "distinct_configured_url_fallback_preserved": true,
     "pooled_transport_reuse_preserved": true,
-    "transitional_401_403_credential_recovery": "one_attempt_pending_C13"
+    "transitional_401_403_credential_recovery": "replaced_by_C13_request_scoped_planner"
   },
   "versions": {
     "opencode": "1.18.31",

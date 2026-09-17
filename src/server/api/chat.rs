@@ -13,7 +13,7 @@ use futures_util::TryStreamExt;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 
-use crate::core::account_fallback::ProviderAttemptError;
+use crate::core::account_fallback::{GenerationAttemptBudget, ProviderAttemptError};
 use crate::core::chat::RequestPlan;
 use crate::core::executor::UpstreamResponse;
 use crate::core::model::get_model_info;
@@ -724,6 +724,7 @@ async fn forward_with_provider_fallback(
     let mut excluded = HashSet::new();
     let mut last_error: Option<ProviderAttemptError> = None;
     let mut reloaded = false;
+    let mut auth_recovery_used = false;
     let codex_supporters = if provider == "codex" {
         let snapshot = state.db.snapshot();
         state
@@ -733,6 +734,27 @@ async fn forward_with_provider_fallback(
     } else {
         None
     };
+    let initial_snapshot = state.db.snapshot();
+    let eligible_accounts = eligible_connection_count_with_supporters(
+        &initial_snapshot,
+        provider,
+        model,
+        codex_supporters.as_ref(),
+    )
+    .max(1);
+    let endpoint_attempts_per_account = if provider == "kiro" {
+        crate::core::executor::MAX_KIRO_ENDPOINT_ATTEMPTS
+    } else {
+        1
+    };
+    // Every eligible account gets a bounded set of protocol endpoint surfaces.
+    // One additional generation attempt is reserved for the sole request-scoped
+    // 401/403 credential recovery. There is no cross-request state or sleep.
+    let attempt_budget = GenerationAttemptBudget::new(
+        eligible_accounts
+            .saturating_mul(endpoint_attempts_per_account)
+            .saturating_add(1),
+    );
 
     // Extract custom-tool names (OpenAI Responses translator metadata).
     // Kept for the streaming response path; stripped from the body below.
@@ -888,6 +910,19 @@ async fn forward_with_provider_fallback(
             obj.insert("stream".into(), Value::Bool(stream));
         }
 
+        if !attempt_budget.try_acquire() {
+            return Err(last_error.unwrap_or_else(|| {
+                ProviderAttemptError::new(
+                    502,
+                    format!(
+                        "Generation attempt budget exhausted ({}/{})",
+                        attempt_budget.used(),
+                        attempt_budget.max()
+                    ),
+                )
+            }));
+        }
+
         let attempt_log = match log_context {
             Some(context) => context.start_attempt(provider, model).await,
             None => None,
@@ -918,13 +953,16 @@ async fn forward_with_provider_fallback(
                         upstream_body: None,
                     })?;
                 executor
-                    .execute_request(KiroExecutionRequest {
-                        model: model.to_string(),
-                        body: request_body.clone(),
-                        stream,
-                        credentials: connection.clone(),
-                        proxy,
-                    })
+                    .execute_request_with_budget(
+                        KiroExecutionRequest {
+                            model: model.to_string(),
+                            body: request_body.clone(),
+                            stream,
+                            credentials: connection.clone(),
+                            proxy,
+                        },
+                        attempt_budget.clone(),
+                    )
                     .await
                     .map_err(|e| ProviderAttemptError {
                         status: 500,
@@ -1618,13 +1656,21 @@ async fn forward_with_provider_fallback(
                     upstream_body,
                 });
 
-                // Token refresh: on 401/403, try to refresh the access token
-                // before giving up on this connection (9router parity).
-                // On success, merge credentials (expires_at, refresh, PSD) and
-                // continue the loop so the fresh snapshot picks up the token.
+                // A body-invalid request is account-independent. Replaying it
+                // across every configured credential only multiplies an
+                // already-known client failure.
+                if matches!(status.as_u16(), 400 | 422) {
+                    return Err(last_error.expect("upstream error recorded"));
+                }
+
+                // C13: the request-scoped planner is the sole 401/403 recovery
+                // owner. At most one refresh is attempted across all accounts;
+                // its follow-up generation consumes the shared budget.
                 if (status.as_u16() == 401 || status.as_u16() == 403)
                     && connection.refresh_token.is_some()
+                    && !auth_recovery_used
                 {
+                    auth_recovery_used = true;
                     if let Some(ref rt) = connection.refresh_token.clone() {
                         let refresh_provider = plan.provider.as_str();
                         if let Ok(result) = crate::oauth::token_refresh::dispatch_oauth_refresh(
@@ -1641,7 +1687,7 @@ async fn forward_with_provider_fallback(
                                 (Utc::now() + ChronoDuration::seconds(secs)).to_rfc3339()
                             });
                             let last_refresh_at = Utc::now().to_rfc3339();
-                            let _ = state
+                            let persisted = state
                                 .db
                                 .update(move |db| {
                                     if let Some(conn) =
@@ -1665,8 +1711,11 @@ async fn forward_with_provider_fallback(
                                         conn.backoff_level = Some(0);
                                     }
                                 })
-                                .await;
-                            continue;
+                                .await
+                                .is_ok();
+                            if persisted {
+                                continue;
+                            }
                         }
                     }
                 }
@@ -1759,6 +1808,31 @@ fn select_connection_with_supporters(
             .cmp(&(right.priority.unwrap_or(u32::MAX), right.id.as_str()))
     });
     candidates.into_iter().next()
+}
+
+fn eligible_connection_count_with_supporters(
+    snapshot: &AppDb,
+    provider: &str,
+    model: &str,
+    discovered_supporters: Option<&HashSet<String>>,
+) -> usize {
+    let count = snapshot
+        .provider_connections
+        .iter()
+        .filter(|connection| {
+            connection.provider == provider
+                && connection.is_active()
+                && connection_has_credentials(connection)
+                && connection_supports_model(connection, model)
+                && discovered_supporters
+                    .is_none_or(|supporters| supporters.contains(&connection.id))
+        })
+        .count();
+    if count == 0 && is_no_auth_provider(provider) {
+        1
+    } else {
+        count
+    }
 }
 
 fn is_no_auth_provider(provider: &str) -> bool {
