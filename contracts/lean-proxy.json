@@ -133,6 +133,9 @@
     "context_management_owner": "client",
     "proxy_memory_limit_unit": "bytes",
     "default_rejection_reader_removed_by": "C08",
+    "default_rejection_reader_status": "removed",
+    "explicit_count_tokens_route_preserved": true,
+    "upstream_context_error_passthrough": true,
     "codex_values_are_verified_upstream_limits": false,
     "stored_values_preserved_for_rollback": true
   },

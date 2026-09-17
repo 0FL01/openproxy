@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C08",
+  "next_checkpoint": "C09",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c07_cargo_1.98.1",
+    "rust_verification": "passed_through_c08_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -427,7 +427,7 @@
     {
       "id": "C08",
       "title": "Убрать эвристический token estimator с обычного chat path",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C07"
       ],
@@ -441,7 +441,34 @@
       "change": "В лёгком режиме не обходить messages/tools дважды ради proxy token-count и искусственного headroom. Удалить вызовы и затем невостребованные функции. Сохранить отдельный явно запрошенный count_tokens API, если это публичный поддерживаемый контракт. Для временно поддерживаемой явной legacy policy вычислять один раз без Value::clone и Vec, сохраняя исключение inline binary.",
       "tests": "Большой Unicode/tools запрос, data URL и base64 object; для удалённой default policy число вызовов estimator равно нулю. Реальный upstream context error передаётся клиенту. Legacy/count_tokens fixtures, если они остаются, не меняют семантику.",
       "acceptance": "Обычный chat не делает полную сериализацию/клонирование ради эвристики. Контекст не обрезается, synthetic usage не выдаётся за upstream usage.",
-      "rollback": "Возврат прежнего поведения только явно объявленным режимом совместимости на период миграции, не новым автоматическим fallback."
+      "rollback": "Возврат прежнего поведения только явно объявленным режимом совместимости на период миграции, не новым автоматическим fallback.",
+      "result": {
+        "completed": "2026-09-17",
+        "files": [
+          "src/core/context_limit.rs",
+          "src/core/executor/default.rs",
+          "src/server/api/chat.rs",
+          "tests/chat_completions.rs",
+          "tests/lean_proxy_context_c08.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json"
+        ],
+        "removal": "Both ordinary-chat estimator calls, the recursive clone-and-serialize estimator, native catalog lookup for local rejection, synthetic context 413 construction, and transitional rejection/headroom helpers were deleted. No compatibility mode or automatic fallback replaced them.",
+        "preserved": "The explicit /v1/messages/count_tokens implementation and fixtures, 32 MiB request body bounds, provider translations, providerContextLimits metadata semantics, and OpenCode metadata are unchanged. DefaultExecutor now returns non-retryable upstream statuses as raw responses so actual provider context errors keep their status and body.",
+        "tests": [
+          "cargo test --test lean_proxy_context_c08 -- --nocapture: 2 passed",
+          "cargo test --test chat_completions --test v1_compat_api --test executor_pool_behavior -- --nocapture: 54 passed",
+          "cargo test --lib core::context_limit --all-features -- --nocapture: 3 passed",
+          "cargo test --lib core::executor::default --all-features -- --nocapture: 10 passed",
+          "cargo test --lib --all-features: 1227 passed",
+          "cargo clippy --test lean_proxy_context_c08 --test chat_completions --test v1_compat_api --all-features -- -D warnings -A clippy::let-and-return -A clippy::needless-return: passed",
+          "cargo clippy --all-targets --all-features: passed with 7 pre-existing warnings",
+          "cargo fmt --all -- --check, JSON parse, and git diff --check: passed"
+        ],
+        "acceptance_evidence": "A >2 MiB request containing 500000 Unicode characters, a 720000-byte tool description, a data URL, and a base64 object reaches the loopback upstream exactly once without truncation or local rejection. Source guards prove the estimator/policy symbols have no src references. A real upstream 413 body is returned byte-for-byte, and the independent count_tokens fixture remains green.",
+        "data_and_schema": "No persisted value, schema field, model metadata shape, or openproxy.v1 field changed. Stored providerContextLimits values remain available for metadata and an explicitly announced rollback reader.",
+        "rollback": "Revert the C08 commit only if an explicit compatibility mode is declared; do not restore the estimator as default policy or as a generation fallback."
+      }
     },
     {
       "id": "C09",

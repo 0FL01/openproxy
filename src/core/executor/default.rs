@@ -1281,25 +1281,21 @@ impl DefaultExecutor {
                     break;
                 }
 
-                // Other non-success status: propagate the upstream error WITH
-                // its body (JS base.js returns the raw response so handlers can
-                // read quota text / RetryInfo / provider error codes — dropping
-                // the body here blinded check_fallback_error's message matching).
-                let body_text = upstream.text().await;
-                let body_text = body_text.chars().take(2000).collect::<String>();
-                return Err(ExecutorError::UpstreamStatus(
-                    status,
-                    if body_text.is_empty() {
-                        format!("upstream returned {} for URL {}", status.as_u16(), url)
+                // Other non-success statuses are provider decisions, not
+                // executor failures. Preserve the raw response so the routing
+                // layer can inspect it and return the upstream status/body
+                // verbatim when no account fallback succeeds.
+                return Ok(ExecutionResponse {
+                    response: upstream,
+                    url: url.clone(),
+                    headers,
+                    transformed_body,
+                    transport: if use_hyper {
+                        TransportKind::Hyper
                     } else {
-                        format!(
-                            "upstream returned {} for URL {}: {}",
-                            status.as_u16(),
-                            url,
-                            body_text
-                        )
+                        TransportKind::Reqwest
                     },
-                ));
+                });
             }
         }
 

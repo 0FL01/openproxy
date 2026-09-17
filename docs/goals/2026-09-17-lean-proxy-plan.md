@@ -93,17 +93,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R3 / C08.
-- Smallest next action: Remove the named legacy token estimator/rejection calls from the ordinary chat path while preserving explicit count-tokens and upstream context errors.
-- Expected evidence: Large Unicode/tools/base64 requests make zero estimator calls on the default generation path, remain bounded by byte limits, and upstream context failures pass through unchanged.
-- Stop or replan if: A supported adapter proves an explicit opt-in compatibility mode requires local estimation; isolate that mode without restoring the default heuristic.
+- Closes: R3 / C09.
+- Smallest next action: Select same-format passthrough from protocol capability rather than recognized client User-Agent while retaining required model routing and adapter headers.
+- Expected evidence: Equivalent bodies with recognized, unknown, and absent User-Agent preserve the same unknown fields/cache anchors; incompatible source/target formats still translate tools and reasoning correctly.
+- Stop or replan if: A provider-specific adapter proves a concrete wire mutation is mandatory; isolate that adapter requirement instead of restoring client-name gating.
 
 ## Current State
 
-- Resolved: R1 / C00, R2 / C01-C02, C03-C07 and C14 within R3, plus C15 within R4. Kiro semantic repair/history replay, global Claude header replay, process-wide session/continuation maps, successful-response legacy housekeeping, and redundant `Db::update` snapshot copies are gone; context metadata is now separate from the transitional rejection policy.
-- Last relevant evidence: C07 persisted missing/empty/explicit/custom-model fixtures, `/v1/models` metadata/source tests, dashboard build, OpenCode discovery tests, and focused strict clippy passed.
+- Resolved: R1 / C00, R2 / C01-C02, C03-C08 and C14 within R3, plus C15 within R4. Kiro semantic repair/history replay, global Claude header replay, process-wide session/continuation maps, successful-response legacy housekeeping, redundant `Db::update` snapshot copies, and default chat context estimation/rejection are gone; context metadata remains independent.
+- Last relevant evidence: C08 forwarded a >2 MiB Unicode/tools/data-URL/base64 request once without truncation, returned a loopback upstream context 413 byte-for-byte, preserved explicit count-tokens, and removed every estimator/policy symbol from `src`.
 - Blocker: None; the prompt explicitly allows independent safe work when external harness/version evidence is unavailable.
-- Next: C08 removal of the default chat-path estimator/rejection.
+- Next: C09 protocol-capability passthrough independent of client identity.
 
 ## Material Decisions
 
@@ -124,6 +124,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-09-17: C15 passed. `Db::update` now performs one mutable full copy, shares old/new snapshots with blocking persistence, preserves Arc identity on no-op, publishes only after commit, and keeps commit/publication serialized even when the awaiting caller is cancelled. C06 is next as the first dependency-ready checkpoint after the frozen first-delivery sequence.
 - 2026-09-17: C06 passed. Deleted both process-wide session/continuation maps without replacement; client ids remain authoritative, Antigravity preserves its UUID-plus-digits wire shape, OpenCode fallback is a stateless namespaced UUID, and Kiro continuation is deterministically bound to the selected configured connection while anonymous requests remain ephemeral. Five full-handler Kiro turns, adapter tests, 100,000-session churn, and cancellation prove zero retained entries; C07 is next.
 - 2026-09-17: C07 passed. Split client-facing configured/native context metadata from the explicitly named transitional proxy rejection reader, preserved missing/empty/explicit/custom persisted values and canonical `opencode.source`, removed the unverified Codex overdrive claim, and rebuilt the dashboard with ownership-accurate copy. C08 is next.
+- 2026-09-17: C08 passed. Deleted both ordinary-chat estimator calls and all synthetic context rejection/headroom code without changing advertised metadata or byte limits; preserved explicit count-tokens and made real non-retryable upstream errors retain their status/body. A large Unicode/tools/data-URL/base64 request reached the loopback upstream once without truncation. C09 is next.
 
 ## Completion
 

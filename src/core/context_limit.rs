@@ -1,7 +1,5 @@
 use std::collections::BTreeMap;
 
-use serde_json::Value;
-
 pub const DEFAULT_CONTEXT_LIMIT: u32 = 500_000;
 pub const MAX_CONTEXT_LIMIT: u32 = 1_000_000;
 pub const CODEX_OUTPUT_LIMIT: u32 = 128_000;
@@ -79,92 +77,12 @@ pub fn advertised_model_limits(
     }
 }
 
-/// Transitional C07 policy reader for the heuristic rejection removed by C08.
-/// Keep it separate from [`advertised_model_limits`]: deleting this policy must
-/// not alter metadata consumed by OpenCode and other clients.
-pub fn legacy_proxy_rejection_limit(
-    provider: &str,
-    configured: u32,
-    native_context: Option<u32>,
-) -> u32 {
-    if canonical_provider(provider) == Some("codex") {
-        configured
-    } else {
-        native_context.map_or(configured, |native| native.min(configured))
-    }
-}
-
-/// Transitional input headroom used only by the legacy rejection policy.
-pub fn legacy_proxy_input_limit(provider: &str, context: u32) -> Option<u32> {
-    (canonical_provider(provider) == Some("codex")).then(|| {
-        context
-            .saturating_sub(CODEX_ADVERTISED_INPUT_RESERVE)
-            .max(1)
-    })
-}
-
-/// Conservative cross-provider estimate for prompt-bearing JSON fields.
-/// One token per four serialized UTF-8 bytes is intentionally approximate;
-/// request bodies are rejected, never truncated or rewritten.
-pub fn estimate_input_tokens(body: &Value) -> u64 {
-    const PROMPT_FIELDS: [&str; 7] = [
-        "messages",
-        "input",
-        "instructions",
-        "system",
-        "contents",
-        "tools",
-        "tool_choice",
-    ];
-
-    let bytes: usize = PROMPT_FIELDS
-        .into_iter()
-        .filter_map(|field| body.get(field))
-        .map(|value| {
-            let mut prompt = value.clone();
-            remove_inline_binary_payloads(&mut prompt);
-            serde_json::to_vec(&prompt).map_or(0, |encoded| encoded.len())
-        })
-        .sum();
-    (bytes as u64).div_ceil(4)
-}
-
-fn remove_inline_binary_payloads(value: &mut Value) {
-    match value {
-        Value::String(text) => {
-            if text.starts_with("data:") {
-                if let Some(index) = text.find(";base64,") {
-                    text.truncate(index + ";base64,".len());
-                }
-            }
-        }
-        Value::Array(values) => {
-            for value in values {
-                remove_inline_binary_payloads(value);
-            }
-        }
-        Value::Object(object) => {
-            if object.get("type").and_then(Value::as_str) == Some("base64") {
-                if let Some(Value::String(data)) = object.get_mut("data") {
-                    data.clear();
-                }
-            }
-            for value in object.values_mut() {
-                remove_inline_binary_payloads(value);
-            }
-        }
-        _ => {}
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
     use super::*;
 
     #[test]
-    fn codex_advertising_is_separate_from_legacy_rejection_policy() {
+    fn codex_advertising_retains_compatibility_metadata() {
         let advertised =
             advertised_model_limits("codex", 500_000, Some(272_000), None, Some(64_000));
         assert_eq!(
@@ -175,11 +93,6 @@ mod tests {
                 output: Some(128_000),
             }
         );
-        assert_eq!(
-            legacy_proxy_rejection_limit("codex", 500_000, Some(272_000)),
-            500_000
-        );
-        assert_eq!(legacy_proxy_input_limit("codex", 500_000), Some(450_000));
     }
 
     #[test]
@@ -207,58 +120,5 @@ mod tests {
         let empty = BTreeMap::new();
         assert_eq!(configured_limit(&empty, "glm"), Some(DEFAULT_CONTEXT_LIMIT));
         assert_eq!(configured_limit(&empty, "unconfigured"), None);
-    }
-
-    #[test]
-    fn estimate_counts_messages_and_tools_but_not_transport_fields() {
-        let base = estimate_input_tokens(&json!({
-            "model": "glm/glm-5.1",
-            "messages": [{"role": "user", "content": "hello"}]
-        }));
-        let with_tools = estimate_input_tokens(&json!({
-            "model": "ignored-model-name",
-            "stream": true,
-            "messages": [{"role": "user", "content": "hello"}],
-            "tools": [{"type": "function", "function": {"name": "lookup", "description": "long schema"}}]
-        }));
-        assert!(with_tools > base);
-    }
-
-    #[test]
-    fn estimate_ignores_inline_image_payloads() {
-        let small = estimate_input_tokens(&json!({
-            "input": [{
-                "role": "user",
-                "content": [{
-                    "type": "input_image",
-                    "image_url": "data:image/png;base64,A"
-                }]
-            }]
-        }));
-        let large = estimate_input_tokens(&json!({
-            "input": [{
-                "role": "user",
-                "content": [{
-                    "type": "input_image",
-                    "image_url": format!("data:image/png;base64,{}", "A".repeat(1_000_000))
-                }]
-            }]
-        }));
-        let claude = estimate_input_tokens(&json!({
-            "messages": [{
-                "role": "user",
-                "content": [{
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "image/png",
-                        "data": "A".repeat(1_000_000)
-                    }
-                }]
-            }]
-        }));
-
-        assert_eq!(large, small);
-        assert!(claude < 100);
     }
 }

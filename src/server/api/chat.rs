@@ -417,18 +417,6 @@ async fn chat_completions_impl(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    let estimated_tokens = crate::core::context_limit::estimate_input_tokens(&body);
-    if let Some(error) = context_limit_error(
-        &state,
-        &snapshot.settings,
-        resolved.provider.as_deref().unwrap_or(model_str),
-        &resolved.model,
-        estimated_tokens,
-    )
-    .await
-    {
-        return attempt_error_response(error);
-    }
     let mut plan = RequestPlan::new(
         endpoint,
         &body,
@@ -535,68 +523,6 @@ fn apply_stream_plan(
     );
 }
 
-async fn native_context_window(state: &AppState, provider: &str, model: &str) -> Option<u32> {
-    let provider = crate::core::context_limit::canonical_provider(provider)?;
-    if crate::core::model::models_dev::is_opencode_provider(provider) {
-        return state
-            .models_dev
-            .snapshot()
-            .await
-            .ok()?
-            .find(provider, model)
-            .and_then(|metadata| metadata.context_window);
-    }
-    if provider == "codex" {
-        let snapshot = state.db.snapshot();
-        return state
-            .codex_models
-            .union_active(state, &snapshot.provider_connections)
-            .await
-            .models
-            .iter()
-            .find(|metadata| metadata.id == model)
-            .and_then(|metadata| metadata.context_window)
-            .and_then(|value| u32::try_from(value).ok());
-    }
-    crate::core::model::catalog::provider_catalog()
-        .find_model(provider, model)
-        .and_then(|metadata| metadata.context_window)
-}
-
-fn context_limit_attempt_error(
-    provider: &str,
-    estimated_tokens: u64,
-    effective_limit: u32,
-    configured_limit: u32,
-) -> ProviderAttemptError {
-    ProviderAttemptError {
-        status: 413,
-        message: format!(
-            "Context limit exceeded for provider {provider}: estimated {estimated_tokens} input tokens, effective limit {effective_limit}, configured limit {configured_limit}"
-        ),
-        retry_after: None,
-        upstream_body: None,
-    }
-}
-
-async fn context_limit_error(
-    state: &AppState,
-    settings: &crate::types::Settings,
-    provider: &str,
-    model: &str,
-    estimated_tokens: u64,
-) -> Option<ProviderAttemptError> {
-    let configured =
-        crate::core::context_limit::configured_limit(&settings.provider_context_limits, provider)?;
-    let native = native_context_window(state, provider, model).await;
-    let context =
-        crate::core::context_limit::legacy_proxy_rejection_limit(provider, configured, native);
-    let input =
-        crate::core::context_limit::legacy_proxy_input_limit(provider, context).unwrap_or(context);
-    (estimated_tokens > u64::from(input))
-        .then(|| context_limit_attempt_error(provider, estimated_tokens, input, configured))
-}
-
 async fn execute_single_model(
     state: &AppState,
     request_body: &Value,
@@ -635,19 +561,6 @@ async fn execute_single_model(
                 upstream_body: None,
             })?;
         plan.apply_opencode_metadata(metadata);
-    }
-
-    let estimated_tokens = crate::core::context_limit::estimate_input_tokens(request_body);
-    if let Some(error) = context_limit_error(
-        state,
-        &snapshot.settings,
-        &plan.provider,
-        plan.dispatch_model(),
-        estimated_tokens,
-    )
-    .await
-    {
-        return Err(error);
     }
 
     let mut body = request_body.clone();

@@ -191,43 +191,6 @@ async fn chat_completions_streams_openai_compatible_response() {
 }
 
 #[tokio::test]
-async fn context_limit_rejects_before_provider_dispatch() {
-    let settings = Settings::default();
-    let state = seeded_state_with_settings(Vec::new(), Vec::new(), settings).await;
-    let app = openproxy::build_app(state);
-    // Exceeds Axum's default 2 MiB JSON limit, but remains below OpenProxy's
-    // fixed 32 MiB LLM-route ceiling so the semantic context guard handles it.
-    let oversized_prompt = "x".repeat(2 * 1024 * 1024 + 100);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/chat/completions")
-                .header("authorization", "Bearer valid-bearer")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({
-                        "model": "glm/glm-5.1",
-                        "messages": [{"role": "user", "content": oversized_prompt}]
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    let body = axum::body::to_bytes(response.into_body(), 4096)
-        .await
-        .unwrap();
-    let body = String::from_utf8(body.to_vec()).unwrap();
-    assert!(body.contains("provider glm"));
-    assert!(body.contains("configured limit 500000"));
-}
-
-#[tokio::test]
 async fn chat_completions_reports_oversized_json_as_payload_too_large() {
     let app = openproxy::build_app(seeded_state(Vec::new(), Vec::new()).await);
     let oversized_prompt = "x".repeat(32 * 1024 * 1024);
