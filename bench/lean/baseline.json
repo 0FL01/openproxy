@@ -1,0 +1,790 @@
+{
+  "allocation_run": {
+    "allocator": "std::alloc::System wrapped by atomic counting allocator",
+    "metrics": [
+      "allocated_bytes",
+      "deallocated_bytes",
+      "temporary_allocated_bytes_estimate",
+      "allocation_calls",
+      "deallocation_calls",
+      "live_bytes_delta",
+      "peak_live_bytes_above_start_max"
+    ],
+    "mode": "separate release integration executable",
+    "scope": "request batches only; stack and temporary database setup excluded",
+    "status": "measured"
+  },
+  "build": {
+    "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+    "cargo_profile": "release",
+    "debug_assertions": false,
+    "features": [
+      "default",
+      "embed-web"
+    ],
+    "logging": {
+      "RUST_LOG": "off",
+      "request_logging_code_path": "enabled",
+      "subscriber": "not installed by benchmark"
+    },
+    "release_profile": {
+      "codegen_units": 1,
+      "lto": "thin",
+      "opt_level": "s",
+      "panic": "abort",
+      "strip": "symbols"
+    },
+    "runtime_threads": "Tokio test runtime defaults; unchanged",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8"
+  },
+  "command": "scripts/bench-lean",
+  "database": {
+    "kind": "owned temporary SQLite",
+    "production_database_used": false,
+    "seeded_connections": 1,
+    "seeded_provider_nodes": 1,
+    "size_bytes": 238776
+  },
+  "environment": {
+    "cpu_model": "AMD EPYC 9634 84-Core Processor",
+    "git_commit": "f189469fc7b6572b0453dc9d4171ba0d1f7c2b40",
+    "git_worktree_dirty": true,
+    "kernel": "Linux 6.12.86+deb13-amd64 x86_64 GNU/Linux",
+    "logical_cpus": 6,
+    "opencode_version": "1.18.31",
+    "opencode_version_unavailable_reason": null
+  },
+  "generated_at": "2026-09-17T18:24:48.619875837+00:00",
+  "matrix": {
+    "concurrency": [
+      1,
+      8,
+      32
+    ],
+    "conditions": [
+      "cold",
+      "warm"
+    ],
+    "repetitions": 5,
+    "warmup_requests_per_path": 1
+  },
+  "methodology": {
+    "allocation": "separate release executable with a System counting allocator; snapshots bracket request batches and exclude stack/database setup; temporary_allocated_bytes_estimate is allocated bytes minus positive end-of-batch live-byte delta",
+    "attempt_check": "mock request-count deltas must equal successful client requests for every batch",
+    "cold": "fresh temporary SQLite, AppState, handler listener, clients, and upstream listener for each repetition; request timing excludes setup",
+    "memory": "Linux /proc/self/smaps_rollup before/after each batch and every 1 ms during the batch; peak is process-wide and includes the benchmark harness",
+    "pairing": "direct and proxy requests are paired by repetition and request index; overhead percentiles are computed from those per-request differences",
+    "throughput": "successful measured requests divided by summed measured batch wall time",
+    "timing": "monotonic Instant from client send start; TTFC ends at first parsed non-empty delta.content; interchunk intervals are between parsed content events from the same request",
+    "warm": "one direct and one handler request before five measured repetitions; clients, transports, AppState, and SQLite are reused"
+  },
+  "results": [
+    {
+      "concurrency": 1,
+      "condition": "cold",
+      "paired_proxy_overhead_us": {
+        "derivation": "proxy-minus-direct per-request differences matched by repetition/request index; never percentile subtraction",
+        "mean_interchunk_interval": {
+          "p50": 14,
+          "p95": 389,
+          "p99": 389
+        },
+        "pair_count": 5,
+        "time_to_first_content": {
+          "p50": 12566,
+          "p95": 16031,
+          "p99": 16031
+        }
+      },
+      "paths": {
+        "direct_mock": {
+          "allocation": {
+            "allocated_bytes": 556240,
+            "allocated_bytes_per_request": 111248,
+            "allocation_calls": 1115,
+            "deallocated_bytes": 241103,
+            "deallocation_calls": 862,
+            "live_bytes_delta": 315137,
+            "peak_live_bytes_above_start_max": 81901,
+            "temporary_allocated_bytes_estimate": 241103,
+            "temporary_metric_definition": "allocated bytes minus positive end-of-batch live-byte delta; an aggregate non-retained estimate, not pointer lifetime tracking"
+          },
+          "allocation_unavailable_reason": null,
+          "interchunk_interval_us": {
+            "p50": 50931,
+            "p95": 51440,
+            "p99": 51440
+          },
+          "interchunk_samples": 10,
+          "memory": {
+            "pss_bytes": {
+              "after_p50": 15897600,
+              "before_p50": 15881216,
+              "peak_above_before_max": 503808,
+              "peak_max": 18134016
+            },
+            "rss_bytes": {
+              "after_p50": 18288640,
+              "before_p50": 18272256,
+              "peak_above_before_max": 503808,
+              "peak_max": 20525056
+            },
+            "unavailable_reason": null
+          },
+          "request_samples": 5,
+          "successes": 5,
+          "throughput_requests_per_second": 4.882082752587621,
+          "time_to_first_content_us": {
+            "p50": 51648,
+            "p95": 52116,
+            "p99": 52116
+          },
+          "upstream_attempts": 5
+        },
+        "full_openproxy_handler": {
+          "allocation": {
+            "allocated_bytes": 25167880,
+            "allocated_bytes_per_request": 5033576,
+            "allocation_calls": 34683,
+            "deallocated_bytes": 22089534,
+            "deallocation_calls": 19240,
+            "live_bytes_delta": 3078346,
+            "peak_live_bytes_above_start_max": 1585347,
+            "temporary_allocated_bytes_estimate": 22089534,
+            "temporary_metric_definition": "allocated bytes minus positive end-of-batch live-byte delta; an aggregate non-retained estimate, not pointer lifetime tracking"
+          },
+          "allocation_unavailable_reason": null,
+          "interchunk_interval_us": {
+            "p50": 50953,
+            "p95": 51591,
+            "p99": 51591
+          },
+          "interchunk_samples": 10,
+          "memory": {
+            "pss_bytes": {
+              "after_p50": 17060864,
+              "before_p50": 15897600,
+              "peak_above_before_max": 3547136,
+              "peak_max": 19137536
+            },
+            "rss_bytes": {
+              "after_p50": 19451904,
+              "before_p50": 18288640,
+              "peak_above_before_max": 3547136,
+              "peak_max": 21528576
+            },
+            "unavailable_reason": null
+          },
+          "request_samples": 5,
+          "successes": 5,
+          "throughput_requests_per_second": 4.606534113991491,
+          "time_to_first_content_us": {
+            "p50": 64214,
+            "p95": 67722,
+            "p99": 67722
+          },
+          "upstream_attempts": 5
+        }
+      },
+      "repetitions": 5
+    },
+    {
+      "concurrency": 8,
+      "condition": "cold",
+      "paired_proxy_overhead_us": {
+        "derivation": "proxy-minus-direct per-request differences matched by repetition/request index; never percentile subtraction",
+        "mean_interchunk_interval": {
+          "p50": 84,
+          "p95": 890,
+          "p99": 911
+        },
+        "pair_count": 40,
+        "time_to_first_content": {
+          "p50": 11501,
+          "p95": 13422,
+          "p99": 13845
+        }
+      },
+      "paths": {
+        "direct_mock": {
+          "allocation": {
+            "allocated_bytes": 4337078,
+            "allocated_bytes_per_request": 108426,
+            "allocation_calls": 8279,
+            "deallocated_bytes": 1929254,
+            "deallocation_calls": 6871,
+            "live_bytes_delta": 2407824,
+            "peak_live_bytes_above_start_max": 548565,
+            "temporary_allocated_bytes_estimate": 1929254,
+            "temporary_metric_definition": "allocated bytes minus positive end-of-batch live-byte delta; an aggregate non-retained estimate, not pointer lifetime tracking"
+          },
+          "allocation_unavailable_reason": null,
+          "interchunk_interval_us": {
+            "p50": 51028,
+            "p95": 51715,
+            "p99": 51781
+          },
+          "interchunk_samples": 80,
+          "memory": {
+            "pss_bytes": {
+              "after_p50": 23258112,
+              "before_p50": 23258112,
+              "peak_above_before_max": 36864,
+              "peak_max": 27649024
+            },
+            "rss_bytes": {
+              "after_p50": 25649152,
+              "before_p50": 25649152,
+              "peak_above_before_max": 36864,
+              "peak_max": 30040064
+            },
+            "unavailable_reason": null
+          },
+          "request_samples": 40,
+          "successes": 40,
+          "throughput_requests_per_second": 38.744999448082325,
+          "time_to_first_content_us": {
+            "p50": 51949,
+            "p95": 52284,
+            "p99": 52402
+          },
+          "upstream_attempts": 40
+        },
+        "full_openproxy_handler": {
+          "allocation": {
+            "allocated_bytes": 47507462,
+            "allocated_bytes_per_request": 1187686,
+            "allocation_calls": 115095,
+            "deallocated_bytes": 30591898,
+            "deallocation_calls": 50071,
+            "live_bytes_delta": 16915564,
+            "peak_live_bytes_above_start_max": 3733805,
+            "temporary_allocated_bytes_estimate": 30591898,
+            "temporary_metric_definition": "allocated bytes minus positive end-of-batch live-byte delta; an aggregate non-retained estimate, not pointer lifetime tracking"
+          },
+          "allocation_unavailable_reason": null,
+          "interchunk_interval_us": {
+            "p50": 51141,
+            "p95": 51926,
+            "p99": 52906
+          },
+          "interchunk_samples": 80,
+          "memory": {
+            "pss_bytes": {
+              "after_p50": 25699328,
+              "before_p50": 23258112,
+              "peak_above_before_max": 2441216,
+              "peak_max": 28517376
+            },
+            "rss_bytes": {
+              "after_p50": 28090368,
+              "before_p50": 25649152,
+              "peak_above_before_max": 2441216,
+              "peak_max": 30908416
+            },
+            "unavailable_reason": null
+          },
+          "request_samples": 40,
+          "successes": 40,
+          "throughput_requests_per_second": 36.69648654049156,
+          "time_to_first_content_us": {
+            "p50": 63033,
+            "p95": 65558,
+            "p99": 65932
+          },
+          "upstream_attempts": 40
+        }
+      },
+      "repetitions": 5
+    },
+    {
+      "concurrency": 32,
+      "condition": "cold",
+      "paired_proxy_overhead_us": {
+        "derivation": "proxy-minus-direct per-request differences matched by repetition/request index; never percentile subtraction",
+        "mean_interchunk_interval": {
+          "p50": -111,
+          "p95": 817,
+          "p99": 951
+        },
+        "pair_count": 160,
+        "time_to_first_content": {
+          "p50": 14765,
+          "p95": 28824,
+          "p99": 35634
+        }
+      },
+      "paths": {
+        "direct_mock": {
+          "allocation": {
+            "allocated_bytes": 17320033,
+            "allocated_bytes_per_request": 108250,
+            "allocation_calls": 32784,
+            "deallocated_bytes": 7729925,
+            "deallocation_calls": 27441,
+            "live_bytes_delta": 9590108,
+            "peak_live_bytes_above_start_max": 2234535,
+            "temporary_allocated_bytes_estimate": 7729925,
+            "temporary_metric_definition": "allocated bytes minus positive end-of-batch live-byte delta; an aggregate non-retained estimate, not pointer lifetime tracking"
+          },
+          "allocation_unavailable_reason": null,
+          "interchunk_interval_us": {
+            "p50": 51193,
+            "p95": 52275,
+            "p99": 52338
+          },
+          "interchunk_samples": 320,
+          "memory": {
+            "pss_bytes": {
+              "after_p50": 46261248,
+              "before_p50": 46248960,
+              "peak_above_before_max": 12288,
+              "peak_max": 61613056
+            },
+            "rss_bytes": {
+              "after_p50": 48652288,
+              "before_p50": 48640000,
+              "peak_above_before_max": 12288,
+              "peak_max": 64004096
+            },
+            "unavailable_reason": null
+          },
+          "request_samples": 160,
+          "successes": 160,
+          "throughput_requests_per_second": 152.27623129156825,
+          "time_to_first_content_us": {
+            "p50": 52439,
+            "p95": 67407,
+            "p99": 68428
+          },
+          "upstream_attempts": 160
+        },
+        "full_openproxy_handler": {
+          "allocation": {
+            "allocated_bytes": 126477657,
+            "allocated_bytes_per_request": 790485,
+            "allocation_calls": 412581,
+            "deallocated_bytes": 65515471,
+            "deallocation_calls": 161474,
+            "live_bytes_delta": 60962186,
+            "peak_live_bytes_above_start_max": 14461008,
+            "temporary_allocated_bytes_estimate": 65515471,
+            "temporary_metric_definition": "allocated bytes minus positive end-of-batch live-byte delta; an aggregate non-retained estimate, not pointer lifetime tracking"
+          },
+          "allocation_unavailable_reason": null,
+          "interchunk_interval_us": {
+            "p50": 51373,
+            "p95": 52448,
+            "p99": 52574
+          },
+          "interchunk_samples": 320,
+          "memory": {
+            "pss_bytes": {
+              "after_p50": 54125568,
+              "before_p50": 46261248,
+              "peak_above_before_max": 10010624,
+              "peak_max": 62190592
+            },
+            "rss_bytes": {
+              "after_p50": 56516608,
+              "before_p50": 48652288,
+              "peak_above_before_max": 10010624,
+              "peak_max": 64581632
+            },
+            "unavailable_reason": null
+          },
+          "request_samples": 160,
+          "successes": 160,
+          "throughput_requests_per_second": 137.33470458259154,
+          "time_to_first_content_us": {
+            "p50": 67091,
+            "p95": 83533,
+            "p99": 87765
+          },
+          "upstream_attempts": 160
+        }
+      },
+      "repetitions": 5
+    },
+    {
+      "concurrency": 1,
+      "condition": "warm",
+      "paired_proxy_overhead_us": {
+        "derivation": "proxy-minus-direct per-request differences matched by repetition/request index; never percentile subtraction",
+        "mean_interchunk_interval": {
+          "p50": -24,
+          "p95": 1637,
+          "p99": 1637
+        },
+        "pair_count": 5,
+        "time_to_first_content": {
+          "p50": 620,
+          "p95": 1641,
+          "p99": 1641
+        }
+      },
+      "paths": {
+        "direct_mock": {
+          "allocation": {
+            "allocated_bytes": 172007,
+            "allocated_bytes_per_request": 34401,
+            "allocation_calls": 828,
+            "deallocated_bytes": 163698,
+            "deallocation_calls": 803,
+            "live_bytes_delta": 8309,
+            "peak_live_bytes_above_start_max": 21419,
+            "temporary_allocated_bytes_estimate": 163698,
+            "temporary_metric_definition": "allocated bytes minus positive end-of-batch live-byte delta; an aggregate non-retained estimate, not pointer lifetime tracking"
+          },
+          "allocation_unavailable_reason": null,
+          "interchunk_interval_us": {
+            "p50": 51005,
+            "p95": 51606,
+            "p99": 51606
+          },
+          "interchunk_samples": 10,
+          "memory": {
+            "pss_bytes": {
+              "after_p50": 62080000,
+              "before_p50": 62080000,
+              "peak_above_before_max": 0,
+              "peak_max": 62080000
+            },
+            "rss_bytes": {
+              "after_p50": 64471040,
+              "before_p50": 64471040,
+              "peak_above_before_max": 0,
+              "peak_max": 64471040
+            },
+            "unavailable_reason": null
+          },
+          "request_samples": 5,
+          "successes": 5,
+          "throughput_requests_per_second": 4.888705242177795,
+          "time_to_first_content_us": {
+            "p50": 51476,
+            "p95": 51823,
+            "p99": 51823
+          },
+          "upstream_attempts": 5
+        },
+        "full_openproxy_handler": {
+          "allocation": {
+            "allocated_bytes": 704750,
+            "allocated_bytes_per_request": 140950,
+            "allocation_calls": 4415,
+            "deallocated_bytes": 698726,
+            "deallocation_calls": 4390,
+            "live_bytes_delta": 6024,
+            "peak_live_bytes_above_start_max": 60128,
+            "temporary_allocated_bytes_estimate": 698726,
+            "temporary_metric_definition": "allocated bytes minus positive end-of-batch live-byte delta; an aggregate non-retained estimate, not pointer lifetime tracking"
+          },
+          "allocation_unavailable_reason": null,
+          "interchunk_interval_us": {
+            "p50": 51349,
+            "p95": 52340,
+            "p99": 52340
+          },
+          "interchunk_samples": 10,
+          "memory": {
+            "pss_bytes": {
+              "after_p50": 62075904,
+              "before_p50": 62080000,
+              "peak_above_before_max": 0,
+              "peak_max": 62080000
+            },
+            "rss_bytes": {
+              "after_p50": 64466944,
+              "before_p50": 64471040,
+              "peak_above_before_max": 0,
+              "peak_max": 64471040
+            },
+            "unavailable_reason": null
+          },
+          "request_samples": 5,
+          "successes": 5,
+          "throughput_requests_per_second": 4.8617718245515755,
+          "time_to_first_content_us": {
+            "p50": 52096,
+            "p95": 52781,
+            "p99": 52781
+          },
+          "upstream_attempts": 5
+        }
+      },
+      "repetitions": 5
+    },
+    {
+      "concurrency": 8,
+      "condition": "warm",
+      "paired_proxy_overhead_us": {
+        "derivation": "proxy-minus-direct per-request differences matched by repetition/request index; never percentile subtraction",
+        "mean_interchunk_interval": {
+          "p50": 186,
+          "p95": 651,
+          "p99": 693
+        },
+        "pair_count": 40,
+        "time_to_first_content": {
+          "p50": 863,
+          "p95": 2367,
+          "p99": 2878
+        }
+      },
+      "paths": {
+        "direct_mock": {
+          "allocation": {
+            "allocated_bytes": 1841782,
+            "allocated_bytes_per_request": 46044,
+            "allocation_calls": 6695,
+            "deallocated_bytes": 1401327,
+            "deallocation_calls": 6439,
+            "live_bytes_delta": 440455,
+            "peak_live_bytes_above_start_max": 462215,
+            "temporary_allocated_bytes_estimate": 1401327,
+            "temporary_metric_definition": "allocated bytes minus positive end-of-batch live-byte delta; an aggregate non-retained estimate, not pointer lifetime tracking"
+          },
+          "allocation_unavailable_reason": null,
+          "interchunk_interval_us": {
+            "p50": 50982,
+            "p95": 51686,
+            "p99": 52166
+          },
+          "interchunk_samples": 80,
+          "memory": {
+            "pss_bytes": {
+              "after_p50": 62063616,
+              "before_p50": 62063616,
+              "peak_above_before_max": 1024,
+              "peak_max": 62075904
+            },
+            "rss_bytes": {
+              "after_p50": 64454656,
+              "before_p50": 64454656,
+              "peak_above_before_max": 0,
+              "peak_max": 64466944
+            },
+            "unavailable_reason": null
+          },
+          "request_samples": 40,
+          "successes": 40,
+          "throughput_requests_per_second": 38.88034127266208,
+          "time_to_first_content_us": {
+            "p50": 51714,
+            "p95": 52744,
+            "p99": 52816
+          },
+          "upstream_attempts": 40
+        },
+        "full_openproxy_handler": {
+          "allocation": {
+            "allocated_bytes": 9255295,
+            "allocated_bytes_per_request": 231382,
+            "allocation_calls": 46245,
+            "deallocated_bytes": 6355870,
+            "deallocation_calls": 35160,
+            "live_bytes_delta": 2899425,
+            "peak_live_bytes_above_start_max": 3099809,
+            "temporary_allocated_bytes_estimate": 6355870,
+            "temporary_metric_definition": "allocated bytes minus positive end-of-batch live-byte delta; an aggregate non-retained estimate, not pointer lifetime tracking"
+          },
+          "allocation_unavailable_reason": null,
+          "interchunk_interval_us": {
+            "p50": 51445,
+            "p95": 51875,
+            "p99": 51945
+          },
+          "interchunk_samples": 80,
+          "memory": {
+            "pss_bytes": {
+              "after_p50": 62063616,
+              "before_p50": 62063616,
+              "peak_above_before_max": 0,
+              "peak_max": 62075904
+            },
+            "rss_bytes": {
+              "after_p50": 64454656,
+              "before_p50": 64454656,
+              "peak_above_before_max": 0,
+              "peak_max": 64466944
+            },
+            "unavailable_reason": null
+          },
+          "request_samples": 40,
+          "successes": 40,
+          "throughput_requests_per_second": 38.57223316754875,
+          "time_to_first_content_us": {
+            "p50": 52733,
+            "p95": 53989,
+            "p99": 54092
+          },
+          "upstream_attempts": 40
+        }
+      },
+      "repetitions": 5
+    },
+    {
+      "concurrency": 32,
+      "condition": "warm",
+      "paired_proxy_overhead_us": {
+        "derivation": "proxy-minus-direct per-request differences matched by repetition/request index; never percentile subtraction",
+        "mean_interchunk_interval": {
+          "p50": 250,
+          "p95": 804,
+          "p99": 1355
+        },
+        "pair_count": 160,
+        "time_to_first_content": {
+          "p50": 3290,
+          "p95": 7865,
+          "p99": 9458
+        }
+      },
+      "paths": {
+        "direct_mock": {
+          "allocation": {
+            "allocated_bytes": 7588436,
+            "allocated_bytes_per_request": 47427,
+            "allocation_calls": 26772,
+            "deallocated_bytes": 5657590,
+            "deallocation_calls": 25715,
+            "live_bytes_delta": 1930846,
+            "peak_live_bytes_above_start_max": 2068098,
+            "temporary_allocated_bytes_estimate": 5657590,
+            "temporary_metric_definition": "allocated bytes minus positive end-of-batch live-byte delta; an aggregate non-retained estimate, not pointer lifetime tracking"
+          },
+          "allocation_unavailable_reason": null,
+          "interchunk_interval_us": {
+            "p50": 51143,
+            "p95": 51866,
+            "p99": 51997
+          },
+          "interchunk_samples": 320,
+          "memory": {
+            "pss_bytes": {
+              "after_p50": 62620672,
+              "before_p50": 62620672,
+              "peak_above_before_max": 28672,
+              "peak_max": 62800896
+            },
+            "rss_bytes": {
+              "after_p50": 65011712,
+              "before_p50": 65011712,
+              "peak_above_before_max": 28672,
+              "peak_max": 65191936
+            },
+            "unavailable_reason": null
+          },
+          "request_samples": 160,
+          "successes": 160,
+          "throughput_requests_per_second": 155.13349905637432,
+          "time_to_first_content_us": {
+            "p50": 51916,
+            "p95": 53069,
+            "p99": 53471
+          },
+          "upstream_attempts": 160
+        },
+        "full_openproxy_handler": {
+          "allocation": {
+            "allocated_bytes": 46152546,
+            "allocated_bytes_per_request": 288453,
+            "allocation_calls": 193768,
+            "deallocated_bytes": 32788349,
+            "deallocation_calls": 145297,
+            "live_bytes_delta": 13364197,
+            "peak_live_bytes_above_start_max": 13157811,
+            "temporary_allocated_bytes_estimate": 32788349,
+            "temporary_metric_definition": "allocated bytes minus positive end-of-batch live-byte delta; an aggregate non-retained estimate, not pointer lifetime tracking"
+          },
+          "allocation_unavailable_reason": null,
+          "interchunk_interval_us": {
+            "p50": 51128,
+            "p95": 52471,
+            "p99": 52800
+          },
+          "interchunk_samples": 320,
+          "memory": {
+            "pss_bytes": {
+              "after_p50": 62665728,
+              "before_p50": 62620672,
+              "peak_above_before_max": 487424,
+              "peak_max": 62800896
+            },
+            "rss_bytes": {
+              "after_p50": 65056768,
+              "before_p50": 65011712,
+              "peak_above_before_max": 487424,
+              "peak_max": 65191936
+            },
+            "unavailable_reason": null
+          },
+          "request_samples": 160,
+          "successes": 160,
+          "throughput_requests_per_second": 151.22158945417382,
+          "time_to_first_content_us": {
+            "p50": 55243,
+            "p95": 59236,
+            "p99": 62261
+          },
+          "upstream_attempts": 160
+        }
+      },
+      "repetitions": 5
+    }
+  ],
+  "schema": "openproxy.lean-benchmark.v1",
+  "thresholds": {
+    "declared_before_measurement": true,
+    "noise": {
+      "allocation_relative_percent": 5,
+      "latency_relative_percent": 10,
+      "memory_relative_percent": 5,
+      "throughput_relative_percent": 10
+    },
+    "regression": {
+      "allocated_bytes_per_request": {
+        "absolute_allowance_bytes": 65536,
+        "max_relative_percent": 10
+      },
+      "interchunk_p95": {
+        "absolute_allowance_us": 250,
+        "max_relative_percent": 15
+      },
+      "rss_pss_peak": {
+        "absolute_allowance_bytes": 1048576,
+        "max_relative_percent": 10
+      },
+      "successes": "must equal request samples",
+      "throughput": {
+        "max_decrease_percent": 10
+      },
+      "ttfc_p95": {
+        "absolute_allowance_us": 250,
+        "max_relative_percent": 15
+      },
+      "upstream_attempts": "must equal successes"
+    }
+  },
+  "workload": {
+    "client": "reqwest 0.12 release integration executable",
+    "external_or_paid_network": false,
+    "features": {
+      "images": false,
+      "reasoning": false,
+      "streaming": true,
+      "tool_choice": "auto",
+      "tools": true
+    },
+    "first_chunk_delay_us": 50000,
+    "inter_chunk_delay_us": 50000,
+    "network": "127.0.0.1 ephemeral listeners only",
+    "provider_path": "lean prefix -> lean-node openai-compatible -> loopback /chat/completions",
+    "request_bytes": 335,
+    "stream_content_events": 3,
+    "success_contract": "HTTP 2xx; exactly alpha beta gamma across three content events; terminal [DONE]",
+    "translator_path": "OpenAI chat input -> OpenAI-compatible identity mapping; streamed OpenAI SSE -> OpenAI SSE",
+    "upstream_response_bytes": 360
+  }
+}

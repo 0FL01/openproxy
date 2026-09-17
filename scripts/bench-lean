@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+export RUST_LOG=off
+export LEAN_BENCH_OUTPUT="${LEAN_BENCH_OUTPUT:-$repo_root/bench/lean/baseline.json}"
+
+if [[ "${1:-}" == "--help" ]]; then
+  printf '%s\n' \
+    'Usage: scripts/bench-lean' \
+    '' \
+    'Runs the deterministic loopback lean-proxy matrix in release mode, then' \
+    'runs the same matrix in a separate counting-allocator executable and' \
+    'validates the generated baseline. No external provider is contacted.' \
+    '' \
+    'Override the artifact path with LEAN_BENCH_OUTPUT.'
+  exit 0
+fi
+
+cargo test --release --test lean_proxy_benchmark \
+  generate_lean_latency_baseline -- --ignored --exact --nocapture
+cargo test --release --test lean_proxy_allocation_benchmark \
+  add_lean_allocation_baseline -- --ignored --exact --nocapture
+cargo test --test lean_proxy_benchmark_validation -- --nocapture
+
+printf 'Lean baseline written to %s\n' "$LEAN_BENCH_OUTPUT"

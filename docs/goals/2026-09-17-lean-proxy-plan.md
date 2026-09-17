@@ -27,8 +27,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: `docs/CHECKPOINTS.json` C01-C02.
   - Acceptance: The harness controls headers, chunk timing/EOF, failures, OAuth rotation, request counts, clock, and concurrency; release baseline records the specified latency, memory, allocation, throughput, feature, workload, and environment metadata with at least five representative repetitions.
   - Primary evidence: Harness tests and validated `baseline.json` produced by the documented benchmark command.
-  - Status: in_progress
-  - Evidence: C01 is verified: the reusable loopback harness controls response headers/status/chunks, first-byte and EOF gates, body failures, OAuth-shaped rotation, and request capture/counts; native JSON/SSE and OpenAI↔Claude fixtures, virtual time, barriers, and an owned temporary DB are covered by five passing integration tests. C02 baseline remains.
+  - Status: verified
+  - Evidence: C01 is verified: the reusable loopback harness controls response headers/status/chunks, first-byte and EOF gates, body failures, OAuth-shaped rotation, and request capture/counts; native JSON/SSE and OpenAI↔Claude fixtures, virtual time, barriers, and an owned temporary DB are covered by five passing integration tests. C02 is verified by `scripts/bench-lean`: its release latency/RSS/PSS run and separate counting-allocator run produced `bench/lean/baseline.json`, covering direct/full-handler, cold/warm, concurrency 1/8/32, five repetitions, matched per-request overhead, exact success/attempt counts, and predeclared thresholds. Two artifact validation tests passed.
 
 - R3: Remove proxy-owned semantic replay, header replay, context policy, and independent generation retry loops while preserving required protocol/account behavior (C03-C14).
   - Source: `docs/CHECKPOINTS.json` C03-C14.
@@ -93,17 +93,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R2 / C02.
-- Smallest next action: Add and run the release lean benchmark against the deterministic upstream, recording comparable direct/proxy latency, RSS/PSS, allocation, throughput, success, and attempt-count evidence.
-- Expected evidence: Validated baseline artifact with environment/features/logging/request/DB metadata, warm/cold concurrency 1/8/32 series, at least five repetitions, and a predeclared noise/regression threshold.
-- Stop or replan if: A required system measurement source is unavailable; record that individual metric as blocked/unavailable without fabricating it and continue all independent measurements.
+- Closes: R3 / C03.
+- Smallest next action: Remove Kiro semantic repair buffering and hidden second-generation behavior while preserving required AWS EventStream decoding and tool mapping.
+- Expected evidence: A valid first Kiro event reaches the client before held EOF; short valid, ellipsis, and future-action text do not trigger another generation; malformed frames fail and cancellation reaches upstream.
+- Stop or replan if: Removing repair reveals a required provider wire decoder or tool mapping dependency; preserve that protocol requirement and isolate the semantic retry/remapping behavior rather than deleting both.
 
 ## Current State
 
-- Resolved: R1 / C00 and C01 of R2. The deterministic mock harness and first fixture set are available without production data or external network access.
-- Last relevant evidence: C01 harness tests passed 5/5; contract+harness passed 9/9; clippy and all 1,233 library tests passed. The streaming fixture delivered before held EOF, while the deliberately buffering fixture missed the first-event window until released.
+- Resolved: R1 / C00 and R2 / C01-C02. The deterministic mock harness and comparable release baseline are available without production data, credentials, paid providers, or external network access.
+- Last relevant evidence: `scripts/bench-lean` passed the normal release matrix, separate counting-allocator matrix, and two artifact validations. Every path completed 410/410 measured requests with one upstream attempt each. Warm concurrency-32 full-handler TTFC was 55,243/59,236/62,261 us p50/p95/p99, throughput was 151.22 requests/s, RSS/PSS peaks were 65,191,936/62,800,896 bytes, and counted allocation was 288,453 bytes/request. C01 harness tests remain 5/5.
 - Blocker: None; the prompt explicitly allows independent safe work when external harness/version evidence is unavailable.
-- Next: C02 release baseline.
+- Next: C03 Kiro semantic repair and full-response buffering removal.
 
 ## Material Decisions
 
@@ -116,6 +116,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-09-17: Goal frozen from the user request, `docs/AGENT-PROMPT.md`, and all C00-C42 entries in `docs/CHECKPOINTS.json`; C00 started.
 - 2026-09-17: C00 passed. Added the human and machine-readable lean boundary, migration matrix, route/format inventories, source registry links, and contract tests. No runtime/configuration behavior changed; C01 is next.
 - 2026-09-17: C01 passed. Added a reusable loopback scripted upstream, controlled stream gates/failures/request capture, OAuth-shaped rotation responses, native and translated fixtures, virtual-time/barrier primitives, and an owned temporary DB. No production behavior changed; C02 is next.
+- 2026-09-17: C02 passed. The documented release benchmark measured the direct mock and full handler with equal successful SSE/tools work at cold/warm concurrency 1/8/32 over five repetitions, separately measured allocations, validated exact attempts and artifact completeness, and recorded predeclared thresholds. No runtime behavior changed; C03 is next.
 
 ## Completion
 

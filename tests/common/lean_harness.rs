@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::{to_bytes, Body};
 use axum::extract::State;
@@ -15,6 +16,8 @@ use tokio::task::JoinHandle;
 
 #[derive(Clone, Debug)]
 pub struct RecordedRequest {
+    #[allow(dead_code)]
+    pub path: String,
     pub headers: HeaderMap,
     pub body: Bytes,
 }
@@ -24,6 +27,8 @@ pub struct ScriptedResponse {
     pub status: StatusCode,
     pub headers: Vec<(String, String)>,
     pub chunks: Vec<Bytes>,
+    pub delay_before_first: Duration,
+    pub inter_chunk_delay: Duration,
     pub wait_before_first: Option<Arc<Notify>>,
     pub hold_eof: Option<Arc<Notify>>,
     pub fail_after_chunks: bool,
@@ -35,6 +40,8 @@ impl ScriptedResponse {
             status,
             headers: vec![("content-type".into(), "application/json".into())],
             chunks: vec![body.into()],
+            delay_before_first: Duration::ZERO,
+            inter_chunk_delay: Duration::ZERO,
             wait_before_first: None,
             hold_eof: None,
             fail_after_chunks: false,
@@ -46,6 +53,8 @@ impl ScriptedResponse {
             status: StatusCode::OK,
             headers: vec![("content-type".into(), "text/event-stream".into())],
             chunks: chunks.into_iter().map(Into::into).collect(),
+            delay_before_first: Duration::ZERO,
+            inter_chunk_delay: Duration::ZERO,
             wait_before_first: None,
             hold_eof: None,
             fail_after_chunks: false,
@@ -54,6 +63,13 @@ impl ScriptedResponse {
 
     pub fn with_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.headers.push((name.into(), value.into()));
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn with_chunk_timing(mut self, first: Duration, between: Duration) -> Self {
+        self.delay_before_first = first;
+        self.inter_chunk_delay = between;
         self
     }
 
@@ -136,6 +152,11 @@ impl MockUpstream {
         self.state.requests.lock().await.clone()
     }
 
+    #[allow(dead_code)]
+    pub async fn request_count(&self) -> usize {
+        self.state.requests.lock().await.len()
+    }
+
     pub async fn shutdown(mut self) {
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
@@ -158,15 +179,16 @@ impl Drop for MockUpstream {
 }
 
 async fn mock_handler(State(state): State<MockState>, request: Request<Body>) -> Response<Body> {
+    let path = request.uri().path().to_string();
     let headers = request.headers().clone();
     let body = to_bytes(request.into_body(), 32 * 1024 * 1024)
         .await
         .expect("read mock request body");
-    state
-        .requests
-        .lock()
-        .await
-        .push(RecordedRequest { headers, body });
+    state.requests.lock().await.push(RecordedRequest {
+        path,
+        headers,
+        body,
+    });
     state.request_arrived.notify_waiters();
 
     let Some(script) = state.scripts.lock().await.pop_front() else {
@@ -180,7 +202,13 @@ async fn mock_handler(State(state): State<MockState>, request: Request<Body>) ->
         if let Some(release) = script.wait_before_first {
             release.notified().await;
         }
-        for chunk in script.chunks {
+        if !script.delay_before_first.is_zero() {
+            tokio::time::sleep(script.delay_before_first).await;
+        }
+        for (index, chunk) in script.chunks.into_iter().enumerate() {
+            if index > 0 && !script.inter_chunk_delay.is_zero() {
+                tokio::time::sleep(script.inter_chunk_delay).await;
+            }
             yield Ok::<Bytes, std::io::Error>(chunk);
             tokio::task::yield_now().await;
         }
@@ -218,5 +246,10 @@ impl TempTestDb {
             db,
             _directory: directory,
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn path(&self) -> &std::path::Path {
+        self._directory.path()
     }
 }

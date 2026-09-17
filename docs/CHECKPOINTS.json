@@ -23,9 +23,34 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C02",
+  "next_checkpoint": "C03",
   "measurements": {
-    "baseline": null,
+    "baseline": {
+      "artifact": "bench/lean/baseline.json",
+      "command": "scripts/bench-lean",
+      "generated_at": "2026-09-17T18:24:48.619875837+00:00",
+      "profile": "release",
+      "features": [
+        "default",
+        "embed-web"
+      ],
+      "matrix": "direct mock and full OpenProxy handler; cold/warm; concurrency 1/8/32; 5 repetitions",
+      "measured_requests_per_path": 410,
+      "proxy_warm_c1_ttfc_us": {
+        "p50": 52303,
+        "p95": 53312,
+        "p99": 53312
+      },
+      "proxy_warm_c32_ttfc_us": {
+        "p50": 55243,
+        "p95": 59236,
+        "p99": 62261
+      },
+      "proxy_warm_c32_throughput_rps": 151.22158945417382,
+      "proxy_warm_c32_rss_peak_bytes": 65191936,
+      "proxy_warm_c32_pss_peak_bytes": 62800896,
+      "proxy_warm_c32_allocated_bytes_per_request": 288453
+    },
     "final": null,
     "rust_verification": "passed_c00_cargo_1.98.1",
     "node_pass": 4,
@@ -117,7 +142,7 @@
     {
       "id": "C02",
       "title": "Снять baseline RAM и добавленной задержки",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C01"
       ],
@@ -131,7 +156,34 @@
       "change": "Собрать текущий архив из lockfile в release. Записать build features, настройки логов, провайдеры, версию клиента, kernel/CPU, размеры БД и запросов. Измерить warm/cold, concurrency 1/8/32, p50/p95/p99 первого содержательного события и межчанковых интервалов, RSS/PSS и живые/временные аллокации. Отдельно — путь через прокси и прямой mock.",
       "tests": "Минимум пять повторов репрезентативных серий после прогрева; контроль успешных ответов, upstream attempts и throughput. Профилирование аллокаций отдельно от обычного latency/RSS прогона. Не вычислять overhead как разность несвязанных p95.",
       "acceptance": "baseline.json содержит измерения и заранее зафиксированный порог шумов/регрессии. При отсутствии toolchain отмечено blocked для измерений, а не придуман PASS; следующие performance-checkpoints не считаются измеренно принятыми.",
-      "rollback": "Никакой runtime оптимизации в этой итерации."
+      "rollback": "Никакой runtime оптимизации в этой итерации.",
+      "result": {
+        "completed": "2026-09-17",
+        "files": [
+          "scripts/bench-lean",
+          "bench/lean/README.md",
+          "bench/lean/baseline.json",
+          "tests/common/lean_benchmark.rs",
+          "tests/common/lean_harness.rs",
+          "tests/lean_proxy_benchmark.rs",
+          "tests/lean_proxy_allocation_benchmark.rs",
+          "tests/lean_proxy_benchmark_validation.rs"
+        ],
+        "command": "scripts/bench-lean",
+        "matrix": "The same successful three-content-event OpenAI SSE/tools request was measured through the direct loopback mock and the full OpenProxy handler for cold/warm conditions, concurrency 1/8/32, and five repetitions. There were 410 measured requests and exactly 410 upstream attempts per path; warmups were excluded.",
+        "timing": "TTFC and interchunk p50/p95/p99 use parsed per-request content-event timestamps. Proxy overhead percentiles use matched proxy-minus-direct request samples rather than subtraction of independently aggregated percentiles.",
+        "memory": "Linux RSS and PSS were sampled from /proc/self/smaps_rollup before, during, and after each measured batch. Warm concurrency-32 full-handler peaks were 65,191,936 RSS bytes and 62,800,896 PSS bytes.",
+        "allocations": "A separate release executable wrapped std::alloc::System with atomic counters. Warm concurrency-32 allocated bytes/request were 47,427 direct and 288,453 through the full handler; live delta, peak live above start, allocated/deallocated bytes, call counts, and an explicitly defined aggregate non-retained/temporary estimate are retained per cell in the artifact.",
+        "environment": "Rust/Cargo 1.98.1, OpenCode 1.18.31, Linux 6.12.86+deb13-amd64, AMD EPYC 9634, release profile with default/embed-web features, RUST_LOG=off with the request-logging code path enabled, temporary 238,776-byte SQLite fixture.",
+        "thresholds": "Predeclared in baseline.json: 10% latency/throughput noise, 5% memory/allocation noise; p95 latency regression 15% + 250 us, throughput decrease 10%, RSS/PSS 10% + 1 MiB, allocation/request 10% + 64 KiB, exact success and attempt counts.",
+        "tests": [
+          "scripts/bench-lean: passed latency run, separate allocation run, and 2 artifact validation tests",
+          "cargo test --test lean_proxy_harness -- --nocapture: 5 passed",
+          "cargo test --test lean_proxy_benchmark_validation -- --nocapture: 2 passed"
+        ],
+        "network_and_data": "Only ephemeral 127.0.0.1 listeners and benchmark-owned temporary SQLite/config were used; no production DB, credentials, paid provider, or external network was accessed.",
+        "rollback": "Delete the benchmark-only script, artifacts, tests, and C01 harness timing/count helpers; production runtime behavior, allocator, dependencies, lockfile, and persisted data are unchanged."
+      }
     },
     {
       "id": "C03",
