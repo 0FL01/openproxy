@@ -1,4 +1,4 @@
-//! Token refresh with deduplication.
+//! Token refresh and connection-scoped coordination.
 //!
 //! Provides a `RefreshDedup` concurrent-safe dedup layer plus a set of
 //! per-provider refresh functions that each wrap the upstream token-refresh
@@ -27,18 +27,27 @@
 //! `dispatch_oauth_refresh` which calls `dedup_refresh`, and the sole
 //! call site (`chat.rs` 401/403 retry in `forward_with_provider_fallback`)
 //! invokes `dispatch_oauth_refresh` with the correct provider/token values.
-//! The dedup mechanism is fully wired and correct as of this audit.
+//! C16 adds an in-flight-only coordinator keyed by configured connection and
+//! credential generation. Existing callers deliberately remain on the legacy
+//! token-keyed path until C17A/C17B migrate them; C18 then removes that cache.
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use futures_util::FutureExt;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::Value;
-use tokio::sync::OnceCell;
+use sha2::{Digest, Sha256};
+use tokio::sync::{Mutex as AsyncMutex, Notify, OnceCell};
+
+use crate::db::Db;
+use crate::types::ProviderConnection;
 
 use super::TOKEN_EXPIRY_BUFFER_MS;
 
@@ -163,6 +172,339 @@ impl RefreshResult {
             expires_in: None,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Connection-scoped refresh coordination (C16)
+// ---------------------------------------------------------------------------
+
+/// Opaque fingerprint of the canonical credential generation for one
+/// configured connection. The coordinator retains this digest, never the old
+/// access or refresh token that produced it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CredentialGeneration([u8; 32]);
+
+/// Compute a deterministic generation from fields that can affect OAuth
+/// refresh or authorization. Provider-specific data is included because some
+/// refresh protocols select an endpoint/client/device from that map.
+pub fn connection_credential_generation(connection: &ProviderConnection) -> CredentialGeneration {
+    let encoded = serde_json::to_vec(&(
+        &connection.id,
+        &connection.provider,
+        &connection.auth_type,
+        &connection.access_token,
+        &connection.refresh_token,
+        &connection.expires_at,
+        &connection.created_at,
+        &connection.updated_at,
+        &connection.token_type,
+        &connection.scope,
+        &connection.id_token,
+        &connection.project_id,
+        &connection.api_key,
+        &connection.provider_specific_data,
+    ))
+    .expect("provider credentials are JSON serializable");
+    let digest = Sha256::digest(encoded);
+    CredentialGeneration(digest.into())
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CoordinatedRefreshResult {
+    /// Canonical, published connection state after the operation.
+    pub connection: ProviderConnection,
+    /// True only when this operation persisted the returned refresh result.
+    /// A stale caller instead receives the already-current canonical state.
+    pub refreshed: bool,
+}
+
+type SharedRefreshResult = Result<CoordinatedRefreshResult, String>;
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct ConnectionRefreshKey {
+    provider: String,
+    connection_id: String,
+}
+
+struct ActiveConnectionRefresh {
+    result: AsyncMutex<Option<SharedRefreshResult>>,
+    completed: Notify,
+}
+
+impl ActiveConnectionRefresh {
+    fn new() -> Self {
+        Self {
+            result: AsyncMutex::new(None),
+            completed: Notify::new(),
+        }
+    }
+
+    async fn wait(&self) -> SharedRefreshResult {
+        loop {
+            let completed = self.completed.notified();
+            if let Some(result) = self.result.lock().await.clone() {
+                return result;
+            }
+            completed.await;
+        }
+    }
+
+    async fn finish(&self, result: SharedRefreshResult) {
+        *self.result.lock().await = Some(result);
+        self.completed.notify_waiters();
+    }
+}
+
+/// In-flight-only refresh singleflight keyed by configured connection.
+///
+/// The map contains no completed results and is empty while idle. A detached
+/// operation owns the upstream result through persistence, so cancelling any
+/// waiter cannot lose a token pair after the provider has returned it. This is
+/// process-local coordination, not an exactly-once promise: process death or
+/// an uncertain network result can still require reauthorization.
+pub struct ConnectionRefreshCoordinator {
+    active: Mutex<HashMap<ConnectionRefreshKey, Arc<ActiveConnectionRefresh>>>,
+    accepting: AtomicBool,
+    idle: Notify,
+}
+
+impl ConnectionRefreshCoordinator {
+    pub fn new() -> Self {
+        Self {
+            active: Mutex::new(HashMap::new()),
+            accepting: AtomicBool::new(true),
+            idle: Notify::new(),
+        }
+    }
+
+    /// Refresh one canonical connection generation. Concurrent callers for
+    /// the same configured connection share one active result, including an
+    /// error. Different connections never share a lock while provider HTTP is
+    /// in progress.
+    pub async fn refresh<F, Fut>(
+        self: &Arc<Self>,
+        db: Arc<Db>,
+        provider: &str,
+        connection_id: &str,
+        observed_generation: CredentialGeneration,
+        refresh_fn: F,
+    ) -> SharedRefreshResult
+    where
+        F: FnOnce(ProviderConnection) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<RefreshResult, String>> + Send + 'static,
+    {
+        if !self.accepting.load(Ordering::Acquire) {
+            return Err("refresh coordinator is shutting down".to_string());
+        }
+
+        let key = ConnectionRefreshKey {
+            provider: provider.to_string(),
+            connection_id: connection_id.to_string(),
+        };
+        let (operation, starts_operation) = {
+            let mut active = self.active.lock();
+            if !self.accepting.load(Ordering::Acquire) {
+                return Err("refresh coordinator is shutting down".to_string());
+            }
+            if let Some(operation) = active.get(&key) {
+                (Arc::clone(operation), false)
+            } else {
+                let operation = Arc::new(ActiveConnectionRefresh::new());
+                active.insert(key.clone(), Arc::clone(&operation));
+                (operation, true)
+            }
+        };
+
+        if starts_operation {
+            let coordinator = Arc::clone(self);
+            let operation_for_task = Arc::clone(&operation);
+            tokio::spawn(async move {
+                let worker = {
+                    let coordinator = Arc::clone(&coordinator);
+                    let db = Arc::clone(&db);
+                    let key = key.clone();
+                    async move {
+                        coordinator
+                            .run_refresh(db, &key, observed_generation, refresh_fn)
+                            .await
+                    }
+                };
+                let result = AssertUnwindSafe(worker)
+                    .catch_unwind()
+                    .await
+                    .unwrap_or_else(|_| Err("refresh operation panicked".to_string()));
+
+                // Publish the shared result before removing the active entry.
+                // A caller racing this boundary either joins this operation or
+                // re-reads the newly published canonical generation.
+                operation_for_task.finish(result).await;
+                {
+                    let mut active = coordinator.active.lock();
+                    if active
+                        .get(&key)
+                        .is_some_and(|current| Arc::ptr_eq(current, &operation_for_task))
+                    {
+                        active.remove(&key);
+                    }
+                }
+                coordinator.idle.notify_waiters();
+            });
+        }
+
+        operation.wait().await
+    }
+
+    /// Production adapter for the existing provider refresh dispatcher.
+    /// C16 exposes this seam without wiring callers; C17A/C17B migrate each
+    /// caller only after their provider-specific behavior is covered.
+    pub async fn refresh_connection(
+        self: &Arc<Self>,
+        db: Arc<Db>,
+        provider: &str,
+        connection_id: &str,
+        observed_generation: CredentialGeneration,
+    ) -> SharedRefreshResult {
+        let refresh_provider = provider.to_string();
+        self.refresh(
+            db,
+            provider,
+            connection_id,
+            observed_generation,
+            move |connection| async move {
+                let refresh_token = connection
+                    .refresh_token
+                    .as_deref()
+                    .ok_or_else(|| "connection has no refresh token".to_string())?;
+                dispatch_oauth_refresh(
+                    &refresh_provider,
+                    refresh_token,
+                    &connection.provider_specific_data,
+                )
+                .await
+            },
+        )
+        .await
+    }
+
+    async fn run_refresh<F, Fut>(
+        &self,
+        db: Arc<Db>,
+        key: &ConnectionRefreshKey,
+        observed_generation: CredentialGeneration,
+        refresh_fn: F,
+    ) -> SharedRefreshResult
+    where
+        F: FnOnce(ProviderConnection) -> Fut,
+        Fut: Future<Output = Result<RefreshResult, String>>,
+    {
+        let canonical = canonical_connection(&db, key)?;
+        let base_generation = connection_credential_generation(&canonical);
+        if base_generation != observed_generation {
+            return Ok(CoordinatedRefreshResult {
+                connection: canonical,
+                refreshed: false,
+            });
+        }
+
+        let refreshed = refresh_fn(canonical).await?;
+        let new_access = refreshed.access_token;
+        let new_refresh = refreshed.refresh_token;
+        let new_expires_at = refreshed
+            .expires_in
+            .map(|seconds| (chrono::Utc::now() + chrono::Duration::seconds(seconds)).to_rfc3339());
+        let last_refresh_at = chrono::Utc::now().to_rfc3339();
+        let connection_id = key.connection_id.clone();
+        let provider = key.provider.clone();
+        let applied = Arc::new(AtomicBool::new(false));
+        let applied_in_update = Arc::clone(&applied);
+
+        let published = db
+            .update(move |state| {
+                let Some(connection) = state.provider_connections.iter_mut().find(|candidate| {
+                    candidate.id == connection_id && candidate.provider == provider
+                }) else {
+                    return;
+                };
+                if connection_credential_generation(connection) != base_generation {
+                    return;
+                }
+
+                connection.access_token = Some(new_access);
+                if let Some(refresh_token) = new_refresh {
+                    connection.refresh_token = Some(refresh_token);
+                }
+                if let Some(expires_at) = new_expires_at {
+                    connection.expires_at = Some(expires_at);
+                }
+                connection
+                    .provider_specific_data
+                    .insert("lastRefreshAt".into(), Value::String(last_refresh_at));
+                connection.last_error = None;
+                connection.last_error_at = None;
+                connection.error_code = None;
+                connection.backoff_level = Some(0);
+                applied_in_update.store(true, Ordering::Release);
+            })
+            .await
+            .map_err(|error| format!("persist refreshed credentials: {error}"))?;
+
+        let connection = published
+            .provider_connections
+            .iter()
+            .find(|candidate| {
+                candidate.id == key.connection_id && candidate.provider == key.provider
+            })
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "connection {} was deleted while refresh was active",
+                    key.connection_id
+                )
+            })?;
+
+        Ok(CoordinatedRefreshResult {
+            connection,
+            refreshed: applied.load(Ordering::Acquire),
+        })
+    }
+
+    pub fn active_count(&self) -> usize {
+        self.active.lock().len()
+    }
+
+    /// Stop admitting operations and wait for every already-issued refresh to
+    /// publish its result. The caller chooses the outer timeout; remote API
+    /// exactly-once behavior is intentionally not claimed.
+    pub async fn shutdown(&self) {
+        self.accepting.store(false, Ordering::Release);
+        loop {
+            let idle = self.idle.notified();
+            if self.active.lock().is_empty() {
+                return;
+            }
+            idle.await;
+        }
+    }
+}
+
+impl Default for ConnectionRefreshCoordinator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Shared service prepared by C16. It has no background task and stores only
+/// currently active operations. Caller migration is intentionally C17 scope.
+pub(crate) static CONNECTION_REFRESH_COORDINATOR: Lazy<Arc<ConnectionRefreshCoordinator>> =
+    Lazy::new(|| Arc::new(ConnectionRefreshCoordinator::new()));
+
+fn canonical_connection(db: &Db, key: &ConnectionRefreshKey) -> Result<ProviderConnection, String> {
+    db.snapshot()
+        .provider_connections
+        .iter()
+        .find(|candidate| candidate.id == key.connection_id && candidate.provider == key.provider)
+        .cloned()
+        .ok_or_else(|| format!("connection {} is not configured", key.connection_id))
 }
 
 // ---------------------------------------------------------------------------

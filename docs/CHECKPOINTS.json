@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C16",
+  "next_checkpoint": "C17A",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c13_cargo_1.98.1",
+    "rust_verification": "passed_through_c16_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -774,7 +774,7 @@
     {
       "id": "C16",
       "title": "Подготовить refresh coordination по подключению",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C13",
         "C15"
@@ -787,7 +787,31 @@
       "change": "Подготовить общий механизм, привязанный к connection identity/generation, а не к полному старому токену. После получения права refresh заново прочитать canonical credentials: если другой вызов уже обновил поколение, использовать их. Успешно сохранить/publish новую пару токенов до допуска следующего refresh. Задать cancellation и singleflight lifecycle без completed result cache. Пока не удалять старые caller paths. Совместные waiters получают один результат активной операции, включая ошибку; простой mutex с повторной попыткой каждым waiter после одного failed refresh недостаточен. Операция имеет ограниченный собственный lifecycle: отмена одного caller не должна бросать уже полученные rotated credentials между ответом upstream и их сохранением.",
       "tests": "100 конкурентных запросов одного поколения дают один refresh; разные connections не блокируют друг друга. Поздний запрос со старым snapshot получает актуальные credentials. Ошибка persistence, cancellation, удаление/recreate ID, неуспешная ротация, shutdown. После неуспешного refresh текущая группа waiters разделяет эту ошибку без последовательного шторма повторов; следующий независимый вызов может сделать новую разрешённую попытку. Отмена лидера после выдачи нового токена upstream не теряет обновлённую пару в доступных для контроля границах; сетевую неопределённость явно обрабатывать, не обещать exactly-once удалённого API.",
       "acceptance": "Есть протестированная замена, не зависящая от повторного обращения к старому ключу. Нет глобального mutex на все provider HTTP операции и нет карты замков, растущей по всем когда-либо встреченным session/token значениям.",
-      "rollback": "Новый сервис не включать до тестов; откат безопасен, поскольку старые caller paths пока сохраняются."
+      "rollback": "Новый сервис не включать до тестов; откат безопасен, поскольку старые caller paths пока сохраняются.",
+      "result": {
+        "completed_at": "2026-09-18",
+        "files": [
+          "src/oauth/token_refresh.rs",
+          "tests/lean_proxy_refresh_c16.rs",
+          "tests/lean_proxy_contract.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json"
+        ],
+        "coordination": "Added an in-flight-only ConnectionRefreshCoordinator keyed by configured provider/connection identity. Credential generation is a SHA-256 digest over canonical authorization inputs; full tokens are never map keys. The active map is empty while idle and has no completed-result TTL cache.",
+        "canonical_state": "The detached winner re-reads the canonical connection before provider I/O. A stale observed generation returns current credentials without refreshing. Persistence applies only if the canonical generation still matches; concurrent delete/recreate or rotation wins and is never overwritten.",
+        "lifecycle": "Current waiters share one success or error. The provider operation owns its lifecycle through Db::update publication, so waiter cancellation cannot drop an already-issued token pair. Graceful shutdown stops admission and drains active operations. Hard process/network uncertainty is documented without an exactly-once claim.",
+        "caller_migration": "The tested shared service and production dispatch adapter are prepared but no old caller path is removed or migrated in C16. Foreground migration remains C17A, control/background migration C17B, and legacy token-keyed cache deletion C18.",
+        "tests": [
+          "cargo test --test lean_proxy_refresh_c16 --test lean_proxy_contract -- --nocapture: 11 passed",
+          "cargo test --lib oauth::tests::token_refresh_tests --all-features -- --nocapture: 19 passed",
+          "cargo test --lib --all-features -- --test-threads=1: 1222 passed",
+          "cargo clippy --test lean_proxy_refresh_c16 --all-features -- -D warnings -A clippy::let-and-return -A clippy::needless-return: passed",
+          "cargo fmt --all -- --check, jq parse, and git diff --check: passed"
+        ],
+        "acceptance_evidence": "One hundred callers of one generation issue one refresh; a late stale caller makes zero provider calls. Same-token different connections progress independently. Failed waiter groups share one error and a later call may retry. SQLite failure does not publish. Caller cancellation after provider issuance still persists both rotated tokens. Delete/recreate prevents stale overwrite, shutdown drains, and every operation leaves active_count zero.",
+        "schema_and_data": "No public route, persisted field, SQLite schema, credential encryption boundary, dependency, or legacy caller behavior changed.",
+        "rollback": "Revert the C16 commit. Because no existing caller is wired yet, rollback removes only the unused service, tests, and additive contract metadata."
+      }
     },
     {
       "id": "C17A",

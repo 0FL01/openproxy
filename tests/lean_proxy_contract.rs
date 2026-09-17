@@ -134,4 +134,21 @@ fn contract_freezes_preservation_and_removal_lists() {
         manifest["generation_retry_policy"]["cross_request_cooldown_routing"],
         false
     );
+    assert_eq!(
+        manifest["refresh_coordination"]["prepared_checkpoint"],
+        "C16"
+    );
+    assert_eq!(manifest["refresh_coordination"]["full_token_in_key"], false);
+    assert_eq!(
+        manifest["refresh_coordination"]["new_coordinator_completed_result_cache"],
+        false
+    );
+    assert_eq!(
+        manifest["refresh_coordination"]["waiter_cancellation_aborts_operation"],
+        false
+    );
+    assert_eq!(
+        manifest["refresh_coordination"]["legacy_token_cache_removed_in"],
+        "C18"
+    );
 }

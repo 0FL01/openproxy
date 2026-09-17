@@ -171,6 +171,24 @@
     "pooled_transport_reuse_preserved": true,
     "transitional_401_403_credential_recovery": "replaced_by_C13_request_scoped_planner"
   },
+  "refresh_coordination": {
+    "prepared_checkpoint": "C16",
+    "key": "configured_provider_connection_identity_and_credential_generation_digest",
+    "full_token_in_key": false,
+    "active_operations_only": true,
+    "new_coordinator_completed_result_cache": false,
+    "canonical_credentials_reread_before_refresh": true,
+    "publish_before_next_operation": true,
+    "current_waiters_share_success_and_error": true,
+    "waiter_cancellation_aborts_operation": false,
+    "different_connections_share_http_lock": false,
+    "exactly_once_remote_refresh_claimed": false,
+    "legacy_callers_migrate_in": [
+      "C17A",
+      "C17B"
+    ],
+    "legacy_token_cache_removed_in": "C18"
+  },
   "versions": {
     "opencode": "1.18.31",
     "custom_harness": "unknown"

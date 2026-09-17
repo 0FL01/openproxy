@@ -93,17 +93,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R4 / C16.
-- Smallest next action: Replace token-keyed completed-result refresh deduplication with connection-identity/generation singleflight and no long-lived completed-result cache.
-- Expected evidence: Concurrent same-connection refreshes coalesce; different connections/tokens do not cross; rotation, failure, cancellation, and generation changes have deterministic bounded state.
-- Stop or replan if: A caller lacks stable configured connection identity; record it for C17 migration rather than retaining an old-token key.
+- Closes: R4 / C17A.
+- Smallest next action: Migrate foreground chat/executor OAuth refresh callers to the tested connection-identity/generation coordinator, removing their independent duplicate branches while preserving the C13 generation-attempt budget.
+- Expected evidence: Every foreground caller is enumerated; concurrent 401s share one refresh and one persisted generation; invalid grants, non-token 403s, cancellation, and counted post-refresh generation remain bounded.
+- Stop or replan if: A foreground caller lacks stable configured connection identity; isolate that provider migration rather than falling back to token-keyed coordination.
 
 ## Current State
 
-- Resolved: R1 / C00, R2 / C01-C02, R3 / C03-C14, plus C15 within R4. Proxy-owned semantic/header/history replay, heuristic context policy, client-identity passthrough gating, all three executor temporal retry schedulers, and successful-response legacy housekeeping are gone. C13 provides the single bounded request-scoped generation/account/auth planner.
-- Last relevant evidence: The C13 status/account matrix proved its exact attempt count, terminal 400 behavior, raw Retry-After/body, one persisted xAI recovery with one counted follow-up, and no fallback after stream commitment or cancellation.
+- Resolved: R1 / C00, R2 / C01-C02, R3 / C03-C14, plus C15-C16 within R4. Proxy-owned semantic/header/history replay, heuristic context policy, client-identity passthrough gating, all three executor temporal retry schedulers, and successful-response legacy housekeeping are gone. C13 provides the single bounded request-scoped generation/account/auth planner; C16 provides a tested, not-yet-wired connection-scoped refresh service.
+- Last relevant evidence: C16 proves 100 same-generation waiters issue one refresh, different same-token connections do not block, stale generations return canonical state, failures are shared, SQLite failure does not publish, cancellation cannot lose an issued token pair, delete/recreate wins over stale persistence, and shutdown drains to zero active entries.
 - Blocker: None; the prompt explicitly allows independent safe work when external harness/version evidence is unavailable.
-- Next: C16 connection-scoped refresh singleflight.
+- Next: C17A foreground OAuth caller migration.
 
 ## Material Decisions
 
@@ -130,6 +130,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-09-18: C11 passed. Deleted Codex's three-attempt first-SSE-error retry loop, fixed sleeps, and 256 KiB user-output window. A bounded one-event structured preflight now hands an initial overload/rate-limit failure to the request-scoped planner before commitment, while normal and post-delta events stay live and can never trigger another generation. C12 is next.
 - 2026-09-18: C12 passed. Deleted Antigravity's three-attempt generation retry loop, Retry-After sleeps, jitter, and free-text body classifier. Raw errors now reach the request-scoped planner after one configured-endpoint request; pooled transport, protocol transformation, successful live SSE, and separate project/onboarding behavior remain. C13 is next.
 - 2026-09-18: C13 passed. Added one request-scoped generation budget over eligible accounts and bounded protocol endpoint surfaces plus one auth follow-up; made chat the sole 401/403 recovery owner; stopped 400/422 account fan-out; removed Default and Mimo recovery multipliers; and preserved final raw errors, cancellation, pooled transports, and the no-post-commit rule. R3 is verified and C16 is next.
+- 2026-09-18: C16 passed. Added an in-flight-only connection/generation refresh coordinator with canonical re-read, compare-before-persist, shared success/error, detached persistence-safe lifecycle, graceful drain, and zero idle entries. One hundred-way concurrency, same-token connection isolation, stale generation, failure, SQLite rollback, cancellation, delete/recreate, and shutdown are covered. Legacy callers remain untouched for C17A/C17B; C17A is next.
 
 ## Completion
 
