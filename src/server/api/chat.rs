@@ -1645,7 +1645,6 @@ async fn forward_with_provider_fallback(
             Ok(result) => {
                 let status = result.response.status();
                 if status.is_success() {
-                    clear_connection_error_for_model(state, &connection.id, Some(model)).await;
                     if dashboard_stream {
                         let response = proxy_dashboard_sse(result.response, attempt_log).await;
                         return Ok(response);
@@ -1914,57 +1913,6 @@ fn model_ids_match(advertised: &str, requested: &str) -> bool {
     let requested = requested.trim();
 
     advertised == requested || advertised.ends_with(&format!("/{requested}"))
-}
-
-/// Clear error state; only remove expired model locks and optionally the
-/// succeeded model lock (9router clearAccountError selective clear).
-async fn clear_connection_error_for_model(
-    state: &AppState,
-    connection_id: &str,
-    succeeded_model: Option<&str>,
-) {
-    let connection_id = connection_id.to_string();
-    let succeeded_model = succeeded_model.map(|s| s.to_string());
-    let now = Utc::now();
-    let _ = state
-        .db
-        .update(move |db| {
-            if let Some(connection) = db
-                .provider_connections
-                .iter_mut()
-                .find(|connection| connection.id == connection_id)
-            {
-                connection.last_error = None;
-                connection.last_error_at = None;
-                connection.error_code = None;
-                connection.backoff_level = Some(0);
-                connection.consecutive_errors = Some(0);
-                connection.test_status = None;
-                // Selective clear: remove expired locks + lock for succeeded model only
-                let model_key = succeeded_model.as_ref().map(|m| format!("modelLock_{m}"));
-                connection.extra.retain(|k, v| {
-                    if !k.starts_with("modelLock_") {
-                        return true;
-                    }
-                    // Drop expired
-                    if let Some(exp) = v.as_str() {
-                        if let Ok(t) = DateTime::parse_from_rfc3339(exp) {
-                            if t.with_timezone(&Utc) <= now {
-                                return false;
-                            }
-                        }
-                    }
-                    // Drop succeeded model lock
-                    if let Some(ref mk) = model_key {
-                        if k == mk {
-                            return false;
-                        }
-                    }
-                    true
-                });
-            }
-        })
-        .await;
 }
 
 /// forceStream SSE→JSON: collect upstream SSE and collapse to chat.completion JSON.

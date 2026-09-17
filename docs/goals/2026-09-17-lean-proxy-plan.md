@@ -93,17 +93,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R3 / C14.
-- Smallest next action: Remove success-path persisted cooldown/error housekeeping while preserving legacy diagnostic fields and proving they never suppress routing.
-- Expected evidence: Successful generation performs no synchronous `Db::update` for model locks/error counters; stored future locks, rate limits, and degraded markers remain readable but do not exclude an otherwise eligible account.
-- Stop or replan if: A write is proven to be required auth/credential state rather than routing diagnostics; isolate that write without restoring cooldown-based routing suppression.
+- Closes: R4 / C15.
+- Smallest next action: Refactor legitimate `Db::update` calls to retain the previous `Arc<AppDb>`, make one mutable copy, reuse shared snapshots in blocking persistence, and return the original Arc for no-op updates.
+- Expected evidence: No-op update preserves Arc identity; real, failed, concurrent, and cancelled updates keep SQLite and published snapshots linear and consistent without redundant full copies.
+- Stop or replan if: Cancellation can leave a committed SQLite state unpublished; establish and test the existing boundary before changing ownership.
 
 ## Current State
 
-- Resolved: R1 / C00, R2 / C01-C02, and C03-C05 within R3. Kiro semantic repair/history replay and global Claude header replay are gone; only current-request prompt/history/header content reaches these adapters.
-- Last relevant evidence: C05 full-handler capture proved a reused session sent the changed first message and no old msg0. Compaction, empty history, system/model/account changes, tools/required fields, and 24 concurrent same-session translations passed; C05 tests passed 4/4 and Kiro-focused library tests passed 105/105.
+- Resolved: R1 / C00, R2 / C01-C02, and C03-C05 plus C14 within R3. Kiro semantic repair/history replay, global Claude header replay, and successful-response legacy configuration housekeeping are gone.
+- Last relevant evidence: C14 ran 16 successful requests against a 257-connection configuration without changing the AppDb Arc or any stored diagnostic. Future model lock/rate-limit/degraded fields did not suppress chat, CLI, or web-fetch selection; explicit model-specific clear remained available. Focused tests passed 26/26 and the full library passed 1,223/1,223.
 - Blocker: None; the prompt explicitly allows independent safe work when external harness/version evidence is unavailable.
-- Next: C14 diagnostic cooldown success-write cleanup, following the frozen first-delivery order.
+- Next: C15 Db::update ownership/cancellation refactor, following the frozen first-delivery order.
 
 ## Material Decisions
 
@@ -120,6 +120,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-09-17: C03 passed. Removed Kiro semantic classification, full-success-body buffering, prompt mutation, and the hidden second generation; retained incremental AWS EventStream/tool translation, made malformed frames explicit errors, preserved the deprecated setting with a one-time warning, and verified first-event delivery plus cancellation against the loopback harness. C04 is next.
 - 2026-09-17: C04 passed. Deleted process-wide Claude header capture/replay, threaded only current-request headers into the default adapter, enforced a non-secret allowlist with explicit provider defaults, and verified alternating plus concurrent account/session isolation. C05 is next.
 - 2026-09-17: C05 passed. Deleted Kiro's process-wide frozen-msg0/system-prompt store without replacement, kept request-scoped protocol identifiers for C06, and verified current-only history across repeated sessions, compaction, account/model/system changes, tools, and concurrency. Real provider cache-hit/TTFT remains unverified because no permitted live Kiro credentials are available. C14 is next per the first-delivery order.
+- 2026-09-17: C14 passed. Removed successful-generation and successful-web-fetch `Db::update` cleanup, preserved all legacy diagnostic bytes as historical/inert state, kept explicit narrow clearing, and proved repeated success on a large configuration neither published a new AppDb nor let future cooldown/degraded markers suppress routing. C15 is next.
 
 ## Completion
 

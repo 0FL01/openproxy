@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C14",
+  "next_checkpoint": "C15",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c05_cargo_1.98.1",
+    "rust_verification": "passed_through_c14_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -477,7 +477,7 @@
     {
       "id": "C14",
       "title": "Удалить legacy cleanup с успешного data path",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C02"
       ],
@@ -491,7 +491,29 @@
       "change": "Убрать безусловный clear_connection_error_for_model/db.update на успешных headers, поскольку model locks и health-degrade уже не управляют текущей маршрутизацией. Нужный reset диагностического поля оформить отдельно как реальный state transition; не сохранять старый весь механизм только ради привычки. Не делать успех UI ложным.",
       "tests": "Много успешных запросов при большой конфигурации: нет AppDb clone/update в этой точке. Сохранённый legacy cooldown не исключает аккаунт. Диагностика не утверждает актуальную ошибку после последующего успеха, если поле заявлено как текущее состояние.",
       "acceptance": "Успешный ответ не ждёт старого housekeeping и полной конфигурационной копии. Изменение не возвращает удалённую routing policy.",
-      "rollback": "Откат отдельной функции; не переносить синхронный общий update в другое место hot path."
+      "rollback": "Откат отдельной функции; не переносить синхронный общий update в другое место hot path.",
+      "result": {
+        "completed": "2026-09-17",
+        "files": [
+          "src/server/api/chat.rs",
+          "src/server/api/web_fetch.rs",
+          "tests/lean_proxy_c14.rs",
+          "contracts/lean-proxy.md"
+        ],
+        "behavior": "Successful generation headers and successful web-fetch completion no longer call Db::update to clear legacy error counters, model locks, or rate-limit diagnostics. No replacement housekeeping write was moved elsewhere on either hot path.",
+        "legacy_data": "modelLock_*, rate_limited_until, degradedUntil, test/error/backoff fields remain stored and round-trip unchanged. They are historical diagnostics rather than current routing eligibility. The authenticated clearCooldown API remains the explicit narrow transition and clears only its selected model lock plus the pre-existing unavailable-state fields.",
+        "tests": [
+          "cargo test --test lean_proxy_c14 --test api_auth_and_models -- --nocapture: 21 passed",
+          "cargo test --lib web_fetch --all-features -- --nocapture: 5 passed",
+          "cargo test --lib --all-features: 1223 passed",
+          "cargo clippy --test lean_proxy_c14 --all-features -- -D warnings -A clippy::let-and-return -A clippy::needless-return: passed",
+          "cargo clippy --all-targets --all-features: passed with 7 pre-existing warnings",
+          "cargo fmt --all -- --check and git diff --check: passed"
+        ],
+        "acceptance_evidence": "Sixteen successful full-handler requests selected the preferred account despite future rate-limit, model-lock, and degraded markers. A 257-connection AppDb retained the identical Arc snapshot and every diagnostic value, proving the success point neither cloned nor published configuration. Web-fetch routing has a matching legacy-marker test. Explicit clear remained model-specific and preserved unrelated locks, rate-limit, degraded, and error-code diagnostics.",
+        "network_and_data": "Only an ephemeral 127.0.0.1 upstream and temporary SQLite database were used; no production DB, credentials, paid provider, or external network was accessed.",
+        "rollback": "Revert the C14 commit. No schema or persisted value was migrated or deleted."
+      }
     },
     {
       "id": "C15",

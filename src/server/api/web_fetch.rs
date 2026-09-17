@@ -164,7 +164,6 @@ async fn execute_single_fetch(
 
         match do_fetch(state, &provider_id, &connection, url, format, max_chars).await {
             Ok(response) => {
-                clear_connection_error(state, &connection.id).await;
                 return Ok(cors_json_response(StatusCode::OK, response));
             }
             Err(e) => {
@@ -584,60 +583,6 @@ fn connection_has_credentials(c: &ProviderConnection) -> bool {
             .is_some()
 }
 
-async fn clear_connection_error(state: &AppState, connection_id: &str) {
-    clear_connection_error_for_model(state, connection_id, None).await;
-}
-
-/// Selective model-lock clear (9router clearAccountError parity; matches chat.rs).
-/// Drops expired locks and optionally the succeeded model lock — not all modelLock_*.
-async fn clear_connection_error_for_model(
-    state: &AppState,
-    connection_id: &str,
-    succeeded_model: Option<&str>,
-) {
-    use chrono::{DateTime, Utc};
-    let connection_id = connection_id.to_string();
-    let succeeded_model = succeeded_model.map(|s| s.to_string());
-    let now = Utc::now();
-    let _ = state
-        .db
-        .update(move |db| {
-            if let Some(c) = db
-                .provider_connections
-                .iter_mut()
-                .find(|c| c.id == connection_id)
-            {
-                c.last_error = None;
-                c.last_error_at = None;
-                c.error_code = None;
-                c.backoff_level = Some(0);
-                c.consecutive_errors = Some(0);
-                c.test_status = None;
-                c.rate_limited_until = None;
-                let model_key = succeeded_model.as_ref().map(|m| format!("modelLock_{m}"));
-                c.extra.retain(|k, v| {
-                    if !k.starts_with("modelLock_") {
-                        return true;
-                    }
-                    if let Some(exp) = v.as_str() {
-                        if let Ok(t) = DateTime::parse_from_rfc3339(exp) {
-                            if t.with_timezone(&Utc) <= now {
-                                return false;
-                            }
-                        }
-                    }
-                    if let Some(ref mk) = model_key {
-                        if k == mk {
-                            return false;
-                        }
-                    }
-                    true
-                });
-            }
-        })
-        .await;
-}
-
 // ─── Response helpers ────────────────────────────────────────────────────────
 
 fn cors_json_response(status: StatusCode, payload: Value) -> Response {
@@ -663,6 +608,7 @@ fn fetch_error(status: StatusCode, message: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{Duration, Utc};
 
     #[test]
     fn resolve_fetch_provider_maps_aliases() {
@@ -672,6 +618,45 @@ mod tests {
         assert_eq!(resolve_fetch_provider("exa"), "exa");
         assert_eq!(resolve_fetch_provider("jina-reader"), "jina-reader");
         assert_eq!(resolve_fetch_provider("FC"), "firecrawl");
+    }
+
+    #[test]
+    fn select_fetch_connection_ignores_legacy_diagnostic_cooldowns() {
+        let future = (Utc::now() + Duration::hours(1)).to_rfc3339();
+        let mut preferred = ProviderConnection {
+            id: "preferred".into(),
+            provider: "firecrawl".into(),
+            auth_type: "apikey".into(),
+            priority: Some(1),
+            is_active: Some(true),
+            api_key: Some("preferred-key".into()),
+            rate_limited_until: Some(future.clone()),
+            ..Default::default()
+        };
+        preferred
+            .extra
+            .insert("modelLock___all".into(), Value::String(future.clone()));
+        preferred
+            .extra
+            .insert("degradedUntil".into(), Value::String(future));
+        let fallback = ProviderConnection {
+            id: "fallback".into(),
+            provider: "firecrawl".into(),
+            auth_type: "apikey".into(),
+            priority: Some(2),
+            is_active: Some(true),
+            api_key: Some("fallback-key".into()),
+            ..Default::default()
+        };
+        let snapshot = crate::types::AppDb {
+            provider_connections: vec![preferred, fallback],
+            ..Default::default()
+        };
+
+        let selected = select_fetch_connection(&snapshot, "firecrawl", &HashSet::new())
+            .expect("legacy diagnostics must not suppress web fetch routing");
+
+        assert_eq!(selected.id, "preferred");
     }
 
     #[test]
