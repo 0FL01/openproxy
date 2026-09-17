@@ -106,4 +106,16 @@ fn contract_freezes_preservation_and_removal_lists() {
         manifest["context_limit_transition"]["codex_values_are_verified_upstream_limits"],
         false
     );
+    assert_eq!(
+        manifest["generation_retry_policy"]["codex_executor_same_request_retries"],
+        false
+    );
+    assert_eq!(
+        manifest["generation_retry_policy"]["codex_first_event_preflight_max_inspected_bytes"],
+        65_536
+    );
+    assert_eq!(
+        manifest["generation_retry_policy"]["codex_retries_after_downstream_commitment"],
+        false
+    );
 }

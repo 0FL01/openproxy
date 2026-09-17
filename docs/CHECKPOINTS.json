@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C11",
+  "next_checkpoint": "C12",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -562,7 +562,7 @@
     {
       "id": "C11",
       "title": "Убрать отдельную retry-политику Codex",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C10"
       ],
@@ -574,7 +574,30 @@
       "change": "Убрать скрытые повторы первых SSE-ошибок с задержкой. Сохранить минимальную распознаваемую protocol error handling там, где она необходима, не накапливая успешный stream ради возможности позднего retry. Передавать отказ в единый account/auth planner до commitment.",
       "tests": "Transient error в первом событии, нормальный первый event и ошибка после содержательной дельты. Ни один сценарий не дублирует уже начатый ответ. Нет фиксированной задержки из retry sleep.",
       "acceptance": "Codex не реализует независимый временной retry loop и не заставляет нормальный stream ждать искусственный retry window.",
-      "rollback": "Откат только Codex ветки; запрет повторов после downstream commitment остаётся обязательным."
+      "rollback": "Откат только Codex ветки; запрет повторов после downstream commitment остаётся обязательным.",
+      "result": {
+        "completed": "2026-09-18",
+        "files": [
+          "src/core/executor/codex.rs",
+          "tests/lean_proxy_codex_c11.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json"
+        ],
+        "scheduler": "CodexExecutor now issues one generation request. Its three-attempt first-SSE-error loop and fixed two-second sleeps are deleted; no retry is possible after downstream commitment.",
+        "preflight": "Only the first complete SSE event is considered and classification inspects at most 65536 bytes. A recognized structured overload or rate-limit failure is returned to the request-scoped planner with the original event bytes and headers. Normal first events are replayed immediately into the remaining live stream; later errors stay in that committed stream.",
+        "transport": "Configured Codex provider-node endpoints are honored for deterministic routing while the default chatgpt.com endpoint, compact suffix, request transformation, and pooled reqwest transport remain unchanged.",
+        "tests": [
+          "cargo test --test lean_proxy_codex_c11 -- --nocapture: 4 passed",
+          "cargo test --lib codex --all-features -- --nocapture: 67 passed",
+          "cargo test --test lean_proxy_contract --test lean_proxy_codex_c11 --test lean_proxy_retry_c10 --test chat_completions -- --nocapture: 21 passed",
+          "cargo test --lib --all-features -- --test-threads=1: 1227 passed",
+          "cargo clippy --test lean_proxy_codex_c11 --all-features -- -D warnings -A clippy::let-and-return -A clippy::needless-return: passed",
+          "cargo clippy --all-targets --all-features: passed with 7 pre-existing warnings",
+          "cargo fmt --all -- --check, JSON parse, and git diff --check: passed"
+        ],
+        "acceptance_evidence": "A structured first-event overload returned once within 500 ms with Retry-After and exact event bytes; a normal first event arrived before held EOF and downstream cancellation dropped the upstream body; an error after a meaningful delta remained in the same stream and issued no second request. Source guards prohibit the retired retry loop, patterns, and sleep.",
+        "rollback": "Revert only the C11 commit. Any rollback must retain the prohibition on retries after downstream commitment and must not restore a temporal sleep window."
+      }
     },
     {
       "id": "C12",

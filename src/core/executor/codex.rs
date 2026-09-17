@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use futures_util::stream;
 use futures_util::StreamExt;
@@ -263,35 +262,75 @@ mod codex_tool_pattern_tests {
 
 const CODEX_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 
-/// SSE peek size (256 KiB) — ported from JS `CODEX_SSE_PEEK_BYTES`.
-const CODEX_SSE_PEEK_BYTES: usize = 256 * 1024;
+/// Maximum bytes inspected while identifying the first complete SSE event.
+///
+/// C11 keeps this preflight intentionally narrow: it can turn a structured
+/// first-event protocol failure into an HTTP failure for the request-scoped
+/// account planner, but it never waits for later output or a retry window.
+const CODEX_FIRST_EVENT_MAX_BYTES: usize = 64 * 1024;
 
-/// Transient-overload patterns that trigger a retry (JS `CODEX_SSE_RETRY_PATTERNS`).
-const CODEX_SSE_RETRY_PATTERNS: &[&str] = &["server_is_overloaded", "service_unavailable_error"];
-
-/// Account-fallback patterns → 503 with the capacity message (JS `CODEX_SSE_ACCOUNT_FALLBACK_PATTERNS`).
-const CODEX_SSE_ACCOUNT_FALLBACK_PATTERNS: &[&str] =
-    &["selected model is at capacity", "model_at_capacity"];
-
-/// Patterns that indicate real user output has started → stop peeking (JS `CODEX_SSE_USER_OUTPUT_PATTERNS`).
-const CODEX_SSE_USER_OUTPUT_PATTERNS: &[&str] = &[
-    "event: response.output_text.delta",
-    "event: response.function_call_arguments.delta",
-    "event: response.web_search_call.",
-    "\"type\":\"response.output_text.delta\"",
-    "\"type\":\"response.function_call_arguments.delta\"",
-    "\"type\":\"web_search_call\"",
-];
-
-fn codex_sse_has_user_output(text: &str) -> bool {
-    let lower = text.to_lowercase();
-    CODEX_SSE_USER_OUTPUT_PATTERNS
-        .iter()
-        .any(|pattern| lower.contains(pattern))
+fn first_sse_event_end(bytes: &[u8]) -> Option<usize> {
+    bytes
+        .windows(2)
+        .position(|window| window == b"\n\n")
+        .map(|position| position + 2)
+        .or_else(|| {
+            bytes
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|position| position + 4)
+        })
 }
 
-const CODEX_MODEL_CAPACITY_MESSAGE: &str =
-    "Selected model is at capacity. Please try a different model.";
+fn codex_first_event_failure_status(event: &[u8]) -> Option<reqwest::StatusCode> {
+    let text = std::str::from_utf8(event).ok()?;
+    let mut event_name = None;
+    let mut data = String::new();
+    for line in text.lines() {
+        if let Some(value) = line.strip_prefix("event:") {
+            event_name = Some(value.trim());
+        } else if let Some(value) = line.strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(value.trim_start());
+        }
+    }
+
+    let payload = serde_json::from_str::<Value>(&data).ok();
+    let payload_type = payload
+        .as_ref()
+        .and_then(|value| value.get("type"))
+        .and_then(Value::as_str);
+    let is_failure_event = matches!(event_name, Some("error" | "response.failed"))
+        || matches!(payload_type, Some("error" | "response.failed"));
+    if !is_failure_event {
+        return None;
+    }
+
+    let error = payload.as_ref().and_then(|value| {
+        value
+            .get("error")
+            .or_else(|| value.pointer("/response/error"))
+    });
+    let code = error
+        .and_then(|value| value.get("code"))
+        .and_then(Value::as_str);
+    let error_type = error
+        .and_then(|value| value.get("type"))
+        .and_then(Value::as_str);
+    let is_kind = |expected: &str| code == Some(expected) || error_type == Some(expected);
+    if is_kind("rate_limit_exceeded") || is_kind("usage_limit_reached") {
+        Some(reqwest::StatusCode::TOO_MANY_REQUESTS)
+    } else if is_kind("server_is_overloaded")
+        || is_kind("service_unavailable_error")
+        || is_kind("model_at_capacity")
+    {
+        Some(reqwest::StatusCode::SERVICE_UNAVAILABLE)
+    } else {
+        None
+    }
+}
 
 #[derive(Clone)]
 #[allow(dead_code)]
@@ -311,7 +350,6 @@ pub enum CodexExecutorError {
     HyperClientInit(std::io::Error),
     Hyper(hyper_util::client::legacy::Error),
     Request(reqwest::Error),
-    StreamingResponseFailed(String),
     UnsupportedFormat(String),
 }
 
@@ -422,7 +460,15 @@ impl CodexExecutor {
     /// carries a custom field `"_compact": true`, the `/compact` suffix
     /// is appended to reduce response size.
     fn build_url(&self, model: &str) -> String {
-        let base = CODEX_RESPONSES_URL.trim_end_matches('/').to_string();
+        let base = self
+            .provider_node
+            .as_ref()
+            .and_then(|node| node.base_url.as_deref())
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+            .unwrap_or(CODEX_RESPONSES_URL)
+            .trim_end_matches('/')
+            .to_string();
         let is_compact_model = model.ends_with("_compact");
         let is_compact_node = self
             .provider_node
@@ -829,129 +875,27 @@ impl CodexExecutor {
         )?;
 
         let client = self.pool.get("openai", request.proxy.as_ref())?;
+        let response = client
+            .post(&url)
+            .headers(headers.clone())
+            .json(&transformed_body)
+            .send()
+            .await?;
 
-        // SSE-level transient-error retry (JS execute/_peekSseTransientError,
-        // codex.js:258-362). Retries on server_is_overloaded /
-        // service_unavailable_error; account-fallback → 503 capacity message.
-        const MAX_RETRIES: usize = 3;
-        for attempt in 0..MAX_RETRIES {
-            let resp = client
-                .post(&url)
-                .headers(headers.clone())
-                .json(&transformed_body)
-                .send()
-                .await?;
-
-            // Capture parts before consuming the body.
-            let status = resp.status();
-            let resp_headers = resp.headers().clone();
-
-            // Stream-peek the first ≤256 KiB of the SSE body.
-            let stream = resp.bytes_stream();
-            let mut chunks: Vec<bytes::Bytes> = Vec::new();
-            let mut text = String::new();
-            let mut matched: Option<&str> = None;
-            let mut account_fallback = false;
-            let mut pinned = stream;
-            let mut total = 0usize;
-            while total < CODEX_SSE_PEEK_BYTES {
-                match pinned.next().await {
-                    Some(Ok(chunk)) => {
-                        total += chunk.len();
-                        chunks.push(chunk.clone());
-                        text.push_str(&String::from_utf8_lossy(&chunk));
-                        if codex_sse_has_user_output(&text) {
-                            break;
-                        }
-                        let lower = text.to_lowercase();
-                        let account_hit = CODEX_SSE_ACCOUNT_FALLBACK_PATTERNS
-                            .iter()
-                            .find(|p| lower.contains(**p));
-                        if let Some(hit) = account_hit {
-                            matched = Some(hit);
-                            account_fallback = true;
-                            break;
-                        }
-                        let retry_hit = CODEX_SSE_RETRY_PATTERNS
-                            .iter()
-                            .find(|p| lower.contains(**p));
-                        if let Some(hit) = retry_hit {
-                            matched = Some(hit);
-                            break;
-                        }
-                    }
-                    Some(Err(_)) | None => break,
-                }
-            }
-
-            if let Some(_hit) = matched {
-                if account_fallback {
-                    // Return 503 with the exact capacity message for downstream
-                    // account fallback matching.
-                    let err_body = json!({
-                        "error": {
-                            "message": CODEX_MODEL_CAPACITY_MESSAGE,
-                            "type": "server_error",
-                            "code": "service_unavailable",
-                        }
-                    });
-                    let bytes = serde_json::to_vec(&err_body).unwrap_or_default();
-                    let mut http_resp = http::Response::new(ReqwestBody::from(bytes));
-                    *http_resp.status_mut() = reqwest::StatusCode::SERVICE_UNAVAILABLE;
-                    http_resp.headers_mut().insert(
-                        reqwest::header::CONTENT_TYPE,
-                        HeaderValue::from_static("application/json"),
-                    );
-                    return Ok(CodexExecutorResponse {
-                        response: UpstreamResponse::Reqwest(reqwest::Response::from(http_resp)),
-                        url,
-                        headers,
-                        transformed_body,
-                        transport: TransportKind::Reqwest,
-                    });
-                }
-                if attempt + 1 < MAX_RETRIES {
-                    // JS codex.js reuses the flat 503 entry of
-                    // DEFAULT_RETRY_CONFIG (attempts 3, delay 2000ms) — not
-                    // exponential backoff.
-                    tokio::time::sleep(Duration::from_millis(2000)).await;
-                    continue;
-                }
-                let err_body = json!({
-                    "error": {
-                        "message": matched.unwrap_or("server_is_overloaded"),
-                        "type": "server_error",
-                        "code": "service_unavailable",
-                    }
-                });
-                let bytes = serde_json::to_vec(&err_body).unwrap_or_default();
-                let mut http_resp = http::Response::new(ReqwestBody::from(bytes));
-                *http_resp.status_mut() = reqwest::StatusCode::SERVICE_UNAVAILABLE;
-                http_resp.headers_mut().insert(
-                    reqwest::header::CONTENT_TYPE,
-                    HeaderValue::from_static("application/json"),
-                );
-                return Ok(CodexExecutorResponse {
-                    response: UpstreamResponse::Reqwest(reqwest::Response::from(http_resp)),
-                    url,
-                    headers,
-                    transformed_body,
-                    transport: TransportKind::Reqwest,
-                });
-            }
-
-            // No transient error matched → re-assemble a live stream from the
-            // peeked prefix chunks + the remaining upstream body so SSE flows.
-            // Both sides must yield `Result<Bytes, reqwest::Error>`.
-            let prefix = stream::iter(chunks).map(Ok::<_, reqwest::Error>);
-            let combined = prefix.chain(pinned);
-            let mut http_resp = http::Response::new(ReqwestBody::wrap_stream(combined));
-            *http_resp.status_mut() = status;
-            *http_resp.headers_mut() = resp_headers;
-            let reconstructed = reqwest::Response::from(http_resp);
-
+        // Preserve non-success responses verbatim for the request-scoped
+        // account/auth planner. Successful Codex responses are SSE; inspect at
+        // most their first complete event so a structured failure can reach the
+        // planner before downstream commitment. Normal streams are released as
+        // soon as that first event arrives, without waiting for user output or
+        // any temporal retry window.
+        let is_sse = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.to_ascii_lowercase().starts_with("text/event-stream"));
+        if !response.status().is_success() || !is_sse {
             return Ok(CodexExecutorResponse {
-                response: UpstreamResponse::Reqwest(reconstructed),
+                response: UpstreamResponse::Reqwest(response),
                 url,
                 headers,
                 transformed_body,
@@ -959,9 +903,59 @@ impl CodexExecutor {
             });
         }
 
-        Err(CodexExecutorError::StreamingResponseFailed(
-            "max retries exhausted for overloaded SSE response".into(),
-        ))
+        let status = response.status();
+        let response_headers = response.headers().clone();
+        let mut upstream = response.bytes_stream();
+        let mut prefix = Vec::new();
+        let mut first_event = Vec::with_capacity(CODEX_FIRST_EVENT_MAX_BYTES);
+        while first_event.len() < CODEX_FIRST_EVENT_MAX_BYTES {
+            match upstream.next().await {
+                Some(Ok(chunk)) => {
+                    let remaining = CODEX_FIRST_EVENT_MAX_BYTES - first_event.len();
+                    first_event.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+                    prefix.push(chunk);
+                }
+                Some(Err(error)) => return Err(CodexExecutorError::Request(error)),
+                None => break,
+            }
+            if first_sse_event_end(&first_event).is_some()
+                || first_event.len() >= CODEX_FIRST_EVENT_MAX_BYTES
+            {
+                break;
+            }
+        }
+
+        if let Some(event_end) = first_sse_event_end(&first_event) {
+            if let Some(failure_status) =
+                codex_first_event_failure_status(&first_event[..event_end])
+            {
+                first_event.truncate(event_end);
+                let mut failed = http::Response::new(ReqwestBody::from(first_event));
+                *failed.status_mut() = failure_status;
+                *failed.headers_mut() = response_headers;
+                failed.headers_mut().remove(reqwest::header::CONTENT_LENGTH);
+                return Ok(CodexExecutorResponse {
+                    response: UpstreamResponse::Reqwest(reqwest::Response::from(failed)),
+                    url,
+                    headers,
+                    transformed_body,
+                    transport: TransportKind::Reqwest,
+                });
+            }
+        }
+
+        let replay = stream::iter(prefix).map(Ok::<_, reqwest::Error>);
+        let combined = replay.chain(upstream);
+        let mut live = http::Response::new(ReqwestBody::wrap_stream(combined));
+        *live.status_mut() = status;
+        *live.headers_mut() = response_headers;
+        Ok(CodexExecutorResponse {
+            response: UpstreamResponse::Reqwest(reqwest::Response::from(live)),
+            url,
+            headers,
+            transformed_body,
+            transport: TransportKind::Reqwest,
+        })
     }
 }
 
@@ -1285,17 +1279,6 @@ mod tests {
     }
 
     #[test]
-    fn test_codex_web_search_event_counts_as_user_output() {
-        let event = r#"event: response.output_item.added
-data: {"type":"response.output_item.added","item":{"type":"web_search_call"}}"#;
-        assert!(codex_sse_has_user_output(event));
-        assert!(codex_sse_has_user_output(
-            "event: response.web_search_call.searching"
-        ));
-        assert!(!codex_sse_has_user_output("event: response.created"));
-    }
-
-    #[test]
     fn test_codex_sse_conversion_standard_format_unchanged() {
         let standard_sse = b"data: {\"type\":\"content.delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n";
         let result = convert_openai_sse_to_standard(standard_sse);
@@ -1317,6 +1300,44 @@ data: {"type":"response.output_item.added","item":{"type":"web_search_call"}}"#;
         assert_eq!(
             url,
             "https://chatgpt.com/backend-api/codex/responses/compact"
+        );
+    }
+
+    #[test]
+    fn test_build_url_honors_configured_endpoint() {
+        let node = ProviderNode {
+            base_url: Some("http://127.0.0.1:1234/codex/responses/".into()),
+            ..Default::default()
+        };
+        let executor = CodexExecutor::new(Arc::new(ClientPool::new()), Some(node)).unwrap();
+        assert_eq!(
+            executor.build_url("gpt-5.6-luna"),
+            "http://127.0.0.1:1234/codex/responses"
+        );
+        assert_eq!(
+            executor.build_url("gpt-5.6-luna_compact"),
+            "http://127.0.0.1:1234/codex/responses/compact"
+        );
+    }
+
+    #[test]
+    fn structured_first_event_failure_is_classified_without_message_matching() {
+        let event = br#"event: response.failed
+data: {"type":"response.failed","response":{"error":{"code":"server_is_overloaded","message":"arbitrary localized text"}}}
+
+"#;
+        assert_eq!(
+            codex_first_event_failure_status(event),
+            Some(reqwest::StatusCode::SERVICE_UNAVAILABLE)
+        );
+        assert_eq!(
+            codex_first_event_failure_status(
+                br#"event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"server_is_overloaded"}
+
+"#
+            ),
+            None
         );
     }
 
