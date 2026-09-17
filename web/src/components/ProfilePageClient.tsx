@@ -93,10 +93,6 @@ export default function ProfilePageClient() {
   const fetchSettings = useCallback(async () => {
     try {
       const res = await fetch("/api/settings");
-      if (res.status === 401) {
-        window.location.assign("/login");
-        return;
-      }
       if (!res.ok) throw new Error(`Server returned ${res.status}`);
       const data = (await res.json()) as Settings;
       setSettings(data);
@@ -124,10 +120,6 @@ export default function ProfilePageClient() {
       });
       const data = (await res.json()) as Settings;
       if (!res.ok) {
-        if (res.status === 401) {
-          window.location.assign("/login");
-          return null;
-        }
         const errMsg = (data as unknown as { error?: string }).error ?? "Request failed";
         throw new Error(errMsg);
       }
@@ -166,16 +158,16 @@ export default function ProfilePageClient() {
         }),
       });
       const data = await res.json();
-      if (res.status === 401) {
-        window.location.assign("/login");
-        return;
-      }
       if (!res.ok) {
         throw new Error(data.error || "Failed to update password");
       }
+      if (data.sessionsInvalidated === true) {
+        window.location.replace("/login");
+        return;
+      }
       setPassStatus({
         type: "success",
-        message: "Password updated successfully. All sessions invalidated.",
+        message: "Password updated successfully.",
       });
       setPasswords({ current: "", newPass: "", confirm: "" });
     } catch (err) {

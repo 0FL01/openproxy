@@ -10,6 +10,22 @@ interface DashboardLayoutProps {
   children: React.ReactNode;
 }
 
+interface AuthStatus {
+  requireLogin: boolean;
+  authenticated: boolean;
+}
+
+type AuthState = "checking" | "ready" | "error";
+
+function requestUrl(input: RequestInfo | URL): URL | null {
+  try {
+    const value = input instanceof Request ? input.url : input.toString();
+    return new URL(value, window.location.origin);
+  } catch {
+    return null;
+  }
+}
+
 function getToastStyle(type: string) {
   if (type === "success") {
     return {
@@ -46,19 +62,124 @@ function getToastStyle(type: string) {
 export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [pathname, setPathname] = useState("");
-  const [mounted, setMounted] = useState(false);
+  const [authState, setAuthState] = useState<AuthState>("checking");
+  const [authAttempt, setAuthAttempt] = useState(0);
 
   useEffect(() => {
-    setMounted(true);
     setPathname(window.location.pathname);
-    document.body.classList.add("dashboard-ready");
+    const originalFetch = window.fetch;
+    const callOriginalFetch = originalFetch.bind(window) as typeof window.fetch;
+    let active = true;
+    let redirecting = false;
+    let statusController: AbortController | null = null;
+    let statusCheck: Promise<void> | null = null;
+
+    const checkSession = async (initial: boolean): Promise<void> => {
+      statusController = new AbortController();
+      try {
+        const response = await callOriginalFetch("/api/auth/status", {
+          cache: "no-store",
+          credentials: "same-origin",
+          signal: statusController.signal,
+        });
+        if (!response.ok) throw new Error(`Server returned ${response.status}`);
+
+        const data = (await response.json()) as Partial<AuthStatus>;
+        if (
+          typeof data.requireLogin !== "boolean" ||
+          typeof data.authenticated !== "boolean"
+        ) {
+          throw new Error("Invalid auth status response");
+        }
+
+        if (data.requireLogin && !data.authenticated) {
+          if (!redirecting) {
+            redirecting = true;
+            window.location.replace("/login");
+          }
+          return;
+        }
+
+        if (active && initial) {
+          document.body.classList.add("dashboard-ready");
+          setAuthState("ready");
+        }
+      } catch (error) {
+        if (active && initial && !(error instanceof DOMException && error.name === "AbortError")) {
+          document.body.classList.add("dashboard-ready");
+          setAuthState("error");
+        }
+      } finally {
+        statusController = null;
+      }
+    };
+
+    const ensureSession = (initial = false): Promise<void> => {
+      if (!statusCheck) {
+        statusCheck = checkSession(initial).finally(() => {
+          statusCheck = null;
+        });
+      }
+      return statusCheck;
+    };
+
+    const observedFetch: typeof window.fetch = async (input, init) => {
+      const response = await callOriginalFetch(input, init);
+      const url = requestUrl(input);
+      if (
+        active &&
+        response.status === 401 &&
+        url?.origin === window.location.origin &&
+        url.pathname.startsWith("/api/") &&
+        url.pathname !== "/api/auth/status"
+      ) {
+        void ensureSession();
+      }
+      return response;
+    };
+
+    window.fetch = observedFetch;
+    void ensureSession(true);
+
     return () => {
+      active = false;
+      statusController?.abort();
+      if (window.fetch === observedFetch) window.fetch = originalFetch;
       document.body.classList.remove("dashboard-ready");
     };
-  }, []);
+  }, [authAttempt]);
 
   const notifications = useNotificationStore((state) => state.notifications);
   const removeNotification = useNotificationStore((state) => state.removeNotification);
+
+  if (authState !== "ready") {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-canvas px-4">
+        {authState === "checking" ? (
+          <div className="text-center">
+            <div className="inline-block h-8 w-8 animate-spin rounded-full border-2 border-brand-coral border-t-transparent" />
+            <p className="mt-4 text-[14px] text-muted">Checking session…</p>
+          </div>
+        ) : (
+          <div className="max-w-sm text-center">
+            <span className="material-symbols-outlined text-[32px] text-brand-coral">cloud_off</span>
+            <h1 className="mt-3 font-serif text-2xl text-ink">Unable to verify session</h1>
+            <p className="mt-2 text-sm text-muted">Check that OpenProxy is running and try again.</p>
+            <button
+              type="button"
+              onClick={() => {
+                setAuthState("checking");
+                setAuthAttempt((attempt) => attempt + 1);
+              }}
+              className="mt-5 rounded-mini-md bg-brand-coral px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-canvas">

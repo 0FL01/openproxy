@@ -176,12 +176,17 @@ async fn password_login_creates_dashboard_session() {
         .unwrap();
 
     assert_eq!(login.status(), StatusCode::OK);
-    let cookie = login
+    let set_cookie = login
         .headers()
         .get("set-cookie")
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(';').next())
         .expect("auth cookie")
+        .to_string();
+    assert!(set_cookie.contains("Max-Age=604800"));
+    let cookie = set_cookie
+        .split(';')
+        .next()
+        .expect("auth cookie value")
         .to_string();
 
     let status = app

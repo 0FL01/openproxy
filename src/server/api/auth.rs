@@ -21,6 +21,8 @@ use crate::server::auth::{
 use crate::server::state::AppState;
 use crate::types::Settings;
 
+const DASHBOARD_SESSION_TTL_SECS: i64 = 7 * 24 * 60 * 60;
+
 #[derive(Debug, Deserialize)]
 pub struct PasswordLoginRequest {
     pub password: String,
@@ -103,7 +105,7 @@ pub async fn login(
 
     let _ = state.login_limiter.check_and_record(client_ip, true).await;
 
-    let expires_at = now_secs() + 86400;
+    let expires_at = now_secs() + DASHBOARD_SESSION_TTL_SECS;
     let jti = crate::server::auth::generate_jti();
     let token = match encode(
         &JwtHeader::default(),
@@ -142,7 +144,7 @@ pub async fn login(
         "mustChangePassword": must_change_password,
     }))
     .into_response();
-    let cookie = build_auth_cookie(&token, 86400, secure_cookie);
+    let cookie = build_auth_cookie(&token, DASHBOARD_SESSION_TTL_SECS, secure_cookie);
     if let Ok(value) = HeaderValue::from_str(&cookie) {
         response.headers_mut().append(header::SET_COOKIE, value);
     }
