@@ -93,17 +93,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R3 / C12.
-- Smallest next action: Remove Antigravity's local temporal generation retry scheduler while preserving raw Retry-After/error responses and distinct configured endpoint alternatives.
-- Expected evidence: Retryable status/body signals return without sleep or same-endpoint repeat; malformed error JSON, 401, successful SSE, and alternate endpoints retain their protocol behavior with explicit attempt counts.
-- Stop or replan if: Onboarding/project discovery is encountered; keep that work isolated for C21-C22 and change only the generation execution loop in C12.
+- Closes: R3 / C13.
+- Smallest next action: Make the request-scoped chat planner the sole owner of account fallback and credential recovery, with one documented generation-attempt budget and no retry after downstream commitment.
+- Expected evidence: A status/account/auth matrix proves the exact upper attempt bound, one credential recovery owner, preserved raw errors and Retry-After, cancellation, and no executor multiplier.
+- Stop or replan if: A provider requires a protocol-mandated distinct endpoint exchange; count it explicitly without restoring temporal backoff or cross-request cooldown.
 
 ## Current State
 
-- Resolved: R1 / C00, R2 / C01-C02, C03-C11 and C14 within R3, plus C15 within R4. Kiro semantic repair/history replay, global Claude header replay, process-wide session/continuation maps, client-identity passthrough gating/cache re-anchoring, DefaultExecutor and Codex temporal retries, successful-response legacy housekeeping, redundant `Db::update` snapshot copies, and default chat context estimation/rejection are gone; context metadata remains independent.
-- Last relevant evidence: Codex structured first-event failures reach the upper planner once without sleep; normal first events arrive before held EOF; post-delta failures and cancellation do not duplicate generation. The preflight considers only the first event and inspects at most 64 KiB.
+- Resolved: R1 / C00, R2 / C01-C02, C03-C12 and C14 within R3, plus C15 within R4. Kiro semantic repair/history replay, global Claude header replay, process-wide session/continuation maps, client-identity passthrough gating/cache re-anchoring, DefaultExecutor/Codex/Antigravity temporal retries, successful-response legacy housekeeping, redundant `Db::update` snapshot copies, and default chat context estimation/rejection are gone; context metadata remains independent.
+- Last relevant evidence: Antigravity 429/malformed/401 responses retained exact status, body, and headers after one request with no sleep; configured endpoint routing and live SSE cancellation remained intact while project discovery/onboarding stayed unchanged.
 - Blocker: None; the prompt explicitly allows independent safe work when external harness/version evidence is unavailable.
-- Next: C12 removal of Antigravity's independent temporal generation retry loop.
+- Next: C13 unified request-scoped account fallback and credential recovery budget.
 
 ## Material Decisions
 
@@ -128,6 +128,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-09-17: C09 passed. Same-format passthrough is now selected from source/target protocol capability after dynamic model metadata, independent of recognized User-Agent. Native Messages input no longer undergoes duplicate OpenAI preconversion, standalone Claude cache re-anchoring is deleted, client cache fields/unknown extensions survive, and incompatible pairs still translate. C10 is next.
 - 2026-09-17: C10 passed. Deleted DefaultExecutor's same-URL retry loop and fixed sleeps for tokenrouter 429 plus 502/503/504, while preserving raw errors, distinct URL alternatives, pooled transports, and one separately identified transitional credential recovery. Controlled loopback counters show one request per unchanged URL; C11 is next.
 - 2026-09-18: C11 passed. Deleted Codex's three-attempt first-SSE-error retry loop, fixed sleeps, and 256 KiB user-output window. A bounded one-event structured preflight now hands an initial overload/rate-limit failure to the request-scoped planner before commitment, while normal and post-delta events stay live and can never trigger another generation. C12 is next.
+- 2026-09-18: C12 passed. Deleted Antigravity's three-attempt generation retry loop, Retry-After sleeps, jitter, and free-text body classifier. Raw errors now reach the request-scoped planner after one configured-endpoint request; pooled transport, protocol transformation, successful live SSE, and separate project/onboarding behavior remain. C13 is next.
 
 ## Completion
 

@@ -152,6 +152,7 @@
     "temporal_retry_owner": "client_or_harness",
     "default_executor_same_url_retries": false,
     "codex_executor_same_request_retries": false,
+    "antigravity_executor_same_request_retries": false,
     "codex_first_event_preflight_max_inspected_bytes": 65536,
     "codex_structured_first_event_failure_reaches_planner": true,
     "codex_retries_after_downstream_commitment": false,

@@ -18,10 +18,9 @@
 //!   now we forward tool parameters verbatim.
 
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
-use hyper::http;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -139,7 +138,6 @@ fn build_ide_request_id(
 #[derive(Clone)]
 pub struct AntigravityExecutor {
     pool: Arc<ClientPool>,
-    #[allow(dead_code)]
     provider_node: Option<ProviderNode>,
 }
 
@@ -152,7 +150,6 @@ pub enum AntigravityExecutorError {
     Request(reqwest::Error),
     InvalidHeader(reqwest::header::InvalidHeaderValue),
     MissingCredentials(String),
-    RetryExhausted(String),
 }
 
 impl From<reqwest::Error> for AntigravityExecutorError {
@@ -218,12 +215,26 @@ impl AntigravityExecutor {
 
     /// Build the Antigravity URL.
     pub fn build_url(stream: bool) -> String {
+        Self::build_url_from_base(ANTIGRAVITY_BASE_URL, stream)
+    }
+
+    fn build_url_from_base(base_url: &str, stream: bool) -> String {
         let action = if stream {
             "streamGenerateContent?alt=sse"
         } else {
             "generateContent"
         };
-        format!("{ANTIGRAVITY_BASE_URL}/v1internal:{action}")
+        format!("{}/v1internal:{action}", base_url.trim_end_matches('/'))
+    }
+
+    fn request_url(&self, stream: bool) -> String {
+        let configured_base = self
+            .provider_node
+            .as_ref()
+            .and_then(|node| node.base_url.as_deref())
+            .map(str::trim)
+            .filter(|base_url| !base_url.is_empty());
+        Self::build_url_from_base(configured_base.unwrap_or(ANTIGRAVITY_BASE_URL), stream)
     }
 
     fn build_headers(
@@ -642,40 +653,6 @@ impl AntigravityExecutor {
         Ok(derive_session_id(connection_id))
     }
 
-    /// Parse the Retry-After header value into a Duration.
-    /// Handles both HTTP-date and integer-seconds formats.
-    fn parse_retry_after(headers: &HeaderMap) -> Option<Duration> {
-        let value = headers.get("Retry-After")?;
-        let value_str = value.to_str().ok()?.trim();
-
-        // Try integer seconds first.
-        if let Ok(seconds) = value_str.parse::<u64>() {
-            let capped = seconds.min(120); // cap at 2 minutes
-            return Some(Duration::from_secs(capped));
-        }
-
-        // Try HTTP-date format (not commonly used, but handle it).
-        if let Ok(expires) = chrono::DateTime::parse_from_rfc2822(value_str) {
-            let now = chrono::Utc::now();
-            let duration = expires.signed_duration_since(now);
-            let secs = duration.num_seconds().clamp(1, 120) as u64;
-            return Some(Duration::from_secs(secs));
-        }
-
-        None
-    }
-
-    /// Check if an error response body suggests a transient error that should
-    /// be automatically retried.  Looks for common rate-limit and quota-exhausted
-    /// signals in the response text.
-    fn is_transient_antigravity_error(body_text: &str) -> bool {
-        let lower = body_text.to_ascii_lowercase();
-        lower.contains("rate_limit")
-            || lower.contains("quota_exceeded")
-            || lower.contains("resource_exhausted")
-            || body_text.contains("429")
-    }
-
     pub async fn execute_request(
         &self,
         mut request: AntigravityExecutionRequest,
@@ -749,97 +726,33 @@ impl AntigravityExecutor {
             obj.insert("requestId".into(), Value::String(request_id));
         }
 
-        let url = Self::build_url(request.stream);
+        let url = self.request_url(request.stream);
+        let mut headers = Self::build_headers(&access_token, request.stream, Some(&session_id))?;
 
-        // Retry up to 3 times with exponential backoff, Retry-After header,
-        // and error-body-text transient detection.
-        const MAX_RETRIES: usize = 3;
-        for attempt in 0..MAX_RETRIES {
-            let mut headers =
-                Self::build_headers(&access_token, request.stream, Some(&session_id))?;
-
-            // Add Antigravity-specific headers (Client-Metadata, etc.).
-            let ag_headers = Self::build_antigravity_headers()?;
-            for (key, value) in ag_headers.iter() {
-                headers.insert(key, value.clone());
-            }
-
-            let client = self.pool.get("antigravity", request.proxy.as_ref())?;
-            let response = client
-                .post(&url)
-                .headers(headers.clone())
-                .json(&request.body)
-                .send()
-                .await?;
-
-            let status = response.status();
-
-            // Success -- return immediately with unconsumed response.
-            if status.is_success() {
-                return Ok(AntigravityExecutorResponse {
-                    response: UpstreamResponse::Reqwest(response),
-                    url,
-                    headers,
-                    transformed_body: request.body,
-                    transport: TransportKind::Reqwest,
-                });
-            }
-
-            // Save response headers before body consumption, then check
-            // for transient error signals in the body text.
-            let response_headers = response.headers().clone();
-            let body_bytes = response.bytes().await.unwrap_or_default();
-            let body_text = String::from_utf8_lossy(&body_bytes);
-
-            // Determine retryability: status code check + body text check.
-            let is_retryable = status.as_u16() == 429
-                || status == reqwest::StatusCode::SERVICE_UNAVAILABLE
-                || status == reqwest::StatusCode::BAD_GATEWAY
-                || status == reqwest::StatusCode::GATEWAY_TIMEOUT
-                || Self::is_transient_antigravity_error(&body_text);
-
-            if !is_retryable || attempt + 1 >= MAX_RETRIES {
-                // Not retryable or no retries left -- reconstruct a
-                // reqwest::Response from status, saved headers, and body bytes.
-                let mut builder = http::Response::builder().status(status);
-                for (key, value) in response_headers.iter() {
-                    builder = builder.header(key.clone(), value.clone());
-                }
-                let reconstructed_http = builder.body(body_bytes).map_err(|e| {
-                    AntigravityExecutorError::RequestFailed(format!("response reconstruction: {e}"))
-                })?;
-                let reconstructed = reqwest::Response::from(reconstructed_http);
-                return Ok(AntigravityExecutorResponse {
-                    response: UpstreamResponse::Reqwest(reconstructed),
-                    url,
-                    headers,
-                    transformed_body: request.body,
-                    transport: TransportKind::Reqwest,
-                });
-            }
-
-            // Determine wait duration: Retry-After header wins, otherwise
-            // exponential backoff: 500ms * 2^attempt (jittered).
-            let delay = Self::parse_retry_after(&response_headers).unwrap_or_else(|| {
-                let base_ms = 500u64 * (1u64 << attempt);
-                let jitter = rand::random::<u64>() % (base_ms / 2 + 1);
-                Duration::from_millis(base_ms + jitter)
-            });
-
-            tracing::info!(
-                "antigravity request got HTTP {}, retrying in {:?} (attempt {}/{})",
-                status.as_u16(),
-                delay,
-                attempt + 1,
-                MAX_RETRIES,
-            );
-
-            tokio::time::sleep(delay).await;
+        // Add Antigravity-specific headers (Client-Metadata, etc.).
+        let ag_headers = Self::build_antigravity_headers()?;
+        for (key, value) in ag_headers.iter() {
+            headers.insert(key, value.clone());
         }
 
-        Err(AntigravityExecutorError::RetryExhausted(
-            "antigravity request failed after max retries".into(),
-        ))
+        let client = self.pool.get("antigravity", request.proxy.as_ref())?;
+        let response = client
+            .post(&url)
+            .headers(headers.clone())
+            .json(&request.body)
+            .send()
+            .await?;
+
+        // C12: this executor owns protocol mapping, not temporal scheduling.
+        // Preserve every HTTP response as a live, unconsumed body so the
+        // request-scoped planner can inspect status, body, and Retry-After.
+        Ok(AntigravityExecutorResponse {
+            response: UpstreamResponse::Reqwest(response),
+            url,
+            headers,
+            transformed_body: request.body,
+            transport: TransportKind::Reqwest,
+        })
     }
 }
 
@@ -1116,57 +1029,6 @@ mod tests {
             platform <= 5,
             "platform value {platform} is in expected range"
         );
-    }
-
-    // ---- transient error body-text detection tests ----
-
-    #[test]
-    fn is_transient_antigravity_error_detects_rate_limit() {
-        assert!(AntigravityExecutor::is_transient_antigravity_error(
-            "{\"error\": {\"message\": \"rate_limit exceeded\"}}"
-        ));
-    }
-
-    #[test]
-    fn is_transient_antigravity_error_detects_quota_exceeded() {
-        assert!(AntigravityExecutor::is_transient_antigravity_error(
-            "quota_exceeded: daily limit reached"
-        ));
-    }
-
-    #[test]
-    fn is_transient_antigravity_error_detects_resource_exhausted() {
-        assert!(AntigravityExecutor::is_transient_antigravity_error(
-            "RESOURCE_EXHAUSTED: quota exhausted"
-        ));
-    }
-
-    #[test]
-    fn is_transient_antigravity_error_detects_429_string() {
-        assert!(AntigravityExecutor::is_transient_antigravity_error(
-            "Error code: 429 Too Many Requests"
-        ));
-    }
-
-    #[test]
-    fn is_transient_antigravity_error_returns_false_for_other_errors() {
-        assert!(!AntigravityExecutor::is_transient_antigravity_error(
-            "{\"error\": {\"message\": \"invalid argument\"}}"
-        ));
-        assert!(!AntigravityExecutor::is_transient_antigravity_error(
-            "{\"error\": {\"message\": \"permission denied\"}}"
-        ));
-        assert!(!AntigravityExecutor::is_transient_antigravity_error(""));
-    }
-
-    #[test]
-    fn is_transient_antigravity_error_case_insensitive() {
-        assert!(AntigravityExecutor::is_transient_antigravity_error(
-            "RATE_LIMIT REACHED"
-        ));
-        assert!(AntigravityExecutor::is_transient_antigravity_error(
-            "Rate_Limit Exceeded"
-        ));
     }
 
     #[test]

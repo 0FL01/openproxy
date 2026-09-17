@@ -118,4 +118,8 @@ fn contract_freezes_preservation_and_removal_lists() {
         manifest["generation_retry_policy"]["codex_retries_after_downstream_commitment"],
         false
     );
+    assert_eq!(
+        manifest["generation_retry_policy"]["antigravity_executor_same_request_retries"],
+        false
+    );
 }
