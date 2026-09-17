@@ -14,6 +14,68 @@ const KIRO_TOOL_NAME_MAX_LENGTH: usize = 64;
 const KIRO_TOOL_DESCRIPTION_MAX_LENGTH: usize = 10237;
 const KIRO_TOOL_ID_MAX_LENGTH: usize = 64;
 
+/// Apply Kiro's required model id and system/thinking prefix using only the
+/// history supplied in the current request. The prefix belongs on the first
+/// user turn when history exists, otherwise on the current user message.
+pub fn prepare_kiro_request_messages(
+    mut history: Vec<Value>,
+    mut current_message: Value,
+    content_prefix: &str,
+    model_id: &str,
+) -> (Vec<Value>, Value) {
+    fn ensure_model_id(message: &mut Value, model_id: &str) {
+        let Some(user) = message.get_mut("userInputMessage") else {
+            return;
+        };
+        let missing = user
+            .get("modelId")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty);
+        if missing {
+            if let Some(object) = user.as_object_mut() {
+                object.insert("modelId".into(), Value::String(model_id.to_string()));
+            }
+        }
+    }
+
+    fn prepend_content(message: &mut Value, content_prefix: &str) {
+        if content_prefix.is_empty() {
+            return;
+        }
+        let Some(user) = message.get_mut("userInputMessage") else {
+            return;
+        };
+        let content = user
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let content = if content.is_empty() {
+            content_prefix.to_string()
+        } else {
+            format!("{content_prefix}\n\n{content}")
+        };
+        if let Some(object) = user.as_object_mut() {
+            object.insert("content".into(), Value::String(content));
+        }
+    }
+
+    for item in &mut history {
+        ensure_model_id(item, model_id);
+    }
+    ensure_model_id(&mut current_message, model_id);
+
+    if let Some(first_user) = history
+        .iter_mut()
+        .find(|item| item.get("userInputMessage").is_some())
+    {
+        prepend_content(first_user, content_prefix);
+    } else {
+        prepend_content(&mut current_message, content_prefix);
+    }
+
+    (history, current_message)
+}
+
 /// Tally of structural repairs performed while canonicalizing a conversation.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct KiroRepairs {

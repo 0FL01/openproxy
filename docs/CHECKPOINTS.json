@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C05",
+  "next_checkpoint": "C14",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c04_cargo_1.98.1",
+    "rust_verification": "passed_through_c05_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -279,7 +279,7 @@
     {
       "id": "C05",
       "title": "Удалить Kiro replay содержимого диалога",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C03"
       ],
@@ -292,7 +292,37 @@
       "change": "Удалить хранение session_start Value/system_prompt и подстановку сохранённого msg0 в новый запрос. Строить историю исключительно из текущего тела клиента с необходимым отображением system/messages на протокол Kiro. Не заменять этот кэш LRU, TTL-store или persistent history.",
       "tests": "Один session-id, но изменённое/сокращённое первое сообщение; compaction; пустая/новая история; смена system prompt, model и account. Старое содержание не появляется в upstream. Инструменты и required Kiro поля остаются валидны. Отдельно зафиксировать provider cache-hit/TTFT на warm сценарии при доступном разрешённом тесте.",
       "acceptance": "Покси не удерживает и не восстанавливает историю прошлых запросов. Нет утверждения, что удаление replay обязательно улучшает provider-side cache-hit или суммарный TTFT.",
-      "rollback": "Не мигрировать содержимое кэша в БД. При несовместимости адаптера остановить релиз его ветки и исправить mapping текущего запроса, не скрывать проблему восстановлением старой истории."
+      "rollback": "Не мигрировать содержимое кэша в БД. При несовместимости адаптера остановить релиз его ветки и исправить mapping текущего запроса, не скрывать проблему восстановлением старой истории.",
+      "result": {
+        "completed": "2026-09-17",
+        "files": [
+          "src/core/utils/kiro_session_replay.rs (deleted)",
+          "src/core/utils/mod.rs",
+          "src/core/utils/session_manager.rs",
+          "src/core/translator/concerns/kiro_conversation.rs",
+          "src/core/translator/request/openai_to_kiro.rs",
+          "src/core/translator/request/claude_to_kiro.rs",
+          "src/server/api/chat.rs",
+          "tests/lean_proxy_kiro_c05.rs",
+          "contracts/lean-proxy.md"
+        ],
+        "behavior": "The process-wide Kiro session-start map, frozen msg0/system-prompt values, TTL cleanup, and replacement logic are gone. Both OpenAI-to-Kiro and Claude-to-Kiro now apply model IDs and system/thinking prefixes to history/current content supplied by that request, then run the existing strict conversation/tool canonicalizer. No LRU, TTL, or persistent history replacement was added.",
+        "protocol_preservation": "conversationId and agentContinuationId resolution remain in session_manager for the C06 protocol audit. Kiro wire fields, tool normalization/pairing, profileArn, inferenceConfig, model routing, EventStream decoding, and top-level systemPrompt exclusion are unchanged.",
+        "tests": [
+          "cargo test --test lean_proxy_kiro_c05 -- --nocapture: 4 passed",
+          "cargo test --test lean_proxy_kiro_c03 --test kiro_executor -- --nocapture: 29 passed, 8 ignored pre-existing live/mock-incompatible tests",
+          "cargo test --lib kiro --all-features -- --nocapture: 105 passed",
+          "cargo test --lib --all-features: 1222 passed",
+          "cargo clippy --test lean_proxy_kiro_c05 --all-features -- -D warnings -A clippy::let-and-return -A clippy::needless-return: passed",
+          "cargo clippy --all-targets --all-features: passed with 7 pre-existing warnings",
+          "cargo fmt --all -- --check and git diff --check: passed"
+        ],
+        "acceptance_evidence": "A full-handler repeated-session test captured two upstream payloads: the second contained the changed first message/current turn and no original msg0 while retaining stable protocol identifiers. Direct OpenAI/Claude fixtures covered compaction, empty history, changed system/model/account, required fields, tools, and 24 concurrent same-session translations without content crossover.",
+        "measurements": "Provider-side prompt-cache hit rate and provider TTFT were not measured: proving either requires a real Kiro provider and credentials, while this checkpoint permits only local mock traffic. The loopback test verifies two successful single-attempt requests but is not reported as provider cache or TTFT evidence.",
+        "retained_state": "No Kiro prompt/history content map remains. C06-scoped identifier/continuation maps were deliberately not changed in C05.",
+        "network_and_data": "Only an ephemeral 127.0.0.1 upstream and temporary SQLite database were used; no production DB, credentials, paid provider, or external network was accessed.",
+        "rollback": "Revert the C05 commit. The deleted state was process-memory-only and was not migrated to SQLite, so no persisted user data or secret needs reconstruction."
+      }
     },
     {
       "id": "C06",

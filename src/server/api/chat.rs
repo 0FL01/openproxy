@@ -697,8 +697,8 @@ async fn execute_single_model(
             );
         }
     } else if plan.needs_translation() {
-        // Include rawHeaders so Kiro session-replay can resolve a stable
-        // conversationId from client session headers (x-session-id, etc.).
+        // Include rawHeaders so protocol adapters can resolve request-scoped
+        // session/continuation identifiers from client headers.
         let mut creds = json!({
             "provider": plan.provider,
         });

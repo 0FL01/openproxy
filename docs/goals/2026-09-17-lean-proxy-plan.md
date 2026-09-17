@@ -93,17 +93,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R3 / C05.
-- Smallest next action: Delete Kiro session-start content replay and build every Kiro upstream history exclusively from the current request body.
-- Expected evidence: Reused session IDs with changed, compacted, empty, and account/model-switched histories never restore old `msg0` or system content; current tools and required Kiro fields remain valid.
-- Stop or replan if: A field is proven to be mandatory provider continuation metadata; preserve only that protocol field without retaining prompt/history content or adding a replacement cache.
+- Closes: R3 / C14.
+- Smallest next action: Remove success-path persisted cooldown/error housekeeping while preserving legacy diagnostic fields and proving they never suppress routing.
+- Expected evidence: Successful generation performs no synchronous `Db::update` for model locks/error counters; stored future locks, rate limits, and degraded markers remain readable but do not exclude an otherwise eligible account.
+- Stop or replan if: A write is proven to be required auth/credential state rather than routing diagnostics; isolate that write without restoring cooldown-based routing suppression.
 
 ## Current State
 
-- Resolved: R1 / C00, R2 / C01-C02, and C03-C04 within R3. Kiro semantic repair is gone, and Claude identity/session metadata is now request-scoped with no global retained map.
-- Last relevant evidence: C04 alternating Claude CLI/OpenCode/headerless requests inherited no prior session/retry metadata, and 24 concurrent account/session pairs remained correctly isolated. The focused C04 tests passed 2/2, DefaultExecutor regressions passed 12/12, and OpenCode-focused library tests passed 11/11.
+- Resolved: R1 / C00, R2 / C01-C02, and C03-C05 within R3. Kiro semantic repair/history replay and global Claude header replay are gone; only current-request prompt/history/header content reaches these adapters.
+- Last relevant evidence: C05 full-handler capture proved a reused session sent the changed first message and no old msg0. Compaction, empty history, system/model/account changes, tools/required fields, and 24 concurrent same-session translations passed; C05 tests passed 4/4 and Kiro-focused library tests passed 105/105.
 - Blocker: None; the prompt explicitly allows independent safe work when external harness/version evidence is unavailable.
-- Next: C05 Kiro session-start content replay removal.
+- Next: C14 diagnostic cooldown success-write cleanup, following the frozen first-delivery order.
 
 ## Material Decisions
 
@@ -119,6 +119,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-09-17: C02 passed. The documented release benchmark measured the direct mock and full handler with equal successful SSE/tools work at cold/warm concurrency 1/8/32 over five repetitions, separately measured allocations, validated exact attempts and artifact completeness, and recorded predeclared thresholds. No runtime behavior changed; C03 is next.
 - 2026-09-17: C03 passed. Removed Kiro semantic classification, full-success-body buffering, prompt mutation, and the hidden second generation; retained incremental AWS EventStream/tool translation, made malformed frames explicit errors, preserved the deprecated setting with a one-time warning, and verified first-event delivery plus cancellation against the loopback harness. C04 is next.
 - 2026-09-17: C04 passed. Deleted process-wide Claude header capture/replay, threaded only current-request headers into the default adapter, enforced a non-secret allowlist with explicit provider defaults, and verified alternating plus concurrent account/session isolation. C05 is next.
+- 2026-09-17: C05 passed. Deleted Kiro's process-wide frozen-msg0/system-prompt store without replacement, kept request-scoped protocol identifiers for C06, and verified current-only history across repeated sessions, compaction, account/model/system changes, tools, and concurrency. Real provider cache-hit/TTFT remains unverified because no permitted live Kiro credentials are available. C14 is next per the first-delivery order.
 
 ## Completion
 

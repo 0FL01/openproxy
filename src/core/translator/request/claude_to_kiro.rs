@@ -11,7 +11,7 @@ use crate::core::config::kiro_constants::{
     resolve_kiro_thinking_budget, uses_kiro_native_gpt_effort, HeaderLookup,
 };
 use crate::core::translator::concerns::kiro_conversation::{
-    canonicalize_kiro_conversation, normalize_kiro_tool_specs,
+    canonicalize_kiro_conversation, normalize_kiro_tool_specs, prepare_kiro_request_messages,
 };
 use serde_json::Value;
 
@@ -410,8 +410,7 @@ pub fn claude_to_kiro_request(
         }
     }
 
-    let system_prompt = system_prompt_parts.join("\n\n");
-    let content_prefix = system_prompt.clone();
+    let content_prefix = system_prompt_parts.join("\n\n");
 
     // Resolve conversation-stable session identity (client header / body field,
     // or ephemeral one-shot for Kiro when no client id is present).
@@ -440,43 +439,40 @@ pub fn claude_to_kiro_request(
         })
     });
 
-    let replay = crate::core::utils::kiro_session_replay::apply_kiro_session_replay(
-        Some(&conversation_id),
-        connection_id.as_deref(),
-        upstream_model,
-        &system_prompt,
+    let (request_history, request_current) = prepare_kiro_request_messages(
+        merged_history,
+        base_current,
         &content_prefix,
-        &merged_history,
-        &base_current,
+        upstream_model,
     );
 
-    // Canonicalize the replayed conversation into the strict Kiro wire shape:
+    // Canonicalize the current request into the strict Kiro wire shape:
     // alternating user/assistant turns, adjacent tool-use/tool-result pairs with
     // reserved ids, and tool specs only on the final (current) user message.
     // Port of 9router `canonicalizeKiroConversation` (kiroConversation.js).
     let (specs, name_map) = normalize_kiro_tool_specs(&tools);
     let (canonical_history, canonical_current, _repairs, _valid) = canonicalize_kiro_conversation(
-        &replay.history,
-        &replay.current_message,
+        &request_history,
+        &request_current,
         upstream_model,
         &specs,
         &name_map,
     );
 
-    let replay_current = canonical_current
+    let canonical_current = canonical_current
         .get("userInputMessage")
         .cloned()
         .unwrap_or_else(|| serde_json::json!({ "content": "" }));
 
     let mut user_input_message = serde_json::json!({
-        "content": replay_current.get("content").and_then(|v| v.as_str()).unwrap_or(""),
+        "content": canonical_current.get("content").and_then(|v| v.as_str()).unwrap_or(""),
         "modelId": upstream_model,
         "origin": "AI_EDITOR"
     });
-    if let Some(ctx) = replay_current.get("userInputMessageContext") {
+    if let Some(ctx) = canonical_current.get("userInputMessageContext") {
         user_input_message["userInputMessageContext"] = ctx.clone();
     }
-    if let Some(images) = replay_current.get("images") {
+    if let Some(images) = canonical_current.get("images") {
         if images.as_array().is_some_and(|a| !a.is_empty()) {
             user_input_message["images"] = images.clone();
         }
@@ -498,7 +494,8 @@ pub fn claude_to_kiro_request(
 
     // JS parity (claude-to-kiro.js:245-247): NEVER send top-level
     // `systemPrompt` — the CodeWhisperer surface rejects it with 400
-    // REQUEST_BODY_INVALID. `system_prompt` above is only a replay cache key.
+    // REQUEST_BODY_INVALID. System/thinking instructions are carried in the
+    // current request's first user turn instead.
 
     // Native effort fields for supported models (9router
     // buildKiroAdditionalModelRequestFieldsForModel).
@@ -603,10 +600,9 @@ mod tests {
 
     /// JS parity (claude-to-kiro.js:245-247): NEVER send top-level
     /// `systemPrompt` — the CodeWhisperer surface rejects it with 400
-    /// REQUEST_BODY_INVALID; the value is only a replay cache key.
+    /// REQUEST_BODY_INVALID; system content travels in the current request.
     #[test]
     fn never_emits_top_level_system_prompt() {
-        crate::core::utils::kiro_session_replay::clear_kiro_session_replay_store();
         let mut body = json!({
             "model": "claude-sonnet-4",
             "system": "you are helpful",

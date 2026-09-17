@@ -6,7 +6,6 @@
 pub mod client_detector;
 pub mod cursor_checksum;
 pub mod error;
-pub mod kiro_session_replay;
 pub mod project_id_cache;
 pub mod reasoning_content_injector;
 pub mod session_manager;

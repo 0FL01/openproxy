@@ -6,9 +6,9 @@
 //!   "stable for the process lifetime" behaviour by caching one id per
 //!   connection-id (typically the OAuth account email).
 //!
-//! Also provides conversation-stable session identity resolution used by
-//! Kiro multi-turn prompt-cache (`resolve_session_identity`) and stable
-//! `agentContinuationId` minting (`resolve_continuation_id`).
+//! Also provides conversation-stable session identity resolution and stable
+//! Kiro `agentContinuationId` minting (`resolve_continuation_id`). It never
+//! stores prompt or conversation content.
 
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
