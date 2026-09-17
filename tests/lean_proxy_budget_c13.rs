@@ -281,7 +281,9 @@ fn source_has_one_recovery_owner_and_no_hidden_generation_multiplier() {
     let mimo = include_str!("../src/core/executor/mimo_free.rs");
     let kiro = include_str!("../src/core/executor/kiro.rs");
 
-    assert_eq!(chat.matches("dispatch_oauth_refresh(").count(), 1);
+    assert!(!chat.contains("dispatch_oauth_refresh("));
+    assert!(chat.contains("CONNECTION_REFRESH_COORDINATOR"));
+    assert!(chat.contains("connection_credential_generation"));
     assert!(chat.contains("GenerationAttemptBudget::new"));
     assert!(chat.contains("matches!(status.as_u16(), 400 | 422)"));
     for removed in [

@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
 use reqwest::StatusCode;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -13,7 +12,9 @@ use crate::core::config::app_constants::{
 };
 use crate::core::proxy::resolve_proxy_target;
 use crate::core::usage::quota_fetcher::codex_account_id;
-use crate::oauth::token_refresh::{dispatch_oauth_refresh, needs_refresh_with_lead, RefreshResult};
+use crate::oauth::token_refresh::{
+    connection_credential_generation, needs_refresh_with_lead, CONNECTION_REFRESH_COORDINATOR,
+};
 use crate::server::state::AppState;
 use crate::types::ProviderConnection;
 
@@ -306,55 +307,18 @@ async fn refresh_connection(
     state: &AppState,
     connection: &mut ProviderConnection,
 ) -> Result<(), CodexCatalogError> {
-    let refresh_token = connection
-        .refresh_token
-        .as_deref()
-        .ok_or_else(|| CodexCatalogError::new(StatusCode::UNAUTHORIZED, "Token expired"))?;
-    let refreshed =
-        dispatch_oauth_refresh("codex", refresh_token, &connection.provider_specific_data)
-            .await
-            .map_err(|error| CodexCatalogError::new(StatusCode::UNAUTHORIZED, error))?;
-    persist_refresh(state, connection, &refreshed).await;
-    connection.access_token = Some(refreshed.access_token.clone());
-    if let Some(refresh_token) = refreshed.refresh_token {
-        connection.refresh_token = Some(refresh_token);
-    }
-    if let Some(expires_in) = refreshed.expires_in {
-        connection.expires_at =
-            Some((Utc::now() + chrono::Duration::seconds(expires_in)).to_rfc3339());
-    }
+    let observed_generation = connection_credential_generation(connection);
+    let refreshed = CONNECTION_REFRESH_COORDINATOR
+        .refresh_connection(
+            state.db.clone(),
+            "codex",
+            &connection.id,
+            observed_generation,
+        )
+        .await
+        .map_err(|error| CodexCatalogError::new(StatusCode::UNAUTHORIZED, error))?;
+    *connection = refreshed.connection;
     Ok(())
-}
-
-async fn persist_refresh(
-    state: &AppState,
-    connection: &ProviderConnection,
-    refresh: &RefreshResult,
-) {
-    let connection_id = connection.id.clone();
-    let refresh = refresh.clone();
-    let _ = state
-        .db
-        .update(move |db| {
-            let Some(target) = db
-                .provider_connections
-                .iter_mut()
-                .find(|candidate| candidate.id == connection_id)
-            else {
-                return;
-            };
-            target.access_token = Some(refresh.access_token.clone());
-            if let Some(token) = &refresh.refresh_token {
-                target.refresh_token = Some(token.clone());
-            }
-            if let Some(expires_in) = refresh.expires_in {
-                target.expires_in = Some(expires_in);
-                target.expires_at =
-                    Some((Utc::now() + chrono::Duration::seconds(expires_in)).to_rfc3339());
-            }
-            target.updated_at = Some(Utc::now().to_rfc3339());
-        })
-        .await;
 }
 
 #[derive(Debug, Deserialize)]

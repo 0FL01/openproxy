@@ -151,4 +151,20 @@ fn contract_freezes_preservation_and_removal_lists() {
         manifest["refresh_coordination"]["legacy_token_cache_removed_in"],
         "C18"
     );
+    assert_eq!(
+        manifest["refresh_coordination"]["foreground_migrated_checkpoint"],
+        "C17A"
+    );
+    assert_eq!(
+        manifest["refresh_coordination"]["foreground_owner"],
+        "connection_refresh_coordinator"
+    );
+    assert_eq!(
+        manifest["refresh_coordination"]["foreground_direct_dispatch_calls"],
+        false
+    );
+    assert_eq!(
+        manifest["refresh_coordination"]["non_token_forbidden_triggers_refresh"],
+        false
+    );
 }

@@ -183,6 +183,14 @@
     "waiter_cancellation_aborts_operation": false,
     "different_connections_share_http_lock": false,
     "exactly_once_remote_refresh_claimed": false,
+    "foreground_migrated_checkpoint": "C17A",
+    "foreground_owner": "connection_refresh_coordinator",
+    "foreground_direct_dispatch_calls": false,
+    "foreground_uses_canonical_snapshot_after_refresh": true,
+    "non_token_forbidden_triggers_refresh": false,
+    "codex_catalog_shared_refresh_helper_migrated": true,
+    "duplicate_executor_credential_manager_removed": true,
+    "remaining_control_background_migration": "C17B",
     "legacy_callers_migrate_in": [
       "C17A",
       "C17B"

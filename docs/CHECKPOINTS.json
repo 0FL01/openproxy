@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C17A",
+  "next_checkpoint": "C17B",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c16_cargo_1.98.1",
+    "rust_verification": "passed_through_c17a_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -816,7 +816,7 @@
     {
       "id": "C17A",
       "title": "Перевести foreground OAuth callers на общий refresh",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C16"
       ],
@@ -830,7 +830,53 @@
       "change": "Мигрировать только request-path refresh callers; удалить их независимые duplicate refresh branches после переноса. Использовать credential version/snapshot заново, не держать старый request clone ради повторной авторизации. При нескольких несвязанных provider API разделить на C17A.1 и т.д., не объединять большой refactor.",
       "tests": "Каждый затронутый executor: параллельный 401, успешный refresh, invalid_grant, 403 не из-за токена, отмена и повторная авторизация. Account fallback бюджет C13 остаётся соблюдён.",
       "acceptance": "Все foreground call sites перечислены и используют общий coordinator; число refresh/generation requests подтверждено mocks.",
-      "rollback": "Каждый provider caller переносится отдельным обратимым commit."
+      "rollback": "Каждый provider caller переносится отдельным обратимым commit.",
+      "result": {
+        "completed_at": "2026-09-18",
+        "files": [
+          "src/server/api/chat.rs",
+          "src/server/codex_catalog.rs",
+          "src/core/executor/provider.rs",
+          "src/core/auth/mod.rs",
+          "src/core/auth/credential_manager.rs",
+          "src/core/usage/quota_fetcher.rs",
+          "tests/lean_proxy_refresh_c17a.rs",
+          "tests/lean_proxy_budget_c13.rs",
+          "tests/lean_proxy_contract.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json"
+        ],
+        "caller_census": {
+          "migrated": [
+            "chat request-scoped 401 and structured token-authentication 403 recovery",
+            "Codex catalog refresh helper used by foreground web-search capability checks"
+          ],
+          "removed_as_duplicate_or_unreachable": [
+            "ProviderExecutor and UnifiedExecutor refresh_credentials/needs_refresh hooks",
+            "unused CredentialManager DashMap state and per-key lock map"
+          ],
+          "deferred_to_c17b": [
+            "manual OAuth refresh API",
+            "background proactive refresh",
+            "quota and auto-ping refresh",
+            "provider model discovery and connection-test refresh"
+          ]
+        },
+        "behavior": "Foreground recovery computes the observed generation from the selected configured connection, joins the in-flight-only coordinator, and re-enters selection from a fresh canonical snapshot. The single post-refresh generation remains inside C13's request budget. A 401 is refreshable; a 403 requires an exact structured token/authentication code rather than free-text matching, so permission failures advance or return without credential rotation.",
+        "tests": [
+          "cargo test --test lean_proxy_refresh_c17a -- --nocapture: 4 passed, repeated three consecutive runs",
+          "cargo test --test lean_proxy_budget_c13 -- --nocapture: 4 passed",
+          "cargo test --lib codex_catalog --all-features -- --nocapture: 2 passed",
+          "cargo test --test lean_proxy_refresh_c16 --test lean_proxy_refresh_c17a --test lean_proxy_budget_c13 --test lean_proxy_contract -- --nocapture: 19 passed",
+          "cargo test --lib --all-features -- --test-threads=1: 1211 passed",
+          "cargo clippy --test lean_proxy_refresh_c17a --test lean_proxy_budget_c13 --test lean_proxy_contract --all-features -- -D warnings -A clippy::let-and-return -A clippy::needless-return: passed",
+          "cargo clippy --all-targets --all-features: passed with 7 pre-existing warnings",
+          "cargo fmt --all -- --check, JSON parse, and git diff --check: passed"
+        ],
+        "acceptance_evidence": "Sixteen simultaneous stale-token chats each made one initial generation and one counted post-refresh generation while sharing exactly one token refresh. Invalid-grant performs one refresh per inbound request and permits a later independent request to reauthenticate. Structured permission-denied 403 makes zero refresh calls. Cancelling the foreground waiter does not lose the rotated pair; the next request uses the published token without another refresh.",
+        "schema_and_data": "No public route, persisted field, SQLite schema, credential encryption boundary, provider format, or dependency changed. Existing token fields and lastRefreshAt retain their prior serialized meanings.",
+        "rollback": "Revert the foreground migration while keeping C16 available, or revert the Codex catalog helper independently. Do not restore the removed parallel executor/CredentialManager refresh owners alongside the coordinator."
+      }
     },
     {
       "id": "C17B",

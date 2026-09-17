@@ -26,6 +26,9 @@ use crate::core::translator::registry::{self, Format};
 use crate::core::translator::response_transform::{transform_sse_stream, transformer_for_provider};
 use crate::core::utils::client_detector::{detect_client_tool, ClientTool};
 use crate::core::utils::stream_flags::resolve_stream_flags;
+use crate::oauth::token_refresh::{
+    connection_credential_generation, CONNECTION_REFRESH_COORDINATOR,
+};
 use crate::server::application_logs::{AttemptLog, RequestLogContext};
 use crate::server::auth::{extract_api_key, require_api_key, require_api_key_with_reload};
 use crate::server::state::AppState;
@@ -1649,6 +1652,8 @@ async fn forward_with_provider_fallback(
                         .await;
                 }
                 let retry_after = header_retry_after.or(body_retry_after);
+                let refreshable_auth_failure =
+                    is_refreshable_auth_failure(status, upstream_body.as_deref());
                 last_error = Some(ProviderAttemptError {
                     status: status.as_u16(),
                     message: message.clone(),
@@ -1663,59 +1668,39 @@ async fn forward_with_provider_fallback(
                     return Err(last_error.expect("upstream error recorded"));
                 }
 
-                // C13: the request-scoped planner is the sole 401/403 recovery
-                // owner. At most one refresh is attempted across all accounts;
-                // its follow-up generation consumes the shared budget.
-                if (status.as_u16() == 401 || status.as_u16() == 403)
+                // C17A: the request-scoped planner is the sole foreground
+                // recovery owner, and every caller joins the connection-scoped
+                // coordinator. A plain 403 is not enough evidence to rotate a
+                // credential: only structured token/authentication codes are
+                // refreshable. The follow-up generation still consumes C13's
+                // shared request budget at the top of the loop.
+                if refreshable_auth_failure
                     && connection.refresh_token.is_some()
                     && !auth_recovery_used
                 {
                     auth_recovery_used = true;
-                    if let Some(ref rt) = connection.refresh_token.clone() {
-                        let refresh_provider = plan.provider.as_str();
-                        if let Ok(result) = crate::oauth::token_refresh::dispatch_oauth_refresh(
-                            refresh_provider,
-                            rt,
-                            &connection.provider_specific_data,
+                    let observed_generation = connection_credential_generation(&connection);
+                    match CONNECTION_REFRESH_COORDINATOR
+                        .refresh_connection(
+                            state.db.clone(),
+                            &connection.provider,
+                            &connection.id,
+                            observed_generation,
                         )
                         .await
-                        {
-                            let conn_id = connection.id.clone();
-                            let new_access = result.access_token.clone();
-                            let new_refresh = result.refresh_token.clone();
-                            let expires_at = result.expires_in.map(|secs| {
-                                (Utc::now() + ChronoDuration::seconds(secs)).to_rfc3339()
-                            });
-                            let last_refresh_at = Utc::now().to_rfc3339();
-                            let persisted = state
-                                .db
-                                .update(move |db| {
-                                    if let Some(conn) =
-                                        db.provider_connections.iter_mut().find(|c| c.id == conn_id)
-                                    {
-                                        conn.access_token = Some(new_access);
-                                        // Preserve old refresh_token when response omits it
-                                        if let Some(rt) = new_refresh {
-                                            conn.refresh_token = Some(rt);
-                                        }
-                                        if let Some(exp) = expires_at {
-                                            conn.expires_at = Some(exp);
-                                        }
-                                        conn.provider_specific_data.insert(
-                                            "lastRefreshAt".into(),
-                                            Value::String(last_refresh_at),
-                                        );
-                                        conn.last_error = None;
-                                        conn.last_error_at = None;
-                                        conn.error_code = None;
-                                        conn.backoff_level = Some(0);
-                                    }
-                                })
-                                .await
-                                .is_ok();
-                            if persisted {
-                                continue;
-                            }
+                    {
+                        Ok(_) => {
+                            // Re-select from a fresh canonical snapshot rather
+                            // than retaining the stale request clone.
+                            continue;
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                provider = %connection.provider,
+                                connection_id = %connection.id,
+                                error = %error,
+                                "foreground OAuth credential recovery failed"
+                            );
                         }
                     }
                 }
@@ -1733,6 +1718,46 @@ async fn forward_with_provider_fallback(
             }
         }
     }
+}
+
+/// A 401 is an explicit authentication failure. A 403 can also be returned for
+/// authorization policy and quota failures, so it triggers credential rotation
+/// only when the provider supplies a structured token/authentication code.
+/// Free-text messages are intentionally not classified.
+fn is_refreshable_auth_failure(status: StatusCode, body: Option<&[u8]>) -> bool {
+    if status == StatusCode::UNAUTHORIZED {
+        return true;
+    }
+    if status != StatusCode::FORBIDDEN {
+        return false;
+    }
+
+    let Ok(payload) = body
+        .and_then(|body| serde_json::from_slice::<Value>(body).ok())
+        .ok_or(())
+    else {
+        return false;
+    };
+    let candidates = [
+        payload.pointer("/error/code"),
+        payload.pointer("/error/type"),
+        payload.pointer("/error/status"),
+        payload.get("code"),
+        payload.get("type"),
+        payload.get("status"),
+    ];
+    candidates.into_iter().flatten().any(|value| {
+        value.as_str().is_some_and(|code| {
+            matches!(
+                code.trim().to_ascii_lowercase().as_str(),
+                "invalid_token"
+                    | "token_expired"
+                    | "expired_token"
+                    | "authentication_error"
+                    | "unauthenticated"
+            )
+        })
+    })
 }
 
 async fn proxy_dashboard_sse(

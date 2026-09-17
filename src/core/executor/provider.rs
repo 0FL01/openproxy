@@ -7,7 +7,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::core::proxy::ProxyTarget;
 use crate::core::translator::helpers::openai_helper::normalize_developer_role;
-use crate::oauth::token_refresh::{dispatch_oauth_refresh, needs_refresh as oauth_needs_refresh};
 use crate::types::ProviderConnection;
 
 use super::{ClientPool, TransportKind, UpstreamResponse};
@@ -280,25 +279,6 @@ pub trait ProviderExecutor: Send + Sync {
         _credentials: &ProviderConnection,
     ) -> Value {
         body.clone()
-    }
-
-    /// Refresh the OAuth / access-token credentials for this provider.
-    ///
-    /// Returns `Some(updated_connection)` on success, or `None` if the
-    /// provider does not support credential refresh or the refresh failed.
-    async fn refresh_credentials(
-        &self,
-        credentials: &ProviderConnection,
-    ) -> Option<ProviderConnection> {
-        let _ = credentials;
-        None
-    }
-
-    /// Returns `true` if the credentials are expired (or close to expiring)
-    /// and should be refreshed before the next request.
-    fn needs_refresh(&self, credentials: &ProviderConnection) -> bool {
-        let _ = credentials;
-        false
     }
 }
 
@@ -573,51 +553,6 @@ impl UnifiedExecutor {
             transport: TransportKind::Reqwest,
         })
     }
-
-    /// Refresh OAuth/access-token credentials.
-    async fn refresh_credentials(
-        &self,
-        credentials: &ProviderConnection,
-    ) -> Option<ProviderConnection> {
-        let refresh_token = credentials.refresh_token.as_deref()?;
-        if refresh_token.is_empty() {
-            return None;
-        }
-
-        match dispatch_oauth_refresh(
-            &self.provider,
-            refresh_token,
-            &credentials.provider_specific_data,
-        )
-        .await
-        {
-            Ok(result) => {
-                let mut updated = credentials.clone();
-                updated.access_token = Some(result.access_token);
-                if let Some(new_refresh) = result.refresh_token {
-                    updated.refresh_token = Some(new_refresh);
-                }
-                if let Some(expires_in) = result.expires_in {
-                    let expiry = chrono::Utc::now() + chrono::Duration::seconds(expires_in);
-                    updated.expires_at = Some(expiry.to_rfc3339());
-                }
-                Some(updated)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "credential refresh failed for provider {}: {}",
-                    self.provider,
-                    e
-                );
-                None
-            }
-        }
-    }
-
-    /// Returns true if the credentials are expired or near-expiration.
-    fn needs_refresh(&self, credentials: &ProviderConnection) -> bool {
-        oauth_needs_refresh(&credentials.expires_at)
-    }
 }
 
 #[async_trait]
@@ -659,16 +594,5 @@ impl ProviderExecutor for UnifiedExecutor {
         credentials: &ProviderConnection,
     ) -> Value {
         self.transform_request(body, model, stream, credentials)
-    }
-
-    async fn refresh_credentials(
-        &self,
-        credentials: &ProviderConnection,
-    ) -> Option<ProviderConnection> {
-        UnifiedExecutor::refresh_credentials(self, credentials).await
-    }
-
-    fn needs_refresh(&self, credentials: &ProviderConnection) -> bool {
-        UnifiedExecutor::needs_refresh(self, credentials)
     }
 }

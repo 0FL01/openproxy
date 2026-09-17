@@ -52,8 +52,9 @@
 //!   translate to `{ "message": "invalid/expired token" }`.
 //! - The dashboard treats that message as "connected, but quota unavailable"
 //!   and degrades gracefully.
-//! - Credential refreshes are serialised per connection
-//!   ([`CredentialManager`]), so at most one refresh runs at a time.
+//! - Connection-scoped refresh coordination is owned by the callers. C17B
+//!   migrates these quota/control-plane paths to the shared coordinator; this
+//!   module itself never retains or refreshes credentials.
 
 use serde_json::{json, Value};
 use std::time::Duration;
