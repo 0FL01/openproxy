@@ -540,22 +540,15 @@ async fn execute_single_model(
     let snapshot = state.db.snapshot();
     let mut plan = base_plan.clone();
     if crate::core::model::models_dev::is_opencode_provider(&plan.provider) {
-        let models = state
-            .models_dev
-            .snapshot()
-            .await
-            .map_err(|message| ProviderAttemptError {
-                status: 503,
-                message,
-                retry_after: None,
-                upstream_body: None,
-            })?;
+        // C19: generation only reads the atomically published local snapshot.
+        // Refresh and remote HTTP belong to bounded control-plane paths.
+        let models = state.models_dev.load();
         let metadata = models
             .find(&plan.provider, plan.dispatch_model())
             .ok_or_else(|| ProviderAttemptError {
                 status: 400,
                 message: format!(
-                    "Model {} is not published for {} by models.dev",
+                    "Model {} is not present in the published models.dev snapshot for {}",
                     plan.dispatch_model(),
                     plan.provider
                 ),

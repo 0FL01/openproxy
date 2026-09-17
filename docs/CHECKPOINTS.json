@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C19",
+  "next_checkpoint": "C20",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c18_cargo_1.98.1",
+    "rust_verification": "passed_through_c19_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -995,7 +995,7 @@
     {
       "id": "C19",
       "title": "Исключить models.dev HTTP из chat path",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C08"
       ],
@@ -1008,7 +1008,39 @@
       "change": "Сделать чтение опубликованного каталога локальным и немедленным. Загрузка/обновление происходят при настройке, явном refresh или ограниченной control-plane задаче и атомарно публикуют snapshot. Не держать read mutex во время HTTP. На холодном старте использовать saved/bundled metadata; отсутствие сведений обозначать честно, не начинать скрытую сеть на каждом запросе.",
       "tests": "HTTP каталога зависает/недоступен; одновременно идут chat и metadata refresh. Warm chat не ждёт HTTP, immutable старый snapshot доступен. Custom/enabled models и корректные advertised limits сохранены.",
       "acceptance": "Ноль remote catalog запросов и ожиданий его refresh lock на warm generation path. Удаление result-cache не превращено в обязательный fetch каждого запроса.",
-      "rollback": "Откат публикации snapshot отдельно; persisted models не удалять."
+      "rollback": "Откат публикации snapshot отдельно; persisted models не удалять.",
+      "result": {
+        "files": [
+          "src/core/model/models_dev.rs",
+          "src/core/model/models_dev_bundled.json",
+          "src/server/api/chat.rs",
+          "src/server/api/mod.rs",
+          "src/server/api/v1_models.rs",
+          "src/server/api/provider_models.rs",
+          "src/main.rs",
+          "tests/lean_proxy_models_c19.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json"
+        ],
+        "read_path": "ModelsDevCatalog::load clones an Arc from ArcSwap immediately. Chat generation, /api/catalog, and /v1/models use only this immutable publication and do not acquire the refresh mutex or issue models.dev HTTP.",
+        "refresh_path": "A separate writer mutex coordinates remote refresh and is never touched by readers. A fully parsed response atomically replaces the Arc; HTTP/status/schema failure leaves the prior Arc unchanged. Refresh is limited to one process task when an active OpenCode connection exists and the explicit provider-model discovery endpoint, with one-hour success freshness and short failed-attempt throttling.",
+        "cold_start": "The binary embeds a validated public models.dev subset containing the complete opencode and opencode-go provider metadata from the C19 implementation date (103 Zen and 37 Go rows). No first generation request needs catalog network access.",
+        "tests": [
+          "cargo test --test lean_proxy_models_c19 -- --nocapture: 4 passed",
+          "cargo test --test lean_proxy_models_c19 --test lean_proxy_context_c07 --test lean_proxy_contract -- --nocapture: 10 passed",
+          "cargo test --lib models_dev --all-features -- --nocapture: 3 passed",
+          "cargo test --lib v1_models --all-features -- --nocapture: 8 passed",
+          "node --test tests/opencode_models.test.mjs tests/opencode_models_cli.test.mjs: 4 passed, 1 installed-CLI test skipped",
+          "cargo test --test lean_proxy_models_c19 --test lean_proxy_context_c07 --test lean_proxy_contract --test api_auth_and_models -- --nocapture: 29 passed",
+          "cargo test --lib --all-features -- --test-threads=1: 1204 passed",
+          "focused clippy with -D warnings: passed",
+          "cargo clippy --all-targets --all-features: passed with 7 pre-existing warnings",
+          "cargo fmt --all -- --check, JSON parse, and git diff --check: passed"
+        ],
+        "acceptance_evidence": "A gated models.dev response remains hung while a generation request reaches the local published lookup and returns in under 250 ms; the prior Arc remains pointer-identical until release, then a validated replacement is published. A failed 503 refresh leaves the prior Arc pointer and model intact. Cold start has non-empty bundled Zen/Go metadata. /v1/models preserves enabled rows, custom metadata, disabled filtering, configured advertised limits, and canonical opencode.source without contacting the configured unreachable test endpoint.",
+        "schema_and_data": "No persisted field, SQLite schema, route shape, credential, encryption boundary, dependency, model-id prefix, or openproxy.v1 envelope changed. Existing custom/enabled/disabled rows and providerContextLimits remain the durable user configuration; rollback does not remove them.",
+        "rollback": "Revert the ArcSwap publication/read-path commit and bundled snapshot independently. Never restore remote catalog I/O or refresh-lock waiting on the generation path, and do not delete persisted custom/enabled/disabled model configuration."
+      }
     },
     {
       "id": "C20",

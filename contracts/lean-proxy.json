@@ -211,6 +211,22 @@
     ],
     "legacy_token_cache_removed_in": "C18"
   },
+  "model_catalog_publication": {
+    "checkpoint": "C19",
+    "generation_read": "atomic_immutable_local_snapshot",
+    "generation_remote_http": false,
+    "generation_refresh_lock_wait": false,
+    "cold_start_source": "bundled_validated_models_dev_snapshot",
+    "successful_refresh_publication": "atomic_after_full_validation",
+    "failed_refresh_replaces_snapshot": false,
+    "refresh_entry_points": [
+      "single_bounded_process_task_for_configured_opencode_connections",
+      "explicit_provider_model_discovery"
+    ],
+    "custom_enabled_disabled_models_preserved": true,
+    "advertised_limits_preserved": true,
+    "canonical_opencode_source_preserved": true
+  },
   "versions": {
     "opencode": "1.18.31",
     "custom_harness": "unknown"

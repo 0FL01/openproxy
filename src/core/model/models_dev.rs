@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use arc_swap::ArcSwap;
 use reqwest::header::USER_AGENT;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -11,6 +12,8 @@ use crate::core::translator::registry::Format;
 
 const MODELS_DEV_URL: &str = "https://models.dev/api.json";
 const CACHE_TTL: Duration = Duration::from_secs(60 * 60);
+const FAILED_REFRESH_RETRY_DELAY: Duration = Duration::from_secs(30);
+const BUNDLED_MODELS_DEV_JSON: &str = include_str!("models_dev_bundled.json");
 
 #[derive(Debug, Clone)]
 pub struct OpenCodeModelMetadata {
@@ -66,84 +69,136 @@ impl ModelsDevSnapshot {
 }
 
 #[derive(Debug, Default)]
-struct CacheState {
-    loaded_at: Option<Instant>,
-    snapshot: Option<Arc<ModelsDevSnapshot>>,
+struct RefreshState {
+    last_success: Option<Instant>,
+    last_attempt: Option<Instant>,
+    last_error: Option<String>,
 }
 
-#[derive(Debug)]
 pub struct ModelsDevCatalog {
     client: reqwest::Client,
-    cache: Mutex<CacheState>,
+    endpoint: String,
+    published: ArcSwap<ModelsDevSnapshot>,
+    // This mutex coordinates refresh writers only. Readers use `published`
+    // and never wait for this lock or for remote I/O.
+    refresh: Mutex<RefreshState>,
 }
 
 impl Default for ModelsDevCatalog {
     fn default() -> Self {
+        let bundled: Value = serde_json::from_str(BUNDLED_MODELS_DEV_JSON)
+            .expect("embedded models.dev snapshot should be valid JSON");
+        let bundled = parse_snapshot(bundled)
+            .expect("embedded models.dev snapshot should match the expected schema");
         Self {
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(15))
                 .build()
                 .expect("models.dev HTTP client should build"),
-            cache: Mutex::new(CacheState::default()),
+            endpoint: MODELS_DEV_URL.to_string(),
+            published: ArcSwap::from_pointee(bundled),
+            refresh: Mutex::new(RefreshState::default()),
         }
     }
 }
 
 impl ModelsDevCatalog {
-    pub async fn snapshot(&self) -> Result<Arc<ModelsDevSnapshot>, String> {
-        let mut cache = self.cache.lock().await;
-        if cache
-            .loaded_at
-            .is_some_and(|loaded| loaded.elapsed() < CACHE_TTL)
-        {
-            if let Some(snapshot) = &cache.snapshot {
-                return Ok(snapshot.clone());
+    /// Return the currently published immutable catalog immediately.
+    ///
+    /// This method performs no network I/O and does not acquire the refresh
+    /// mutex, so it is safe on the generation path while a refresh is hung.
+    pub fn load(&self) -> Arc<ModelsDevSnapshot> {
+        self.published.load_full()
+    }
+
+    /// Refresh if the last successful publication is stale. Concurrent
+    /// control-plane callers share the writer lock and re-check freshness
+    /// after acquiring it. A failed refresh never replaces the prior snapshot.
+    pub async fn refresh_if_stale(&self) -> Result<Arc<ModelsDevSnapshot>, String> {
+        self.refresh_inner(false).await
+    }
+
+    /// Explicit control-plane refresh. Readers continue using the prior
+    /// immutable snapshot until the new response has fully validated.
+    pub async fn refresh(&self) -> Result<Arc<ModelsDevSnapshot>, String> {
+        self.refresh_inner(true).await
+    }
+
+    async fn refresh_inner(&self, force: bool) -> Result<Arc<ModelsDevSnapshot>, String> {
+        let mut state = self.refresh.lock().await;
+        if !force {
+            if state
+                .last_success
+                .is_some_and(|loaded| loaded.elapsed() < CACHE_TTL)
+            {
+                return Ok(self.load());
+            }
+            if state
+                .last_attempt
+                .is_some_and(|attempt| attempt.elapsed() < FAILED_REFRESH_RETRY_DELAY)
+            {
+                return Err(state.last_error.clone().unwrap_or_else(|| {
+                    "models.dev refresh is temporarily throttled after a failure".to_string()
+                }));
             }
         }
+        state.last_attempt = Some(Instant::now());
 
-        let fetched = async {
-            let response = self
-                .client
-                .get(MODELS_DEV_URL)
-                .header(USER_AGENT, "opencode")
-                .send()
-                .await
-                .map_err(|error| format!("models.dev request failed: {error}"))?;
-            if !response.status().is_success() {
-                return Err(format!("models.dev returned HTTP {}", response.status()));
-            }
-            let value = response
-                .json::<Value>()
-                .await
-                .map_err(|error| format!("models.dev response is invalid: {error}"))?;
-            parse_snapshot(value)
-        }
-        .await;
-
+        let fetched = self.fetch_snapshot().await;
         match fetched {
             Ok(snapshot) => {
                 let snapshot = Arc::new(snapshot);
-                cache.loaded_at = Some(Instant::now());
-                cache.snapshot = Some(snapshot.clone());
+                self.published.store(snapshot.clone());
+                state.last_success = Some(Instant::now());
+                state.last_error = None;
                 Ok(snapshot)
             }
             Err(error) => {
-                let stale = cache.snapshot.clone().ok_or(error)?;
-                cache.loaded_at = Some(Instant::now());
-                Ok(stale)
+                state.last_error = Some(error.clone());
+                Err(error)
             }
         }
     }
 
+    async fn fetch_snapshot(&self) -> Result<ModelsDevSnapshot, String> {
+        let response = self
+            .client
+            .get(&self.endpoint)
+            .header(USER_AGENT, "opencode")
+            .send()
+            .await
+            .map_err(|error| format!("models.dev request failed: {error}"))?;
+        if !response.status().is_success() {
+            return Err(format!("models.dev returned HTTP {}", response.status()));
+        }
+        let value = response
+            .json::<Value>()
+            .await
+            .map_err(|error| format!("models.dev response is invalid: {error}"))?;
+        parse_snapshot(value)
+    }
+
     #[cfg(test)]
     pub fn from_json(value: Value) -> Result<Self, String> {
-        let snapshot = Arc::new(parse_snapshot(value)?);
+        Self::from_json_with_endpoint(value, MODELS_DEV_URL)
+    }
+
+    /// Test/control-plane constructor with an explicit loopback endpoint.
+    /// Production uses [`Default`] and the fixed public models.dev endpoint.
+    #[doc(hidden)]
+    pub fn from_json_with_endpoint(
+        value: Value,
+        endpoint: impl Into<String>,
+    ) -> Result<Self, String> {
+        let snapshot = parse_snapshot(value)?;
         Ok(Self {
-            client: reqwest::Client::new(),
-            cache: Mutex::new(CacheState {
-                loaded_at: Some(Instant::now()),
-                snapshot: Some(snapshot),
-            }),
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(15))
+                .build()
+                .map_err(|error| format!("models.dev HTTP client failed: {error}"))?,
+            endpoint: endpoint.into(),
+            published: ArcSwap::from_pointee(snapshot),
+            refresh: Mutex::new(RefreshState::default()),
         })
     }
 }

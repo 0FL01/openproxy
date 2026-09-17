@@ -288,22 +288,21 @@ async fn api_catalog(State(state): State<AppState>) -> Response {
     let mut catalog: Value =
         serde_json::from_str(CATALOG_JSON).expect("embedded provider_catalog.json should be valid");
 
-    if let Ok(snapshot) = state.models_dev.snapshot().await {
-        if let Some(entries) = catalog
-            .get_mut("providerModels")
-            .and_then(Value::as_array_mut)
-        {
-            for provider in ["opencode-zen", "opencode-go"] {
-                let Some(models) = snapshot.models(provider) else {
-                    continue;
-                };
-                if let Some(entry) = entries
-                    .iter_mut()
-                    .find(|entry| entry.get("alias").and_then(Value::as_str) == Some(provider))
-                {
-                    entry["models"] =
-                        Value::Array(models.iter().map(|model| model.catalog_json()).collect());
-                }
+    let snapshot = state.models_dev.load();
+    if let Some(entries) = catalog
+        .get_mut("providerModels")
+        .and_then(Value::as_array_mut)
+    {
+        for provider in ["opencode-zen", "opencode-go"] {
+            let Some(models) = snapshot.models(provider) else {
+                continue;
+            };
+            if let Some(entry) = entries
+                .iter_mut()
+                .find(|entry| entry.get("alias").and_then(Value::as_str) == Some(provider))
+            {
+                entry["models"] =
+                    Value::Array(models.iter().map(|model| model.catalog_json()).collect());
             }
         }
     }

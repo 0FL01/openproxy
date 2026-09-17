@@ -199,4 +199,20 @@ fn contract_freezes_preservation_and_removal_lists() {
         manifest["refresh_coordination"]["historical_rotation_entries_retained"],
         0
     );
+    assert_eq!(
+        manifest["model_catalog_publication"]["generation_remote_http"],
+        false
+    );
+    assert_eq!(
+        manifest["model_catalog_publication"]["generation_refresh_lock_wait"],
+        false
+    );
+    assert_eq!(
+        manifest["model_catalog_publication"]["failed_refresh_replaces_snapshot"],
+        false
+    );
+    assert_eq!(
+        manifest["model_catalog_publication"]["canonical_opencode_source_preserved"],
+        true
+    );
 }

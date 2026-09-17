@@ -335,6 +335,7 @@ async fn main() -> anyhow::Result<()> {
     // backgroundTokenRefresh.js): tick every 5 min, refresh tokens expiring
     // within max(provider lead, 30 min) so idle periods don't surface 401s.
     openproxy::oauth::background_refresh::spawn_background_token_refresh(state.clone().into());
+    spawn_models_dev_refresh(state.clone());
 
     let app = openproxy::build_app(state.clone());
     let addr = format!("{}:{}", cli.host, cli.port);
@@ -410,6 +411,37 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Refresh models.dev from one bounded process task. Generation requests never
+/// await this work; they read the last atomically published bundled/remote
+/// snapshot from `ModelsDevCatalog::load`.
+fn spawn_models_dev_refresh(state: AppState) {
+    tokio::spawn(async move {
+        loop {
+            let has_opencode = state
+                .db
+                .snapshot()
+                .provider_connections
+                .iter()
+                .any(|connection| {
+                    connection.is_active()
+                        && openproxy::core::model::models_dev::is_opencode_provider(
+                            &connection.provider,
+                        )
+                });
+            if has_opencode {
+                if let Err(error) = state.models_dev.refresh_if_stale().await {
+                    tracing::warn!(%error, "models.dev refresh failed; retaining published snapshot");
+                }
+            }
+
+            tokio::select! {
+                _ = state.shutdown_signal.notified() => break,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(60 * 60)) => {}
+            }
+        }
+    });
 }
 
 /// Decide whether to launch the user's default browser at startup.

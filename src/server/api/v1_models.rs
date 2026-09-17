@@ -93,7 +93,7 @@ async fn build_models_list(
     let models_dev = if active_connections.iter().any(|connection| {
         crate::core::model::models_dev::is_opencode_provider(&connection.provider)
     }) {
-        state.models_dev.snapshot().await.ok()
+        Some(state.models_dev.load())
     } else {
         None
     };
@@ -183,10 +183,21 @@ async fn build_models_list(
                     raw_model_ids.extend(inventory.models.iter().map(|model| model.id.clone()));
                 }
             } else if !had_enabled_models {
-                raw_model_ids = provider_models
-                    .iter()
-                    .map(|model| model.id.clone())
-                    .collect::<Vec<_>>();
+                raw_model_ids = if crate::core::model::models_dev::is_opencode_provider(provider_id)
+                {
+                    models_dev
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.models(provider_id))
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|model| model.id.clone())
+                        .collect()
+                } else {
+                    provider_models
+                        .iter()
+                        .map(|model| model.id.clone())
+                        .collect::<Vec<_>>()
+                };
             }
 
             if raw_model_ids.is_empty()

@@ -600,11 +600,11 @@ async fn fetch_opencode_models(
     state: &AppState,
     connection: &ProviderConnection,
 ) -> Result<ProviderModelsResponse, RouteError> {
-    let snapshot = state
-        .models_dev
-        .snapshot()
-        .await
-        .map_err(|error| RouteError::new(StatusCode::SERVICE_UNAVAILABLE, error))?;
+    // This dashboard/provider-discovery endpoint is an explicit control-plane
+    // refresh point. A failed refresh keeps serving the prior bundled/published
+    // snapshot and reports the failure as a warning rather than emptying it.
+    let warning = state.models_dev.refresh_if_stale().await.err();
+    let snapshot = state.models_dev.load();
     let models = snapshot
         .models(&connection.provider)
         .ok_or_else(|| RouteError::bad_request("Unsupported OpenCode provider"))?
@@ -627,7 +627,7 @@ async fn fetch_opencode_models(
             }
         })
         .collect();
-    Ok(response_with_models(connection, models, None))
+    Ok(response_with_models(connection, models, warning))
 }
 
 /// GLM Coding Plan models: paas id list + fail-open rich enrichment.
