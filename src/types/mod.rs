@@ -297,7 +297,10 @@ pub struct Settings {
     pub cloud_enabled: bool,
     #[serde(default, deserialize_with = "deserialize_null_default")]
     pub cloud_url: String,
-    /// Local input-context caps for providers exposed in the provider UI.
+    /// Compatibility metadata advertised to clients for providers exposed in
+    /// the provider UI. During the C07→C08 transition the legacy heuristic
+    /// rejection path still reads the same values; proxy memory byte limits are
+    /// separate. Missing and empty maps retain the historical defaults.
     #[serde(
         default = "crate::core::context_limit::default_provider_context_limits",
         deserialize_with = "deserialize_null_default"

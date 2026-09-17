@@ -93,17 +93,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R3 / C07.
-- Smallest next action: Separate advertised provider/model context metadata from proxy-owned rejection/headroom policy while preserving persisted `providerContextLimits` values and OpenCode metadata.
-- Expected evidence: `/v1/models` retains accurate configured/native context metadata, existing settings round-trip unchanged, and metadata computation no longer implies autonomous request rejection policy.
-- Stop or replan if: A named provider proves one stored limit is an upstream wire requirement rather than metadata/policy; preserve that adapter-specific requirement without restoring a generic proxy heuristic.
+- Closes: R3 / C08.
+- Smallest next action: Remove the named legacy token estimator/rejection calls from the ordinary chat path while preserving explicit count-tokens and upstream context errors.
+- Expected evidence: Large Unicode/tools/base64 requests make zero estimator calls on the default generation path, remain bounded by byte limits, and upstream context failures pass through unchanged.
+- Stop or replan if: A supported adapter proves an explicit opt-in compatibility mode requires local estimation; isolate that mode without restoring the default heuristic.
 
 ## Current State
 
-- Resolved: R1 / C00, R2 / C01-C02, C03-C06 and C14 within R3, plus C15 within R4. Kiro semantic repair/history replay, global Claude header replay, process-wide session/continuation maps, successful-response legacy housekeeping, and redundant `Db::update` snapshot copies are gone.
-- Last relevant evidence: C06 Kiro full-handler account/client/tool/compaction coverage, Antigravity/OpenCode adapter tests, 100,000-session stateless churn, concurrent cancellation, 1,227 library tests, and all-target/all-feature clippy passed (seven pre-existing warnings only).
+- Resolved: R1 / C00, R2 / C01-C02, C03-C07 and C14 within R3, plus C15 within R4. Kiro semantic repair/history replay, global Claude header replay, process-wide session/continuation maps, successful-response legacy housekeeping, and redundant `Db::update` snapshot copies are gone; context metadata is now separate from the transitional rejection policy.
+- Last relevant evidence: C07 persisted missing/empty/explicit/custom-model fixtures, `/v1/models` metadata/source tests, dashboard build, OpenCode discovery tests, and focused strict clippy passed.
 - Blocker: None; the prompt explicitly allows independent safe work when external harness/version evidence is unavailable.
-- Next: C07 metadata-versus-context-policy separation.
+- Next: C08 removal of the default chat-path estimator/rejection.
 
 ## Material Decisions
 
@@ -123,6 +123,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-09-17: C14 passed. Removed successful-generation and successful-web-fetch `Db::update` cleanup, preserved all legacy diagnostic bytes as historical/inert state, kept explicit narrow clearing, and proved repeated success on a large configuration neither published a new AppDb nor let future cooldown/degraded markers suppress routing. C15 is next.
 - 2026-09-17: C15 passed. `Db::update` now performs one mutable full copy, shares old/new snapshots with blocking persistence, preserves Arc identity on no-op, publishes only after commit, and keeps commit/publication serialized even when the awaiting caller is cancelled. C06 is next as the first dependency-ready checkpoint after the frozen first-delivery sequence.
 - 2026-09-17: C06 passed. Deleted both process-wide session/continuation maps without replacement; client ids remain authoritative, Antigravity preserves its UUID-plus-digits wire shape, OpenCode fallback is a stateless namespaced UUID, and Kiro continuation is deterministically bound to the selected configured connection while anonymous requests remain ephemeral. Five full-handler Kiro turns, adapter tests, 100,000-session churn, and cancellation prove zero retained entries; C07 is next.
+- 2026-09-17: C07 passed. Split client-facing configured/native context metadata from the explicitly named transitional proxy rejection reader, preserved missing/empty/explicit/custom persisted values and canonical `opencode.source`, removed the unverified Codex overdrive claim, and rebuilt the dashboard with ownership-accurate copy. C08 is next.
 
 ## Completion
 

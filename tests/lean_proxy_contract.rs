@@ -94,4 +94,16 @@ fn contract_freezes_preservation_and_removal_lists() {
         false
     );
     assert_eq!(manifest["versions"]["custom_harness"], "unknown");
+    assert_eq!(
+        manifest["context_limit_transition"]["context_management_owner"],
+        "client"
+    );
+    assert_eq!(
+        manifest["context_limit_transition"]["proxy_memory_limit_unit"],
+        "bytes"
+    );
+    assert_eq!(
+        manifest["context_limit_transition"]["codex_values_are_verified_upstream_limits"],
+        false
+    );
 }

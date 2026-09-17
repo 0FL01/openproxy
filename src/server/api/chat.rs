@@ -589,8 +589,10 @@ async fn context_limit_error(
     let configured =
         crate::core::context_limit::configured_limit(&settings.provider_context_limits, provider)?;
     let native = native_context_window(state, provider, model).await;
-    let context = crate::core::context_limit::effective_limit(provider, configured, native);
-    let input = crate::core::context_limit::codex_input_limit(provider, context).unwrap_or(context);
+    let context =
+        crate::core::context_limit::legacy_proxy_rejection_limit(provider, configured, native);
+    let input =
+        crate::core::context_limit::legacy_proxy_input_limit(provider, context).unwrap_or(context);
     (estimated_tokens > u64::from(input))
         .then(|| context_limit_attempt_error(provider, estimated_tokens, input, configured))
 }

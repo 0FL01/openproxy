@@ -127,6 +127,15 @@
     "silent_reinterpretation": false,
     "rollback_may_reenable_preserved_reader": true
   },
+  "context_limit_transition": {
+    "setting": "settings.providerContextLimits",
+    "missing_or_empty_meaning": "default_500000_for_four_legacy_providers",
+    "context_management_owner": "client",
+    "proxy_memory_limit_unit": "bytes",
+    "default_rejection_reader_removed_by": "C08",
+    "codex_values_are_verified_upstream_limits": false,
+    "stored_values_preserved_for_rollback": true
+  },
   "versions": {
     "opencode": "1.18.31",
     "custom_harness": "unknown"

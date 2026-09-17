@@ -356,26 +356,38 @@ async fn api_catalog(State(state): State<AppState>) -> Response {
                 continue;
             };
             for model in models {
-                let native = model
+                let native_context = model
                     .get("contextWindow")
                     .and_then(Value::as_u64)
                     .and_then(|value| u32::try_from(value).ok());
-                let effective =
-                    crate::core::context_limit::effective_limit(provider, configured, native);
-                model["contextWindow"] = json!(effective);
-                if let Some(input) =
-                    crate::core::context_limit::codex_input_limit(provider, effective)
-                {
-                    if model.get("kind").and_then(Value::as_str) == Some("llm") {
-                        model["maxInput"] = json!(input);
-                        model["maxOutput"] = json!(crate::core::context_limit::CODEX_OUTPUT_LIMIT);
-                    }
-                } else if model
+                let native_input = model
                     .get("maxInput")
                     .and_then(Value::as_u64)
-                    .is_some_and(|input| input > u64::from(effective))
-                {
-                    model["maxInput"] = json!(effective);
+                    .and_then(|value| u32::try_from(value).ok());
+                let native_output = model
+                    .get("maxOutput")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok());
+                let advertised = crate::core::context_limit::advertised_model_limits(
+                    provider,
+                    configured,
+                    native_context,
+                    native_input,
+                    native_output,
+                );
+                model["contextWindow"] = json!(advertised.context);
+                let is_llm = model.get("kind").and_then(Value::as_str) == Some("llm");
+                let is_codex =
+                    crate::core::context_limit::canonical_provider(provider) == Some("codex");
+                if !is_codex || is_llm {
+                    if let Some(input) = advertised.input {
+                        model["maxInput"] = json!(input);
+                    }
+                }
+                if is_llm {
+                    if let Some(output) = advertised.output {
+                        model["maxOutput"] = json!(output);
+                    }
                 }
             }
         }

@@ -441,31 +441,37 @@ async fn build_models_list(
                     &snapshot.settings.provider_context_limits,
                     provider_id,
                 ) {
-                    let native = metadata
+                    let native_context = metadata
                         .limit
                         .as_ref()
                         .and_then(|limit| limit.context)
                         .map(std::num::NonZeroU32::get)
                         .or(model.context_length);
-                    let effective = crate::core::context_limit::effective_limit(
+                    let native_input = metadata
+                        .limit
+                        .as_ref()
+                        .and_then(|limit| limit.input)
+                        .map(std::num::NonZeroU32::get);
+                    let native_output = metadata
+                        .limit
+                        .as_ref()
+                        .and_then(|limit| limit.output)
+                        .map(std::num::NonZeroU32::get);
+                    let advertised = crate::core::context_limit::advertised_model_limits(
                         provider_id,
                         configured,
-                        native,
+                        native_context,
+                        native_input,
+                        native_output,
                     );
-                    model.context_length = Some(effective);
+                    model.context_length = Some(advertised.context);
                     let limit = metadata.limit.get_or_insert_with(Default::default);
-                    limit.context = std::num::NonZeroU32::new(effective);
-                    if let Some(input) =
-                        crate::core::context_limit::codex_input_limit(provider_id, effective)
+                    limit.context = std::num::NonZeroU32::new(advertised.context);
+                    limit.input = advertised.input.and_then(std::num::NonZeroU32::new);
+                    limit.output = advertised.output.and_then(std::num::NonZeroU32::new);
+                    if crate::core::context_limit::canonical_provider(provider_id) == Some("codex")
                     {
-                        limit.input = std::num::NonZeroU32::new(input);
-                        limit.output = std::num::NonZeroU32::new(
-                            crate::core::context_limit::CODEX_OUTPUT_LIMIT,
-                        );
-                        model.max_completion_tokens =
-                            Some(crate::core::context_limit::CODEX_OUTPUT_LIMIT);
-                    } else if limit.input.is_some_and(|input| input.get() > effective) {
-                        limit.input = std::num::NonZeroU32::new(effective);
+                        model.max_completion_tokens = advertised.output;
                     }
                 }
                 model.opencode = Some(metadata);
@@ -1110,5 +1116,64 @@ mod tests {
         assert!(!llm
             .iter()
             .any(|model| model.id == "custom-cx/gpt-5.5-image"));
+    }
+
+    #[tokio::test]
+    async fn custom_model_metadata_keeps_source_and_explicit_provider_override() {
+        let snapshot = AppDb {
+            provider_connections: vec![ProviderConnection {
+                id: "conn-glm-custom".into(),
+                provider: "glm".into(),
+                auth_type: "apikey".into(),
+                provider_specific_data: BTreeMap::from([
+                    ("prefix".into(), json!("custom-glm")),
+                    ("enabledModels".into(), json!(["custom-context-model"])),
+                ]),
+                ..Default::default()
+            }],
+            custom_models: vec![CustomModel {
+                provider_alias: "custom-glm".into(),
+                id: "custom-context-model".into(),
+                r#type: LLM_KIND.into(),
+                name: Some("Custom Context Model".into()),
+                extra: BTreeMap::from([(
+                    "opencode".into(),
+                    json!({
+                        "limit": {
+                            "context": 333000,
+                            "input": 300000,
+                            "output": 16000
+                        },
+                        "tool_call": true
+                    }),
+                )]),
+            }],
+            settings: crate::types::Settings {
+                provider_context_limits: BTreeMap::from([
+                    ("opencode-zen".into(), 500_000),
+                    ("opencode-go".into(), 500_000),
+                    ("glm".into(), 230_000),
+                    ("codex".into(), 500_000),
+                ]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let models = build_models_list(&test_state().await, &snapshot, &[LLM_KIND]).await;
+        let model = models
+            .iter()
+            .find(|model| model.id == "custom-glm/custom-context-model")
+            .expect("custom model");
+        let metadata = json!(model.opencode);
+
+        assert_eq!(model.owned_by, "custom-glm");
+        assert_eq!(model.context_length, Some(230_000));
+        assert_eq!(metadata["name"], "Custom Context Model");
+        assert_eq!(metadata["source"], "glm");
+        assert_eq!(metadata["limit"]["context"], 230_000);
+        assert_eq!(metadata["limit"]["input"], 230_000);
+        assert_eq!(metadata["limit"]["output"], 16_000);
+        assert_eq!(metadata["tool_call"], true);
     }
 }

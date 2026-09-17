@@ -1417,10 +1417,10 @@ export default function ProviderDetailPageClient() {
                 <label
                   className="flex items-center gap-2"
                   title={providerId === "codex"
-                    ? "Codex advertises this context limit with 50,000 fewer input tokens and 128,000 output tokens; OpenCode compacts another 20,000 tokens earlier"
-                    : "Local input cap; a model's smaller native context window still applies"}
+                    ? "Context metadata advertised to clients. Codex compatibility metadata reserves 50,000 input tokens and reports 128,000 output tokens; OpenCode owns compaction policy. Proxy memory byte limits are separate."
+                    : "Context metadata advertised to clients; a model's smaller native context window still applies. Proxy memory byte limits are separate."}
                 >
-                  <span className="text-xs text-text-muted font-medium">Context Limit</span>
+                  <span className="text-xs text-text-muted font-medium">Advertised Context</span>
                   <input
                     type="number"
                     min={1}

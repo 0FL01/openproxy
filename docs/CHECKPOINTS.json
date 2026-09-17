@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C07",
+  "next_checkpoint": "C08",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c06_cargo_1.98.1",
+    "rust_verification": "passed_through_c07_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -374,7 +374,7 @@
     {
       "id": "C07",
       "title": "Отделить model metadata от автономной context policy",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C02"
       ],
@@ -388,7 +388,41 @@
       "change": "Разделить точные или явно пользовательские сведения о native context/input/output и политику эвристического отказа proxy. Удаление proxy headroom не должно уменьшить/исказить metadata, которыми пользуется OpenCode. Описать переход существующих providerContextLimits; пустая карта сейчас не означает off. Не выдавать комментарий про Codex overdrive за подтверждённый лимит провайдера.",
       "tests": "Fixtures существующей БД: нет настройки, пустая карта, явно заданный limit, custom models. Проверить model picker, canonical opencode.source и экспорт клиента. Проверить стабильность v1 schema и документируемую миграцию поведения.",
       "acceptance": "Есть явный контракт: context management у клиента, memory byte limits у прокси; существующие пользовательские overrides не потеряны и не стали молча другим типом лимита.",
-      "rollback": "Миграция обратима; старые значения сохранены до окончания перехода."
+      "rollback": "Миграция обратима; старые значения сохранены до окончания перехода.",
+      "result": {
+        "completed": "2026-09-17",
+        "files": [
+          "src/core/context_limit.rs",
+          "src/server/api/chat.rs",
+          "src/server/api/mod.rs",
+          "src/server/api/v1_models.rs",
+          "src/types/mod.rs",
+          "web/src/components/providers/ProviderDetailPageClient.tsx",
+          "tests/lean_proxy_context_c07.rs",
+          "tests/lean_proxy_contract.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json"
+        ],
+        "separation": "AdvertisedModelLimits and advertised_model_limits now own client metadata. The temporary legacy_proxy_rejection_limit and legacy_proxy_input_limit names isolate the default heuristic policy for deletion in C08. Both metadata and rejection retain the exact pre-C07 values during this transition, so C08 can delete policy without changing OpenCode metadata.",
+        "migration": "providerContextLimits retains its serialized map and u32 values. Missing and empty maps still normalize to four 500000 compatibility defaults; legacy opencode migrates to opencode-zen with or_insert; explicit and unknown persisted entries and custom model opencode metadata round-trip. Codex compatibility metadata is explicitly not claimed as a verified upstream limit.",
+        "ownership": "Clients own context/history/compaction policy. OpenProxy advertises configured/native model metadata and independently enforces bounded request/response bytes; token-estimator rejection remains only as a named transitional reader for C08.",
+        "tests": [
+          "cargo test --test lean_proxy_context_c07 --test lean_proxy_contract -- --nocapture: 6 passed",
+          "cargo test --lib server::api::v1_models::tests --all-features -- --nocapture: 8 passed",
+          "cargo test --lib context_limit --all-features -- --nocapture: 5 passed",
+          "cargo test --test chat_completions context_limit -- --nocapture: 1 passed",
+          "cargo test --test settings_api -- --nocapture: 3 passed",
+          "cargo test --lib --all-features: 1229 passed",
+          "node --test tests/opencode_models.test.mjs tests/opencode_models_cli.test.mjs: 4 passed, 1 installed-CLI test skipped",
+          "pnpm build: passed (pre-existing sourcemap warnings only)",
+          "cargo clippy --test lean_proxy_context_c07 --test lean_proxy_contract --all-features -- -D warnings -A clippy::let-and-return -A clippy::needless-return: passed",
+          "cargo clippy --all-targets --all-features: passed with 7 pre-existing warnings",
+          "cargo fmt --all -- --check and git diff --check: passed"
+        ],
+        "product_chain": "The provider page now labels the value Advertised Context and states that client compaction and proxy memory byte limits are separate. buildAvailableModels and ModelSelectModal were not changed; dashboard build, canonical opencode.source/custom-model coverage, and OpenCode plugin discovery tests pass.",
+        "schema": "No openproxy.v1 field changed. The existing providerContextLimits JSON shape and validation remain intact; the contract manifest gained additive transition metadata.",
+        "rollback": "Revert the C07 commit. No data conversion or destructive normalization occurred, so the old reader can consume every preserved value."
+      }
     },
     {
       "id": "C08",

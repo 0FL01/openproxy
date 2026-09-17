@@ -5,10 +5,20 @@ use serde_json::Value;
 pub const DEFAULT_CONTEXT_LIMIT: u32 = 500_000;
 pub const MAX_CONTEXT_LIMIT: u32 = 1_000_000;
 pub const CODEX_OUTPUT_LIMIT: u32 = 128_000;
-// OpenCode reserves another 20k when `limit.input` is present, so 50k here
-// makes its automatic compaction start at 430k for the default 500k context.
-const CODEX_INPUT_HEADROOM: u32 = 50_000;
+// This is compatibility metadata for OpenCode, not a verified Codex provider
+// limit. OpenCode reserves another 20k when `limit.input` is present, so 50k
+// here makes its client-owned compaction start at 430k for a 500k context.
+const CODEX_ADVERTISED_INPUT_RESERVE: u32 = 50_000;
 pub const LIMITED_PROVIDERS: [&str; 4] = ["opencode-zen", "opencode-go", "glm", "codex"];
+
+/// Context metadata advertised to clients. These values do not define proxy
+/// memory limits and do not authorize request rejection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdvertisedModelLimits {
+    pub context: u32,
+    pub input: Option<u32>,
+    pub output: Option<u32>,
+}
 
 pub fn canonical_provider(provider: &str) -> Option<&'static str> {
     match provider {
@@ -37,18 +47,60 @@ pub fn configured_limit(limits: &BTreeMap<String, u32>, provider: &str) -> Optio
     )
 }
 
-pub fn effective_limit(provider: &str, configured: u32, native: Option<u32>) -> u32 {
+/// Apply a configured compatibility override to provider/model metadata.
+///
+/// Codex historically advertised the configured value even when its catalog
+/// reported a smaller context window. That behavior is retained for client
+/// compatibility, but is not evidence that the upstream accepts that size.
+pub fn advertised_model_limits(
+    provider: &str,
+    configured: u32,
+    native_context: Option<u32>,
+    native_input: Option<u32>,
+    native_output: Option<u32>,
+) -> AdvertisedModelLimits {
     if canonical_provider(provider) == Some("codex") {
-        // Codex reports 272k as a soft client limit. The upstream accepts
-        // overdrive close to 1M, so the configured local limit is authoritative.
-        return configured;
+        return AdvertisedModelLimits {
+            context: configured,
+            input: Some(
+                configured
+                    .saturating_sub(CODEX_ADVERTISED_INPUT_RESERVE)
+                    .max(1),
+            ),
+            output: Some(CODEX_OUTPUT_LIMIT),
+        };
     }
-    native.map_or(configured, |native| native.min(configured))
+
+    let context = native_context.map_or(configured, |native| native.min(configured));
+    AdvertisedModelLimits {
+        context,
+        input: native_input.map(|input| input.min(context)),
+        output: native_output,
+    }
 }
 
-pub fn codex_input_limit(provider: &str, context: u32) -> Option<u32> {
-    (canonical_provider(provider) == Some("codex"))
-        .then(|| context.saturating_sub(CODEX_INPUT_HEADROOM).max(1))
+/// Transitional C07 policy reader for the heuristic rejection removed by C08.
+/// Keep it separate from [`advertised_model_limits`]: deleting this policy must
+/// not alter metadata consumed by OpenCode and other clients.
+pub fn legacy_proxy_rejection_limit(
+    provider: &str,
+    configured: u32,
+    native_context: Option<u32>,
+) -> u32 {
+    if canonical_provider(provider) == Some("codex") {
+        configured
+    } else {
+        native_context.map_or(configured, |native| native.min(configured))
+    }
+}
+
+/// Transitional input headroom used only by the legacy rejection policy.
+pub fn legacy_proxy_input_limit(provider: &str, context: u32) -> Option<u32> {
+    (canonical_provider(provider) == Some("codex")).then(|| {
+        context
+            .saturating_sub(CODEX_ADVERTISED_INPUT_RESERVE)
+            .max(1)
+    })
 }
 
 /// Conservative cross-provider estimate for prompt-bearing JSON fields.
@@ -112,17 +164,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn configured_codex_limit_overrides_soft_native_limit() {
-        assert_eq!(effective_limit("codex", 500_000, Some(272_000)), 500_000);
-        assert_eq!(codex_input_limit("codex", 500_000), Some(450_000));
-        assert_eq!(CODEX_OUTPUT_LIMIT, 128_000);
+    fn codex_advertising_is_separate_from_legacy_rejection_policy() {
+        let advertised =
+            advertised_model_limits("codex", 500_000, Some(272_000), None, Some(64_000));
+        assert_eq!(
+            advertised,
+            AdvertisedModelLimits {
+                context: 500_000,
+                input: Some(450_000),
+                output: Some(128_000),
+            }
+        );
+        assert_eq!(
+            legacy_proxy_rejection_limit("codex", 500_000, Some(272_000)),
+            500_000
+        );
+        assert_eq!(legacy_proxy_input_limit("codex", 500_000), Some(450_000));
     }
 
     #[test]
-    fn native_limit_still_caps_other_providers() {
-        assert_eq!(effective_limit("glm", 500_000, Some(204_800)), 204_800);
-        assert_eq!(effective_limit("glm", 500_000, Some(1_050_000)), 500_000);
-        assert_eq!(effective_limit("glm", 500_000, None), 500_000);
+    fn native_metadata_still_caps_other_providers() {
+        assert_eq!(
+            advertised_model_limits("glm", 500_000, Some(204_800), Some(300_000), Some(32_000),),
+            AdvertisedModelLimits {
+                context: 204_800,
+                input: Some(204_800),
+                output: Some(32_000),
+            }
+        );
+        assert_eq!(
+            advertised_model_limits("glm", 500_000, Some(1_050_000), None, None).context,
+            500_000
+        );
+        assert_eq!(
+            advertised_model_limits("glm", 500_000, None, None, None).context,
+            500_000
+        );
+    }
+
+    #[test]
+    fn empty_map_keeps_documented_default_compatibility_value() {
+        let empty = BTreeMap::new();
+        assert_eq!(configured_limit(&empty, "glm"), Some(DEFAULT_CONTEXT_LIMIT));
+        assert_eq!(configured_limit(&empty, "unconfigured"), None);
     }
 
     #[test]
