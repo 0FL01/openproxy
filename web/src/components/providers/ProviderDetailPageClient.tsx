@@ -1414,7 +1414,12 @@ export default function ProviderDetailPageClient() {
                 </div>
               )}
               {CONTEXT_LIMIT_PROVIDERS.has(providerId) && (
-                <label className="flex items-center gap-2" title="Local input cap; a model's smaller native context window still applies">
+                <label
+                  className="flex items-center gap-2"
+                  title={providerId === "codex"
+                    ? "Codex advertises this context limit with 50,000 fewer input tokens and 128,000 output tokens; OpenCode compacts another 20,000 tokens earlier"
+                    : "Local input cap; a model's smaller native context window still applies"}
+                >
                   <span className="text-xs text-text-muted font-medium">Context Limit</span>
                   <input
                     type="number"

@@ -13,7 +13,7 @@ test("discovery authenticates, refreshes inventory, preserves options and valida
       opencode: {
         name: "New Model",
         source: "codex",
-        limit: { context: 628000, input: 600000, output: 128000 },
+        limit: { context: 628000, input: 450000, output: 128000 },
         modalities: { input: ["text", "image"], output: ["text"] },
         attachment: true,
         reasoning: true,
@@ -56,7 +56,7 @@ test("discovery authenticates, refreshes inventory, preserves options and valida
   assert.deepEqual(Object.keys(models), ["cx/new/model"])
   assert.deepEqual(models["cx/new/model"], {
     name: "Local name · codex",
-    limit: { context: 500000, input: 500000, output: 128000 },
+    limit: { context: 500000, input: 450000, output: 128000 },
     modalities: { input: ["text", "image"], output: ["text"] },
     attachment: true,
     reasoning: true,

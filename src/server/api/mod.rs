@@ -356,9 +356,17 @@ async fn api_catalog(State(state): State<AppState>) -> Response {
                     .get("contextWindow")
                     .and_then(Value::as_u64)
                     .and_then(|value| u32::try_from(value).ok());
-                let effective = crate::core::context_limit::effective_limit(configured, native);
+                let effective =
+                    crate::core::context_limit::effective_limit(provider, configured, native);
                 model["contextWindow"] = json!(effective);
-                if model
+                if let Some(input) =
+                    crate::core::context_limit::codex_input_limit(provider, effective)
+                {
+                    if model.get("kind").and_then(Value::as_str) == Some("llm") {
+                        model["maxInput"] = json!(input);
+                        model["maxOutput"] = json!(crate::core::context_limit::CODEX_OUTPUT_LIMIT);
+                    }
+                } else if model
                     .get("maxInput")
                     .and_then(Value::as_u64)
                     .is_some_and(|input| input > u64::from(effective))

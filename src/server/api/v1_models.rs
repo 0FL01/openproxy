@@ -447,11 +447,24 @@ async fn build_models_list(
                         .and_then(|limit| limit.context)
                         .map(std::num::NonZeroU32::get)
                         .or(model.context_length);
-                    let effective = crate::core::context_limit::effective_limit(configured, native);
+                    let effective = crate::core::context_limit::effective_limit(
+                        provider_id,
+                        configured,
+                        native,
+                    );
                     model.context_length = Some(effective);
                     let limit = metadata.limit.get_or_insert_with(Default::default);
                     limit.context = std::num::NonZeroU32::new(effective);
-                    if limit.input.is_some_and(|input| input.get() > effective) {
+                    if let Some(input) =
+                        crate::core::context_limit::codex_input_limit(provider_id, effective)
+                    {
+                        limit.input = std::num::NonZeroU32::new(input);
+                        limit.output = std::num::NonZeroU32::new(
+                            crate::core::context_limit::CODEX_OUTPUT_LIMIT,
+                        );
+                        model.max_completion_tokens =
+                            Some(crate::core::context_limit::CODEX_OUTPUT_LIMIT);
+                    } else if limit.input.is_some_and(|input| input.get() > effective) {
                         limit.input = std::num::NonZeroU32::new(effective);
                     }
                 }
@@ -1048,7 +1061,7 @@ mod tests {
                     crate::server::codex_catalog::CodexModelMetadata {
                         id: "gpt-5.6-luna".into(),
                         name: "GPT-5.6 Luna".into(),
-                        context_window: Some(872_000),
+                        context_window: Some(272_000),
                         capabilities: vec!["tools".into(), "reasoning".into(), "vision".into()],
                         reasoning_efforts: vec!["high".into()],
                     },
@@ -1071,7 +1084,9 @@ mod tests {
             .unwrap();
         let metadata = json!(luna.opencode);
         assert_eq!(luna.context_length, Some(500_000));
+        assert_eq!(luna.max_completion_tokens, Some(128_000));
         assert_eq!(metadata["limit"]["context"], 500000);
+        assert_eq!(metadata["limit"]["input"], 450000);
         assert_eq!(metadata["source"], "codex");
         assert_eq!(metadata["limit"]["output"], 128000);
         assert_eq!(metadata["attachment"], true);
@@ -1089,7 +1104,8 @@ mod tests {
                 .opencode
         );
         assert_eq!(unknown["limit"]["context"], 500000);
-        assert!(unknown["limit"].get("output").is_none());
+        assert_eq!(unknown["limit"]["input"], 450000);
+        assert_eq!(unknown["limit"]["output"], 128000);
         assert_eq!(unknown["variants"], json!({}));
         assert!(!llm
             .iter()

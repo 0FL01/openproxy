@@ -4,6 +4,10 @@ use serde_json::Value;
 
 pub const DEFAULT_CONTEXT_LIMIT: u32 = 500_000;
 pub const MAX_CONTEXT_LIMIT: u32 = 1_000_000;
+pub const CODEX_OUTPUT_LIMIT: u32 = 128_000;
+// OpenCode reserves another 20k when `limit.input` is present, so 50k here
+// makes its automatic compaction start at 430k for the default 500k context.
+const CODEX_INPUT_HEADROOM: u32 = 50_000;
 pub const LIMITED_PROVIDERS: [&str; 4] = ["opencode-zen", "opencode-go", "glm", "codex"];
 
 pub fn canonical_provider(provider: &str) -> Option<&'static str> {
@@ -33,8 +37,18 @@ pub fn configured_limit(limits: &BTreeMap<String, u32>, provider: &str) -> Optio
     )
 }
 
-pub fn effective_limit(configured: u32, native: Option<u32>) -> u32 {
+pub fn effective_limit(provider: &str, configured: u32, native: Option<u32>) -> u32 {
+    if canonical_provider(provider) == Some("codex") {
+        // Codex reports 272k as a soft client limit. The upstream accepts
+        // overdrive close to 1M, so the configured local limit is authoritative.
+        return configured;
+    }
     native.map_or(configured, |native| native.min(configured))
+}
+
+pub fn codex_input_limit(provider: &str, context: u32) -> Option<u32> {
+    (canonical_provider(provider) == Some("codex"))
+        .then(|| context.saturating_sub(CODEX_INPUT_HEADROOM).max(1))
 }
 
 /// Conservative cross-provider estimate for prompt-bearing JSON fields.
@@ -66,10 +80,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_limit_wins_when_lower() {
-        assert_eq!(effective_limit(500_000, Some(204_800)), 204_800);
-        assert_eq!(effective_limit(500_000, Some(1_050_000)), 500_000);
-        assert_eq!(effective_limit(500_000, None), 500_000);
+    fn configured_codex_limit_overrides_soft_native_limit() {
+        assert_eq!(effective_limit("codex", 500_000, Some(272_000)), 500_000);
+        assert_eq!(codex_input_limit("codex", 500_000), Some(450_000));
+        assert_eq!(CODEX_OUTPUT_LIMIT, 128_000);
+    }
+
+    #[test]
+    fn native_limit_still_caps_other_providers() {
+        assert_eq!(effective_limit("glm", 500_000, Some(204_800)), 204_800);
+        assert_eq!(effective_limit("glm", 500_000, Some(1_050_000)), 500_000);
+        assert_eq!(effective_limit("glm", 500_000, None), 500_000);
     }
 
     #[test]
