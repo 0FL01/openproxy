@@ -61,9 +61,14 @@ logs/*
 source/*
 .cursor/*
 docs/*
+!docs/AGENT-PROMPT.md
 !docs/ARCHITECTURE.md
+!docs/CHECKPOINTS.json
 !docs/git-conventions.md
 !docs/integrations/
+!docs/goals/
+docs/goals/*
+!docs/goals/2026-09-17-lean-proxy-plan.md
 test/*
 bin/*
 open-sse/test/*

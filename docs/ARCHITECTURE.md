@@ -2,6 +2,11 @@
 
 Single-binary AI router: OpenAI-compatible endpoint → provider executors.
 
+The frozen lean ownership and compatibility boundary lives in
+[`../contracts/lean-proxy.md`](../contracts/lean-proxy.md). Its route and
+protocol-pair inventory is machine-readable in
+[`../contracts/lean-proxy.json`](../contracts/lean-proxy.json).
+
 ## Request pipeline
 
 1. Detect client format, resolve target format + upstream model.
@@ -20,6 +25,10 @@ Single-binary AI router: OpenAI-compatible endpoint → provider executors.
 - Secrets encrypted in SQLite WAL.
 - No token-saver passes (PXPIPE/RTK/Headroom/Caveman/Ponytail
   removed) — the proxy forwards bodies unmutated.
+- The client harness owns history, compaction, tool execution, semantic repair,
+  and temporal generation retries. The proxy owns credentials/OAuth,
+  configured routing, required wire translation, transport, and resource
+  limits; it does not become a second harness.
 
 ## Smoke
 

@@ -13,6 +13,15 @@ Own single-binary AI router: faster, safer Rust implementation. Critical pattern
 - **Persistence**: SQLite WAL + encrypted columns + usage tracking
 - **Security**: HMAC API keys, bcrypt auth, SSRF protection
 
+## Lean Proxy Boundary
+
+The frozen ownership, route/protocol, migration, and preservation contract is
+[`contracts/lean-proxy.md`](contracts/lean-proxy.md), with a machine-readable
+manifest in [`contracts/lean-proxy.json`](contracts/lean-proxy.json). The client
+harness owns history, compaction, tool execution, semantic repair, and temporal
+generation retries; OpenProxy owns private credentials/OAuth, configured
+routing, required protocol mapping, transport reuse, and bounded resources.
+
 ## Beads
 Fork: parity with other routers is not tracked. Use beads only for own product tasks.
 

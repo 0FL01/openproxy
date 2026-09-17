@@ -1,0 +1,912 @@
+{
+  "schema": "openproxy.lean-plan.v1",
+  "kind": "planning_artifact_not_runtime_api",
+  "created": "2026-09-17",
+  "source_archive": "openproxy-main(1).zip",
+  "source_sha256": "e1613d03c34bc8a76fb8f1f5bd65c6074e727396144eca709ea9d834b6a3ffe3",
+  "implementation_applied": false,
+  "goal": "Минимальная добавленная задержка и bounded RAM без дублирования agent/harness функций; сохраняются provider/auth/transport/model-discovery contracts.",
+  "status_values": [
+    "pending",
+    "in_progress",
+    "blocked",
+    "done",
+    "not_applicable"
+  ],
+  "first_delivery_order": [
+    "C00",
+    "C01",
+    "C02",
+    "C03",
+    "C04",
+    "C05",
+    "C14",
+    "C15"
+  ],
+  "next_checkpoint": "C01",
+  "measurements": {
+    "baseline": null,
+    "final": null,
+    "rust_verification": "passed_c00_cargo_1.98.1",
+    "node_pass": 4,
+    "node_fail": 0,
+    "node_skip": 1
+  },
+  "checkpoints": [
+    {
+      "id": "C00",
+      "title": "Зафиксировать границы лёгкого прокси и правила миграции",
+      "status": "done",
+      "depends_on": [],
+      "kind": "contract",
+      "evidence": [
+        "E01",
+        "E02"
+      ],
+      "scope": "AGENTS.md; docs/ARCHITECTURE.md; contracts/lean-proxy.md — новый документ, не новый runtime framework.",
+      "change": "Записать единственного владельца каждой функции: harness — история, compaction, tools и временные повторы генерации; proxy — приватные credentials, routing, перевод протокола, transport и ресурсные пределы. Зафиксировать используемые provider/protocol пары и поддерживаемые публичные маршруты. Записать версии OpenCode и собственного harness, если они доступны; неизвестное отметить unknown. Описать миграцию старых настроек без удаления пользовательских данных и нарушения openproxy.v1.*. Не добавлять десятки независимых флагов.",
+      "tests": "Сопоставить контракт с текущими CLI/API/schema tests и цепочкой providers → Available Models → model picker → OpenCode discovery. Неизвестная версия harness не препятствует независимым исправлениям кода, но реальная end-to-end совместимость с ней остаётся непроверенной.",
+      "acceptance": "Есть согласованный с задачей машинно-проверяемый список сохраняемых контрактов и удаляемых автоматических действий; старые model locks не превращены снова в ограничители маршрутизации.",
+      "rollback": "Это документирование: runtime и конфигурация ещё не меняются.",
+      "result": {
+        "completed": "2026-09-17",
+        "files": [
+          "AGENTS.md",
+          "docs/ARCHITECTURE.md",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json",
+          "tests/lean_proxy_contract.rs"
+        ],
+        "opencode_version": "1.18.31",
+        "custom_harness_version": "unknown",
+        "missing_source_artifacts": [
+          "PLAN.md",
+          "AUDIT-EVIDENCE.md"
+        ],
+        "tests": [
+          "cargo test --test lean_proxy_contract: 4 passed",
+          "cargo test -p openproxy --lib parity_tests -- --nocapture: 11 passed",
+          "cargo test -p openproxy --lib v1_models -- --nocapture: 7 passed",
+          "node --test tests/opencode_models.test.mjs tests/opencode_models_cli.test.mjs: 4 passed, 1 skipped",
+          "cargo clippy --all-targets --all-features: passed",
+          "cargo test --lib --all-features: 1233 passed"
+        ],
+        "measurements": "not measured; C00 changes no runtime behavior",
+        "rollback": "Revert the C00 documentation and manifest commit; no runtime or persisted data changed."
+      }
+    },
+    {
+      "id": "C01",
+      "title": "Создать минимальный детерминированный стенд",
+      "status": "pending",
+      "depends_on": [
+        "C00"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E02",
+        "E11",
+        "E17",
+        "E32"
+      ],
+      "scope": "Существующие Rust integration tests и test helpers; tests/fixtures/lean-proxy — предложенный каталог.",
+      "change": "Переиспользовать имеющиеся mock/test helpers, а не строить отдельную платформу нагрузочного тестирования. Добавить mock upstream с управляемыми заголовками, чанками, задержкой EOF, ошибкой, OAuth-ротацией и счётчиком запросов. Первые fixtures: native JSON/SSE и один реально используемый переводчик. Зафиксировать существующее поведение до правок.",
+      "tests": "Стенд работает без production БД, секретов и платных запросов. Управляемые часы для backoff/TTL, barrier для конкурентности. Проверить, что намеренно буферизующий mock действительно обнаруживает поздний первый чанк.",
+      "acceptance": "Есть воспроизводимый запуск исходного снимка и fixtures для первой итерации; расширение провайдеров делается в их чекпоинтах, не задерживает все правки.",
+      "rollback": "Только тестовые файлы; удаление стенда не меняет production поведение."
+    },
+    {
+      "id": "C02",
+      "title": "Снять baseline RAM и добавленной задержки",
+      "status": "pending",
+      "depends_on": [
+        "C01"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E03",
+        "E30",
+        "E39"
+      ],
+      "scope": "bench/lean или scripts/bench-lean — предложенные пути; baseline.json и инструкция запуска.",
+      "change": "Собрать текущий архив из lockfile в release. Записать build features, настройки логов, провайдеры, версию клиента, kernel/CPU, размеры БД и запросов. Измерить warm/cold, concurrency 1/8/32, p50/p95/p99 первого содержательного события и межчанковых интервалов, RSS/PSS и живые/временные аллокации. Отдельно — путь через прокси и прямой mock.",
+      "tests": "Минимум пять повторов репрезентативных серий после прогрева; контроль успешных ответов, upstream attempts и throughput. Профилирование аллокаций отдельно от обычного latency/RSS прогона. Не вычислять overhead как разность несвязанных p95.",
+      "acceptance": "baseline.json содержит измерения и заранее зафиксированный порог шумов/регрессии. При отсутствии toolchain отмечено blocked для измерений, а не придуман PASS; следующие performance-checkpoints не считаются измеренно принятыми.",
+      "rollback": "Никакой runtime оптимизации в этой итерации."
+    },
+    {
+      "id": "C03",
+      "title": "Убрать Kiro semantic repair и ожидание полного ответа",
+      "status": "pending",
+      "depends_on": [
+        "C02"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E11",
+        "E12"
+      ],
+      "scope": "src/core/executor/kiro.rs:751–858; kiroToolCallRepair settings и их UI/API consumers.",
+      "change": "Удалить из лёгкого пути сбор всего успешного потока ради эвристического repair и скрытую вторую генерацию с дописанной инструкцией. Разобрать зависимости repair-функций и удалить ставшие мёртвыми. Для ранее явно включённой настройки провести объявленную миграцию/депрекацию, не молча проигнорировать её. Сохранить обязательный декодер Kiro/AWS EventStream и корректное преобразование tools.",
+      "tests": "Mock отдаёт валидное первое событие и удерживает EOF: клиент получает событие до EOF. Короткий валидный ответ, многоточие и текст будущего действия не запускают второй запрос. Некорректный frame возвращает ошибку, а не автоматически исправленный ответ. Отмена клиента прерывает upstream.",
+      "acceptance": "Для обычного Kiro stream нет полного repair buffer, семантической подмены prompt и второй генерации. Принятие подтверждено event-before-EOF тестом, а не только снижением RSS.",
+      "rollback": "Откатить отдельный commit без потери настроек/секретов; не возвращать repair незаметно как fallback при любой ошибке."
+    },
+    {
+      "id": "C04",
+      "title": "Удалить глобальный Claude header cache",
+      "status": "pending",
+      "depends_on": [
+        "C02"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E08",
+        "E15",
+        "E16"
+      ],
+      "scope": "src/core/utils/claude_header_cache.rs; capture в chat.rs; использование в executor/default.rs.",
+      "change": "Передавать разрешённые заголовки только из текущего запроса. Отсутствующие обязательные provider headers брать из явных adapter defaults. Удалить process-wide capture/replay, включая перенос x-claude-code-session-id и retry metadata между разными запросами. Не расширять allowlist авторизационными секретами.",
+      "tests": "Два клиента/аккаунта с различными session-id выполняют чередующиеся и конкурентные запросы. В upstream B отсутствуют заголовки A; запрос без session-id не наследует предыдущее значение. Проверить Claude CLI и OpenCode adapter fixtures.",
+      "acceptance": "Нет глобального retained header map и межклиентского переноса session metadata; контракт обязательных заголовков сохранён.",
+      "rollback": "Откат отдельной правки допустим для диагностики, но сценарий межклиентского смешивания блокирует релиз."
+    },
+    {
+      "id": "C05",
+      "title": "Удалить Kiro replay содержимого диалога",
+      "status": "pending",
+      "depends_on": [
+        "C03"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E13",
+        "E14"
+      ],
+      "scope": "src/core/utils/kiro_session_replay.rs; вызовы из openai_to_kiro.rs и claude_to_kiro.rs.",
+      "change": "Удалить хранение session_start Value/system_prompt и подстановку сохранённого msg0 в новый запрос. Строить историю исключительно из текущего тела клиента с необходимым отображением system/messages на протокол Kiro. Не заменять этот кэш LRU, TTL-store или persistent history.",
+      "tests": "Один session-id, но изменённое/сокращённое первое сообщение; compaction; пустая/новая история; смена system prompt, model и account. Старое содержание не появляется в upstream. Инструменты и required Kiro поля остаются валидны. Отдельно зафиксировать provider cache-hit/TTFT на warm сценарии при доступном разрешённом тесте.",
+      "acceptance": "Покси не удерживает и не восстанавливает историю прошлых запросов. Нет утверждения, что удаление replay обязательно улучшает provider-side cache-hit или суммарный TTFT.",
+      "rollback": "Не мигрировать содержимое кэша в БД. При несовместимости адаптера остановить релиз его ветки и исправить mapping текущего запроса, не скрывать проблему восстановлением старой истории."
+    },
+    {
+      "id": "C06",
+      "title": "Сократить session/continuation state без разрушения протокола",
+      "status": "pending",
+      "depends_on": [
+        "C05"
+      ],
+      "kind": "conditional",
+      "evidence": [
+        "E35",
+        "E36"
+      ],
+      "scope": "src/core/utils/session_manager.rs и только подтверждённые caller paths Kiro/Antigravity/OpenCode executor.",
+      "change": "Сначала проверить необходимость STORE/CONTINUATION_STORE для каждой используемой пары протоколов. Предпочесть клиентский session identifier. От глобальных карт отказаться там, где допустим стабильный namespaced identifier без хранения; допустимость подтвердить протоколом и тестом. Если upstream требует непрозрачный continuation state, оставить минимальное изолированное состояние с пределом байтов и жизненным циклом подключения. Не трогать AppState.sessions аутентификации.",
+      "tests": "Продолжение tools между ходами, разветвление/compaction, новый пользователь, смена connection, удаление и повторное создание connection. Проверка отсутствия склейки диалогов и случайного нового session-id на каждом ходе. Рост числа давних клиентских сессий не даёт неограниченного retained state.",
+      "acceptance": "Каждая оставшаяся карта имеет доказанную protocol-причину, scope и byte bound; избыточные карты удалены. Если безопасного stateless эквивалента нет, checkpoint принимается с документированным минимальным остатком, не с выдуманным протоколом.",
+      "rollback": "Откат adapter-specific изменения; не объединять независимые provider semantics в одну догадку."
+    },
+    {
+      "id": "C07",
+      "title": "Отделить model metadata от автономной context policy",
+      "status": "pending",
+      "depends_on": [
+        "C02"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E02",
+        "E07",
+        "E09"
+      ],
+      "scope": "src/core/context_limit.rs; providerContextLimits настройки/normalization; генерация metadata /v1/models.",
+      "change": "Разделить точные или явно пользовательские сведения о native context/input/output и политику эвристического отказа proxy. Удаление proxy headroom не должно уменьшить/исказить metadata, которыми пользуется OpenCode. Описать переход существующих providerContextLimits; пустая карта сейчас не означает off. Не выдавать комментарий про Codex overdrive за подтверждённый лимит провайдера.",
+      "tests": "Fixtures существующей БД: нет настройки, пустая карта, явно заданный limit, custom models. Проверить model picker, canonical opencode.source и экспорт клиента. Проверить стабильность v1 schema и документируемую миграцию поведения.",
+      "acceptance": "Есть явный контракт: context management у клиента, memory byte limits у прокси; существующие пользовательские overrides не потеряны и не стали молча другим типом лимита.",
+      "rollback": "Миграция обратима; старые значения сохранены до окончания перехода."
+    },
+    {
+      "id": "C08",
+      "title": "Убрать эвристический token estimator с обычного chat path",
+      "status": "pending",
+      "depends_on": [
+        "C07"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E07",
+        "E08",
+        "E09"
+      ],
+      "scope": "src/server/api/chat.rs:418,636 и вызовы validate_context_budget; src/core/context_limit.rs.",
+      "change": "В лёгком режиме не обходить messages/tools дважды ради proxy token-count и искусственного headroom. Удалить вызовы и затем невостребованные функции. Сохранить отдельный явно запрошенный count_tokens API, если это публичный поддерживаемый контракт. Для временно поддерживаемой явной legacy policy вычислять один раз без Value::clone и Vec, сохраняя исключение inline binary.",
+      "tests": "Большой Unicode/tools запрос, data URL и base64 object; для удалённой default policy число вызовов estimator равно нулю. Реальный upstream context error передаётся клиенту. Legacy/count_tokens fixtures, если они остаются, не меняют семантику.",
+      "acceptance": "Обычный chat не делает полную сериализацию/клонирование ради эвристики. Контекст не обрезается, synthetic usage не выдаётся за upstream usage.",
+      "rollback": "Возврат прежнего поведения только явно объявленным режимом совместимости на период миграции, не новым автоматическим fallback."
+    },
+    {
+      "id": "C09",
+      "title": "Выбирать passthrough по протоколу, не по имени клиента",
+      "status": "pending",
+      "depends_on": [
+        "C04",
+        "C05",
+        "C08"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E10",
+        "E43"
+      ],
+      "scope": "src/core/utils/client_detector.rs; планирование преобразований в src/server/api/chat.rs.",
+      "change": "Для эквивалентных входного/upstream протоколов разрешить минимальный путь OpenCode и собственному harness, а не только распознанным CLI user-agents. Удалить автономную переустановку cache anchors и дублирующие изменения prompt на этом пути. Оставить обязательные provider headers, model routing и доказанные adapter требования. Не писать regex/ручной небезопасный JSON parser ради zero-copy.",
+      "tests": "Одинаковый JSON с разными User-Agent сохраняет одинаковую семантику; неизвестные JSON поля и клиентские cache_control/prompt_cache_key не теряются. Несовместимые форматы по-прежнему идут в переводчик. Проверить tools/reasoning и native provider extensions.",
+      "acceptance": "Минимальный путь определяется возможностями протокола; content mutation отсутствует без конкретной причины адаптера. Это не обещание побайтовой неизменности там, где необходимо заменить routed model.",
+      "rollback": "Откат конкретной capability пары; не компенсировать регрессию подделкой имени клиента."
+    },
+    {
+      "id": "C10",
+      "title": "Убрать sleeps и повторную генерацию из DefaultExecutor",
+      "status": "pending",
+      "depends_on": [
+        "C02"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E17"
+      ],
+      "scope": "src/core/executor/default.rs:1103–1256; тесты ошибок и tokenrouter.",
+      "change": "Убрать циклы повторения generation-запроса по 429/502/503/504 с задержками. Сохранить статус/тело/Retry-After для верхнего слоя. Credential recovery оставить только до миграции в единый механизм C13, чётко учитывая его отдельно от retry генерации. Не удалять transport connection reuse.",
+      "tests": "Управляемые часы: mock 429/502/503/504 не требует advance на секунды для возврата executor. На неизменённом аккаунте/URL нет повторного generation request из этого слоя. Успех, redirect policy и request body fixtures прежние.",
+      "acceptance": "DefaultExecutor не является вторым scheduler поверх harness. Число фактических попыток видно в тестовом счётчике.",
+      "rollback": "Откат только executor commit; не возвращать старые sleeps под видом таймаутов."
+    },
+    {
+      "id": "C11",
+      "title": "Убрать отдельную retry-политику Codex",
+      "status": "pending",
+      "depends_on": [
+        "C10"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E18"
+      ],
+      "scope": "src/core/executor/codex.rs:828–931 и SSE preflight detection.",
+      "change": "Убрать скрытые повторы первых SSE-ошибок с задержкой. Сохранить минимальную распознаваемую protocol error handling там, где она необходима, не накапливая успешный stream ради возможности позднего retry. Передавать отказ в единый account/auth planner до commitment.",
+      "tests": "Transient error в первом событии, нормальный первый event и ошибка после содержательной дельты. Ни один сценарий не дублирует уже начатый ответ. Нет фиксированной задержки из retry sleep.",
+      "acceptance": "Codex не реализует независимый временной retry loop и не заставляет нормальный stream ждать искусственный retry window.",
+      "rollback": "Откат только Codex ветки; запрет повторов после downstream commitment остаётся обязательным."
+    },
+    {
+      "id": "C12",
+      "title": "Убрать отдельную retry-политику Antigravity",
+      "status": "pending",
+      "depends_on": [
+        "C10"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E19"
+      ],
+      "scope": "src/core/executor/antigravity.rs:753–839.",
+      "change": "Удалить локальный scheduler временных generation retries; сохранить необходимый перевод ошибок и допустимые endpoint/account alternatives под единым бюджетом. Retry-After передать вверх без sleep. Не смешивать эту правку с project discovery/onboarding.",
+      "tests": "Ошибки с Retry-After, malformed error JSON, другой endpoint, 401 и успешный SSE. Счётчик попыток и виртуальное время подтверждают отсутствие скрытого локального цикла.",
+      "acceptance": "В исполнительной ветке нет второго владельца временных повторов; body/error не подменены фиктивным успехом.",
+      "rollback": "Откат отдельного provider изменения без возврата фоновых задач на каждый запрос."
+    },
+    {
+      "id": "C13",
+      "title": "Единый бюджет account fallback и credential recovery",
+      "status": "pending",
+      "depends_on": [
+        "C10",
+        "C11",
+        "C12"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E01",
+        "E05",
+        "E17",
+        "E18",
+        "E19"
+      ],
+      "scope": "src/server/api/chat.rs; общие executor interfaces; тесты routing/account fallback.",
+      "change": "В одном месте учитывать попытки в рамках входящего запроса. Каждый допустимый аккаунт пробовать ограниченно; определить ровно одну разрешённую auth recovery для устаревших credentials и учесть её в лимите. Не восстанавливать cross-request cooldown. Временной backoff генерации принадлежит клиенту. Не гонять заведомо client-invalid body по всем аккаунтам без обоснования. Ретраи после downstream commitment запрещены.",
+      "tests": "Матрица 400/401/403/429/5xx, разные аккаунты и URL, сохранённый Retry-After, клиентская отмена, заголовки уже отправлены. Установленный OpenCode может ретраить входящий запрос: проверить отсутствие независимых множителей внутри proxy; собственный harness проверяется по доступному контракту.",
+      "acceptance": "Документированная верхняя граница generation attempts на входящий запрос, один владелец recovery, нет лишнего sleep. Не обещать повторяемость произвольных model/tool запросов после неизвестного результата.",
+      "rollback": "Откат planner вместе с его тестами; не оставить часть старых циклов и новый общий бюджет одновременно."
+    },
+    {
+      "id": "C14",
+      "title": "Удалить legacy cleanup с успешного data path",
+      "status": "pending",
+      "depends_on": [
+        "C02"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E01",
+        "E05",
+        "E06"
+      ],
+      "scope": "src/server/api/chat.rs:1641,1914–1961; потребители legacy diagnostic fields.",
+      "change": "Убрать безусловный clear_connection_error_for_model/db.update на успешных headers, поскольку model locks и health-degrade уже не управляют текущей маршрутизацией. Нужный reset диагностического поля оформить отдельно как реальный state transition; не сохранять старый весь механизм только ради привычки. Не делать успех UI ложным.",
+      "tests": "Много успешных запросов при большой конфигурации: нет AppDb clone/update в этой точке. Сохранённый legacy cooldown не исключает аккаунт. Диагностика не утверждает актуальную ошибку после последующего успеха, если поле заявлено как текущее состояние.",
+      "acceptance": "Успешный ответ не ждёт старого housekeeping и полной конфигурационной копии. Изменение не возвращает удалённую routing policy.",
+      "rollback": "Откат отдельной функции; не переносить синхронный общий update в другое место hot path."
+    },
+    {
+      "id": "C15",
+      "title": "Уменьшить копирование настоящих Db::update",
+      "status": "pending",
+      "depends_on": [
+        "C14"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E04"
+      ],
+      "scope": "src/db/mod.rs:247–274; SQLite incremental patch tests.",
+      "change": "Сохранить prev как Arc<AppDb>; одна изменяемая копия для легитимного обновления вместо цепочки deep clones. В blocking persistence передавать разделяемые снимки. При равенстве вернуть прежний Arc без публикации нового. Publish только после успешной транзакции, с прежней корректной сериализацией writers.",
+      "tests": "No-op update, реальное изменение, ошибка SQLite, конкурентные writers и читатели, отмена вызова в процессе blocking commit. Отдельно установить существующую семантику cancellation; не допустить незамеченного расхождения committed DB и published snapshot.",
+      "acceptance": "No-op не публикует новое состояние; реальное изменение не создаёт лишние полные копии для передачи в spawn_blocking. Persistence и линейность обновлений сохранены.",
+      "rollback": "Откат одной Db правки; никаких необратимых schema изменений здесь."
+    },
+    {
+      "id": "C16",
+      "title": "Подготовить refresh coordination по подключению",
+      "status": "pending",
+      "depends_on": [
+        "C13",
+        "C15"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E20"
+      ],
+      "scope": "src/oauth/token_refresh.rs; canonical connection credential state; новые focused tests.",
+      "change": "Подготовить общий механизм, привязанный к connection identity/generation, а не к полному старому токену. После получения права refresh заново прочитать canonical credentials: если другой вызов уже обновил поколение, использовать их. Успешно сохранить/publish новую пару токенов до допуска следующего refresh. Задать cancellation и singleflight lifecycle без completed result cache. Пока не удалять старые caller paths. Совместные waiters получают один результат активной операции, включая ошибку; простой mutex с повторной попыткой каждым waiter после одного failed refresh недостаточен. Операция имеет ограниченный собственный lifecycle: отмена одного caller не должна бросать уже полученные rotated credentials между ответом upstream и их сохранением.",
+      "tests": "100 конкурентных запросов одного поколения дают один refresh; разные connections не блокируют друг друга. Поздний запрос со старым snapshot получает актуальные credentials. Ошибка persistence, cancellation, удаление/recreate ID, неуспешная ротация, shutdown. После неуспешного refresh текущая группа waiters разделяет эту ошибку без последовательного шторма повторов; следующий независимый вызов может сделать новую разрешённую попытку. Отмена лидера после выдачи нового токена upstream не теряет обновлённую пару в доступных для контроля границах; сетевую неопределённость явно обрабатывать, не обещать exactly-once удалённого API.",
+      "acceptance": "Есть протестированная замена, не зависящая от повторного обращения к старому ключу. Нет глобального mutex на все provider HTTP операции и нет карты замков, растущей по всем когда-либо встреченным session/token значениям.",
+      "rollback": "Новый сервис не включать до тестов; откат безопасен, поскольку старые caller paths пока сохраняются."
+    },
+    {
+      "id": "C17A",
+      "title": "Перевести foreground OAuth callers на общий refresh",
+      "status": "pending",
+      "depends_on": [
+        "C16"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E05",
+        "E17",
+        "E20"
+      ],
+      "scope": "Foreground chat/executors refresh call sites; отдельная карта вызовов.",
+      "change": "Мигрировать только request-path refresh callers; удалить их независимые duplicate refresh branches после переноса. Использовать credential version/snapshot заново, не держать старый request clone ради повторной авторизации. При нескольких несвязанных provider API разделить на C17A.1 и т.д., не объединять большой refactor.",
+      "tests": "Каждый затронутый executor: параллельный 401, успешный refresh, invalid_grant, 403 не из-за токена, отмена и повторная авторизация. Account fallback бюджет C13 остаётся соблюдён.",
+      "acceptance": "Все foreground call sites перечислены и используют общий coordinator; число refresh/generation requests подтверждено mocks.",
+      "rollback": "Каждый provider caller переносится отдельным обратимым commit."
+    },
+    {
+      "id": "C17B",
+      "title": "Перевести control/background OAuth callers",
+      "status": "pending",
+      "depends_on": [
+        "C17A"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E20",
+        "E22",
+        "E29"
+      ],
+      "scope": "Catalog, quota и фоновые OAuth refresh call sites.",
+      "change": "Перевести оставшихся потребителей на тот же connection-scoped coordinator. Proactive refresh, если он сохранён для активных OAuth connections, не должен гоняться с первым chat/с обновлением каталога. Не заменять его таймером на каждый клиентский session.",
+      "tests": "Одовременно proactive refresh, запрос /models или quota и foreground 401. Проверить один refresh нужного поколения и отсутствие rollback новых токенов старым background result.",
+      "acceptance": "Call-site census не оставляет обходов shared refresh; idle credentials/task count ограничены числом настроенных подключений.",
+      "rollback": "Откат control-plane миграции отдельно от foreground; старый механизм удаляется только следующим checkpoint."
+    },
+    {
+      "id": "C18",
+      "title": "Удалить завершённый refresh TTL-кэш",
+      "status": "pending",
+      "depends_on": [
+        "C17B"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E20"
+      ],
+      "scope": "RefreshDedup/DedupEntry/make_dedup_key в src/oauth/token_refresh.rs и неиспользуемые tests.",
+      "change": "Удалить token-keyed map completed results, дублирование OnceCell/cached_result и связанный TTL. Оставить только активную координацию/connection-owned mutex из нового сервиса. Удалить dead exports после проверки. Не добавлять общий LRU/timer cleanup взамен.",
+      "tests": "Десятки тысяч уникальных ротаций без повторного обращения к старым токенам; устаревший caller приходит уже после окончания refresh; массовая отмена; idle после серии. Завершённые результаты и старые секреты не остаются в отдельном cache map.",
+      "acceptance": "Нет завершённого refresh result cache и ключей из полного токена. Живое состояние связано с активными/настроенными connections, а не историческим числом ротаций.",
+      "rollback": "При найденной гонке исправить coordinator; нельзя считать удаление кэша успешным ценой параллельного refresh одноразового токена."
+    },
+    {
+      "id": "C19",
+      "title": "Исключить models.dev HTTP из chat path",
+      "status": "pending",
+      "depends_on": [
+        "C08"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E09",
+        "E21"
+      ],
+      "scope": "src/core/model/models_dev.rs; chat metadata reads; control-plane refresh entry points.",
+      "change": "Сделать чтение опубликованного каталога локальным и немедленным. Загрузка/обновление происходят при настройке, явном refresh или ограниченной control-plane задаче и атомарно публикуют snapshot. Не держать read mutex во время HTTP. На холодном старте использовать saved/bundled metadata; отсутствие сведений обозначать честно, не начинать скрытую сеть на каждом запросе.",
+      "tests": "HTTP каталога зависает/недоступен; одновременно идут chat и metadata refresh. Warm chat не ждёт HTTP, immutable старый snapshot доступен. Custom/enabled models и корректные advertised limits сохранены.",
+      "acceptance": "Ноль remote catalog запросов и ожиданий его refresh lock на warm generation path. Удаление result-cache не превращено в обязательный fetch каждого запроса.",
+      "rollback": "Откат публикации snapshot отдельно; persisted models не удалять."
+    },
+    {
+      "id": "C20",
+      "title": "Убрать ожидание Codex catalog refresh из маршрутизации",
+      "status": "pending",
+      "depends_on": [
+        "C19",
+        "C17B"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E09",
+        "E22",
+        "E23"
+      ],
+      "scope": "src/server/codex_catalog.rs; callers cached_supporters/union_active.",
+      "change": "Читать уже опубликованный per-connection/model snapshot без ожидания mutex, которым refresh держит HTTP. Перенести remote discovery/union rebuild в control plane; избежать повторного полного merge/clone при каждом chat. Актуализировать snapshot при изменении аккаунтов и custom models.",
+      "tests": "Dashboard запускает долгий refresh, параллельный chat по известной модели сразу выбирает аккаунт. Удалённый/disabled connection не остаётся допустимым. Cold unknown модель не маршрутизируется на случайный аккаунт.",
+      "acceptance": "Известный запрос не зависит от задержки catalog refresh; объём metadata связан с конфигурацией, а не числом входящих запросов.",
+      "rollback": "Откат только каталожного слоя; не выключать authenticated /v1/models или discovery plugin."
+    },
+    {
+      "id": "C21",
+      "title": "Убрать projectId TTL-кэш, сохранив canonical metadata",
+      "status": "pending",
+      "depends_on": [
+        "C17B"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E24"
+      ],
+      "scope": "src/core/utils/project_id_cache.rs; src/core/executor/project_id_cache.rs; Antigravity get_project_id; connection metadata.",
+      "change": "Использовать существующее место provider-specific metadata для projectId, связанного с canonical connection и identity generation. Обнаружение выполнять на connect/явном refresh/обоснованной инвалидизации. Удалить активный дублирующий TTL-кэш и после call-site проверки мёртвый одноимённый executor module. Не заменять удалённый cache сетевым loadCodeAssist на каждом chat.",
+      "tests": "Warm chat не вызывает project lookup; удаление/смена identity не использует старый project. Ошибка discovery явно отражается в настройке подключения; одновременное первое использование координируется без бесконечной очереди.",
+      "acceptance": "Один источник projectId вместо конкурирующих caches; нет дополнительного RTT на каждый запрос. Мёртвый module не объявлен runtime утечкой задним числом.",
+      "rollback": "Версионировать/инвалидировать новое metadata состояние; не терять существующие credentials."
+    },
+    {
+      "id": "C22",
+      "title": "Убрать Antigravity onboarding task из каждого запроса",
+      "status": "pending",
+      "depends_on": [
+        "C21"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E25"
+      ],
+      "scope": "src/core/executor/antigravity.rs:702–719; onboardUser lifecycle.",
+      "change": "Перенести onboarding в lifecycle подключения после discovery; выполняется только при необходимости для данной identity/config generation. Никакого detached polling на каждый chat. Ограничить активность, отмену при удалении подключения и число попыток setup; использовать подходящий общий transport.",
+      "tests": "100 chat одного настроенного connection не запускают 100 onboarding workers. Новое подключение выполняет нужный onboarding один раз; failure/retry setup, deletion и shutdown освобождают задачу.",
+      "acceptance": "Число onboarding задач определяется настройкой подключений, не chat throughput; readiness ошибки доступны пользователю без скрытого polling из generation.",
+      "rollback": "Откат lifecycle commit; не возвращать бесконтрольный spawn как recovery strategy."
+    },
+    {
+      "id": "C23",
+      "title": "Удалить Claude quota result cache и ложную дедупликацию",
+      "status": "pending",
+      "depends_on": [
+        "C17B"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E26",
+        "E27"
+      ],
+      "scope": "src/core/usage/quota_fetcher.rs:1614–1776; /api/usage consumers.",
+      "change": "Удалить completed quota JSON cache с access-token keys и OnceCell map, которая не заполняется. Получать quota по явному control-plane запросу. Только при нужной конкуренции одного connection использовать корректную отменяемую in-flight координацию без сохранения завершённых результатов. Не выдавать stale snapshot за fresh данные.",
+      "tests": "Успех, HTTP/JSON error, cancellation и конкурентные callers; не остаются незавершённые записи. Token rotation не накапливает map entries. При выбранном singleflight точно один upstream quota request на одновременную группу.",
+      "acceptance": "Кэши удалены, on-demand quota не утрачена; частота запросов UI проверена отдельно, чтобы удаление не породило шторм опросов. Исправление не называется снижением hot-path chat RAM без замера.",
+      "rollback": "Откат конкретного control-plane изменения; не возвращать stale data с ложным timestamp."
+    },
+    {
+      "id": "C24",
+      "title": "Убрать default health probes и orphan breaker state",
+      "status": "pending",
+      "depends_on": [
+        "C14"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E01",
+        "E28",
+        "E29"
+      ],
+      "scope": "src/core/health/daemon.rs; breaker/registry callers; startup; health endpoints.",
+      "change": "Проверить census читателей, затем удалить/вывести из лёгкого default lifecycle периодические provider probes и state, не участвующее в routing. Liveness приложения оставить независимой от доступности платных upstream. Сохранить явную ручную диагностику и её timestamp; явно настроенный healthCheckEnabled мигрировать без молчаливого изменения смысла.",
+      "tests": "Idle без явно включённой диагностики не делает provider health HTTP. /health отвечает при недоступном upstream; admin получает честное unknown/stale вместо выдуманного healthy. Legacy degraded fields не исключают аккаунты.",
+      "acceptance": "Нет default фонового probing и orphan circuit-breaker registry; кэш/таблица security controls не затронуты.",
+      "rollback": "Вернуть диагностическую возможность отдельным opt-in/control action при необходимости, не возрождать routing cooldown."
+    },
+    {
+      "id": "C25",
+      "title": "Сделать quota auto-ping действительно ленивым",
+      "status": "pending",
+      "depends_on": [
+        "C24"
+      ],
+      "kind": "conditional",
+      "evidence": [
+        "E29",
+        "E44"
+      ],
+      "scope": "src/server/api/quota_auto_ping.rs; startup/task lifecycle.",
+      "change": "Сохранить различие: текущие реальные auto-ping уже требуют явно enabled connections. Убрать пустой sleeper/worker при отсутствии enabled configuration; запускать ограниченную задачу только для явного opt-in и завершать при его снятии. Не добавлять автоматические LLM warmup запросы. OAuth proactive refresh не отключать автоматически — у него другая auth-роль.",
+      "tests": "Пустая конфигурация, включение/отключение единственного connection, несколько providers, shutdown. Ни одного quota/model запроса без opt-in; явные настройки сохраняются после restart.",
+      "acceptance": "Default idle не содержит ненужной polling задачи; нельзя записать в отчёт, что до изменения платные quota probes были включены для всех по умолчанию.",
+      "rollback": "Откат только scheduler lifecycle; не удалять сохранённый opt-in пользователя."
+    },
+    {
+      "id": "C26",
+      "title": "Передавать владение JSON из handler в executor",
+      "status": "pending",
+      "depends_on": [
+        "C09",
+        "C13"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E10"
+      ],
+      "scope": "src/server/api/chat.rs; request/executor parameter structures.",
+      "change": "Снять профиль оставшихся clone после удаления лишних policies. Передавать owned Value в следующий единственный потребитель; сохранять immutable shared representation только там, где оно необходимо для account fallback. Не переписывать одновременно все translator modules и не хранить original плюс transformed после исчезновения потребности.",
+      "tests": "Native route, один translated route, fallback с изменяемыми provider fields, large tools/Unicode. Payload semantic golden tests и живые allocations на равной concurrency.",
+      "acceptance": "Удалён конкретный подтверждённый deep clone без потери необходимого retry representation; изменение локально и имеет измеренный allocation эффект либо честно отмечено как simplification.",
+      "rollback": "Откат одной ownership boundary; не компенсировать заимствования unsafe-кодом или глобальным cache."
+    },
+    {
+      "id": "C27",
+      "title": "Сериализовать подготовленное upstream тело один раз",
+      "status": "pending",
+      "depends_on": [
+        "C26"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E17"
+      ],
+      "scope": "DefaultExecutor request build/send; следующий конкретный executor только отдельным sub-checkpoint.",
+      "change": "Получать ограниченное по размеру Bytes после обязательных преобразований; переиспользовать разделяемые байты для разрешённых идентичных повторов. При смене тела/формата/необходимого account field пересоздавать representation. Не хранить несколько полных буферов «на всякий случай».",
+      "tests": "Одинаковая разрешённая отправка использует одну сериализацию; изменение routed model/account-dependent body делает новую. Проверить Content-Type/encoding, Unicode и сохранение unknown fields.",
+      "acceptance": "Устранены повторные serialize одного и того же тела в затронутом executor; не заявлена одна аллокация на весь запрос.",
+      "rollback": "Откат per-executor commit; prepared bytes не записываются в межзапросный cache."
+    },
+    {
+      "id": "C28",
+      "title": "Сократить lifetime transformed_body после отправки",
+      "status": "pending",
+      "depends_on": [
+        "C27"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E10"
+      ],
+      "scope": "Executor response/result types и реальные consumers transformed_body.",
+      "change": "Найти всех readers поля. Удалить передачу полного request JSON обратно с ответом там, где используются только несколько metadata полей; перенести эти поля отдельно либо завершить lifetime до начала длинного SSE. Если конкретному translator тело действительно нужно, оставить только эту scoped ветку.",
+      "tests": "Длинный ответ с большим request body, usage, fallback, cancellation. Проверить, что request history не живёт до EOF без обоснованной причины; инструменты ответа не теряют необходимый mapping.",
+      "acceptance": "После upstream send нет ненужного полного request JSON в response ownership graph. Для оправданных остатков указаны caller и byte budget.",
+      "rollback": "Откат изменения result type; не ломать всё API ради удаления одной копии."
+    },
+    {
+      "id": "C29",
+      "title": "Ограничить собираемые upstream JSON и ошибки во время чтения",
+      "status": "pending",
+      "depends_on": [
+        "C02"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E32",
+        "E34"
+      ],
+      "scope": "collect_upstream_response_bytes и прямые bytes/text callers на используемых response paths.",
+      "change": "Ввести небольшой общий bounded reader для Reqwest/Hyper только там, где требуется collect. Проверять checked addition до расширения buffer, включая распакованные bytes; Content-Length — лишь ранний отказ. Разделить бюджеты успешного JSON и диагностического тела. Обработать partial transport failure; не возвращать обрезанный успешный JSON.",
+      "tests": "Chunked, ложный/отсутствующий Content-Length, compressed response, +1 byte к лимиту, большая ошибка, Unicode граница. До commitment вернуть явную ошибку; после commitment корректно завершить stream с доступным протоколу сигналом.",
+      "acceptance": "Ни один проверенный collector не читает без своего byte limit. Native stream не превращён в collector ради унификации.",
+      "rollback": "Пределы конфигурируемы и возвращаемы; отключение проверки не является штатным способом исправления fixtures."
+    },
+    {
+      "id": "C30A",
+      "title": "Ограничить необходимое разворачивание изображений",
+      "status": "pending",
+      "depends_on": [
+        "C29"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E34"
+      ],
+      "scope": "src/core/translator/helpers/image_helper.rs; callers конкретных adapters.",
+      "change": "Не загружать URL, когда upstream принимает его напрямую. Когда inline необходим, проверять размер при чтении, общий decoded/encoded бюджет всех изображений и итогового запроса. Избежать лишней копии base64 при сборке data URL; не обещать отсутствие самой base64 representation.",
+      "tests": "Одно огромное изображение, много разрешённых по отдельности изображений, неизвестная длина, error midstream, неправильный MIME/magic, отсутствие изображения. Не терять вложение молча и не подменять его текстом ради успеха теста.",
+      "acceptance": "Невозможно сначала целиком скачать oversized image и лишь потом сравнить размер; лишние fetch не добавлены. Кэш изображений/ответов не появляется.",
+      "rollback": "Откат конкретного adapter mapping отдельно от reader limits; security проверки сохраняются."
+    },
+    {
+      "id": "C30B",
+      "title": "Связать SSRF-проверку изображения с реальным подключением",
+      "status": "pending",
+      "depends_on": [
+        "C30A"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E33"
+      ],
+      "scope": "image_helper.rs:106–138; validated resolver/connect/redirect path.",
+      "change": "Исправить разрыв между проверенным публичным IP и последующим независимым DNS resolution клиента. Выбрать доступный стеку способ связывания разрешённого адреса с фактическим connect, сохраняя hostname/TLS verification. Повторять проверку на каждом redirect и для IPv4/IPv6; не отключать TLS и не распространять relaxed egress policy на обычный pool.",
+      "tests": "Mock resolver меняет ответ между lookup/connect; redirect на private/loopback/link-local/IPv6-mapped адрес; TLS hostname mismatch; несколько допустимых IP. Зафиксировать, что это проверка риска по коду, а не доказательство реальной эксплуатации.",
+      "acceptance": "Валидация относится к адресу реального соединения, а не к проигнорированной _pinned_ip переменной. Нет SSRF-регрессии ради reuse или скорости.",
+      "rollback": "При отсутствии безопасной реализации inline fetch закрывается явной ошибкой для этого случая; не выпускать bypass проверки."
+    },
+    {
+      "id": "C31",
+      "title": "Ограничить tool index и размер накапливаемого tool state",
+      "status": "pending",
+      "depends_on": [
+        "C29"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E40"
+      ],
+      "scope": "src/core/chat/stream_to_json.rs и аналогичные tool accumulators активных translators.",
+      "change": "Проверять конвертацию индекса/checked arithmetic до allocation; ограничить количество tool calls и байты arguments/state. Не выделять vector до произвольного upstream index. Выбрать ограниченную representation, сохраняющую ordering protocol. Не подменять неподдерживаемый индекс нулём молча.",
+      "tests": "Индекс u64::MAX, огромный разреженный index при маленьком frame, many tools, длинные arguments, out-of-order allowed deltas, повторный index. Ошибка явная, нет runaway allocation.",
+      "acceptance": "Размер tool state имеет предел независимо от небольшого wire event. Валидная последовательность tool calls собирается без изменения аргументов.",
+      "rollback": "Настройки пределов можно вернуть; семантический data corruption не считается допустимой экономией."
+    },
+    {
+      "id": "C32",
+      "title": "Один инкрементальный bounded SSE framer",
+      "status": "pending",
+      "depends_on": [
+        "C29",
+        "C31"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E32"
+      ],
+      "scope": "SSE observers в src/server/api/chat.rs; небольшой shared parser module.",
+      "change": "Сначала покрыть текущие правила framing, затем заменить повторные pending/to_vec/drain полным инкрементальным framer с scan cursor. Ограничивать размер незавершённого события и удерживаемого состояния, а не весь переданный stream. Использовать framing совместно для нужных observers, без двойного JSON parse одной и той же нагрузки, где это возможно.",
+      "tests": "Каждая возможная граница chunk для небольших fixtures, UTF-8 split, LF/CRLF, multiline data, heartbeat/comment, несколько frames в chunk, frame без delimiter. Один байт за раз не даёт повторного полного сканирования. Малый tail не удерживает неограниченно большой backing allocation.",
+      "acceptance": "Корректные native события передаются сразу; pending ограничен и нет квадратичного scan/copy. Full-message accumulator не замаскирован под framer.",
+      "rollback": "Внедрять по одному observer/adapter при необходимости; rollback не меняет wire contract."
+    },
+    {
+      "id": "C33",
+      "title": "Собирать SSE→JSON без хранения сырой истории SSE",
+      "status": "pending",
+      "depends_on": [
+        "C32"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E32",
+        "E40"
+      ],
+      "scope": "SSE→JSON path в chat.rs; src/core/chat/stream_to_json.rs.",
+      "change": "Подавать завершённые события инкрементально в итоговый accumulator. Удалить полный raw SSE buffer, оставив только обязательный итоговый JSON/state. Применить общий итоговый byte budget, tool limits и error propagation.",
+      "tests": "Длинный response, content/tools/reasoning/refusal/usage, оборванный stream и финальное событие. Сравнить semantic JSON с golden fixtures; ошибка незавершённой передачи не становится успешным частичным completion.",
+      "acceptance": "Нет двух полных представлений «весь исходный SSE плюс весь результат». Итоговое содержимое всё равно O(response); это указано в метриках и документации.",
+      "rollback": "Откат одной conversion path; не менять native streaming ради non-stream клиента."
+    },
+    {
+      "id": "C34",
+      "title": "Убрать квадратичное копирование в Responses translator",
+      "status": "pending",
+      "depends_on": [
+        "C32"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E41"
+      ],
+      "scope": "src/core/translator/response/openai_responses.rs, по одному accumulator семейству.",
+      "change": "Заменить клонирование целых maps и format старый-текст+дельта на точечное mutable state/push_str. Не расширять переделку в универсальный новый engine. Сохранить полный text/arguments только для обязательных done/completed событий, освобождать завершённый state вовремя.",
+      "tests": "Равный общий текст при растущем числе небольших дельт; tool arguments, reasoning, несколько output items, final ordering. Проверить объём скопированных/выделенных байтов, а не только финальный RSS.",
+      "acceptance": "Рост временного копирования не квадратичный для затронутых накопителей; обязательные финальные payloads эквивалентны.",
+      "rollback": "Отдельный commit для text/tool/reasoning, если совмещённая правка слишком велика; не менять event schema."
+    },
+    {
+      "id": "C35",
+      "title": "Убрать audit I/O из первого чанка в явном лёгком режиме",
+      "status": "pending",
+      "depends_on": [
+        "C15",
+        "C32"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E30",
+        "E31"
+      ],
+      "scope": "src/server/application_logs.rs; SQLite log writer; settings/schema/UI режима логов.",
+      "change": "Ввести один ограниченный по событиям И байтам путь metadata logging без task-per-event. Для лёгкого режима — неблокирующая отправка metadata, явный overflow/drop counter и документируемый риск потери последних записей при crash. Для требуемого durable режима сохранить I/O/backpressure как честный tradeoff. Миграция не молча ослабляет прежние гарантии; config/credentials всегда durable.",
+      "tests": "SQLite искусственно медленна: lean first event не ждёт записи. Очередь переполнена, start/finish order, crash/shutdown flush budget, cancellation, секреты/тела отсутствуют в metadata, event max bytes. Durable mode тестируется отдельно и не рекламируется как zero-wait.",
+      "acceptance": "Нет synchronous log insert перед upstream в lean mode и unbounded detached logging tasks. Режим, потери и нагрузка явно видны. Сравнения RAM/latency проведены при одинаковом logging contract.",
+      "rollback": "Режим явно переключаем/мигрируем; rollback не удаляет журналы и не делает потерю аудита скрытой."
+    },
+    {
+      "id": "C36",
+      "title": "Ранний admission и permit на весь response body",
+      "status": "pending",
+      "depends_on": [
+        "C29",
+        "C32"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E03"
+      ],
+      "scope": "src/server/api/mod.rs; middleware/body wrappers; server connection/read limits.",
+      "change": "Ограничить число активных LLM запросов до Json extraction и больших преобразований. Для лёгкого режима — немедленный контролируемый отказ при отсутствии ресурса либо строго ограниченное ожидание, не очередь уже прочитанных тел. Permit принадлежит response body до EOF/Drop и освобождается на всех ошибках. Health/admin защищены от starvation; slow-upload/socket budgets не забыты.",
+      "tests": "Конкурентность выше предела; client медленно грузит request/читает response; cancel до/после headers; upstream timeout; idle SSE; body никогда не дочитан. Проверить число permits и отсутствие роста очереди. Не запрещать обычный долгий SSE фиксированной короткой полной длительностью.",
+      "acceptance": "Пик активных буферов ограничен конфигурацией; successes/throughput при прежней обслуживаемой concurrency не ухудшены. Overload rejection отдельно, не засчитывается как RAM оптимизация.",
+      "rollback": "Лимит меняется явной настройкой; не освобождать permit после одних headers ради красивого throughput."
+    },
+    {
+      "id": "C37",
+      "title": "Подобрать SQLite page-cache по измерениям",
+      "status": "pending",
+      "depends_on": [
+        "C02",
+        "C35"
+      ],
+      "kind": "conditional",
+      "evidence": [
+        "E39"
+      ],
+      "scope": "src/db/sqlite/schema.rs; конфигурация init единственного connection; benchmark БД.",
+      "change": "Сравнить текущий cache_size=-64000 и -8192 на репрезентативной БД. Настройка применяется в connection приложения, а не сторонним sqlite shell. Mmap и temp_store сравнивать отдельными экспериментами; WAL/надежность не ослаблять. Не добавлять DB cache поверх SQLite.",
+      "tests": "page-cache used/hit/miss, anonymous/file RSS, log read/write latency, SQLite lock time и disk I/O. Одинаковая нагрузка/режим логов; холодный и тёплый filesystem cache отдельно.",
+      "acceptance": "Новый default допускается только при фактическом выигрыше и приемлемой latency. Понижение лимита на 54.5 MiB не записывается как экономия тех же байтов.",
+      "rollback": "Возврат одной startup настройки; никаких data/schema миграций в этом checkpoint."
+    },
+    {
+      "id": "C38",
+      "title": "Убрать optional BasicChat из лёгкого продукта",
+      "status": "pending",
+      "depends_on": [
+        "C00",
+        "C02"
+      ],
+      "kind": "conditional",
+      "evidence": [
+        "E02"
+      ],
+      "scope": "web/src/components/BasicChatPageClient.tsx; только demo-chat routes/navigation/assets.",
+      "change": "Предпочесть удаление/вынос optional demo chat вместо разработки IndexedDB, новой истории и хранения вложений. Сначала проверить consumers и объявить изменение optional surface. Сохранить provider admin, Available Models, общий picker и OpenCode config. Не удалять автоматически браузерную историю/данные пользователя.",
+      "tests": "UI build/check, providers/custom models persistence, picker/discovery, отсутствие dangling routes/imports. Сравнить browser RAM отдельно; server RSS измерить, не выводить из размера JS bundle.",
+      "acceptance": "Лёгкий прокси не развивает второй chat/harness UI; обязательные product surfaces целы. Если removal сейчас breaking для защищённого контракта, оформить отдельный пакет/депрекацию, а не затевать frontend rewrite.",
+      "rollback": "Откат optional surface или отдельный пакет; пользовательские данные не удалены."
+    },
+    {
+      "id": "C39",
+      "title": "Вывести standalone harness-like web tools из proxy core",
+      "status": "pending",
+      "depends_on": [
+        "C00",
+        "C38"
+      ],
+      "kind": "conditional",
+      "evidence": [
+        "E02"
+      ],
+      "scope": "src/server/api/web_fetch.rs; web_search convenience routes и их consumers, не provider native tool API.",
+      "change": "Составить точный список самостоятельных web-fetch/search execution функций и клиентов. Неиспользуемые удалить; востребованные перенести на harness/plugin boundary с понятным переходом. Не удалять forwarding tools, provider-native web_search, tool_result или явно вызванный /responses/compact: это transport API, а не автономный агент.",
+      "tests": "Сохранённые endpoints/schema tests, tool protocol roundtrip, native Responses compact forwarding. Удалённые convenience routes имеют объявленную депрекацию/версию/альтернативный consumer, не случайный 404 после релиза.",
+      "acceptance": "В core не появляется собственный agent tool runner. Проверенное отсутствие consumers фиксируется; неподтверждённая «дублируемость» сама по себе не основание ломать публичный API.",
+      "rollback": "Откат route/module removal без потери настройки провайдеров; миграцию потребителей проводить отдельно."
+    },
+    {
+      "id": "C40",
+      "title": "Завершить lifetime backup buffer до sleep",
+      "status": "pending",
+      "depends_on": [
+        "C15"
+      ],
+      "kind": "required",
+      "evidence": [
+        "E42"
+      ],
+      "scope": "src/main.rs:451–482 и backup loop tests.",
+      "change": "Ограничить область экспортированных JSON bytes самой записью backup или явно drop до часового ожидания. Не менять формат/retention/backups и не отключать их ради красивого графика.",
+      "tests": "Успех backup, ошибка export, ошибка записи, cancellation; профиль/тест lifetime подтверждает отсутствие ненужного retained buffer во время sleep.",
+      "acceptance": "Нет живого большого export buffer в idle периоде backup-задачи. В отчёте не выдуман фиксированный размер освобождённой памяти.",
+      "rollback": "Откат простой scope правки, данные backup не меняются."
+    },
+    {
+      "id": "C41",
+      "title": "Удалить осиротевшие модули и зависимости после упрощения",
+      "status": "pending",
+      "depends_on": [
+        "C18",
+        "C22",
+        "C23",
+        "C24",
+        "C28",
+        "C34",
+        "C38",
+        "C39"
+      ],
+      "kind": "conditional",
+      "evidence": [
+        "E02",
+        "E37",
+        "E38"
+      ],
+      "scope": "Cargo.toml/module declarations; только подтверждённый dead code после предыдущих commits.",
+      "change": "Проверить production/test/feature consumers удалённых модулей, затем удалить dead exports/dependencies и устаревшие настройки по контракту миграции. Не трогать HTTP pool, security state, криптографию, allocator или runtime threads без отдельного профиля. opt-level=\"s\" против \"3\" — отдельный возможный эксперимент, не обязательная часть этого checkpoint.",
+      "tests": "Все поддерживаемые build features, clippy/tests и web build. Lockfile меняется только вследствие обоснованного удаления зависимости, не обновления стека «заодно». Никаких production secrets в diff.",
+      "acceptance": "Меньше поддерживаемого кода без скрытых выключений нужного адаптера. Уменьшение бинарника не объявлено автоматически уменьшением RSS/latency.",
+      "rollback": "Каждая группа dead dependencies отдельным commit; можно вернуть без восстановления уже удалённого replay поведения."
+    },
+    {
+      "id": "C42",
+      "title": "Финальная приёмка лёгкого proxy contract",
+      "status": "pending",
+      "depends_on": [
+        "C03",
+        "C04",
+        "C05",
+        "C06",
+        "C08",
+        "C09",
+        "C13",
+        "C15",
+        "C18",
+        "C20",
+        "C21",
+        "C22",
+        "C23",
+        "C24",
+        "C25",
+        "C28",
+        "C29",
+        "C30B",
+        "C31",
+        "C33",
+        "C34",
+        "C35",
+        "C36",
+        "C37",
+        "C38",
+        "C39",
+        "C40",
+        "C41"
+      ],
+      "kind": "release",
+      "evidence": [
+        "E01",
+        "E02"
+      ],
+      "scope": "End-to-end tests; baseline/final measurements; docs/lean-proxy-results.md.",
+      "change": "Повторить исходную матрицу на том же успешном workload, отдельно показать effect от удаления функций и внутренних оптимизаций. Прогнать token/session churn, длинные streams, slow/cancel clients, restart/config/credentials persistence, model discovery и OpenCode/harness fixtures. Реальный установленный OpenCode прогон пометить unavailable, если binary не предоставлен, а не PASS.",
+      "tests": "Длинная серия в несколько окон времени и минимум пять повторов latency серий; live state/queues не растут по историческому числу запросов. Кросс-провайдерные protocol goldens, error semantics, auth races и logging guarantees. Все условные checkpoints done или not_applicable с доказательством.",
+      "acceptance": "Опубликованы реальные RAM/latency/throughput значения и ограничения. Нет автономной semantic repair/history replay, поколенческих token caches и обязательного catalog/log wait на lean hot path. Непроверенная production provider совместимость явно перечислена.",
+      "rollback": "Релиз блокируется при нарушении wire/security/data contracts. Откат проблемного commit, повтор baseline; не маскировать регрессию снижением concurrency или отключением функции без отметки."
+    }
+  ]
+}

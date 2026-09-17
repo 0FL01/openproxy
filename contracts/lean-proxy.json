@@ -1,0 +1,144 @@
+{
+  "schema": "openproxy.lean-proxy-contract.v1",
+  "status": "frozen",
+  "checkpoint": "C00",
+  "owners": {
+    "harness": [
+      "conversation_history",
+      "context_compaction",
+      "tool_execution",
+      "semantic_repair",
+      "temporal_generation_retries"
+    ],
+    "proxy": [
+      "private_credentials_and_oauth",
+      "configured_account_and_model_routing",
+      "required_protocol_translation",
+      "http_transport_and_connection_reuse",
+      "resource_and_security_limits"
+    ]
+  },
+  "public_generation_routes": [
+    "POST /v1/chat/completions",
+    "POST /chat/completions",
+    "POST /v1/v1/chat/completions",
+    "POST /v1/api/chat",
+    "POST /v1/messages",
+    "POST /messages",
+    "POST /v1/v1/messages",
+    "POST /v1/messages/count_tokens",
+    "POST /messages/count_tokens",
+    "POST /v1/v1/messages/count_tokens",
+    "POST /v1/responses",
+    "POST /responses",
+    "POST /v1/v1/responses",
+    "POST /codex",
+    "POST /codex/{*path}",
+    "POST /v1/responses/compact",
+    "POST /v1/v1/responses/compact",
+    "POST /v1beta/models/{*path}"
+  ],
+  "public_model_routes": [
+    "GET /v1/models",
+    "GET /v1/models/info",
+    "GET /v1/v1/models",
+    "GET /v1/v1/models/info",
+    "GET /v1beta/models"
+  ],
+  "provider_target_formats": {
+    "openai": "openai",
+    "anthropic|claude|kimi|minimax|kimi-coding": "claude",
+    "glm": "openai",
+    "gemini": "gemini",
+    "vertex|vertex-partner": "vertex",
+    "codex|grok-cli|gcli|gb|perplexity-agent": "openai-responses",
+    "cursor|cu": "cursor",
+    "kiro": "kiro",
+    "ollama|ollama-cloud": "ollama",
+    "antigravity": "antigravity",
+    "commandcode|command-code": "commandcode",
+    "openai-compatible*": "openai-or-openai-responses",
+    "anthropic-compatible*": "claude",
+    "other": "openai"
+  },
+  "registered_request_transforms": [
+    "openai->claude",
+    "claude->kiro",
+    "claude->openai",
+    "gemini->openai",
+    "openai->ollama",
+    "openai->gemini",
+    "openai->vertex",
+    "openai->kiro",
+    "openai->cursor",
+    "openai->antigravity",
+    "antigravity->openai",
+    "openai->openai-responses",
+    "openai-responses->openai",
+    "openai->codex",
+    "openai->commandcode"
+  ],
+  "registered_response_transforms": [
+    "kiro->claude",
+    "commandcode->openai",
+    "openai->gemini",
+    "claude->openai",
+    "gemini->openai",
+    "ollama->openai",
+    "cursor->openai",
+    "kiro->openai",
+    "openai-responses->openai",
+    "openai->claude",
+    "openai->openai-responses",
+    "openai->codex",
+    "openai->antigravity",
+    "vertex->openai",
+    "antigravity->openai"
+  ],
+  "preserved_contracts": [
+    "provider_credentials_and_oauth",
+    "bounded_account_fallback",
+    "required_provider_continuation",
+    "http_connection_reuse",
+    "tls_ssrf_encryption_auth_and_audit",
+    "client_prompt_tools_and_history",
+    "provider_native_cache_fields_and_usage",
+    "model_metadata_and_opencode.source",
+    "custom_enabled_and_disabled_models",
+    "providers_available-models_model-select-opencode-chain",
+    "openproxy.v1.additive-only"
+  ],
+  "automatic_actions_to_remove": [
+    "kiro_semantic_repair_and_second_generation",
+    "cross_request_claude_header_replay",
+    "kiro_conversation_content_replay",
+    "default_proxy_context_rejection_and_headroom",
+    "executor_owned_temporal_generation_retry_loops",
+    "token_keyed_completed_refresh_and_quota_caches",
+    "default_provider_health_probes",
+    "request_scoped_onboarding_workers",
+    "chat_path_remote_catalog_waits",
+    "successful_response_legacy_routing_cleanup"
+  ],
+  "legacy_data_policy": {
+    "preserve_unknown_fields": true,
+    "preserve_deprecated_values_on_round_trip": true,
+    "destructive_read_migration": false,
+    "silent_reinterpretation": false,
+    "rollback_may_reenable_preserved_reader": true
+  },
+  "versions": {
+    "opencode": "1.18.31",
+    "custom_harness": "unknown"
+  },
+  "source_registries": [
+    "src/core/translator/registry.rs:get_target_format_for_provider",
+    "src/core/translator/registry.rs:global_registry",
+    "src/core/chat/mod.rs:RequestPlan",
+    "src/server/api/mod.rs:routes",
+    "src/server/api/v1_models.rs:build_models_list",
+    "web/src/shared/models/availableModels.ts:buildAvailableModels",
+    "web/src/shared/components/ModelSelectModal.tsx",
+    "plugins/openproxy-models.js"
+  ]
+}
