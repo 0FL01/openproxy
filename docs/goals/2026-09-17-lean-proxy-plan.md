@@ -93,17 +93,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R3 / C04.
-- Smallest next action: Remove process-wide Claude header capture/replay and pass only allowlisted metadata from the current request plus explicit adapter defaults.
-- Expected evidence: Alternating and concurrent clients/accounts never inherit each other's session/retry metadata; a request without a session ID does not inherit one; Claude CLI and OpenCode adapter fixtures remain valid.
-- Stop or replan if: A header is proven to be a provider-required adapter default rather than client session metadata; encode that default in the adapter without retaining cross-request state.
+- Closes: R3 / C05.
+- Smallest next action: Delete Kiro session-start content replay and build every Kiro upstream history exclusively from the current request body.
+- Expected evidence: Reused session IDs with changed, compacted, empty, and account/model-switched histories never restore old `msg0` or system content; current tools and required Kiro fields remain valid.
+- Stop or replan if: A field is proven to be mandatory provider continuation metadata; preserve only that protocol field without retaining prompt/history content or adding a replacement cache.
 
 ## Current State
 
-- Resolved: R1 / C00, R2 / C01-C02, and C03 within R3. Kiro now streams successful EventStream bodies without semantic buffering, prompt mutation, or hidden generation retries; the deprecated setting remains inert and durable.
-- Last relevant evidence: C03 integration tests passed 5/5: first event arrived before held EOF, nine semantic/setting combinations made exactly nine attempts without prompt mutation, malformed binary input surfaced an explicit decode error, downstream cancellation dropped the held upstream stream, and legacy values round-tripped. Kiro-focused library tests passed 107/107; all library tests passed 1,225/1,225.
+- Resolved: R1 / C00, R2 / C01-C02, and C03-C04 within R3. Kiro semantic repair is gone, and Claude identity/session metadata is now request-scoped with no global retained map.
+- Last relevant evidence: C04 alternating Claude CLI/OpenCode/headerless requests inherited no prior session/retry metadata, and 24 concurrent account/session pairs remained correctly isolated. The focused C04 tests passed 2/2, DefaultExecutor regressions passed 12/12, and OpenCode-focused library tests passed 11/11.
 - Blocker: None; the prompt explicitly allows independent safe work when external harness/version evidence is unavailable.
-- Next: C04 process-wide Claude header cache removal.
+- Next: C05 Kiro session-start content replay removal.
 
 ## Material Decisions
 
@@ -118,6 +118,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-09-17: C01 passed. Added a reusable loopback scripted upstream, controlled stream gates/failures/request capture, OAuth-shaped rotation responses, native and translated fixtures, virtual-time/barrier primitives, and an owned temporary DB. No production behavior changed; C02 is next.
 - 2026-09-17: C02 passed. The documented release benchmark measured the direct mock and full handler with equal successful SSE/tools work at cold/warm concurrency 1/8/32 over five repetitions, separately measured allocations, validated exact attempts and artifact completeness, and recorded predeclared thresholds. No runtime behavior changed; C03 is next.
 - 2026-09-17: C03 passed. Removed Kiro semantic classification, full-success-body buffering, prompt mutation, and the hidden second generation; retained incremental AWS EventStream/tool translation, made malformed frames explicit errors, preserved the deprecated setting with a one-time warning, and verified first-event delivery plus cancellation against the loopback harness. C04 is next.
+- 2026-09-17: C04 passed. Deleted process-wide Claude header capture/replay, threaded only current-request headers into the default adapter, enforced a non-secret allowlist with explicit provider defaults, and verified alternating plus concurrent account/session isolation. C05 is next.
 
 ## Completion
 

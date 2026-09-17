@@ -45,7 +45,7 @@ Persisted types intentionally preserve unknown fields through `extra` and `provi
 | State | Transition contract |
 |---|---|
 | `providerSpecificData.kiroToolCallRepair` | C03 stopped semantic repair and second generation for all values. The stored key/value remains exportable and round-trips unchanged; its first runtime encounter per process emits a deprecation warning and has no effect on generation. |
-| Process-wide Claude header cache | C04 deletes it without migration; only current-request allowlisted headers and explicit adapter defaults are used. |
+| Process-wide Claude header cache | C04 deleted it without migration. Claude/Anthropic adapters now receive only an explicit identity/protocol allowlist from the current request; authorization, cookies, forwarding headers, and arbitrary extensions cannot enter that channel. Missing required protocol headers come from adapter defaults. |
 | Kiro session-start replay | C05 deletes it without migration; the current request is the only content source. |
 | Session/continuation maps | C06 retains only protocol-proven, byte-bounded continuation state; never touch dashboard auth `AppState.sessions`. |
 | `settings.providerContextLimits` | C07-C08 preserve the map and metadata meaning while removing default autonomous chat rejection/headroom; explicit count-tokens remains a separate API. Empty currently means defaults, not off. |

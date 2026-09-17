@@ -1361,6 +1361,7 @@ async fn send_glm_ping(state: &AppState, connection: &ProviderConnection) -> Res
                 stream: false,
                 credentials,
                 proxy,
+                client_headers: BTreeMap::new(),
             })
             .await
             .map_err(|error| format!("GLM ping execute: {error:?}"))?;

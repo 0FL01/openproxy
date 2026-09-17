@@ -407,10 +407,6 @@ async fn chat_completions_impl(
         })
         .collect();
 
-    // 9router parity: cache Claude-specific headers from incoming request
-    // for replay on subsequent requests (claudeHeaderCache).
-    crate::core::utils::claude_header_cache::cache_claude_headers(&headers_map);
-
     let client_tool = detect_client_tool(&headers_map, &body);
     let codex_web_search_requested = requests_codex_web_search(&headers, &body);
 
@@ -1624,6 +1620,11 @@ async fn forward_with_provider_fallback(
                         stream,
                         credentials: connection.clone(),
                         proxy,
+                        client_headers: client_headers
+                            .into_iter()
+                            .flatten()
+                            .map(|(key, value)| (key.clone(), value.clone()))
+                            .collect(),
                     })
                     .await
                     .map_err(|err| err.into_provider_attempt_error())?;

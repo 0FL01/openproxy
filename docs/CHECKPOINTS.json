@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C04",
+  "next_checkpoint": "C05",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c03_cargo_1.98.1",
+    "rust_verification": "passed_through_c04_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -231,7 +231,7 @@
     {
       "id": "C04",
       "title": "Удалить глобальный Claude header cache",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C02"
       ],
@@ -245,7 +245,36 @@
       "change": "Передавать разрешённые заголовки только из текущего запроса. Отсутствующие обязательные provider headers брать из явных adapter defaults. Удалить process-wide capture/replay, включая перенос x-claude-code-session-id и retry metadata между разными запросами. Не расширять allowlist авторизационными секретами.",
       "tests": "Два клиента/аккаунта с различными session-id выполняют чередующиеся и конкурентные запросы. В upstream B отсутствуют заголовки A; запрос без session-id не наследует предыдущее значение. Проверить Claude CLI и OpenCode adapter fixtures.",
       "acceptance": "Нет глобального retained header map и межклиентского переноса session metadata; контракт обязательных заголовков сохранён.",
-      "rollback": "Откат отдельной правки допустим для диагностики, но сценарий межклиентского смешивания блокирует релиз."
+      "rollback": "Откат отдельной правки допустим для диагностики, но сценарий межклиентского смешивания блокирует релиз.",
+      "result": {
+        "completed": "2026-09-17",
+        "files": [
+          "src/core/utils/claude_header_cache.rs (deleted)",
+          "src/core/utils/mod.rs",
+          "src/server/api/chat.rs",
+          "src/core/executor/default.rs",
+          "src/cli/mod.rs",
+          "src/server/api/quota_auto_ping.rs",
+          "src/core/executor/codebuddy_intl.rs",
+          "tests/executor_pool_behavior.rs",
+          "tests/lean_proxy_claude_headers_c04.rs",
+          "contracts/lean-proxy.md"
+        ],
+        "behavior": "The process-wide retained Claude header map and capture call are gone. DefaultExecutor receives lowercase client headers as request-owned data and forwards only the existing Claude identity/protocol allowlist for that request. Authorization, cookies, forwarding metadata, and arbitrary headers are excluded. Adapter defaults remain authoritative when a required header is absent, including across credential refresh.",
+        "tests": [
+          "cargo test --test lean_proxy_claude_headers_c04 -- --nocapture: 2 passed",
+          "cargo test --test executor_pool_behavior default_executor -- --nocapture: 12 passed",
+          "cargo test --lib opencode --all-features -- --nocapture: 11 passed",
+          "cargo test --lib --all-features: 1224 passed",
+          "cargo clippy --test lean_proxy_claude_headers_c04 --all-features -- -D warnings -A clippy::let-and-return -A clippy::needless-return: passed",
+          "cargo clippy --all-targets --all-features: passed with 7 pre-existing warnings",
+          "cargo fmt --all -- --check and git diff --check: passed"
+        ],
+        "acceptance_evidence": "Three alternating Claude CLI/OpenCode/headerless requests proved that session and retry metadata are not inherited and that forbidden client credentials/metadata do not replace provider credentials. Twenty-four barrier-released concurrent requests paired every account key with only its own session ID.",
+        "retained_state": "No process-global Claude header map, lock, TTL cache, or persistent replacement remains.",
+        "network_and_data": "Only an ephemeral 127.0.0.1 upstream was used; no production DB, credentials, paid provider, or external network was accessed.",
+        "rollback": "Revert the C04 commit. No persisted user configuration or secret was migrated or deleted."
+      }
     },
     {
       "id": "C05",

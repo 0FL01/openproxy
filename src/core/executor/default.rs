@@ -383,7 +383,35 @@ pub struct ExecutionRequest {
     pub stream: bool,
     pub credentials: ProviderConnection,
     pub proxy: Option<ProxyTarget>,
+    /// Lowercase headers from this client request. Only an explicit, non-secret
+    /// allowlist is eligible for forwarding by provider adapters.
+    pub client_headers: BTreeMap<String, String>,
 }
+
+/// Claude client identity and protocol metadata that may be forwarded from the
+/// current request. Authentication, cookies, forwarding headers, and arbitrary
+/// extension headers are intentionally excluded.
+const CLAUDE_REQUEST_HEADER_ALLOWLIST: &[&str] = &[
+    "user-agent",
+    "anthropic-beta",
+    "anthropic-version",
+    "anthropic-dangerous-direct-browser-access",
+    "x-app",
+    "x-stainless-helper-method",
+    "x-stainless-retry-count",
+    "x-stainless-runtime-version",
+    "x-stainless-package-version",
+    "x-stainless-runtime",
+    "x-stainless-lang",
+    "x-stainless-arch",
+    "x-stainless-os",
+    "x-stainless-timeout",
+    "x-claude-code-session-id",
+    "package-version",
+    "runtime-version",
+    "os",
+    "arch",
+];
 
 pub struct ExecutionResponse {
     pub response: UpstreamResponse,
@@ -762,6 +790,16 @@ impl DefaultExecutor {
         credentials: &ProviderConnection,
         stream: bool,
     ) -> Result<HeaderMap, ExecutorError> {
+        self.build_headers_for_request(model, credentials, stream, &BTreeMap::new())
+    }
+
+    pub fn build_headers_for_request(
+        &self,
+        model: &str,
+        credentials: &ProviderConnection,
+        stream: bool,
+        client_headers: &BTreeMap<String, String>,
+    ) -> Result<HeaderMap, ExecutorError> {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
@@ -928,29 +966,25 @@ impl DefaultExecutor {
                     headers.insert("anthropic-beta", val);
                 }
             }
-            // Claude header cache overlay for anthropic/claude providers
-            if matches!(self.provider.as_str(), "claude" | "anthropic") {
-                if let Some(overlay) =
-                    crate::core::utils::claude_header_cache::get_cached_claude_headers()
-                {
-                    for (k, v) in overlay {
-                        if let (Ok(name), Ok(val)) = (
-                            reqwest::header::HeaderName::from_bytes(k.as_bytes()),
-                            HeaderValue::from_str(&v),
-                        ) {
-                            if !headers.contains_key(&name) {
-                                headers.insert(name, val);
-                            }
-                        }
-                    }
-                }
-            }
-
             if self.provider == "kilocode" {
                 if let Some(org_id) =
                     compatible_value(credentials.provider_specific_data.get("orgId"))
                 {
                     headers.insert("x-kilocode-organizationid", HeaderValue::from_str(org_id)?);
+                }
+            }
+        }
+
+        if matches!(self.provider.as_str(), "claude" | "anthropic") {
+            for name in CLAUDE_REQUEST_HEADER_ALLOWLIST {
+                if !headers.contains_key(*name) {
+                    let Some(value) = client_headers.get(*name) else {
+                        continue;
+                    };
+                    headers.insert(
+                        reqwest::header::HeaderName::from_static(name),
+                        HeaderValue::from_str(value)?,
+                    );
                 }
             }
         }
@@ -1080,8 +1114,12 @@ impl DefaultExecutor {
     ) -> Result<ExecutionResponse, ExecutorError> {
         // Build headers and transformed body once, reused across retries and
         // fallback URLs.
-        let mut headers =
-            self.build_headers(&request.model, &request.credentials, request.stream)?;
+        let mut headers = self.build_headers_for_request(
+            &request.model,
+            &request.credentials,
+            request.stream,
+            &request.client_headers,
+        )?;
         let transformed_body = self.transform_request(&request.body, &request.model);
 
         // Try primary then fallback URLs.
@@ -1130,10 +1168,11 @@ impl DefaultExecutor {
                             self.try_refresh_credentials(&request.credentials).await
                         {
                             request.credentials = new_creds;
-                            headers = self.build_headers(
+                            headers = self.build_headers_for_request(
                                 &request.model,
                                 &request.credentials,
                                 request.stream,
+                                &request.client_headers,
                             )?;
                             // Retry immediately with refreshed credentials.
                             let retry_resp = self

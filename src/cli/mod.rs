@@ -1408,6 +1408,7 @@ async fn run_direct_route(
                 stream: stream_flag,
                 credentials: connection.clone(),
                 proxy,
+                client_headers: Default::default(),
             })
             .await;
 

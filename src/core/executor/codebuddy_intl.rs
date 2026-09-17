@@ -74,6 +74,7 @@ impl ProviderExecutor for CodeBuddyIntlExecutor {
             stream: true, // registry forceStream
             credentials: request.credentials.clone(),
             proxy: request.proxy.clone(),
+            client_headers: Default::default(),
         };
         let ExecutionResponse {
             response,
