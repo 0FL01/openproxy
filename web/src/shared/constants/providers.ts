@@ -494,6 +494,7 @@ export const USAGE_SUPPORTED_PROVIDERS: string[] = [
   "glm",
   "glm-cn",
   "minimax",
+  "opencode-go",
 ];
 
 // Subset that uses apikey auth (still surfaced on quota page)
@@ -503,6 +504,7 @@ export const USAGE_APIKEY_PROVIDERS: string[] = [
   "minimax",
   "kimi",
   "deepseek",
+  "opencode-go",
 ];
 
 // Providers whose dashboard exposes an "Import catalog" button — mirrors

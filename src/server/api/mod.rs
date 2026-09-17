@@ -656,9 +656,17 @@ const USAGE_SUPPORTED_PROVIDERS: &[&str] = &[
     "glm",
     "glm-cn",
     "minimax",
+    "opencode-go",
 ];
 
-const USAGE_APIKEY_PROVIDERS: &[&str] = &["glm", "glm-cn", "minimax", "kimi", "deepseek"];
+const USAGE_APIKEY_PROVIDERS: &[&str] = &[
+    "glm",
+    "glm-cn",
+    "minimax",
+    "kimi",
+    "deepseek",
+    "opencode-go",
+];
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]

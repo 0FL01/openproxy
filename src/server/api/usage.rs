@@ -11,7 +11,7 @@ use crate::core::usage::quota_fetcher::{
     fetch_claude_quota, fetch_codebuddy_quota, fetch_codex_quota, fetch_deepseek_usage,
     fetch_github_quota, fetch_glm_quota, fetch_grok_cli_quota, fetch_kimi_oauth_usage,
     fetch_kimi_usage, fetch_kiro_quota, fetch_minimax_quota, fetch_ollama_quota,
-    fetch_vercel_ai_gateway_quota, get_codex_rate_limit_reset_credits,
+    fetch_opencode_go_quota, fetch_vercel_ai_gateway_quota, get_codex_rate_limit_reset_credits,
 };
 use crate::oauth::token_refresh::{dispatch_oauth_refresh, refresh_codex_token};
 use crate::server::state::AppState;
@@ -32,6 +32,7 @@ fn is_usage_apikey_provider(provider: &str) -> bool {
             | "minimax"
             | "kimi"
             | "deepseek"
+            | "opencode-go"
             | "kiro"
             | "ollama"
             | "vercel-ai-gateway"
@@ -159,6 +160,7 @@ async fn get_connection_usage(
                 "minimax" => fetch_minimax_quota(api_key, &provider).await,
                 "kimi" => fetch_kimi_usage(api_key).await,
                 "deepseek" => fetch_deepseek_usage(api_key).await,
+                "opencode-go" => fetch_opencode_go_quota(api_key).await,
                 "kiro" => fetch_kiro_quota(api_key, &provider, &psd).await,
                 "vercel-ai-gateway" => fetch_vercel_ai_gateway_quota(api_key).await,
                 "codebuddy-cn" | "codebuddy-intl" => {
@@ -795,6 +797,7 @@ mod tests {
             "minimax",
             "kimi",
             "deepseek",
+            "opencode-go",
             "kiro",
             "ollama",
             "vercel-ai-gateway",

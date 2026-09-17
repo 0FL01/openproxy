@@ -68,6 +68,7 @@ const MINIMAX_INTL_URLS: &[&str] = &[
 ];
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+const OPENCODE_GO_USAGE_URL: &str = "https://opencode.ai/zen/go/v1/usage";
 
 const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 const CODEX_RESET_CREDITS_URL: &str =
@@ -592,6 +593,72 @@ fn build_quota_entry(used: f64, total: f64, reset_at: Option<String>) -> Value {
         "resetAt": reset_at,
         "unlimited": false,
     })
+}
+
+/// Fetch OpenCode Go rolling, weekly, and monthly usage percentages.
+pub async fn fetch_opencode_go_quota(api_key: &str) -> Value {
+    if api_key.is_empty() {
+        return json!({ "message": "OpenCode Go API key not available." });
+    }
+
+    let response = match http_client()
+        .get(OPENCODE_GO_USAGE_URL)
+        .bearer_auth(api_key)
+        .header("Accept", "application/json")
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => return json!({ "message": format!("OpenCode Go error: {error}") }),
+    };
+
+    let status = response.status();
+    if !status.is_success() {
+        let message = match status.as_u16() {
+            401 => "OpenCode Go API key invalid or expired.".to_string(),
+            403 => "OpenCode Go subscription required.".to_string(),
+            code => format!("OpenCode Go quota API error ({code})."),
+        };
+        return json!({ "message": message });
+    }
+
+    let body: Value = match response.json().await {
+        Ok(body) => body,
+        Err(error) => return json!({ "message": format!("OpenCode Go error: {error}") }),
+    };
+
+    parse_opencode_go_quota_response(&body)
+}
+
+fn parse_opencode_go_quota_response(body: &Value) -> Value {
+    let Some(usage) = body.get("usage").and_then(Value::as_object) else {
+        return json!({ "message": "OpenCode Go quota response contained no usage data." });
+    };
+
+    let mut quotas = serde_json::Map::new();
+    for (source, name) in [
+        ("rolling", "session (5h)"),
+        ("weekly", "weekly"),
+        ("monthly", "monthly"),
+    ] {
+        let Some(window) = usage.get(source) else {
+            continue;
+        };
+        let Some(percent) = window.get("percent").and_then(Value::as_f64) else {
+            continue;
+        };
+        let reset_at = window.get("resetsAt").and_then(parse_reset_time);
+        quotas.insert(
+            name.to_string(),
+            build_quota_entry(percent, 100.0, reset_at),
+        );
+    }
+
+    if quotas.is_empty() {
+        json!({ "message": "OpenCode Go quota response contained no usage data." })
+    } else {
+        json!({ "quotas": Value::Object(quotas) })
+    }
 }
 
 /// Fetch GitHub Copilot premium-request quota.
@@ -3066,6 +3133,36 @@ pub async fn fetch_ollama_quota(api_key: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opencode_go_quota_normalizes_all_usage_windows() {
+        let out = parse_opencode_go_quota_response(&json!({
+            "usage": {
+                "rolling": {
+                    "status": "ok",
+                    "percent": 22,
+                    "resetsAt": "2026-09-17T18:00:00.000Z"
+                },
+                "weekly": {
+                    "status": "ok",
+                    "percent": 43,
+                    "resetsAt": "2026-09-21T00:00:00.000Z"
+                },
+                "monthly": {
+                    "status": "ok",
+                    "percent": 68,
+                    "resetsAt": "2026-10-01T00:00:00.000Z"
+                }
+            }
+        }));
+
+        assert_eq!(out["quotas"].as_object().unwrap().len(), 3);
+        assert_eq!(out["quotas"]["session (5h)"]["used"], 22.0);
+        assert_eq!(out["quotas"]["session (5h)"]["remainingPercentage"], 78.0);
+        assert_eq!(out["quotas"]["weekly"]["used"], 43.0);
+        assert_eq!(out["quotas"]["monthly"]["used"], 68.0);
+        assert_eq!(out["quotas"]["monthly"]["resetAt"], "2026-10-01T00:00:00Z");
+    }
 
     #[test]
     fn glm_v1_quota_has_only_session_window() {
