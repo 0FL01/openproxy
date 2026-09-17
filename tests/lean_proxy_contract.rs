@@ -183,4 +183,20 @@ fn contract_freezes_preservation_and_removal_lists() {
         manifest["refresh_coordination"]["idle_coordinator_entries"],
         0
     );
+    assert_eq!(
+        manifest["refresh_coordination"]["legacy_token_cache_present"],
+        false
+    );
+    assert_eq!(
+        manifest["refresh_coordination"]["legacy_token_cache_removed_checkpoint"],
+        "C18"
+    );
+    assert_eq!(
+        manifest["refresh_coordination"]["completed_refresh_result_cache"],
+        false
+    );
+    assert_eq!(
+        manifest["refresh_coordination"]["historical_rotation_entries_retained"],
+        0
+    );
 }

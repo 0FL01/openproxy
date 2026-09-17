@@ -3,35 +3,21 @@
 //! Provides connection/generation-scoped singleflight plus the provider wire
 //! functions that call each upstream token-refresh API.
 //!
-//! # Dedup guarantees (H28 — verified correct)
+//! # Coordination guarantees
 //!
-//! - Only **one** HTTP refresh request is in flight per `(provider, old_token)`
-//!   pair at any time. Concurrent callers all await the same `OnceCell`.
-//! - The result is cached for `REFRESH_RESULT_TTL_MS` (10 s) so that burst
-//!   callers within that window reuse the same response instead of sending
-//!   duplicate HTTP requests.
-//! - The per-token mutex in the old code prevented `refresh_token_reused`
-//!   errors from Auth0; this dedup layer provides the same mutual exclusion
-//!   *within process*.
-//!
-//! ## Verification (H28)
-//!
-//! The `dedup_refresh` function calls `GLOBAL_REFRESH_DEDUP.dedup()` which
-//! uses `tokio::sync::OnceCell::get_or_init()` to share a single in-flight
-//! future across concurrent callers. The `OnceCell` is stored per key in a
-//! `HashMap` behind a `parking_lot::Mutex`, so the critical section is
-//! brief (map insertion). Success results are cached for 10 s; errors are
-//! NOT cached so retries (via `refresh_with_retry`) can make additional
-//! attempts. Every configured caller now enters through the C16 connection
-//! coordinator; `dispatch_oauth_refresh` is its provider-wire adapter. The
-//! legacy token-keyed completed-result cache remains only until C18 deletes it.
+//! Every configured caller enters through [`ConnectionRefreshCoordinator`].
+//! It stores only active operations keyed by configured provider/connection
+//! identity; a credential-generation digest prevents stale callers from using
+//! or overwriting a newer token pair. Current waiters share one result, and the
+//! active entry is removed immediately after publication. There is no cache of
+//! completed refresh results and no full access or refresh token in a map key.
 
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use futures_util::FutureExt;
 use once_cell::sync::Lazy;
@@ -39,7 +25,7 @@ use parking_lot::Mutex;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tokio::sync::{Mutex as AsyncMutex, Notify, OnceCell};
+use tokio::sync::{Mutex as AsyncMutex, Notify};
 
 use crate::db::Db;
 use crate::types::ProviderConnection;
@@ -109,41 +95,6 @@ fn jittered_delay(attempt: u32) -> Duration {
     let capped = base.min(MAX_DELAY_MS);
     let jitter = rand::random::<u64>() % (BASE_DELAY_MS / 2);
     Duration::from_millis(capped + jitter)
-}
-
-// ---------------------------------------------------------------------------
-// Global refresh dedup singleton
-// ---------------------------------------------------------------------------
-
-/// Global singleton that all callers can share.
-pub(crate) static GLOBAL_REFRESH_DEDUP: Lazy<RefreshDedup> = Lazy::new(RefreshDedup::new);
-
-/// Convenience: dedup then retry a refresh.
-///
-/// Combines `RefreshDedup::dedup` (one in-flight per provider+token pair) with
-/// `refresh_with_retry` (jittered exponential backoff on transient failures).
-///
-/// `http_fn` must be `Fn` (not `FnOnce`) so the retry loop can call it
-/// multiple times.
-pub async fn dedup_refresh<F, Fut>(
-    provider: &str,
-    old_token: &str,
-    http_fn: F,
-) -> Result<RefreshResult, String>
-where
-    F: Fn() -> Fut + 'static,
-    Fut: Future<Output = Result<RefreshResult, String>>,
-{
-    let provider = provider.to_owned();
-    let old_token = old_token.to_owned();
-
-    GLOBAL_REFRESH_DEDUP
-        .dedup(&provider, &old_token, move || {
-            // The dedup layer calls this FnOnce closure exactly once.
-            // Inside, refresh_with_retry calls http_fn (Fn) up to MAX_RETRIES times.
-            refresh_with_retry(http_fn)
-        })
-        .await
 }
 
 // ---------------------------------------------------------------------------
@@ -599,118 +550,6 @@ const GITHUB_OAUTH_TOKEN_URL: &str = "https://github.com/login/oauth/access_toke
 const GITHUB_COPILOT_TOKEN_URL: &str = "https://api.github.com/copilot_internal/v2/token";
 
 const GITLAB_TOKEN_URL: &str = "https://gitlab.com/oauth/token";
-
-// ---------------------------------------------------------------------------
-// Refresh dedup
-// ---------------------------------------------------------------------------
-
-/// Number of milliseconds a refresh result is cached for dedup purposes.
-const REFRESH_RESULT_TTL_MS: u64 = 10_000;
-
-/// Internal entry for an in-flight or cached refresh.
-struct DedupEntry {
-    in_flight: Arc<OnceCell<Result<RefreshResult, String>>>,
-    cached_result: Option<Result<RefreshResult, String>>,
-    expires_at: Instant,
-}
-
-/// Concurrent-safe dedup that ensures only one refresh request is in flight
-/// per `(provider, old_token)` pair, and caches the result for 10 seconds.
-pub struct RefreshDedup {
-    cache: Mutex<HashMap<String, DedupEntry>>,
-}
-
-impl RefreshDedup {
-    pub fn new() -> Self {
-        Self {
-            cache: Mutex::new(HashMap::new()),
-        }
-    }
-
-    /// Return a cached or freshly-fetched `RefreshResult` for
-    /// `(provider, old_token)`.
-    ///
-    /// If another task is already refreshing the same token, this call will
-    /// await that in-flight request rather than duplicating it.
-    pub async fn dedup<F, Fut>(
-        &self,
-        provider: &str,
-        old_token: &str,
-        refresh_fn: F,
-    ) -> Result<RefreshResult, String>
-    where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = Result<RefreshResult, String>>,
-    {
-        let key = make_dedup_key(provider, old_token);
-        let cell: Arc<OnceCell<Result<RefreshResult, String>>>;
-
-        // --- critical section: check cache / get-or-create in_flight cell ---
-        {
-            let mut cache = self.cache.lock();
-
-            if cache.get(&key).is_some_and(|entry| {
-                entry.cached_result.is_some() && entry.expires_at <= Instant::now()
-            }) {
-                cache.remove(&key);
-            }
-
-            // Fast path: cached result is still warm.
-            if let Some(entry) = cache.get(&key) {
-                if entry.expires_at > Instant::now() {
-                    if let Some(ref cached) = entry.cached_result {
-                        return cached.clone();
-                    }
-                }
-            }
-
-            // Get or insert an OnceCell so concurrent callers share the same
-            // in-flight future.
-            let entry = cache.entry(key.clone()).or_insert_with(|| DedupEntry {
-                in_flight: Arc::new(OnceCell::new()),
-                cached_result: None,
-                expires_at: Instant::now(),
-            });
-            cell = entry.in_flight.clone();
-        }
-        // --- lock released ---
-
-        let result = cell
-            .get_or_init(|| async move { refresh_fn().await })
-            .await
-            .clone();
-
-        let mut cache = self.cache.lock();
-        if result.is_ok() {
-            if let Some(entry) = cache
-                .get_mut(&key)
-                .filter(|entry| Arc::ptr_eq(&entry.in_flight, &cell))
-            {
-                entry.cached_result = Some(result.clone());
-                entry.expires_at = Instant::now() + Duration::from_millis(REFRESH_RESULT_TTL_MS);
-            }
-        } else if cache
-            .get(&key)
-            .is_some_and(|entry| Arc::ptr_eq(&entry.in_flight, &cell))
-        {
-            // Current waiters share this completed error, while a later call
-            // gets a fresh cell and can retry the upstream request.
-            cache.remove(&key);
-        }
-
-        result
-    }
-}
-
-impl Default for RefreshDedup {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-fn make_dedup_key(provider: &str, old_token: &str) -> String {
-    format!("{}:{}", provider, old_token)
-}
 
 /// Codex max refresh age: 8 days (9router CODEX_MAX_REFRESH_AGE_MS).
 pub const CODEX_MAX_REFRESH_AGE_MS: u64 = 8 * 24 * 60 * 60 * 1000;
@@ -1422,9 +1261,9 @@ pub async fn refresh_codebuddy_intl_token(refresh_token: &str) -> Result<Refresh
 
 /// Dispatch to the correct per-provider token refresh function.
 ///
-/// Matches on `provider` name and calls the appropriate `dedup_refresh` wrapper.
-/// Used by the inline token-refresh logic in chat.rs (9router parity: on 401/403,
-/// refresh the token before falling through to the next account).
+/// Connection-level singleflight is owned by [`ConnectionRefreshCoordinator`].
+/// This function performs only the provider wire call and its bounded
+/// transient HTTP retry policy; it retains no token-keyed or completed result.
 pub async fn dispatch_oauth_refresh(
     provider: &str,
     refresh_token: &str,
@@ -1432,148 +1271,38 @@ pub async fn dispatch_oauth_refresh(
 ) -> Result<RefreshResult, String> {
     match provider {
         "claude" | "anthropic" => {
-            let rt = refresh_token.to_string();
-            dedup_refresh(provider, refresh_token, move || {
-                let rt = rt.clone();
-                async move { refresh_claude_oauth_token(&rt).await }
-            })
-            .await
+            refresh_with_retry(|| refresh_claude_oauth_token(refresh_token)).await
         }
-        "codex" | "opencode" => {
-            let rt = refresh_token.to_string();
-            dedup_refresh(provider, refresh_token, move || {
-                let rt = rt.clone();
-                async move { refresh_codex_token(&rt).await }
-            })
-            .await
-        }
+        "codex" | "opencode" => refresh_with_retry(|| refresh_codex_token(refresh_token)).await,
         "antigravity" => {
-            let rt = refresh_token.to_string();
-            let cid = ANTIGRAVITY_CLIENT_ID.to_string();
-            let csec = crate::oauth::secret::antigravity_client_secret().to_string();
-            dedup_refresh(provider, refresh_token, move || {
-                let (rt, cid, csec) = (rt.clone(), cid.clone(), csec.clone());
-                async move { refresh_google_token(&rt, &cid, &csec).await }
+            let client_secret = crate::oauth::secret::antigravity_client_secret();
+            refresh_with_retry(|| {
+                refresh_google_token(refresh_token, ANTIGRAVITY_CLIENT_ID, client_secret)
             })
             .await
         }
-        "qwen" => {
-            let rt = refresh_token.to_string();
-            dedup_refresh(provider, refresh_token, move || {
-                let rt = rt.clone();
-                async move { refresh_qwen_token(&rt).await }
-            })
-            .await
-        }
-        "xai" => {
-            let rt = refresh_token.to_string();
-            dedup_refresh(provider, refresh_token, move || {
-                let rt = rt.clone();
-                async move { refresh_xai_token(&rt).await }
-            })
-            .await
-        }
+        "qwen" => refresh_with_retry(|| refresh_qwen_token(refresh_token)).await,
+        "xai" => refresh_with_retry(|| refresh_xai_token(refresh_token)).await,
         "kimi" | "kimi-coding" => {
-            let rt = refresh_token.to_string();
             let device_id = provider_specific_data
                 .get("deviceId")
-                .and_then(Value::as_str)
-                .map(String::from);
-            dedup_refresh(provider, refresh_token, move || {
-                let rt = rt.clone();
-                let device_id = device_id.clone();
-                async move { refresh_kimi_coding_token(&rt, device_id.as_deref()).await }
-            })
-            .await
+                .and_then(Value::as_str);
+            refresh_with_retry(|| refresh_kimi_coding_token(refresh_token, device_id)).await
         }
-        "kilocode" => {
-            let rt = refresh_token.to_string();
-            dedup_refresh(provider, refresh_token, move || {
-                let rt = rt.clone();
-                async move { refresh_kilocode_token(&rt).await }
-            })
-            .await
-        }
-        "cline" | "clinepass" => {
-            let rt = refresh_token.to_string();
-            dedup_refresh(provider, refresh_token, move || {
-                let rt = rt.clone();
-                async move { refresh_cline_token(&rt).await }
-            })
-            .await
-        }
-        "gitlab" => {
-            let rt = refresh_token.to_string();
-            dedup_refresh(provider, refresh_token, move || {
-                let rt = rt.clone();
-                async move { refresh_gitlab_token(&rt).await }
-            })
-            .await
-        }
-        "codebuddy" => {
-            let rt = refresh_token.to_string();
-            dedup_refresh(provider, refresh_token, move || {
-                let rt = rt.clone();
-                async move { refresh_codebuddy_token(&rt).await }
-            })
-            .await
-        }
-        "codebuddy-cn" => {
-            let rt = refresh_token.to_string();
-            dedup_refresh(provider, refresh_token, move || {
-                let rt = rt.clone();
-                async move { refresh_codebuddy_cn_token(&rt).await }
-            })
-            .await
-        }
-        "openai" => {
-            let rt = refresh_token.to_string();
-            dedup_refresh(provider, refresh_token, move || {
-                let rt = rt.clone();
-                async move { refresh_openai_token(&rt).await }
-            })
-            .await
-        }
+        "kilocode" => refresh_with_retry(|| refresh_kilocode_token(refresh_token)).await,
+        "cline" | "clinepass" => refresh_with_retry(|| refresh_cline_token(refresh_token)).await,
+        "gitlab" => refresh_with_retry(|| refresh_gitlab_token(refresh_token)).await,
+        "codebuddy" => refresh_with_retry(|| refresh_codebuddy_token(refresh_token)).await,
+        "codebuddy-cn" => refresh_with_retry(|| refresh_codebuddy_cn_token(refresh_token)).await,
+        "openai" => refresh_with_retry(|| refresh_openai_token(refresh_token)).await,
         "kiro" => {
-            let rt = refresh_token.to_string();
-            let pdata = provider_specific_data.clone();
-            dedup_refresh(provider, refresh_token, move || {
-                let (rt, pdata) = (rt.clone(), pdata.clone());
-                async move { refresh_kiro_token(&rt, &pdata).await }
-            })
-            .await
+            refresh_with_retry(|| refresh_kiro_token(refresh_token, provider_specific_data)).await
         }
-        "github" => {
-            let rt = refresh_token.to_string();
-            dedup_refresh(provider, refresh_token, move || {
-                let rt = rt.clone();
-                async move { refresh_github_token(&rt).await }
-            })
-            .await
-        }
-        "grok-cli" | "gcli" | "gb" => {
-            let rt = refresh_token.to_string();
-            dedup_refresh(provider, refresh_token, move || {
-                let rt = rt.clone();
-                async move { refresh_xai_token(&rt).await }
-            })
-            .await
-        }
-        "trae" | "marscode" => {
-            let rt = refresh_token.to_string();
-            dedup_refresh(provider, refresh_token, move || {
-                let rt = rt.clone();
-                async move { refresh_trae_token(&rt).await }
-            })
-            .await
-        }
+        "github" => refresh_with_retry(|| refresh_github_token(refresh_token)).await,
+        "grok-cli" | "gcli" | "gb" => refresh_with_retry(|| refresh_xai_token(refresh_token)).await,
+        "trae" | "marscode" => refresh_with_retry(|| refresh_trae_token(refresh_token)).await,
         "codebuddy-intl" | "cbai" => {
-            let rt = refresh_token.to_string();
-            dedup_refresh(provider, refresh_token, move || {
-                let rt = rt.clone();
-                async move { refresh_codebuddy_intl_token(&rt).await }
-            })
-            .await
+            refresh_with_retry(|| refresh_codebuddy_intl_token(refresh_token)).await
         }
         _ => Err(format!("No refresh handler for provider: {}", provider)),
     }

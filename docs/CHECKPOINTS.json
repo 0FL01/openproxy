@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C18",
+  "next_checkpoint": "C19",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c17b_cargo_1.98.1",
+    "rust_verification": "passed_through_c18_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -941,7 +941,7 @@
     {
       "id": "C18",
       "title": "Удалить завершённый refresh TTL-кэш",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C17B"
       ],
@@ -953,7 +953,44 @@
       "change": "Удалить token-keyed map completed results, дублирование OnceCell/cached_result и связанный TTL. Оставить только активную координацию/connection-owned mutex из нового сервиса. Удалить dead exports после проверки. Не добавлять общий LRU/timer cleanup взамен.",
       "tests": "Десятки тысяч уникальных ротаций без повторного обращения к старым токенам; устаревший caller приходит уже после окончания refresh; массовая отмена; idle после серии. Завершённые результаты и старые секреты не остаются в отдельном cache map.",
       "acceptance": "Нет завершённого refresh result cache и ключей из полного токена. Живое состояние связано с активными/настроенными connections, а не историческим числом ротаций.",
-      "rollback": "При найденной гонке исправить coordinator; нельзя считать удаление кэша успешным ценой параллельного refresh одноразового токена."
+      "rollback": "При найденной гонке исправить coordinator; нельзя считать удаление кэша успешным ценой параллельного refresh одноразового токена.",
+      "result": {
+        "completed_at": "2026-09-18",
+        "files": [
+          "src/oauth/token_refresh.rs",
+          "src/oauth/mod.rs",
+          "src/oauth/refresh/mod.rs",
+          "src/oauth/refresh/codex.rs",
+          "src/oauth/refresh/openai.rs",
+          "src/oauth/tests/token_refresh_tests.rs",
+          "tests/lean_proxy_refresh_c16.rs",
+          "tests/lean_proxy_refresh_c18.rs",
+          "tests/lean_proxy_contract.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json"
+        ],
+        "removed": [
+          "RefreshDedup and DedupEntry",
+          "GLOBAL_REFRESH_DEDUP and dedup_refresh",
+          "full provider plus old-token map keys",
+          "OnceCell completed-result wrapper and 10-second TTL",
+          "unused oauth::refresh provider trait and wrapper modules",
+          "obsolete token-cache and simulated lock tests"
+        ],
+        "retained": "ConnectionRefreshCoordinator remains the only configured-connection singleflight and stores active operations only. dispatch_oauth_refresh is a thin provider-wire adapter with the existing bounded transient HTTP retry policy; it stores no completed result or token key. The explicit unconfigured manual bootstrap remains outside connection coordination because no configured identity exists yet.",
+        "tests": [
+          "cargo test --test lean_proxy_refresh_c18 -- --nocapture: 3 passed",
+          "cargo test --test lean_proxy_refresh_c16 --test lean_proxy_refresh_c17a --test lean_proxy_refresh_c17b --test lean_proxy_refresh_c18 --test lean_proxy_budget_c13 --test lean_proxy_contract -- --nocapture: 25 passed",
+          "cargo test --lib oauth::tests::token_refresh_tests --all-features -- --nocapture: 17 passed",
+          "cargo test --lib --all-features -- --test-threads=1: 1204 passed",
+          "focused clippy with -D warnings: passed",
+          "cargo clippy --all-targets --all-features: passed with 7 pre-existing warnings",
+          "cargo fmt --all -- --check, JSON parse, and git diff --check: passed"
+        ],
+        "acceptance_evidence": "Twenty thousand distinct historical credential generations arriving after canonical rotation make zero provider calls and leave active_count zero. Five hundred twelve cancelled waiters share one detached provider operation, which persists the rotated pair and returns the coordinator to zero idle entries. Source census proves no RefreshDedup, DedupEntry, full-token key, completed RefreshResult TTL, OnceCell wrapper, or dead provider-wrapper export remains; the existing 100-caller C16 test still proves one same-generation refresh.",
+        "schema_and_data": "No public route, persisted field, SQLite schema, encryption boundary, provider request format, dependency, or saved credential value changed. No LRU, timer, background cleanup, or persisted cache replacement was added.",
+        "rollback": "Revert this deletion only if a coordinator race is reproduced, then repair the connection/generation coordinator. Do not restore token-keyed completed results or treat parallel use of a single-use refresh token as acceptable behavior."
+      }
     },
     {
       "id": "C19",

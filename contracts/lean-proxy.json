@@ -199,6 +199,12 @@
     "provider_connection_test_proxy_refresh_coordinated": true,
     "idle_coordinator_entries": 0,
     "manual_unconfigured_bootstrap_is_explicit": true,
+    "legacy_token_cache_present": false,
+    "legacy_token_cache_removed_checkpoint": "C18",
+    "completed_refresh_result_cache": false,
+    "historical_rotation_entries_retained": 0,
+    "refresh_wire_transient_retry_preserved": true,
+    "dead_refresh_provider_exports_removed": true,
     "legacy_callers_migrate_in": [
       "C17A",
       "C17B"

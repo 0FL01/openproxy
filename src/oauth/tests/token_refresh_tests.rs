@@ -1,5 +1,5 @@
-//! Tests for token refresh logic: dedupRefresh, REFRESH_LEAD_MS per provider,
-//! Claude refresh body format, GitHub Copilot token poll.
+//! Tests for token refresh wire retries, REFRESH_LEAD_MS per provider, Claude
+//! refresh body format, and GitHub Copilot token poll.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -8,25 +8,6 @@ use std::time::Duration;
 use crate::oauth::device_code;
 use crate::oauth::providers;
 use crate::oauth::{pkce, RefreshRequest, TokenResponse};
-
-#[tokio::test]
-async fn failed_refresh_is_not_cached_for_later_calls() {
-    let dedup = crate::oauth::token_refresh::RefreshDedup::new();
-    let calls = Arc::new(AtomicUsize::new(0));
-
-    for _ in 0..2 {
-        let calls = calls.clone();
-        let result = dedup
-            .dedup("codex", "old-token", move || async move {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Err("temporary failure".to_string())
-            })
-            .await;
-        assert!(result.is_err());
-    }
-
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
-}
 
 #[tokio::test]
 async fn refresh_does_not_retry_permanent_http_error() {
@@ -46,60 +27,6 @@ async fn refresh_does_not_retry_permanent_http_error() {
 
     assert!(result.is_err());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-}
-
-// ─── DedupRefresh: 5 concurrent calls = 1 upstream HTTP call ───────────────
-//
-// Rather than testing the real HTTP endpoint (which would require mocking), we
-// test the *lock* pattern: only one concurrent refresh should proceed per
-// provider+connection pair. We simulate this with a test stub.
-
-#[tokio::test]
-async fn test_refresh_lock_serializes_concurrent_calls() {
-    use once_cell::sync::Lazy;
-    use std::collections::HashMap;
-    use std::sync::Mutex as StdMutex;
-
-    // Simulate the refresh-lock pattern used in the real server
-    static REFRESH_LOCKS: Lazy<StdMutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
-        Lazy::new(|| StdMutex::new(HashMap::new()));
-
-    let key = "claude:conn_123".to_string();
-    let call_count = Arc::new(AtomicUsize::new(0));
-    let mut handles = vec![];
-
-    for _ in 0..5 {
-        let key = key.clone();
-        let count = call_count.clone();
-        handles.push(tokio::spawn(async move {
-            let lock = {
-                let mut locks = REFRESH_LOCKS.lock().unwrap();
-                locks
-                    .entry(key.clone())
-                    .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-                    .clone()
-            };
-            let _guard = lock.lock().await;
-            // Only the first caller reaches here before we yield
-            count.fetch_add(1, Ordering::SeqCst);
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }));
-    }
-
-    for h in handles {
-        h.await.unwrap();
-    }
-
-    // With the mutex pattern, only one call proceeds at a time, but all 5
-    // eventually complete. The key assertion: the *HTTP* call (simulated
-    // by the count increment) happens exactly 5 times sequentially.
-    // Real dedup would use a different approach (e.g., tokio::sync::Semaphore
-    // with permit=1) that makes concurrent waiters share the same result.
-    assert_eq!(
-        call_count.load(Ordering::SeqCst),
-        5,
-        "all 5 concurrent calls should eventually execute"
-    );
 }
 
 // ─── REFRESH_LEAD per provider ────────────────────────────────────────────

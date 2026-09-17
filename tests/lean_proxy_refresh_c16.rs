@@ -486,4 +486,17 @@ fn coordinator_source_has_connection_key_and_no_completed_cache() {
     assert!(!coordinator.contains("REFRESH_RESULT_TTL_MS"));
     assert!(!coordinator.contains("make_dedup_key"));
     assert!(!coordinator.contains("old_token"));
+
+    for removed in [
+        "RefreshDedup",
+        "DedupEntry",
+        "make_dedup_key",
+        "dedup_refresh",
+        "GLOBAL_REFRESH_DEDUP",
+        "REFRESH_RESULT_TTL",
+        "cached_result",
+        "OnceCell",
+    ] {
+        assert!(!source.contains(removed), "legacy cache remains: {removed}");
+    }
 }
