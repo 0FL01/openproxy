@@ -52,7 +52,8 @@ pub struct RequestPlan {
     pub transport_base_url: Option<String>,
     /// Whether this is a streaming request (upstream)
     pub stream: bool,
-    /// Whether this is a passthrough (client tool matches provider ecosystem)
+    /// Whether source and upstream use the same protocol. The body may still
+    /// receive routed-model replacement or a documented adapter requirement.
     pub passthrough: bool,
     /// Provider forceStream + client non-stream → aggregate SSE to JSON
     pub sse_to_json: bool,
@@ -101,6 +102,8 @@ impl RequestPlan {
 
         let stream = body.get("stream").and_then(Value::as_bool).unwrap_or(true);
 
+        let passthrough = source_format == target_format;
+
         Self {
             provider: provider.to_string(),
             model: model.to_string(),
@@ -111,7 +114,7 @@ impl RequestPlan {
             strip_list,
             transport_base_url: transport.map(|t| t.base_url),
             stream,
-            passthrough: false,
+            passthrough,
             sse_to_json: false,
             model_family: None,
         }
@@ -124,11 +127,12 @@ impl RequestPlan {
 
     /// Returns true if request needs translation (source != target).
     pub fn needs_translation(&self) -> bool {
-        self.source_format != self.target_format && !self.passthrough
+        !self.passthrough
     }
 
     pub fn apply_opencode_metadata(&mut self, metadata: &OpenCodeModelMetadata) {
         self.target_format = metadata.format;
+        self.passthrough = self.source_format == self.target_format;
         self.model_family.clone_from(&metadata.family);
     }
 }
@@ -392,6 +396,7 @@ mod tests {
         let body = json!({"model": "gpt-4", "messages": [], "stream": true});
         let plan = RequestPlan::new(Some("/v1/chat/completions"), &body, "openai", "gpt-4");
         // OpenAI body to OpenAI provider — no translation needed
+        assert!(plan.passthrough);
         assert!(!plan.needs_translation());
         assert_eq!(plan.dispatch_model(), "gpt-4");
 
@@ -402,7 +407,41 @@ mod tests {
             "claude-sonnet-4",
         );
         // OpenAI body to Claude provider — needs translation
+        assert!(!plan.passthrough);
         assert!(plan.needs_translation());
+    }
+
+    #[test]
+    fn opencode_metadata_recomputes_protocol_passthrough() {
+        let body = json!({"model": "test", "messages": [], "stream": false});
+        let mut plan =
+            RequestPlan::new(Some("/v1/chat/completions"), &body, "opencode-zen", "test");
+        assert!(plan.passthrough, "default OpenAI plan starts same-format");
+
+        let mut metadata = OpenCodeModelMetadata {
+            id: "test".into(),
+            name: "Test".into(),
+            format: Format::Claude,
+            family: None,
+            context_window: None,
+            max_input: None,
+            max_output: None,
+            attachment: None,
+            input_modalities: None,
+            output_modalities: None,
+            reasoning: None,
+            tool_call: None,
+            capabilities: Vec::new(),
+            reasoning_efforts: None,
+        };
+        plan.apply_opencode_metadata(&metadata);
+        assert!(!plan.passthrough);
+        assert!(plan.needs_translation());
+
+        metadata.format = Format::OpenAi;
+        plan.apply_opencode_metadata(&metadata);
+        assert!(plan.passthrough);
+        assert!(!plan.needs_translation());
     }
 
     #[test]
@@ -416,6 +455,7 @@ mod tests {
         let plan = RequestPlan::new(Some("/v1/messages"), &body, "deepseek", "deepseek-chat");
         assert_eq!(plan.source_format, Format::Claude);
         assert_eq!(plan.target_format, Format::Claude);
+        assert!(plan.passthrough);
         assert!(!plan.needs_translation());
         assert!(
             plan.transport_base_url

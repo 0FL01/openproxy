@@ -139,6 +139,15 @@
     "codex_values_are_verified_upstream_limits": false,
     "stored_values_preserved_for_rollback": true
   },
+  "passthrough_policy": {
+    "selection": "source_format_equals_target_format_after_dynamic_model_metadata",
+    "client_identity_controls_passthrough": false,
+    "standalone_cache_reanchoring": false,
+    "native_messages_preconversion": false,
+    "routed_model_replacement_preserved": true,
+    "documented_adapter_wire_guards_preserved": true,
+    "incompatible_formats_use_registered_translator": true
+  },
   "versions": {
     "opencode": "1.18.31",
     "custom_harness": "unknown"

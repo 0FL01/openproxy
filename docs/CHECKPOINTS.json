@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C09",
+  "next_checkpoint": "C10",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c08_cargo_1.98.1",
+    "rust_verification": "passed_through_c09_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -473,7 +473,7 @@
     {
       "id": "C09",
       "title": "Выбирать passthrough по протоколу, не по имени клиента",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C04",
         "C05",
@@ -488,7 +488,35 @@
       "change": "Для эквивалентных входного/upstream протоколов разрешить минимальный путь OpenCode и собственному harness, а не только распознанным CLI user-agents. Удалить автономную переустановку cache anchors и дублирующие изменения prompt на этом пути. Оставить обязательные provider headers, model routing и доказанные adapter требования. Не писать regex/ручной небезопасный JSON parser ради zero-copy.",
       "tests": "Одинаковый JSON с разными User-Agent сохраняет одинаковую семантику; неизвестные JSON поля и клиентские cache_control/prompt_cache_key не теряются. Несовместимые форматы по-прежнему идут в переводчик. Проверить tools/reasoning и native provider extensions.",
       "acceptance": "Минимальный путь определяется возможностями протокола; content mutation отсутствует без конкретной причины адаптера. Это не обещание побайтовой неизменности там, где необходимо заменить routed model.",
-      "rollback": "Откат конкретной capability пары; не компенсировать регрессию подделкой имени клиента."
+      "rollback": "Откат конкретной capability пары; не компенсировать регрессию подделкой имени клиента.",
+      "result": {
+        "completed": "2026-09-17",
+        "files": [
+          "src/core/chat/mod.rs",
+          "src/core/utils/client_detector.rs",
+          "src/core/translator/request/claude_format.rs",
+          "src/server/api/chat.rs",
+          "src/server/api/compat.rs",
+          "tests/lean_proxy_passthrough_c09.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json"
+        ],
+        "selection": "RequestPlan marks passthrough when source and target formats match and recomputes it after OpenCode models.dev metadata. User-Agent detection no longer participates in this decision and remains only for genuine client transport preferences.",
+        "minimal_path": "Native Messages input is no longer pre-converted into OpenAI-like prompt/tool shapes. Same-format Claude applies only the existing documented native wire guards. Standalone cache re-anchoring and its helper subsystem were deleted; routed-model replacement, stream synchronization, mandatory provider headers, and executor-specific requirements remain.",
+        "tests": [
+          "cargo test --test lean_proxy_passthrough_c09 --test v1_compat_api --test chat_completions --test lean_proxy_claude_headers_c04 -- --nocapture: 22 passed",
+          "cargo test --lib core::chat::tests --all-features -- --nocapture: 18 passed",
+          "cargo test --lib client_detector --all-features -- --nocapture: 4 passed",
+          "cargo test --lib claude_format --all-features -- --nocapture: 30 passed",
+          "cargo test --lib --all-features -- --test-threads=1: 1226 passed",
+          "cargo clippy --test lean_proxy_passthrough_c09 --test v1_compat_api --all-features -- -D warnings -A clippy::let-and-return -A clippy::needless-return: passed",
+          "cargo clippy --all-targets --all-features: passed with 7 pre-existing warnings",
+          "cargo fmt --all -- --check, JSON parse, and git diff --check: passed"
+        ],
+        "acceptance_evidence": "Four identical requests each with Claude CLI, OpenCode, unknown harness, and absent User-Agent produced identical OpenAI and Claude upstream JSON. Unknown fields, client cache_control TTLs, prompt_cache_key, tools, reasoning, and native extensions survived; route prefixes were still replaced. A Claude CLI request using OpenAI chat format was translated to Claude instead of bypassing the translator.",
+        "schema_and_data": "No persisted data, public route, model-discovery shape, credential behavior, or openproxy.v1 field changed. The manifest addition is contract metadata only.",
+        "rollback": "Revert the C09 commit or one proven capability pair. Do not restore behavior by spoofing or requiring a client identity."
+      }
     },
     {
       "id": "C10",

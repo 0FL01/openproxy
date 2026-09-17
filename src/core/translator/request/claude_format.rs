@@ -3,8 +3,8 @@
 //! Claude-specific request normalisation:
 //!   - `prepare_claude_request` — normalise system prompt, thinking config,
 //!     max_tokens handling, cache_control, and tool normalization.
-//!   - `normalize_claude_passthrough` — strip unsupported fields, align
-//!     message format for Claude passthrough mode.
+//!   - `normalize_native_claude_request` — apply documented Anthropic wire
+//!     requirements to any native Claude request, independent of client name.
 
 use serde_json::{json, Value};
 
@@ -146,10 +146,10 @@ fn is_valid_srvtoolu_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-// ─── normalizeClaudePassthrough ─────────────────────────────────────
+// ─── native Claude wire requirements ────────────────────────────────
 
-/// Normalize a native Claude passthrough body to match the Anthropic
-/// Messages API spec.
+/// Normalize a native Claude body to match required Anthropic Messages API
+/// shapes. Selection of this adapter is protocol-based, not User-Agent-based.
 ///
 /// Older Cowork / Claude Code clients emit beta-only shapes that OAuth
 /// endpoints reject:
@@ -158,7 +158,7 @@ fn is_valid_srvtoolu_id(id: &str) -> bool {
 ///   2. `output_config.effort` — unsupported on Haiku → strip.
 ///   3. Mid-conversation `role: "system"` messages → hoist into the
 ///      top-level `system` field.
-pub fn normalize_claude_passthrough(body: &mut Value, model: &str) {
+pub fn normalize_native_claude_request(body: &mut Value, model: &str) {
     let Some(obj) = body.as_object_mut() else {
         return;
     };
@@ -385,264 +385,6 @@ pub fn normalize_claude_passthrough(body: &mut Value, model: &str) {
             kept_msgs.push(msg);
         }
         obj.insert("messages".to_string(), Value::Array(kept_msgs));
-    }
-}
-
-// ─── anchorClaudeCache ──────────────────────────────────────────────
-
-const CACHE_CONTROL_5M: &str = "ephemeral";
-const CACHE_CONTROL_1H_TTL: &str = "1h";
-
-/// Total blocks carrying cache_control across system, tools, and messages.
-/// The upstream Messages API allows at most 4 markers per request.
-/// Mirrors `countCacheControlBlocks` in claude.js:64-76.
-fn count_cache_control_blocks(body: &Value) -> usize {
-    let mut n = 0;
-    if let Some(system) = body.get("system").and_then(Value::as_array) {
-        n += system
-            .iter()
-            .filter(|b| b.get("cache_control").is_some())
-            .count();
-    }
-    if let Some(tools) = body.get("tools").and_then(Value::as_array) {
-        n += tools
-            .iter()
-            .filter(|t| t.get("cache_control").is_some())
-            .count();
-    }
-    if let Some(messages) = body.get("messages").and_then(Value::as_array) {
-        for m in messages {
-            if let Some(arr) = m.get("content").and_then(Value::as_array) {
-                n += arr
-                    .iter()
-                    .filter(|b| b.get("cache_control").is_some())
-                    .count();
-            } else if m
-                .get("content")
-                .and_then(|c| c.get("cache_control"))
-                .is_some()
-            {
-                n += 1;
-            }
-        }
-    }
-    n
-}
-
-/// Trim every marker past the 4-marker budget (JS claude.js:82-102). Head
-/// anchors (last system block, last cacheable tool) are held; remaining slots
-/// go to the tail-most of the other markers in document order.
-fn cap_cache_control_blocks(body: &mut Value) {
-    // Snapshot head-anchor identity: last system block + last cacheable tool.
-    let last_system_idx = body
-        .get("system")
-        .and_then(Value::as_array)
-        .map(|s| s.len().wrapping_sub(1));
-    let last_tool_idx = body
-        .get("tools")
-        .and_then(Value::as_array)
-        .map(|t| t.as_slice())
-        .and_then(last_cacheable_tool_index);
-    // Collect marker coordinates in document order: system, tools, messages.
-    let mut marked: Vec<(char, usize, usize)> = Vec::new();
-    if let Some(system) = body.get("system").and_then(Value::as_array) {
-        for (i, b) in system.iter().enumerate() {
-            if b.get("cache_control").is_some() {
-                marked.push(('s', i, 0));
-            }
-        }
-    }
-    if let Some(tools) = body.get("tools").and_then(Value::as_array) {
-        for (i, t) in tools.iter().enumerate() {
-            if t.get("cache_control").is_some() {
-                marked.push(('t', i, 0));
-            }
-        }
-    }
-    if let Some(messages) = body.get("messages").and_then(Value::as_array) {
-        for (mi, m) in messages.iter().enumerate() {
-            if let Some(arr) = m.get("content").and_then(Value::as_array) {
-                for (bi, b) in arr.iter().enumerate() {
-                    if b.get("cache_control").is_some() {
-                        marked.push(('m', mi, bi));
-                    }
-                }
-            }
-        }
-    }
-    let is_head = |(kind, i, _): &(char, usize, usize)| {
-        (*kind == 's' && Some(*i) == last_system_idx) || (*kind == 't' && Some(*i) == last_tool_idx)
-    };
-    let head_count = marked.iter().filter(|m| is_head(m)).count();
-    let keep = 4usize.saturating_sub(head_count);
-    let rest: Vec<(char, usize, usize)> = marked.into_iter().filter(|m| !is_head(m)).collect();
-    let drop_n = rest.len().saturating_sub(keep);
-    for (kind, i, j) in rest.into_iter().take(drop_n) {
-        match kind {
-            's' => {
-                if let Some(b) = body
-                    .get_mut("system")
-                    .and_then(Value::as_array_mut)
-                    .and_then(|s| s.get_mut(i))
-                {
-                    if let Some(o) = b.as_object_mut() {
-                        o.remove("cache_control");
-                    }
-                }
-            }
-            't' => {
-                if let Some(t) = body
-                    .get_mut("tools")
-                    .and_then(Value::as_array_mut)
-                    .and_then(|t| t.get_mut(i))
-                {
-                    if let Some(o) = t.as_object_mut() {
-                        o.remove("cache_control");
-                    }
-                }
-            }
-            _ => {
-                if let Some(b) = body
-                    .get_mut("messages")
-                    .and_then(Value::as_array_mut)
-                    .and_then(|m| m.get_mut(i))
-                    .and_then(|m| m.get_mut("content"))
-                    .and_then(Value::as_array_mut)
-                    .and_then(|c| c.get_mut(j))
-                {
-                    if let Some(o) = b.as_object_mut() {
-                        o.remove("cache_control");
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Put a 5m breakpoint on the last cache-eligible block of a message.
-/// thinking/redacted_thinking blocks do not accept cache_control.
-/// Mirrors `markLastCacheableBlock` in claude.js:326-335.
-fn mark_last_cacheable_block(msg: &mut Value) -> bool {
-    let Some(content) = msg.get_mut("content").and_then(Value::as_array_mut) else {
-        return false;
-    };
-    for block in content.iter_mut().rev() {
-        let Some(block_obj) = block.as_object_mut() else {
-            continue;
-        };
-        let t = block_obj.get("type").and_then(Value::as_str).unwrap_or("");
-        if t == "thinking" || t == "redacted_thinking" {
-            continue;
-        }
-        block_obj.insert(
-            "cache_control".to_string(),
-            json!({"type": CACHE_CONTROL_5M}),
-        );
-        return true;
-    }
-    false
-}
-
-/// Re-anchor cache breakpoints on a Claude passthrough body (same policy as
-/// prepareClaudeRequest): last tool + last system block at 1h, last assistant
-/// at 5m. Client markers point at pre-normalization offsets, so they are
-/// dropped. Must run LAST, after every step that reshapes system/tools/
-/// messages. Mirrors `anchorClaudeCache` in claude.js:343-410.
-pub fn anchor_claude_cache(body: &mut Value) {
-    if body.as_object().is_none() {
-        return;
-    }
-
-    // Invalid markers first, whatever the budget: Anthropic rejects a tool
-    // carrying BOTH defer_loading and cache_control (#3567).
-    if let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) {
-        for t in tools.iter_mut() {
-            if t.get("defer_loading").and_then(Value::as_bool) == Some(true) {
-                if let Some(o) = t.as_object_mut() {
-                    o.remove("cache_control");
-                }
-            }
-        }
-    }
-
-    // Head anchors first, before any budget guard: the 1h TTL on
-    // system/tools is the point of re-anchoring.
-    if let Some(system) = body.get_mut("system").and_then(Value::as_array_mut) {
-        let last = system.len().wrapping_sub(1);
-        for (i, block) in system.iter_mut().enumerate() {
-            let Some(block_obj) = block.as_object_mut() else {
-                continue;
-            };
-            if i == last {
-                block_obj.insert(
-                    "cache_control".to_string(),
-                    json!({"type": CACHE_CONTROL_5M, "ttl": CACHE_CONTROL_1H_TTL}),
-                );
-            } else {
-                block_obj.remove("cache_control");
-            }
-        }
-    }
-
-    let last_tool = body
-        .get("tools")
-        .and_then(Value::as_array)
-        .map(|t| t.as_slice())
-        .and_then(last_cacheable_tool_index);
-    if let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) {
-        let last = last_tool;
-        for (i, tool) in tools.iter_mut().enumerate() {
-            let Some(tool_obj) = tool.as_object_mut() else {
-                continue;
-            };
-            if Some(i) == last {
-                tool_obj.insert(
-                    "cache_control".to_string(),
-                    json!({"type": CACHE_CONTROL_5M, "ttl": CACHE_CONTROL_1H_TTL}),
-                );
-            } else {
-                tool_obj.remove("cache_control");
-            }
-        }
-    }
-
-    // Budget guard AFTER the head anchors: at >= 4 markers the client spent
-    // the rest of the budget — trim instead of re-anchoring the tail.
-    if count_cache_control_blocks(&*body) >= 4 {
-        cap_cache_control_blocks(body);
-        return;
-    }
-
-    if let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) {
-        let mut anchored = false;
-        for msg in messages.iter_mut().rev() {
-            let is_array = msg.get("content").and_then(Value::as_array).is_some();
-            if !is_array {
-                continue;
-            }
-            // Strip stale client markers on every message content block.
-            if let Some(content) = msg.get_mut("content").and_then(Value::as_array_mut) {
-                for block in content.iter_mut() {
-                    if let Some(o) = block.as_object_mut() {
-                        o.remove("cache_control");
-                    }
-                }
-            }
-            // Prefer the last assistant turn: it ends a completed exchange.
-            if anchored || msg.get("role").and_then(Value::as_str) != Some("assistant") {
-                continue;
-            }
-            anchored = mark_last_cacheable_block(msg);
-        }
-
-        // First turn has no assistant yet — anchor the final message instead.
-        if !anchored {
-            for msg in messages.iter_mut().rev() {
-                if mark_last_cacheable_block(msg) {
-                    break;
-                }
-            }
-        }
     }
 }
 
@@ -1080,7 +822,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    // ─── normalize_claude_passthrough ──────────────────────────────
+    // ─── normalize_native_claude_request ───────────────────────────
 
     #[test]
     fn passthrough_downgrades_adaptive_thinking_on_haiku() {
@@ -1089,7 +831,7 @@ mod tests {
             "thinking": {"type": "adaptive"},
             "messages": [{"role": "user", "content": "hi"}]
         });
-        normalize_claude_passthrough(&mut body, "claude-sonnet-haiku-4.7");
+        normalize_native_claude_request(&mut body, "claude-sonnet-haiku-4.7");
         assert_eq!(
             body["thinking"]["type"], "enabled",
             "adaptive → enabled on Haiku"
@@ -1104,7 +846,7 @@ mod tests {
             "output_config": {"effort": "high", "other": "x"},
             "messages": []
         });
-        normalize_claude_passthrough(&mut body, "claude-sonnet-haiku-4.7");
+        normalize_native_claude_request(&mut body, "claude-sonnet-haiku-4.7");
         // 9router parity: only remove effort, keep other fields
         assert!(
             body.get("output_config").is_some(),
@@ -1124,7 +866,7 @@ mod tests {
             "output_config": {"effort": "high"},
             "messages": []
         });
-        normalize_claude_passthrough(&mut body2, "claude-sonnet-haiku");
+        normalize_native_claude_request(&mut body2, "claude-sonnet-haiku");
         assert!(
             body2.get("output_config").is_none(),
             "output_config removed when only effort"
@@ -1135,7 +877,7 @@ mod tests {
             "output_config": {"other": "x"},
             "messages": []
         });
-        normalize_claude_passthrough(&mut body3, "claude-sonnet-haiku");
+        normalize_native_claude_request(&mut body3, "claude-sonnet-haiku");
         assert!(
             body3.get("output_config").is_some(),
             "output_config kept when no effort"
@@ -1154,7 +896,7 @@ mod tests {
                 {"role": "user", "content": [{"type": "text", "text": "yo"}]}
             ]
         });
-        normalize_claude_passthrough(&mut body, "claude-sonnet-4");
+        normalize_native_claude_request(&mut body, "claude-sonnet-4");
         assert!(body.get("system").is_none());
         let msgs = body["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 2);
@@ -1177,7 +919,7 @@ mod tests {
                 ]
             }]
         });
-        normalize_claude_passthrough(&mut body, "claude-sonnet-4");
+        normalize_native_claude_request(&mut body, "claude-sonnet-4");
         let content = body["messages"][0]["content"].as_array().unwrap();
         assert!(
             content
@@ -1189,31 +931,6 @@ mod tests {
             content.iter().any(|b| b["type"] == "thinking"),
             "placeholder thinking injected: {content:?}"
         );
-    }
-
-    #[test]
-    fn anchor_claude_cache_pins_head_and_caps_at_four() {
-        // anchorClaudeCache (claude.js:343-410): last system + last tool at
-        // 1h; over-budget (>=4) trims instead of re-anchoring the tail.
-        let mut body = json!({
-            "system": [
-                {"type": "text", "text": "a", "cache_control": {"type": "ephemeral"}},
-                {"type": "text", "text": "b"}
-            ],
-            "tools": [{"name": "f", "cache_control": {"type": "ephemeral"}}],
-            "messages": [
-                {"role": "user", "content": "hi"},
-                {"role": "assistant", "content": [
-                    {"type": "text", "text": "r1", "cache_control": {"type": "ephemeral"}},
-                    {"type": "text", "text": "r2", "cache_control": {"type": "ephemeral"}}
-                ]}
-            ]
-        });
-        anchor_claude_cache(&mut body);
-        assert_eq!(body["system"][1]["cache_control"]["ttl"], "1h");
-        assert_eq!(body["tools"][0]["cache_control"]["ttl"], "1h");
-        let total = count_cache_control_blocks(&body);
-        assert!(total <= 4, "budget capped at 4, got {total}");
     }
 
     #[test]
@@ -1540,7 +1257,7 @@ mod tests {
                 ]}
             ]
         });
-        normalize_claude_passthrough(&mut body, "claude-sonnet-4");
+        normalize_native_claude_request(&mut body, "claude-sonnet-4");
         let assistant = &body["messages"][1];
         let content = assistant["content"].as_array().unwrap();
         assert_eq!(content.len(), 1, "foreign server_tool_use dropped");

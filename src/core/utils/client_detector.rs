@@ -1,7 +1,7 @@
-//! Port of `open-sse/utils/clientDetector.js`. Detects which CLI client is
-//! making the request (Claude Code, Gemini CLI, Antigravity, Codex,
-//! GitHub Copilot, DeepSeek TUI) so the request can be passed through
-//! losslessly when it matches the upstream provider.
+//! Detects which CLI client is making the request for the few transport
+//! decisions that are genuinely client-specific (for example DeepSeek TUI's
+//! stream preference). Protocol passthrough is intentionally decided from the
+//! request and upstream formats, never from this identity hint.
 
 use serde_json::Value;
 use std::collections::HashMap;
@@ -92,30 +92,6 @@ pub fn detect_client_tool(headers: &HashMap<String, String>, body: &Value) -> Op
     None
 }
 
-/// Native (CLI tool, provider) pairings that allow lossless passthrough.
-fn native_providers(tool: ClientTool) -> &'static [&'static str] {
-    match tool {
-        ClientTool::Claude => &["claude", "anthropic"],
-        ClientTool::Antigravity => &["antigravity"],
-        ClientTool::Codex => &["codex"],
-        _ => &[],
-    }
-}
-
-/// Returns true iff this CLI tool + provider combination should be passed
-/// through losslessly without translation.
-pub fn is_native_passthrough(client_tool: Option<ClientTool>, provider: &str) -> bool {
-    let Some(tool) = client_tool else {
-        return false;
-    };
-    let normalized = if provider.starts_with("anthropic-compatible") {
-        "anthropic"
-    } else {
-        provider
-    };
-    native_providers(tool).contains(&normalized)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,17 +129,6 @@ mod tests {
             detect_client_tool(&headers, &json!({})),
             Some(ClientTool::GithubCopilot)
         );
-    }
-
-    #[test]
-    fn passthrough_matches_anthropic_variants() {
-        assert!(is_native_passthrough(
-            Some(ClientTool::Claude),
-            "anthropic-compatible-1"
-        ));
-        assert!(is_native_passthrough(Some(ClientTool::Claude), "claude"));
-        assert!(!is_native_passthrough(Some(ClientTool::Claude), "openai"));
-        assert!(!is_native_passthrough(None, "claude"));
     }
 
     #[test]

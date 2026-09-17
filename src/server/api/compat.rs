@@ -1913,18 +1913,12 @@ fn normalize_body(mut body: Value, mode: CompatMode) -> Value {
     };
 
     match mode {
-        CompatMode::Messages => {
-            if let Some(system) = fields.remove("system") {
-                prepend_system_message(fields, normalize_content(system));
-            }
-
-            if let Some(messages) = fields.get_mut("messages") {
-                normalize_messages_value(messages);
-            }
-
-            normalize_tools(fields);
-            normalize_tool_choice(fields);
-        }
+        // Keep native Messages input intact. The chat planner now chooses the
+        // minimal path from source/target protocol capability; when the target
+        // is not Claude, the registered Claude translator performs the one
+        // required format conversion. Pre-converting here duplicated prompt
+        // mutation and discarded client cache anchors before planning.
+        CompatMode::Messages => {}
         CompatMode::Responses { compact } => {
             if compact {
                 fields.insert("_compact".to_string(), Value::Bool(true));
@@ -1933,290 +1927,6 @@ fn normalize_body(mut body: Value, mode: CompatMode) -> Value {
     }
 
     body
-}
-
-/// Detect whether a tool definition is in Anthropic format (has bare `name`/`input_schema`)
-/// and convert it to OpenAI function format (`type:function`, `function:{name,description,parameters}`).
-/// If the tool is already in OpenAI format or has no recognizable structure, leave it unchanged.
-fn normalize_tools(fields: &mut Map<String, Value>) {
-    let Some(tools) = fields.get("tools").and_then(|v| v.as_array()).cloned() else {
-        return;
-    };
-
-    // JS parity (openai-responses.js:196-217): Responses `custom` tool
-    // declarations become Chat functions with one raw `input` string;
-    // names are recorded in translator-only `_customToolNames` metadata.
-    let mut custom_tool_names: Vec<String> = Vec::new();
-    let converted: Vec<Value> = tools
-        .into_iter()
-        .filter(|tool| {
-            // Drop non-function tools (e.g. namespace) — DeepSeek rejects unknown types.
-            // `custom` tools are converted below, so keep them through the filter.
-            let t = tool.get("type").and_then(|v| v.as_str()).unwrap_or("");
-            t.is_empty() || t == "function" || t == "custom"
-        })
-        .filter_map(|tool| {
-            let has_function_field = tool.get("function").is_some();
-            let is_function_type = tool.get("type").and_then(|v| v.as_str()) == Some("function");
-
-            // Already proper OpenAI format {type:"function", function:{name,...}}
-            if has_function_field {
-                return Some(tool);
-            }
-
-            // Responses `custom` tool → Chat function with raw `input` string.
-            if tool.get("type").and_then(|v| v.as_str()) == Some("custom") {
-                let name = tool.get("name").and_then(Value::as_str).unwrap_or("");
-                if name.trim().is_empty() {
-                    return None;
-                }
-                if !custom_tool_names.iter().any(|n| n == name) {
-                    custom_tool_names.push(name.to_string());
-                }
-                let hint = [
-                    tool.pointer("/format/syntax").and_then(Value::as_str),
-                    tool.pointer("/format/definition").and_then(Value::as_str),
-                ]
-                .into_iter()
-                .flatten()
-                .filter(|s| !s.is_empty())
-                .collect::<Vec<_>>()
-                .join("\n");
-                let mut description = tool
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                if !hint.is_empty() {
-                    if !description.is_empty() {
-                        description.push_str("\n\n");
-                    }
-                    description.push_str(&hint);
-                }
-                return Some(json!({
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "description": description,
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "input": {
-                                    "type": "string",
-                                    "description": "Raw freeform input for this custom tool"
-                                }
-                            },
-                            "required": ["input"],
-                            "additionalProperties": false
-                        }
-                    }
-                }));
-            }
-
-            // type:"function" but missing function:{} (e.g. flat Claude-style)
-            // → convert to proper OpenAI format
-            if is_function_type {
-                let name = tool.get("name").cloned().unwrap_or(Value::Null);
-                let description = tool.get("description").cloned().unwrap_or_default();
-                let parameters = tool
-                    .get("parameters")
-                    .cloned()
-                    .or_else(|| tool.get("input_schema").cloned())
-                    .unwrap_or(json!({"type":"object","properties":{}}));
-                return Some(json!({
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "description": description,
-                        "parameters": parameters,
-                    }
-                }));
-            }
-
-            let has_name = tool.get("name").and_then(|v| v.as_str()).is_some();
-            let has_input_schema = tool.get("input_schema").is_some();
-            if !has_name || !has_input_schema {
-                return Some(tool);
-            }
-
-            let name = tool.get("name").cloned().unwrap_or(Value::Null);
-            let description = tool
-                .get("description")
-                .cloned()
-                .unwrap_or(Value::String(String::new()));
-            let parameters = tool
-                .get("input_schema")
-                .cloned()
-                .unwrap_or(Value::Object(Map::new()));
-
-            Some(json!({
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "description": description,
-                    "parameters": parameters,
-                }
-            }))
-        })
-        .collect();
-
-    if converted
-        .iter()
-        .any(|t| t.get("type").and_then(|v| v.as_str()) == Some("function"))
-    {
-        fields.insert("tools".to_string(), Value::Array(converted));
-    }
-    if !custom_tool_names.is_empty() {
-        fields.insert(
-            "_customToolNames".to_string(),
-            Value::Array(custom_tool_names.into_iter().map(Value::String).collect()),
-        );
-    }
-}
-
-/// Convert Anthropic-style tool_choice to OpenAI-style tool_choice.
-///
-/// Anthropic: `{"type":"auto"}`, `{"type":"any"}`, `{"type":"tool","name":"xxx"}`
-/// OpenAI:   `"auto"`,            `"required"`,     `{"type":"function","function":{"name":"xxx"}}`
-///
-/// If tool_choice is already a plain string or valid OpenAI object, leave it unchanged.
-fn normalize_tool_choice(fields: &mut Map<String, Value>) {
-    let Some(tc) = fields.get("tool_choice").cloned() else {
-        return;
-    };
-
-    if tc.is_string() {
-        return;
-    }
-
-    let Some(obj) = tc.as_object() else {
-        return;
-    };
-
-    let tc_type = obj.get("type").and_then(|v| v.as_str());
-    let name = obj.get("name").and_then(|v| v.as_str());
-
-    match tc_type {
-        Some("auto") => {
-            fields.insert("tool_choice".to_string(), Value::String("auto".to_string()));
-        }
-        Some("any") => {
-            fields.insert(
-                "tool_choice".to_string(),
-                Value::String("required".to_string()),
-            );
-        }
-        Some("tool") if name.is_some() => {
-            fields.insert(
-                "tool_choice".to_string(),
-                json!({
-                    "type": "function",
-                    "function": { "name": name }
-                }),
-            );
-        }
-        _ => {
-            // Already in OpenAI format or unrecognized — leave unchanged
-        }
-    }
-}
-
-fn prepend_system_message(fields: &mut Map<String, Value>, content: Value) {
-    let messages = fields
-        .entry("messages".to_string())
-        .or_insert_with(|| Value::Array(Vec::new()));
-
-    let Some(array) = messages.as_array_mut() else {
-        *messages = Value::Array(vec![json!({
-            "role": "system",
-            "content": content,
-        })]);
-        return;
-    };
-
-    array.insert(
-        0,
-        json!({
-            "role": "system",
-            "content": content,
-        }),
-    );
-}
-
-fn normalize_messages_value(messages: &mut Value) {
-    let Some(array) = messages.as_array_mut() else {
-        return;
-    };
-
-    for message in array {
-        normalize_message(message);
-    }
-}
-
-fn normalize_message(message: &mut Value) {
-    let Some(fields) = message.as_object_mut() else {
-        return;
-    };
-
-    if let Some(content) = fields.get_mut("content") {
-        *content = normalize_content(content.clone());
-    } else if let Some(text) = fields.get("text").and_then(Value::as_str) {
-        fields.insert("content".to_string(), Value::String(text.to_string()));
-    }
-}
-
-fn normalize_content(content: Value) -> Value {
-    match content {
-        Value::Array(parts) => Value::Array(
-            parts
-                .into_iter()
-                .filter_map(|part| match part {
-                    Value::String(text) => Some(json!({ "type": "text", "text": text })),
-                    Value::Object(mut map) => {
-                        if map
-                            .get("type")
-                            .and_then(Value::as_str)
-                            .is_some_and(|kind| matches!(kind, "input_text" | "output_text"))
-                        {
-                            map.insert("type".to_string(), Value::String("text".to_string()));
-                        } else if map.get("type").and_then(Value::as_str) == Some("input_image") {
-                            // JS parity (responsesApi.js convertResponsesApiFormat):
-                            // input_image → image_url { url, detail }.
-                            let url = map
-                                .get("image_url")
-                                .and_then(Value::as_str)
-                                .or_else(|| map.get("file_id").and_then(Value::as_str))
-                                .unwrap_or("")
-                                .to_string();
-                            let detail = map
-                                .get("detail")
-                                .and_then(Value::as_str)
-                                .unwrap_or("auto")
-                                .to_string();
-                            map.insert("type".to_string(), Value::String("text".to_string()));
-                            return Some(json!({
-                                "type": "image_url",
-                                "image_url": { "url": url, "detail": detail },
-                            }));
-                        }
-                        Some(Value::Object(map))
-                    }
-                    _ => None,
-                })
-                .collect(),
-        ),
-        Value::Object(mut map) => {
-            if map
-                .get("type")
-                .and_then(Value::as_str)
-                .is_some_and(|kind| matches!(kind, "input_text" | "output_text"))
-            {
-                map.insert("type".to_string(), Value::String("text".to_string()));
-            }
-            Value::Object(map)
-        }
-        other => other,
-    }
 }
 
 fn count_request_chars(body: &Value) -> usize {
@@ -2457,19 +2167,29 @@ mod tests {
     }
 
     #[test]
-    fn messages_route_promotes_system_field() {
+    fn messages_route_preserves_native_body_for_protocol_planner() {
         let body = json!({
             "model": "openai/gpt-4o-mini",
-            "system": "Stay concise",
-            "messages": [{ "role": "user", "content": "Ping" }]
+            "system": [{
+                "type": "text",
+                "text": "Stay concise",
+                "cache_control": {"type": "ephemeral", "ttl": "client-owned"}
+            }],
+            "messages": [{ "role": "user", "content": "Ping" }],
+            "prompt_cache_key": "client-key"
         });
 
         let normalized = normalize_body(body, CompatMode::Messages);
         let messages = normalized["messages"].as_array().expect("messages array");
 
-        assert_eq!(messages[0]["role"], "system");
-        assert_eq!(messages[0]["content"], "Stay concise");
-        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(normalized["system"][0]["text"], "Stay concise");
+        assert_eq!(
+            normalized["system"][0]["cache_control"]["ttl"],
+            "client-owned"
+        );
+        assert_eq!(normalized["prompt_cache_key"], "client-key");
     }
 
     #[test]
@@ -2937,101 +2657,5 @@ mod tests {
         );
         assert_eq!(resp["output"][1]["content"][0]["type"], "output_text");
         assert_eq!(resp["output"][1]["content"][0]["text"], "Final answer");
-    }
-
-    fn normalize_tools_converts_anthropic_to_openai() {
-        let mut map = Map::new();
-        map.insert(
-            "tools".to_string(),
-            json!([
-                {
-                    "name": "get_weather",
-                    "description": "Get weather",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": { "location": { "type": "string" } },
-                        "required": ["location"]
-                    }
-                }
-            ]),
-        );
-        map.insert("tool_choice".to_string(), json!({"type": "auto"}));
-
-        normalize_tools(&mut map);
-        normalize_tool_choice(&mut map);
-
-        let tools = map.get("tools").and_then(|v| v.as_array()).unwrap();
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0]["type"], "function");
-        assert_eq!(tools[0]["function"]["name"], "get_weather");
-        assert_eq!(tools[0]["function"]["description"], "Get weather");
-        assert!(tools[0]["function"]["parameters"]["properties"]["location"].is_object());
-
-        let tc = map.get("tool_choice").unwrap();
-        assert_eq!(tc, "auto");
-    }
-
-    fn normalize_tools_leaves_openai_format_unchanged() {
-        let mut map = Map::new();
-        map.insert(
-            "tools".to_string(),
-            json!([
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "existing_tool",
-                        "description": "Already in correct format",
-                        "parameters": { "type": "object", "properties": {} }
-                    }
-                }
-            ]),
-        );
-
-        normalize_tools(&mut map);
-
-        let tools = map.get("tools").and_then(|v| v.as_array()).unwrap();
-        assert_eq!(tools[0]["type"], "function");
-        assert_eq!(tools[0]["function"]["name"], "existing_tool");
-    }
-
-    fn normalize_tool_choice_converts_any_to_required() {
-        let mut map = Map::new();
-        map.insert("tool_choice".to_string(), json!({"type": "any"}));
-        normalize_tool_choice(&mut map);
-        assert_eq!(map.get("tool_choice").unwrap(), "required");
-    }
-
-    fn normalize_tool_choice_converts_tool_with_name() {
-        let mut map = Map::new();
-        map.insert(
-            "tool_choice".to_string(),
-            json!({"type": "tool", "name": "my_func"}),
-        );
-        normalize_tool_choice(&mut map);
-        let tc = map.get("tool_choice").unwrap();
-        assert_eq!(tc["type"], "function");
-        assert_eq!(tc["function"]["name"], "my_func");
-    }
-
-    fn normalize_body_converts_anthropic_tools_in_messages_mode() {
-        let body = json!({
-            "model": "claude-sonnet-4",
-            "system": "Be helpful",
-            "messages": [{"role": "user", "content": "Hi"}],
-            "tools": [
-                {
-                    "name": "my_tool",
-                    "description": "The tool",
-                    "input_schema": { "type": "object", "properties": {} }
-                }
-            ],
-            "tool_choice": {"type": "any"}
-        });
-
-        let normalized = normalize_body(body, CompatMode::Messages);
-        let tools = normalized["tools"].as_array().unwrap();
-        assert_eq!(tools[0]["type"], "function");
-        assert_eq!(tools[0]["function"]["name"], "my_tool");
-        assert_eq!(normalized["tool_choice"], "required");
     }
 }

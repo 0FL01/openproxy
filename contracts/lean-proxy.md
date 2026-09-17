@@ -22,6 +22,14 @@ The route and format-pair allowlists are in `lean-proxy.json`. Their source regi
 
 Same-format transport may be minimal, but byte-for-byte identity is not promised when model routing or a documented adapter requirement changes the body. Native streaming must not become collection merely to share an implementation.
 
+C09 makes that minimal path a protocol decision: `source_format == target_format`
+after dynamic model metadata is applied. Recognized, unknown, and absent client
+identities therefore receive the same request semantics. Client detection remains
+only for genuine transport preferences such as DeepSeek TUI streaming. OpenProxy
+still replaces the routed model and applies documented native adapter wire guards,
+but it does not autonomously re-anchor cache markers. Native Messages input reaches
+the planner unchanged; incompatible protocol pairs use the registered translator.
+
 ## Product and security invariants
 
 The following chain is one contract and must remain consistent:
@@ -49,6 +57,7 @@ Persisted types intentionally preserve unknown fields through `extra` and `provi
 | Kiro session-start replay | C05 deleted the process-wide `session_start`/system-prompt store without migration or replacement. Kiro history, system/thinking prefix, tools, and current content are now derived only from the current request; request-scoped protocol identifiers remain pending C06. |
 | Session/continuation maps | C06 deleted both process-wide maps without migration. Client identifiers win; Antigravity preserves its UUID-plus-digits wire shape, while OpenCode fallbacks and identified Kiro continuation UUIDs are derived statelessly with adapter + configured-connection namespaces. Anonymous Kiro requests remain one-shot. Kiro binds continuation to the selected connection before transport. Retained entries/bytes are zero; dashboard auth `AppState.sessions` is untouched. |
 | `settings.providerContextLimits` | C07 separated advertised client metadata from policy; C08 deleted the default chat-path estimator, synthetic 413, and Codex input-headroom rejection without changing that metadata. Existing values, the legacy `opencode` → `opencode-zen` alias, and the current missing/empty-map meaning (four 500,000 defaults, not “off”) remain unchanged and round-trip. Codex's 500,000/450,000/128,000 values are compatibility metadata, not proof of an upstream overdrive limit. Context/history/compaction policy belongs to the client; proxy memory safety uses independent byte bounds. Explicit count-tokens remains a separate API, and real upstream context errors retain their status/body. Rollback may add an explicitly announced compatibility reader over the preserved values, never a silent automatic fallback. |
+| Client-identity passthrough and Claude cache re-anchoring | C09 deleted the User-Agent/provider passthrough gate and standalone cache-anchor rewrite. Same-format selection is derived from protocol capability after dynamic model metadata; client `cache_control`, `prompt_cache_key`, unknown fields, tools, reasoning, and provider extensions stay request-owned except for routed-model replacement and documented adapter wire guards. |
 | `modelLock_*`, cooldown/error, and health fields | C14 removed generation and web-fetch success-path cleanup. Stored values remain historical/legacy diagnostics, not a claim about current route eligibility; they do not select accounts. The explicit `clearCooldown` action remains the narrow state transition. C24 separately removes default probes. |
 | `healthCheckEnabled` | C24 preserves the legacy value; periodic probing becomes explicit opt-in while liveness remains independent of upstream availability. |
 | `claudeAutoPing`/`codexAutoPing`/`glmAutoPing` and ping markers | C25 preserves opt-in and markers; no worker exists with no enabled connection. OAuth proactive refresh remains a distinct auth responsibility. |

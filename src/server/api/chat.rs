@@ -24,7 +24,7 @@ use crate::core::translator::helpers::modality_helper::{
 };
 use crate::core::translator::registry::{self, Format};
 use crate::core::translator::response_transform::{transform_sse_stream, transformer_for_provider};
-use crate::core::utils::client_detector::{detect_client_tool, is_native_passthrough, ClientTool};
+use crate::core::utils::client_detector::{detect_client_tool, ClientTool};
 use crate::core::utils::stream_flags::resolve_stream_flags;
 use crate::server::application_logs::{AttemptLog, RequestLogContext};
 use crate::server::auth::{extract_api_key, require_api_key, require_api_key_with_reload};
@@ -423,7 +423,6 @@ async fn chat_completions_impl(
         resolved.provider.as_deref().unwrap_or(model_str),
         &resolved.model,
     );
-    plan.passthrough = is_native_passthrough(client_tool, &plan.provider);
     apply_stream_plan(&mut plan, &body, accept_header.as_deref(), client_tool);
     let response = match execute_single_model(
         &state,
@@ -597,16 +596,19 @@ async fn execute_single_model(
         fields.insert("model".into(), Value::String(dispatch_model.clone()));
     }
 
-    // 3. Translate or native passthrough normalize
+    // 3. Translate incompatible protocols or apply only documented native
+    // adapter requirements. Passthrough depends on protocol capability, not
+    // a recognized User-Agent.
     if plan.passthrough {
         tracing::debug!(
             target: "openproxy::chat",
-            "PASSTHROUGH client={:?} provider={}",
-            client_tool,
-            plan.provider
+            "PASSTHROUGH protocol={:?} provider={} client_hint={:?}",
+            plan.source_format,
+            plan.provider,
+            client_tool
         );
-        if client_tool == Some(ClientTool::Claude) {
-            crate::core::translator::request::claude_format::normalize_claude_passthrough(
+        if plan.target_format == Format::Claude {
+            crate::core::translator::request::claude_format::normalize_native_claude_request(
                 &mut body,
                 &dispatch_model,
             );
@@ -670,13 +672,6 @@ async fn execute_single_model(
         plan.thinking_level.as_deref(),
         plan.stream,
     );
-
-    // Pin cache breakpoints LAST on Claude passthrough (9router
-    // chatCore.js:306): every saver above can reshape system/tools/messages,
-    // and a stale anchor costs a full prefix rewrite.
-    if plan.passthrough && client_tool == Some(ClientTool::Claude) {
-        crate::core::translator::request::claude_format::anchor_claude_cache(&mut body);
-    }
 
     // Sync stream flag onto body for executors that read body.stream
     if let Some(obj) = body.as_object_mut() {

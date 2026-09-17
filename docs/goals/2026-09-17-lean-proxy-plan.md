@@ -93,17 +93,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R3 / C09.
-- Smallest next action: Select same-format passthrough from protocol capability rather than recognized client User-Agent while retaining required model routing and adapter headers.
-- Expected evidence: Equivalent bodies with recognized, unknown, and absent User-Agent preserve the same unknown fields/cache anchors; incompatible source/target formats still translate tools and reasoning correctly.
-- Stop or replan if: A provider-specific adapter proves a concrete wire mutation is mandatory; isolate that adapter requirement instead of restoring client-name gating.
+- Closes: R3 / C10.
+- Smallest next action: Remove DefaultExecutor-owned generation retry loops and fixed sleeps for 429/502/503/504 while preserving raw status/body/Retry-After for the request-scoped planner and keeping transport connection reuse.
+- Expected evidence: Controlled 429/502/503/504 responses return without virtual-time advancement and issue exactly one generation request per unchanged account/URL; success, redirects, request body, and credential-recovery accounting remain explicit.
+- Stop or replan if: A repeated request is proven to be credential recovery rather than temporal generation retry; preserve it as separately counted transitional auth recovery for C13/C16 instead of conflating the budgets.
 
 ## Current State
 
-- Resolved: R1 / C00, R2 / C01-C02, C03-C08 and C14 within R3, plus C15 within R4. Kiro semantic repair/history replay, global Claude header replay, process-wide session/continuation maps, successful-response legacy housekeeping, redundant `Db::update` snapshot copies, and default chat context estimation/rejection are gone; context metadata remains independent.
-- Last relevant evidence: C08 forwarded a >2 MiB Unicode/tools/data-URL/base64 request once without truncation, returned a loopback upstream context 413 byte-for-byte, preserved explicit count-tokens, and removed every estimator/policy symbol from `src`.
+- Resolved: R1 / C00, R2 / C01-C02, C03-C09 and C14 within R3, plus C15 within R4. Kiro semantic repair/history replay, global Claude header replay, process-wide session/continuation maps, client-identity passthrough gating/cache re-anchoring, successful-response legacy housekeeping, redundant `Db::update` snapshot copies, and default chat context estimation/rejection are gone; context metadata remains independent.
+- Last relevant evidence: C09 sent identical OpenAI and Claude semantics for Claude CLI, OpenCode, unknown, and absent User-Agent while preserving client cache markers/unknown fields/tools/reasoning; an incompatible Claude-CLI OpenAI request still used the Claude translator.
 - Blocker: None; the prompt explicitly allows independent safe work when external harness/version evidence is unavailable.
-- Next: C09 protocol-capability passthrough independent of client identity.
+- Next: C10 removal of DefaultExecutor temporal generation retries and sleeps.
 
 ## Material Decisions
 
@@ -125,6 +125,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-09-17: C06 passed. Deleted both process-wide session/continuation maps without replacement; client ids remain authoritative, Antigravity preserves its UUID-plus-digits wire shape, OpenCode fallback is a stateless namespaced UUID, and Kiro continuation is deterministically bound to the selected configured connection while anonymous requests remain ephemeral. Five full-handler Kiro turns, adapter tests, 100,000-session churn, and cancellation prove zero retained entries; C07 is next.
 - 2026-09-17: C07 passed. Split client-facing configured/native context metadata from the explicitly named transitional proxy rejection reader, preserved missing/empty/explicit/custom persisted values and canonical `opencode.source`, removed the unverified Codex overdrive claim, and rebuilt the dashboard with ownership-accurate copy. C08 is next.
 - 2026-09-17: C08 passed. Deleted both ordinary-chat estimator calls and all synthetic context rejection/headroom code without changing advertised metadata or byte limits; preserved explicit count-tokens and made real non-retryable upstream errors retain their status/body. A large Unicode/tools/data-URL/base64 request reached the loopback upstream once without truncation. C09 is next.
+- 2026-09-17: C09 passed. Same-format passthrough is now selected from source/target protocol capability after dynamic model metadata, independent of recognized User-Agent. Native Messages input no longer undergoes duplicate OpenAI preconversion, standalone Claude cache re-anchoring is deleted, client cache fields/unknown extensions survive, and incompatible pairs still translate. C10 is next.
 
 ## Completion
 
