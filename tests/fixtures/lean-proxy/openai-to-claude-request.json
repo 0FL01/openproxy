@@ -1,0 +1,15 @@
+{
+  "model": "anthropic/claude-sonnet-test",
+  "messages": [
+    {
+      "role": "system",
+      "content": "keep protocol semantics"
+    },
+    {
+      "role": "user",
+      "content": "translate this request"
+    }
+  ],
+  "stream": true,
+  "max_tokens": 256
+}

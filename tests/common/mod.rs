@@ -8,6 +8,8 @@ use tempfile::tempdir;
 #[allow(unused_imports)]
 use wiremock::MockServer;
 
+pub mod lean_harness;
+
 #[allow(dead_code)]
 pub async fn boot_test_app() -> (axum::Router, AppState) {
     let temp = tempdir().expect("tempdir");

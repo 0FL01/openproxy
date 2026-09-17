@@ -27,8 +27,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: `docs/CHECKPOINTS.json` C01-C02.
   - Acceptance: The harness controls headers, chunk timing/EOF, failures, OAuth rotation, request counts, clock, and concurrency; release baseline records the specified latency, memory, allocation, throughput, feature, workload, and environment metadata with at least five representative repetitions.
   - Primary evidence: Harness tests and validated `baseline.json` produced by the documented benchmark command.
-  - Status: pending
-  - Evidence:
+  - Status: in_progress
+  - Evidence: C01 is verified: the reusable loopback harness controls response headers/status/chunks, first-byte and EOF gates, body failures, OAuth-shaped rotation, and request capture/counts; native JSON/SSE and OpenAI↔Claude fixtures, virtual time, barriers, and an owned temporary DB are covered by five passing integration tests. C02 baseline remains.
 
 - R3: Remove proxy-owned semantic replay, header replay, context policy, and independent generation retry loops while preserving required protocol/account behavior (C03-C14).
   - Source: `docs/CHECKPOINTS.json` C03-C14.
@@ -93,17 +93,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R2 / C01.
-- Smallest next action: Add the reusable deterministic mock-upstream harness and first native JSON/SSE plus translated fixtures.
-- Expected evidence: Controlled header/chunk/EOF/error/OAuth/request-count tests, paused clock/barrier concurrency tests, and no production data or network dependency.
-- Stop or replan if: Existing test helpers cannot expose response timing without production-code changes; record the minimal C01 envelope expansion before editing runtime code.
+- Closes: R2 / C02.
+- Smallest next action: Add and run the release lean benchmark against the deterministic upstream, recording comparable direct/proxy latency, RSS/PSS, allocation, throughput, success, and attempt-count evidence.
+- Expected evidence: Validated baseline artifact with environment/features/logging/request/DB metadata, warm/cold concurrency 1/8/32 series, at least five repetitions, and a predeclared noise/regression threshold.
+- Stop or replan if: A required system measurement source is unavailable; record that individual metric as blocked/unavailable without fabricating it and continue all independent measurements.
 
 ## Current State
 
-- Resolved: R1 / C00. New branch created; ownership/migration contract frozen and machine-checked; current callers and legacy settings censused.
-- Last relevant evidence: `cargo clippy --all-targets --all-features` and all 1,233 library tests passed; C00 focused Rust tests passed 4+11+7; OpenCode model tests passed 4 with one installed-CLI check skipped. Toolchain is `rustc/cargo 1.98.1`, Node 20.19.2, pnpm 10.31.0; installed OpenCode is 1.18.31. `PLAN.md` and `AUDIT-EVIDENCE.md` remain absent.
+- Resolved: R1 / C00 and C01 of R2. The deterministic mock harness and first fixture set are available without production data or external network access.
+- Last relevant evidence: C01 harness tests passed 5/5; contract+harness passed 9/9; clippy and all 1,233 library tests passed. The streaming fixture delivered before held EOF, while the deliberately buffering fixture missed the first-event window until released.
 - Blocker: None; the prompt explicitly allows independent safe work when external harness/version evidence is unavailable.
-- Next: C01 deterministic harness.
+- Next: C02 release baseline.
 
 ## Material Decisions
 
@@ -115,6 +115,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 - 2026-09-17: Goal frozen from the user request, `docs/AGENT-PROMPT.md`, and all C00-C42 entries in `docs/CHECKPOINTS.json`; C00 started.
 - 2026-09-17: C00 passed. Added the human and machine-readable lean boundary, migration matrix, route/format inventories, source registry links, and contract tests. No runtime/configuration behavior changed; C01 is next.
+- 2026-09-17: C01 passed. Added a reusable loopback scripted upstream, controlled stream gates/failures/request capture, OAuth-shaped rotation responses, native and translated fixtures, virtual-time/barrier primitives, and an owned temporary DB. No production behavior changed; C02 is next.
 
 ## Completion
 

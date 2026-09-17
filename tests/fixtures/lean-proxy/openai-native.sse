@@ -1,0 +1,5 @@
+data: {"id":"chatcmpl-native","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"}}]}
+
+data: {"id":"chatcmpl-native","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"fixture"}}]}
+
+data: [DONE]

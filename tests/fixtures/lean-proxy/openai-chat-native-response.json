@@ -1,0 +1,15 @@
+{
+  "id": "chatcmpl-lean-fixture",
+  "object": "chat.completion",
+  "model": "gpt-test",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "fixture response"
+      },
+      "finish_reason": "stop"
+    }
+  ]
+}

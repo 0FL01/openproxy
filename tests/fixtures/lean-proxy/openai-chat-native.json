@@ -1,0 +1,10 @@
+{
+  "model": "openai/gpt-test",
+  "messages": [
+    {
+      "role": "user",
+      "content": "hello from the lean harness"
+    }
+  ],
+  "stream": false
+}
