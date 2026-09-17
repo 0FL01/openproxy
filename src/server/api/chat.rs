@@ -723,10 +723,16 @@ async fn forward_with_provider_fallback(
     let mut auth_recovery_used = false;
     let codex_supporters = if provider == "codex" {
         let snapshot = state.db.snapshot();
-        state
-            .codex_models
-            .cached_supporters(model, &snapshot.provider_connections)
-            .await
+        let supporters = state.codex_models.cached_supporters(model, &snapshot);
+        if supporters.is_empty() {
+            return Err(ProviderAttemptError::new(
+                400,
+                format!(
+                    "Codex model {model} is not present in the published catalog or explicit configuration"
+                ),
+            ));
+        }
+        Some(supporters)
     } else {
         None
     };
@@ -819,25 +825,10 @@ async fn forward_with_provider_fallback(
         {
             match state
                 .codex_models
-                .models_for_connection(state, &connection)
-                .await
+                .published_for_connection(&snapshot, &connection)
             {
-                Ok(inventory) if codex_models_support_search(&inventory.models, model) => {
-                    // Model discovery may refresh an expiring OAuth token. Use
-                    // the persisted replacement for the actual request.
-                    if let Some(refreshed) = state
-                        .db
-                        .snapshot()
-                        .provider_connections
-                        .iter()
-                        .find(|candidate| candidate.id == connection.id)
-                        .cloned()
-                    {
-                        connection = refreshed;
-                    }
-                    true
-                }
-                Ok(_) => {
+                Some(inventory) if codex_models_support_search(&inventory.models, model) => true,
+                Some(_) => {
                     last_error = Some(ProviderAttemptError::new(
                         400,
                         format!(
@@ -847,12 +838,11 @@ async fn forward_with_provider_fallback(
                     excluded.insert(connection.id.clone());
                     continue;
                 }
-                Err(error) => {
+                None => {
                     last_error = Some(ProviderAttemptError::new(
-                        error.status.as_u16(),
+                        400,
                         format!(
-                            "Unable to verify Codex web search support: {}",
-                            error.message
+                            "Unable to verify Codex web search support for {model} from the published catalog"
                         ),
                     ));
                     excluded.insert(connection.id.clone());

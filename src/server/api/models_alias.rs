@@ -156,10 +156,7 @@ async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> Respo
         }
     }
 
-    let codex = state
-        .codex_models
-        .union_active(&state, &snapshot.provider_connections)
-        .await;
+    let codex = state.codex_models.union_active(&snapshot);
     let disabled_codex = disabled_map.get("cx");
     for model in codex.models.iter() {
         if disabled_codex.is_some_and(|ids| ids.iter().any(|id| id == &model.id)) {

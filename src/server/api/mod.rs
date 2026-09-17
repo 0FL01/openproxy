@@ -308,10 +308,7 @@ async fn api_catalog(State(state): State<AppState>) -> Response {
     }
 
     let db = state.db.snapshot();
-    let codex = state
-        .codex_models
-        .union_active(&state, &db.provider_connections)
-        .await;
+    let codex = state.codex_models.union_active(&db);
     if let Some(entries) = catalog
         .get_mut("providerModels")
         .and_then(Value::as_array_mut)

@@ -80,12 +80,7 @@ async fn build_models_list(
         .filter(|connection| connection.is_active())
         .collect();
     let codex_inventory = if kind_filter.contains(&LLM_KIND) {
-        Some(
-            state
-                .codex_models
-                .union_active(state, &snapshot.provider_connections)
-                .await,
-        )
+        Some(state.codex_models.union_active(snapshot))
     } else {
         None
     };
@@ -201,6 +196,7 @@ async fn build_models_list(
             }
 
             if raw_model_ids.is_empty()
+                && provider_id != "codex"
                 && !UPSTREAM_CONNECTION_RE.is_match(provider_id)
                 && super::provider_models::supports_models_discovery(provider_id)
             {
@@ -1070,28 +1066,26 @@ mod tests {
             ..Default::default()
         };
         let state = test_state().await;
-        state
-            .codex_models
-            .seed(
-                &connection,
-                vec![
-                    crate::server::codex_catalog::CodexModelMetadata {
-                        id: "gpt-5.6-luna".into(),
-                        name: "GPT-5.6 Luna".into(),
-                        context_window: Some(272_000),
-                        capabilities: vec!["tools".into(), "reasoning".into(), "vision".into()],
-                        reasoning_efforts: vec!["high".into()],
-                    },
-                    crate::server::codex_catalog::CodexModelMetadata {
-                        id: "future-model".into(),
-                        name: "Future Model".into(),
-                        context_window: Some(999_000),
-                        capabilities: vec!["tools".into()],
-                        reasoning_efforts: vec![],
-                    },
-                ],
-            )
-            .await;
+        state.codex_models.seed(
+            &snapshot,
+            &connection,
+            vec![
+                crate::server::codex_catalog::CodexModelMetadata {
+                    id: "gpt-5.6-luna".into(),
+                    name: "GPT-5.6 Luna".into(),
+                    context_window: Some(272_000),
+                    capabilities: vec!["tools".into(), "reasoning".into(), "vision".into()],
+                    reasoning_efforts: vec!["high".into()],
+                },
+                crate::server::codex_catalog::CodexModelMetadata {
+                    id: "future-model".into(),
+                    name: "Future Model".into(),
+                    context_window: Some(999_000),
+                    capabilities: vec!["tools".into()],
+                    reasoning_efforts: vec![],
+                },
+            ],
+        );
 
         let llm = build_models_list(&state, &snapshot, &[LLM_KIND]).await;
         assert!(llm.iter().any(|model| model.id == "custom-cx/gpt-5.6-luna"));

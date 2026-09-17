@@ -427,7 +427,7 @@ async fn fetch_provider_models_response(
         "codex" => {
             let inventory = state
                 .codex_models
-                .models_for_connection(state, connection)
+                .refresh_connection(state, connection, true)
                 .await
                 .map_err(|error| RouteError::new(error.status, error.message))?;
             Ok(response_with_models(

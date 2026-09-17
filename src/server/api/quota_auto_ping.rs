@@ -914,14 +914,10 @@ async fn process_codex_quota(
         };
     }
 
-    let model = match state
+    let model = state
         .codex_models
-        .models_for_connection(state, connection)
-        .await
-    {
-        Ok(inventory) => select_codex_ping_model(&inventory.models),
-        Err(_) => None,
-    };
+        .published_for_connection(&state.db.snapshot(), connection)
+        .and_then(|inventory| select_codex_ping_model(&inventory.models));
     let Some(model) = model else {
         return TickOutcome::Skip {
             reason: "model_unavailable".into(),

@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C20",
+  "next_checkpoint": "C21",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c19_cargo_1.98.1",
+    "rust_verification": "passed_through_c20_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -1045,7 +1045,7 @@
     {
       "id": "C20",
       "title": "Убрать ожидание Codex catalog refresh из маршрутизации",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C19",
         "C17B"
@@ -1060,7 +1060,42 @@
       "change": "Читать уже опубликованный per-connection/model snapshot без ожидания mutex, которым refresh держит HTTP. Перенести remote discovery/union rebuild в control plane; избежать повторного полного merge/clone при каждом chat. Актуализировать snapshot при изменении аккаунтов и custom models.",
       "tests": "Dashboard запускает долгий refresh, параллельный chat по известной модели сразу выбирает аккаунт. Удалённый/disabled connection не остаётся допустимым. Cold unknown модель не маршрутизируется на случайный аккаунт.",
       "acceptance": "Известный запрос не зависит от задержки catalog refresh; объём metadata связан с конфигурацией, а не числом входящих запросов.",
-      "rollback": "Откат только каталожного слоя; не выключать authenticated /v1/models или discovery plugin."
+      "rollback": "Откат только каталожного слоя; не выключать authenticated /v1/models или discovery plugin.",
+      "result": {
+        "files": [
+          "src/server/codex_catalog.rs",
+          "src/server/api/chat.rs",
+          "src/server/api/v1_models.rs",
+          "src/server/api/mod.rs",
+          "src/server/api/models_alias.rs",
+          "src/server/api/provider_models.rs",
+          "src/server/api/provider_connection_test.rs",
+          "src/server/api/quota_auto_ping.rs",
+          "src/main.rs",
+          "tests/lean_proxy_codex_c20.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json"
+        ],
+        "read_path": "Codex routing, web-search capability checks, /api/catalog, /api/models, /v1/models, and quota ping model selection synchronously clone one ArcSwap-published immutable per-connection/model index. They perform no catalog HTTP and never acquire the writer refresh mutex.",
+        "refresh_path": "A separate control-plane writer performs OAuth-coordinated model discovery, validates the complete response, and atomically publishes one affected connection plus a pre-merged active union. A single process task reconciles configured Codex connections every minute while the one-hour freshness interval prevents repeated remote fetches; explicit provider discovery and connection test force refresh. Failure retains the previous Arc and models.",
+        "routing_policy": "A Codex model must have a published supporting connection or be explicitly declared by enabledModels, defaultModel, or a user custom Codex model. Cold unknown models return 400 before generation and cannot select an arbitrary account. Inactive, deleted, and credential-identity-changed connections are synchronously removed by configuration reconciliation.",
+        "metadata_bound": "Published entries are bounded by active configured Codex connection IDs. Union/model clones are rebuilt only when configuration or a validated connection inventory changes, not per incoming request. Custom/enabled configuration changes are part of the immutable routing configuration.",
+        "tests": [
+          "cargo test --test lean_proxy_codex_c20 -- --nocapture: 4 passed",
+          "cargo test --lib codex_catalog --all-features -- --nocapture: 2 passed",
+          "cargo test --lib v1_models --all-features -- --nocapture: 8 passed",
+          "cargo test --test lean_proxy_codex_c20 --test lean_proxy_models_c19 --test lean_proxy_context_c07 --test lean_proxy_contract --test api_auth_and_models -- --nocapture: 33 passed",
+          "cargo test --test lean_proxy_codex_c20 --test lean_proxy_models_c19 --test lean_proxy_refresh_c17a --test lean_proxy_refresh_c17b --test lean_proxy_budget_c13 --test lean_proxy_contract --test chat_completions -- --nocapture: 34 passed",
+          "node --test tests/opencode_models.test.mjs tests/opencode_models_cli.test.mjs: 4 passed, 1 installed-CLI test skipped",
+          "cargo test --lib --all-features -- --test-threads=1: 1204 passed",
+          "focused clippy with -D warnings: passed",
+          "cargo clippy --all-targets --all-features: passed with 7 pre-existing warnings",
+          "cargo fmt --all -- --check, JSON parse, and git diff --check: passed"
+        ],
+        "acceptance_evidence": "While an explicit Codex catalog refresh held its JSON body open, a known-model full-handler chat selected the published supporting connection and returned 200 in under 500 ms with exactly one generation request; the prior publication pointer stayed unchanged until release and then changed atomically. A failed 503 refresh kept the exact prior publication. Unknown cold models returned 400 with zero generation requests. Explicit enabled/custom models became routable without discovery, and disabling the configured connection immediately removed all supporters and union rows with zero network calls.",
+        "schema_and_data": "No route, SQLite schema, persisted setting, credential/encryption field, dependency, provider wire format, model prefix, openproxy.v1 envelope, authenticated /v1/models behavior, or OpenCode plugin contract changed. Existing custom/enabled/disabled and advertised metadata overlays remain authoritative user data.",
+        "rollback": "Revert the C20 catalog publication/read-path commit without deleting persisted custom/enabled/disabled model configuration. Never restore catalog HTTP or refresh-mutex waiting in generation, and do not make cold unknown models permissively select arbitrary accounts."
+      }
     },
     {
       "id": "C21",

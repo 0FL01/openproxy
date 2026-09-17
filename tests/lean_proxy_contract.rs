@@ -215,4 +215,20 @@ fn contract_freezes_preservation_and_removal_lists() {
         manifest["model_catalog_publication"]["canonical_opencode_source_preserved"],
         true
     );
+    assert_eq!(
+        manifest["codex_catalog_publication"]["generation_remote_http"],
+        false
+    );
+    assert_eq!(
+        manifest["codex_catalog_publication"]["generation_refresh_lock_wait"],
+        false
+    );
+    assert_eq!(
+        manifest["codex_catalog_publication"]["unknown_cold_model_routes_arbitrary_account"],
+        false
+    );
+    assert_eq!(
+        manifest["codex_catalog_publication"]["union_rebuilt_per_incoming_request"],
+        false
+    );
 }

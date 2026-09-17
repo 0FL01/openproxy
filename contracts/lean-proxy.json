@@ -227,6 +227,26 @@
     "advertised_limits_preserved": true,
     "canonical_opencode_source_preserved": true
   },
+  "codex_catalog_publication": {
+    "checkpoint": "C20",
+    "generation_read": "atomic_immutable_per_connection_model_index",
+    "generation_remote_http": false,
+    "generation_refresh_lock_wait": false,
+    "unknown_cold_model_routes_arbitrary_account": false,
+    "known_model_supporters_are_connection_scoped": true,
+    "explicit_enabled_default_and_custom_models_are_routable": true,
+    "inactive_deleted_or_credential_changed_connections_are_reconciled": true,
+    "union_rebuilt_per_incoming_request": false,
+    "successful_refresh_publication": "atomic_after_full_validation",
+    "failed_refresh_replaces_snapshot": false,
+    "refresh_entry_points": [
+      "single_bounded_process_task_for_configured_codex_connections",
+      "explicit_provider_model_discovery",
+      "explicit_provider_connection_test"
+    ],
+    "authenticated_v1_models_preserved": true,
+    "opencode_discovery_plugin_preserved": true
+  },
   "versions": {
     "opencode": "1.18.31",
     "custom_harness": "unknown"

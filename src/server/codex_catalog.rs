@@ -1,7 +1,9 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use arc_swap::ArcSwap;
+use parking_lot::Mutex as SyncMutex;
 use reqwest::StatusCode;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -16,7 +18,7 @@ use crate::oauth::token_refresh::{
     connection_credential_generation, needs_refresh_with_lead, CONNECTION_REFRESH_COORDINATOR,
 };
 use crate::server::state::AppState;
-use crate::types::ProviderConnection;
+use crate::types::{AppDb, ProviderConnection};
 
 const MODELS_URL: &str = "https://chatgpt.com/backend-api/codex/models";
 const CACHE_TTL: Duration = Duration::from_secs(60 * 60);
@@ -66,69 +68,175 @@ impl CodexCatalogError {
     }
 }
 
-#[derive(Debug, Default)]
-struct CacheEntry {
+#[derive(Debug, Clone)]
+struct PublishedConnectionInventory {
     identity: String,
-    loaded_at: Option<Instant>,
-    models: Option<Arc<Vec<CodexModelMetadata>>>,
+    loaded_at: Instant,
+    models: Arc<Vec<CodexModelMetadata>>,
+    warning: Option<String>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct CodexRoutingConfiguration {
+    active_identities: BTreeMap<String, String>,
+    explicit_models: BTreeMap<String, BTreeSet<String>>,
+    custom_models: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct CodexCatalogSnapshot {
+    configuration: CodexRoutingConfiguration,
+    entries: BTreeMap<String, PublishedConnectionInventory>,
+    union: Arc<Vec<CodexModelMetadata>>,
+    warning: Option<String>,
+}
+
+/// Opaque publication handle used by deterministic integration tests to prove
+/// that failed or in-flight refreshes do not replace the visible snapshot.
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct CodexCatalogPublication(Arc<CodexCatalogSnapshot>);
+
+impl CodexCatalogPublication {
+    #[doc(hidden)]
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
 pub struct CodexModelCatalog {
-    entries: Mutex<HashMap<String, Arc<Mutex<CacheEntry>>>>,
+    published: ArcSwap<CodexCatalogSnapshot>,
+    publication_lock: SyncMutex<()>,
+    refresh_lock: Mutex<()>,
+    models_url: String,
+}
+
+impl Default for CodexModelCatalog {
+    fn default() -> Self {
+        Self::with_models_url(MODELS_URL)
+    }
 }
 
 impl CodexModelCatalog {
+    /// Construct a catalog with an explicit endpoint. This is public only for
+    /// deterministic loopback tests and self-hosted control-plane fixtures.
+    #[doc(hidden)]
+    pub fn with_models_url(models_url: impl Into<String>) -> Self {
+        Self {
+            published: ArcSwap::from_pointee(CodexCatalogSnapshot::default()),
+            publication_lock: SyncMutex::new(()),
+            refresh_lock: Mutex::new(()),
+            models_url: models_url.into(),
+        }
+    }
+
+    /// Return the immutable published inventory for one canonical connection.
+    /// This never waits for a refresh mutex and never performs network I/O.
+    pub fn published_for_connection(
+        &self,
+        snapshot: &AppDb,
+        connection: &ProviderConnection,
+    ) -> Option<CodexInventory> {
+        let published = self.reconcile_configuration(snapshot);
+        let entry = published.entries.get(&connection.id)?;
+        (entry.identity == cache_identity(connection)).then(|| CodexInventory {
+            models: entry.models.clone(),
+            warning: entry.warning.clone(),
+        })
+    }
+
+    /// Refresh one connection from the control plane. Readers continue using
+    /// the prior immutable publication while the HTTP request is in flight.
     pub async fn models_for_connection(
         &self,
         state: &AppState,
         connection: &ProviderConnection,
     ) -> Result<CodexInventory, CodexCatalogError> {
-        let identity = cache_identity(connection);
-        let entry = {
-            let mut entries = self.entries.lock().await;
-            entries
-                .entry(connection.id.clone())
-                .or_insert_with(|| Arc::new(Mutex::new(CacheEntry::default())))
-                .clone()
-        };
-        let mut cache = entry.lock().await;
+        self.refresh_connection(state, connection, false).await
+    }
 
-        if cache.identity == identity
-            && cache
-                .loaded_at
-                .is_some_and(|loaded| loaded.elapsed() < CACHE_TTL)
-        {
-            if let Some(models) = &cache.models {
+    /// Force an explicit dashboard/setup refresh even when the publication is
+    /// younger than the normal control-plane freshness interval.
+    pub async fn refresh_connection(
+        &self,
+        state: &AppState,
+        connection: &ProviderConnection,
+        force: bool,
+    ) -> Result<CodexInventory, CodexCatalogError> {
+        let _refresh = self.refresh_lock.lock().await;
+        let before_db = state.db.snapshot();
+        let before = self.reconcile_configuration(&before_db);
+        let canonical = before_db
+            .provider_connections
+            .iter()
+            .find(|candidate| {
+                candidate.id == connection.id
+                    && candidate.provider == "codex"
+                    && candidate.is_active()
+            })
+            .cloned()
+            .ok_or_else(|| {
+                CodexCatalogError::new(
+                    StatusCode::NOT_FOUND,
+                    "Codex connection is no longer active",
+                )
+            })?;
+        let identity = cache_identity(&canonical);
+
+        if !force {
+            if let Some(entry) = before
+                .entries
+                .get(&canonical.id)
+                .filter(|entry| entry.identity == identity && entry.loaded_at.elapsed() < CACHE_TTL)
+            {
                 return Ok(CodexInventory {
-                    models: models.clone(),
-                    warning: None,
+                    models: entry.models.clone(),
+                    warning: entry.warning.clone(),
                 });
             }
         }
 
-        match fetch_models(state, connection).await {
+        let previous = before
+            .entries
+            .get(&canonical.id)
+            .filter(|entry| entry.identity == identity)
+            .cloned();
+        match fetch_models(state, &canonical, &self.models_url).await {
             Ok(models) => {
                 let models = Arc::new(models);
-                cache.identity = state
-                    .db
-                    .snapshot()
-                    .provider_connections
-                    .iter()
-                    .find(|candidate| candidate.id == connection.id)
-                    .map(cache_identity)
-                    .unwrap_or(identity);
-                cache.loaded_at = Some(Instant::now());
-                cache.models = Some(models.clone());
+                let after_db = state.db.snapshot();
+                let Some(after_connection) =
+                    after_db.provider_connections.iter().find(|candidate| {
+                        candidate.id == canonical.id
+                            && candidate.provider == "codex"
+                            && candidate.is_active()
+                    })
+                else {
+                    return Err(CodexCatalogError::new(
+                        StatusCode::CONFLICT,
+                        "Codex connection changed while model discovery was active",
+                    ));
+                };
+                let published_identity = cache_identity(after_connection);
+                self.publish_entry(
+                    &after_db,
+                    &after_connection.id,
+                    PublishedConnectionInventory {
+                        identity: published_identity,
+                        loaded_at: Instant::now(),
+                        models: models.clone(),
+                        warning: None,
+                    },
+                );
                 Ok(CodexInventory {
                     models,
                     warning: None,
                 })
             }
-            Err(error) if cache.identity == identity && cache.models.is_some() => {
-                cache.loaded_at = Some(Instant::now());
+            Err(error) if previous.is_some() => {
+                let previous = previous.expect("checked above");
                 Ok(CodexInventory {
-                    models: cache.models.clone().expect("checked above"),
+                    models: previous.models,
                     warning: Some(error.message),
                 })
             }
@@ -136,85 +244,261 @@ impl CodexModelCatalog {
         }
     }
 
-    pub async fn union_active(
-        &self,
-        state: &AppState,
-        connections: &[ProviderConnection],
-    ) -> CodexInventory {
-        let mut models = BTreeMap::new();
-        let mut warnings = Vec::new();
-        for connection in connections
+    /// Refresh all configured Codex connections from one bounded control task.
+    pub async fn refresh_active(&self, state: &AppState) {
+        let snapshot = state.db.snapshot();
+        self.reconcile_configuration(&snapshot);
+        let connections: Vec<_> = snapshot
+            .provider_connections
             .iter()
             .filter(|connection| connection.provider == "codex" && connection.is_active())
-        {
-            match self.models_for_connection(state, connection).await {
-                Ok(inventory) => {
-                    for model in inventory.models.iter() {
-                        models
-                            .entry(model.id.clone())
-                            .or_insert_with(|| model.clone());
-                    }
-                    if let Some(warning) = inventory.warning {
-                        warnings.push(warning);
-                    }
-                }
-                Err(error) => warnings.push(error.message),
-            }
-        }
-        CodexInventory {
-            models: Arc::new(models.into_values().collect()),
-            warning: (!warnings.is_empty()).then(|| warnings.join("; ")),
-        }
-    }
-
-    /// Return supporting connection IDs only when the model is present in at
-    /// least one warm cache. Unknown and cold models remain permissive.
-    pub async fn cached_supporters(
-        &self,
-        model: &str,
-        connections: &[ProviderConnection],
-    ) -> Option<HashSet<String>> {
-        let entries: Vec<(String, Arc<Mutex<CacheEntry>>)> = self
-            .entries
-            .lock()
-            .await
-            .iter()
-            .map(|(id, entry)| (id.clone(), entry.clone()))
+            .cloned()
             .collect();
-        let mut supporters = HashSet::new();
-        for (id, entry) in entries {
-            let Some(connection) = connections.iter().find(|connection| connection.id == id) else {
-                continue;
-            };
-            let cache = entry.lock().await;
-            if cache.identity == cache_identity(connection)
-                && cache
-                    .models
-                    .as_ref()
-                    .is_some_and(|models| models.iter().any(|candidate| candidate.id == model))
-            {
-                supporters.insert(id);
+        drop(snapshot);
+        for connection in connections {
+            if let Err(error) = self.models_for_connection(state, &connection).await {
+                tracing::warn!(
+                    connection_id = %connection.id,
+                    error = %error.message,
+                    "Codex model refresh failed; retaining published inventory"
+                );
             }
         }
-        (!supporters.is_empty()).then_some(supporters)
     }
 
-    pub async fn invalidate(&self, connection_id: &str) {
-        self.entries.lock().await.remove(connection_id);
+    /// Return the pre-merged active inventory. A configuration change rebuilds
+    /// it once; unchanged requests only clone the published Arc.
+    pub fn union_active(&self, snapshot: &AppDb) -> CodexInventory {
+        let published = self.reconcile_configuration(snapshot);
+        CodexInventory {
+            models: published.union.clone(),
+            warning: published.warning.clone(),
+        }
+    }
+
+    /// Return the exact active connection set that may route this model.
+    /// Remote publication, explicit enabled/default models, and user custom
+    /// Codex models are authoritative. Cold unknown models return an empty set
+    /// instead of falling through to an arbitrary account.
+    pub fn cached_supporters(&self, model: &str, snapshot: &AppDb) -> HashSet<String> {
+        let published = self.reconcile_configuration(snapshot);
+        let model = model.trim().to_string();
+        let mut supporters = HashSet::new();
+        for (id, identity) in &published.configuration.active_identities {
+            let remote_support = published.entries.get(id).is_some_and(|entry| {
+                entry.identity == *identity
+                    && entry.models.iter().any(|candidate| candidate.id == model)
+            });
+            let explicitly_configured = published
+                .configuration
+                .explicit_models
+                .get(id)
+                .is_some_and(|models| models.contains(&model));
+            if remote_support
+                || explicitly_configured
+                || published.configuration.custom_models.contains(&model)
+            {
+                supporters.insert(id.clone());
+            }
+        }
+        supporters
+    }
+
+    pub fn invalidate(&self, snapshot: &AppDb, connection_id: &str) {
+        let _guard = self.publication_lock.lock();
+        let current = self.published.load_full();
+        let mut entries = current.entries.clone();
+        entries.remove(connection_id);
+        self.published.store(Arc::new(build_snapshot(
+            routing_configuration(snapshot),
+            entries,
+        )));
     }
 
     #[cfg(test)]
-    pub async fn seed(&self, connection: &ProviderConnection, models: Vec<CodexModelMetadata>) {
-        let entry = Arc::new(Mutex::new(CacheEntry {
-            identity: cache_identity(connection),
-            loaded_at: Some(Instant::now()),
-            models: Some(Arc::new(models)),
-        }));
-        self.entries
-            .lock()
-            .await
-            .insert(connection.id.clone(), entry);
+    pub fn seed(
+        &self,
+        snapshot: &AppDb,
+        connection: &ProviderConnection,
+        models: Vec<CodexModelMetadata>,
+    ) {
+        self.publish_entry(
+            snapshot,
+            &connection.id,
+            PublishedConnectionInventory {
+                identity: cache_identity(connection),
+                loaded_at: Instant::now(),
+                models: Arc::new(models),
+                warning: None,
+            },
+        );
     }
+
+    #[doc(hidden)]
+    pub fn published_snapshot_identity(&self) -> CodexCatalogPublication {
+        CodexCatalogPublication(self.published.load_full())
+    }
+
+    fn reconcile_configuration(&self, snapshot: &AppDb) -> Arc<CodexCatalogSnapshot> {
+        let configuration = routing_configuration(snapshot);
+        let current = self.published.load_full();
+        if current.configuration == configuration {
+            return current;
+        }
+        let _guard = self.publication_lock.lock();
+        let current = self.published.load_full();
+        if current.configuration == configuration {
+            return current;
+        }
+        let entries = current
+            .entries
+            .iter()
+            .filter(|(id, entry)| {
+                configuration
+                    .active_identities
+                    .get(*id)
+                    .is_some_and(|identity| identity == &entry.identity)
+            })
+            .map(|(id, entry)| (id.clone(), entry.clone()))
+            .collect();
+        let next = Arc::new(build_snapshot(configuration, entries));
+        self.published.store(next.clone());
+        next
+    }
+
+    fn publish_entry(
+        &self,
+        snapshot: &AppDb,
+        connection_id: &str,
+        entry: PublishedConnectionInventory,
+    ) {
+        let configuration = routing_configuration(snapshot);
+        if configuration
+            .active_identities
+            .get(connection_id)
+            .is_none_or(|identity| identity != &entry.identity)
+        {
+            return;
+        }
+        let _guard = self.publication_lock.lock();
+        let current = self.published.load_full();
+        let mut entries: BTreeMap<_, _> = current
+            .entries
+            .iter()
+            .filter(|(id, published)| {
+                configuration
+                    .active_identities
+                    .get(*id)
+                    .is_some_and(|identity| identity == &published.identity)
+            })
+            .map(|(id, published)| (id.clone(), published.clone()))
+            .collect();
+        entries.insert(connection_id.to_string(), entry);
+        self.published
+            .store(Arc::new(build_snapshot(configuration, entries)));
+    }
+}
+
+fn build_snapshot(
+    configuration: CodexRoutingConfiguration,
+    entries: BTreeMap<String, PublishedConnectionInventory>,
+) -> CodexCatalogSnapshot {
+    let mut models = BTreeMap::new();
+    let mut warnings = Vec::new();
+    for (id, entry) in &entries {
+        if configuration.active_identities.get(id) != Some(&entry.identity) {
+            continue;
+        }
+        for model in entry.models.iter() {
+            models
+                .entry(model.id.clone())
+                .or_insert_with(|| model.clone());
+        }
+        if let Some(warning) = &entry.warning {
+            warnings.push(format!("{id}: {warning}"));
+        }
+    }
+    CodexCatalogSnapshot {
+        configuration,
+        entries,
+        union: Arc::new(models.into_values().collect()),
+        warning: (!warnings.is_empty()).then(|| warnings.join("; ")),
+    }
+}
+
+fn routing_configuration(snapshot: &AppDb) -> CodexRoutingConfiguration {
+    let active: Vec<_> = snapshot
+        .provider_connections
+        .iter()
+        .filter(|connection| connection.provider == "codex" && connection.is_active())
+        .collect();
+    let mut configuration = CodexRoutingConfiguration::default();
+    for connection in &active {
+        configuration
+            .active_identities
+            .insert(connection.id.clone(), cache_identity(connection));
+        let prefixes = codex_prefixes(connection);
+        let mut explicit = BTreeSet::new();
+        if let Some(models) = connection
+            .provider_specific_data
+            .get("enabledModels")
+            .and_then(Value::as_array)
+        {
+            explicit.extend(
+                models
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(|model| normalize_model_id(model, &prefixes)),
+            );
+        }
+        if let Some(model) = connection.default_model.as_deref() {
+            explicit.insert(normalize_model_id(model, &prefixes));
+        }
+        configuration
+            .explicit_models
+            .insert(connection.id.clone(), explicit);
+    }
+
+    let aliases: BTreeSet<_> = active
+        .iter()
+        .flat_map(|connection| codex_prefixes(connection))
+        .collect();
+    for custom in snapshot.custom_models.iter().filter(|custom| {
+        custom.r#type.is_empty() || custom.r#type == "llm" || custom.r#type == "chat"
+    }) {
+        if aliases.contains(custom.provider_alias.trim()) {
+            configuration.custom_models.insert(normalize_model_id(
+                &custom.id,
+                &aliases.iter().cloned().collect::<Vec<_>>(),
+            ));
+        }
+    }
+    configuration
+}
+
+fn codex_prefixes(connection: &ProviderConnection) -> Vec<String> {
+    let mut prefixes = vec!["codex".to_string(), "cx".to_string()];
+    if let Some(prefix) = connection
+        .provider_specific_data
+        .get("prefix")
+        .and_then(Value::as_str)
+        .or_else(|| connection.extra.get("prefix").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|prefix| !prefix.is_empty())
+    {
+        prefixes.push(prefix.to_string());
+    }
+    prefixes
+}
+
+fn normalize_model_id(model: &str, prefixes: &[String]) -> String {
+    let trimmed = model.trim();
+    for prefix in prefixes {
+        if let Some(stripped) = trimmed.strip_prefix(&format!("{prefix}/")) {
+            return stripped.to_string();
+        }
+    }
+    trimmed.to_string()
 }
 
 fn cache_identity(connection: &ProviderConnection) -> String {
@@ -226,6 +510,7 @@ fn cache_identity(connection: &ProviderConnection) -> String {
 async fn fetch_models(
     state: &AppState,
     connection: &ProviderConnection,
+    models_url: &str,
 ) -> Result<Vec<CodexModelMetadata>, CodexCatalogError> {
     let mut connection = connection.clone();
     if needs_refresh_with_lead(&connection.expires_at, REFRESH_LEAD_MS) {
@@ -238,7 +523,7 @@ async fn fetch_models(
         .map(str::trim)
         .filter(|token| !token.is_empty())
         .ok_or_else(|| CodexCatalogError::new(StatusCode::UNAUTHORIZED, "No valid token found"))?;
-    match fetch_with_token(state, &connection, token).await {
+    match fetch_with_token(state, &connection, token, models_url).await {
         Err(error)
             if matches!(
                 error.status,
@@ -247,7 +532,7 @@ async fn fetch_models(
         {
             refresh_connection(state, &mut connection).await?;
             let token = connection.access_token.as_deref().unwrap_or_default();
-            fetch_with_token(state, &connection, token).await
+            fetch_with_token(state, &connection, token, models_url).await
         }
         result => result,
     }
@@ -257,6 +542,7 @@ async fn fetch_with_token(
     state: &AppState,
     connection: &ProviderConnection,
     token: &str,
+    models_url: &str,
 ) -> Result<Vec<CodexModelMetadata>, CodexCatalogError> {
     let snapshot = state.db.snapshot();
     let proxy = resolve_proxy_target(&snapshot, connection, &snapshot.settings);
@@ -270,7 +556,7 @@ async fn fetch_with_token(
             )
         })?;
     let mut request = client
-        .get(MODELS_URL)
+        .get(models_url)
         .query(&[("client_version", CODEX_CLIENT_VERSION)])
         .bearer_auth(token)
         .header("Accept", "application/json")
@@ -468,8 +754,8 @@ mod tests {
         assert_eq!(output["targetFormat"], "openai-responses");
     }
 
-    #[tokio::test]
-    async fn cached_supporters_do_not_cross_credential_identity() {
+    #[test]
+    fn cached_supporters_do_not_cross_credential_identity() {
         let catalog = CodexModelCatalog::default();
         let connection = ProviderConnection {
             id: "connection".into(),
@@ -477,31 +763,33 @@ mod tests {
             access_token: Some("token-a".into()),
             ..Default::default()
         };
-        catalog
-            .seed(
-                &connection,
-                vec![CodexModelMetadata {
-                    id: "gpt-test".into(),
-                    name: "GPT Test".into(),
-                    context_window: None,
-                    capabilities: Vec::new(),
-                    reasoning_efforts: Vec::new(),
-                }],
-            )
-            .await;
+        let mut snapshot = AppDb {
+            provider_connections: vec![connection.clone()],
+            ..Default::default()
+        };
+        catalog.seed(
+            &snapshot,
+            &connection,
+            vec![CodexModelMetadata {
+                id: "gpt-test".into(),
+                name: "GPT Test".into(),
+                context_window: None,
+                capabilities: Vec::new(),
+                reasoning_efforts: Vec::new(),
+            }],
+        );
 
         assert_eq!(
-            catalog
-                .cached_supporters("gpt-test", std::slice::from_ref(&connection))
-                .await,
-            Some(HashSet::from([connection.id.clone()]))
+            catalog.cached_supporters("gpt-test", &snapshot),
+            HashSet::from([connection.id.clone()])
         );
 
         let mut changed = connection;
         changed.access_token = Some("token-b".into());
+        snapshot.provider_connections = vec![changed];
         assert_eq!(
-            catalog.cached_supporters("gpt-test", &[changed]).await,
-            None
+            catalog.cached_supporters("gpt-test", &snapshot),
+            HashSet::new()
         );
     }
 }

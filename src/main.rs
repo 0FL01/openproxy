@@ -336,6 +336,7 @@ async fn main() -> anyhow::Result<()> {
     // within max(provider lead, 30 min) so idle periods don't surface 401s.
     openproxy::oauth::background_refresh::spawn_background_token_refresh(state.clone().into());
     spawn_models_dev_refresh(state.clone());
+    spawn_codex_catalog_refresh(state.clone());
 
     let app = openproxy::build_app(state.clone());
     let addr = format!("{}:{}", cli.host, cli.port);
@@ -439,6 +440,23 @@ fn spawn_models_dev_refresh(state: AppState) {
             tokio::select! {
                 _ = state.shutdown_signal.notified() => break,
                 _ = tokio::time::sleep(std::time::Duration::from_secs(60 * 60)) => {}
+            }
+        }
+    });
+}
+
+/// Reconcile and refresh Codex model inventories from one bounded process
+/// task. Generation uses only the atomically published per-connection index.
+fn spawn_codex_catalog_refresh(state: AppState) {
+    tokio::spawn(async move {
+        loop {
+            state.codex_models.refresh_active(&state).await;
+            tokio::select! {
+                _ = state.shutdown_signal.notified() => break,
+                // Poll configuration more frequently than the one-hour remote
+                // freshness interval. `refresh_active` makes no HTTP request
+                // for an unchanged fresh publication.
+                _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {}
             }
         }
     });

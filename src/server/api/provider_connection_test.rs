@@ -191,7 +191,7 @@ async fn test_oauth_connection(
     if connection.provider == "codex" {
         return match state
             .codex_models
-            .models_for_connection(state, connection)
+            .refresh_connection(state, connection, true)
             .await
         {
             Ok(_) => ConnectionTestResult {
