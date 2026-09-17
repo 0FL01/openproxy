@@ -1,7 +1,7 @@
 //! Antigravity OAuth 2.0 flow (Authorization Code, no PKCE).
 //!
 //! - Google OAuth with extended scopes
-//! - loadCodeAssist + onboardUser (poll 5s x 10 retries)
+//! - loadCodeAssist project discovery during connection setup
 //! - Numeric Client-Metadata headers for EVERY call
 //! - ProjectId discovery during connection setup
 //! - connect_antigravity(), refresh_antigravity()
@@ -12,7 +12,6 @@ use base64::Engine;
 use rand::RngCore;
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -27,8 +26,6 @@ const ANTIGRAVITY_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const ANTIGRAVITY_USER_INFO_URL: &str = "https://www.googleapis.com/oauth2/v1/userinfo";
 const ANTIGRAVITY_LOAD_CODE_ASSIST_ENDPOINT: &str =
     "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
-const ANTIGRAVITY_ONBOARD_USER_ENDPOINT: &str =
-    "https://cloudcode-pa.googleapis.com/v1internal:onboardUser";
 const ANTIGRAVITY_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform \
     https://www.googleapis.com/auth/userinfo.email \
     https://www.googleapis.com/auth/userinfo.profile \
@@ -225,55 +222,6 @@ async fn call_load_code_assist(
 }
 
 // ---------------------------------------------------------------------------
-// onboardUser with polling (5s x 10 retries)
-// ---------------------------------------------------------------------------
-
-async fn call_onboard_user(
-    access_token: &str,
-    tier_id: &str,
-) -> Result<(), String> {
-    let metadata_json = antigravity_metadata_header();
-    let client = reqwest::Client::new();
-    let body = serde_json::json!({
-        "tierId": tier_id,
-        "metadata": client_metadata(),
-    });
-
-    for attempt in 0..10 {
-        let response = client
-            .post(ANTIGRAVITY_ONBOARD_USER_ENDPOINT)
-            .header("Authorization", format!("Bearer {access_token}"))
-            .header("Content-Type", "application/json")
-            .header("User-Agent", ANTIGRAVITY_LOAD_CODE_ASSIST_USER_AGENT)
-            .header("X-Goog-Api-Client", ANTIGRAVITY_LOAD_CODE_ASSIST_API_CLIENT)
-            .header("Client-Metadata", &metadata_json)
-            .header("x-request-source", "local")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("onboardUser request failed: {e}"))?;
-
-        if !response.status().is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            if attempt < 9 {
-                tokio::time::sleep(Duration::from_secs(5)).await;
-                continue;
-            }
-            return Err(format!("onboardUser failed after retries: {error_text}"));
-        }
-
-        let result: Value = response.json().await.unwrap_or_default();
-        if result.get("done").and_then(Value::as_bool) == Some(true) {
-            return Ok(());
-        }
-
-        tokio::time::sleep(Duration::from_secs(5)).await;
-    }
-
-    Err("onboardUser timed out after 10 retries".to_string())
-}
-
-// ---------------------------------------------------------------------------
 // Token response parsing
 // ---------------------------------------------------------------------------
 
@@ -443,16 +391,8 @@ pub async fn connect_antigravity() -> Result<AntigravityConnectResult, String> {
     let (project_id, tier_id) =
         call_load_code_assist(&token_response.access_token).await.unwrap_or((None, None));
 
-    // 7. If we have a tier_id, start onboardUser in background
-    if let Some(ref tier) = tier_id {
-        let at = token_response.access_token.clone();
-        let tid = tier.clone();
-        tokio::spawn(async move {
-            let _ = call_onboard_user(&at, &tid).await;
-        });
-    }
-
-    // 8. Build extra data
+    // 7. Return discovered metadata. The configured-connection lifecycle
+    // schedules onboarding after this result is persisted with a stable id.
     let mut extra = BTreeMap::new();
     if let Some(ref email) = email {
         extra.insert("email".to_string(), Value::String(email.clone()));

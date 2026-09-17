@@ -186,8 +186,6 @@ fn antigravity_generation_has_no_independent_temporal_retry_scheduler() {
     assert!(execute.contains("self.pool.get(\"antigravity\""));
     assert!(execute.contains("self.request_url(request.stream)"));
     assert!(execute.contains("UpstreamResponse::Reqwest(response)"));
-    assert!(
-        source.contains("pub async fn on_user_onboard"),
-        "C12 must not mix in C22 onboarding work"
-    );
+    assert!(!execute.contains("on_user_onboard"));
+    assert!(!execute.contains("tokio::spawn"));
 }

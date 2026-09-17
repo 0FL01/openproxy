@@ -9,6 +9,7 @@ use crate::core::executor::ClientPool;
 use crate::core::health::{health_registry, HealthRegistry};
 use crate::core::model::models_dev::ModelsDevCatalog;
 use crate::db::Db;
+use crate::oauth::antigravity_onboarding::AntigravityOnboardingCoordinator;
 use crate::oauth::pending::PendingFlowStore;
 use crate::server::api::oauth::{CodexProxyState, XaiProxyState, ZedProxyState};
 use crate::server::auth::login_limiter::LoginLimiter;
@@ -78,6 +79,7 @@ pub struct AppState {
 
     pub models_dev: Arc<ModelsDevCatalog>,
     pub codex_models: Arc<CodexModelCatalog>,
+    pub antigravity_onboarding: Arc<AntigravityOnboardingCoordinator>,
 }
 
 impl AppState {
@@ -103,6 +105,7 @@ impl AppState {
             health: health_registry(),
             models_dev: Arc::new(ModelsDevCatalog::default()),
             codex_models: Arc::new(CodexModelCatalog::default()),
+            antigravity_onboarding: Arc::new(AntigravityOnboardingCoordinator::new()),
         }
     }
 

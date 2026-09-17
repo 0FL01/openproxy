@@ -64,8 +64,6 @@ const ANTIGRAVITY_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const ANTIGRAVITY_USER_INFO_URL: &str = "https://www.googleapis.com/oauth2/v1/userinfo";
 const ANTIGRAVITY_LOAD_CODE_ASSIST_ENDPOINT: &str =
     "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
-const ANTIGRAVITY_ONBOARD_USER_ENDPOINT: &str =
-    "https://cloudcode-pa.googleapis.com/v1internal:onboardUser";
 const ANTIGRAVITY_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/cclog https://www.googleapis.com/auth/experimentsandconfigs";
 const ANTIGRAVITY_LOAD_CODE_ASSIST_USER_AGENT: &str = "google-api-nodejs-client/9.15.1";
 const ANTIGRAVITY_LOAD_CODE_ASSIST_API_CLIENT: &str =
@@ -742,13 +740,6 @@ fn antigravity_load_code_assist_endpoint() -> String {
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| ANTIGRAVITY_LOAD_CODE_ASSIST_ENDPOINT.to_string())
-}
-
-fn antigravity_onboard_user_endpoint() -> String {
-    std::env::var("OPENPROXY_ANTIGRAVITY_ONBOARD_USER_ENDPOINT")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| ANTIGRAVITY_ONBOARD_USER_ENDPOINT.to_string())
 }
 
 fn kiro_auth_service_base_url() -> String {
@@ -1449,10 +1440,14 @@ async fn create_imported_oauth_connection(
                 existing.access_token = connection.access_token.clone();
                 existing.refresh_token = connection.refresh_token.clone();
                 existing.expires_at = connection.expires_at.clone();
+                existing.expires_in = connection.expires_in;
                 existing.test_status = connection.test_status.clone();
+                existing.last_error = connection.last_error.clone();
+                existing.last_error_at = connection.last_error_at.clone();
                 existing.token_type = connection.token_type.clone();
                 existing.scope = connection.scope.clone();
                 existing.id_token = connection.id_token.clone();
+                existing.project_id = connection.project_id.clone();
                 existing.provider_specific_data = connection.provider_specific_data.clone();
                 existing.updated_at = Some(now.clone());
                 saved = Some(existing.clone());
@@ -3661,49 +3656,9 @@ async fn exchange_antigravity_compat(
         }
     }
 
-    if project_id.is_some() {
-        let access_token = access_token.clone();
-        let tier_id = tier_id.clone();
-        let onboard_url = antigravity_onboard_user_endpoint();
-        tokio::spawn(async move {
-            let metadata = antigravity_load_metadata();
-            let client = reqwest::Client::new();
-            for _ in 0..10 {
-                let response = match client
-                    .post(&onboard_url)
-                    .header("Authorization", format!("Bearer {access_token}"))
-                    .header("Content-Type", "application/json")
-                    .header("User-Agent", ANTIGRAVITY_LOAD_CODE_ASSIST_USER_AGENT)
-                    .header("X-Goog-Api-Client", ANTIGRAVITY_LOAD_CODE_ASSIST_API_CLIENT)
-                    .header(
-                        "Client-Metadata",
-                        ANTIGRAVITY_LOAD_CODE_ASSIST_CLIENT_METADATA,
-                    )
-                    .header("x-request-source", "local")
-                    .json(&json!({
-                        "tierId": tier_id,
-                        "metadata": metadata,
-                    }))
-                    .send()
-                    .await
-                {
-                    Ok(response) => response,
-                    Err(_) => break,
-                };
-
-                if response.status().is_success() {
-                    let result = response.json::<Value>().await.unwrap_or(Value::Null);
-                    if result.get("done").and_then(Value::as_bool) == Some(true) {
-                        break;
-                    }
-                }
-
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            }
-        });
-    }
-
     let discovery_failed = project_discovery_error.is_some();
+    let mut provider_specific_data = std::collections::BTreeMap::new();
+    provider_specific_data.insert("tierId".to_string(), Value::String(tier_id));
     Ok(ProviderConnection {
         provider: "antigravity".to_string(),
         auth_type: "oauth".to_string(),
@@ -3719,6 +3674,7 @@ async fn exchange_antigravity_compat(
         test_status: Some(if discovery_failed { "error" } else { "active" }.to_string()),
         last_error: project_discovery_error,
         last_error_at: discovery_failed.then(|| chrono::Utc::now().to_rfc3339()),
+        provider_specific_data,
         ..Default::default()
     })
 }
@@ -4034,6 +3990,26 @@ async fn exchange_oauth_compat(
         Ok(value) => value,
         Err(error) => return internal_error_response(error.to_string()),
     };
+
+    // C22: onboarding is admitted once from the configured-connection
+    // lifecycle. Generation never starts or waits for this polling work.
+    if saved.provider == "antigravity"
+        && crate::core::utils::antigravity_project::antigravity_project_id(&saved).is_some()
+    {
+        let onboarding = state.antigravity_onboarding.clone();
+        let db = state.db.clone();
+        let pool = state.client_pool.clone();
+        let connection_id = saved.id.clone();
+        let generation = crate::oauth::token_refresh::connection_credential_generation(&saved);
+        tokio::spawn(async move {
+            if let Err(error) = onboarding
+                .ensure(db, pool, &connection_id, generation)
+                .await
+            {
+                tracing::warn!(%connection_id, %error, "Antigravity onboarding failed");
+            }
+        });
+    }
 
     let mut response_connection = serde_json::Map::from_iter([
         ("id".to_string(), Value::String(saved.id)),

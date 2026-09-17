@@ -266,6 +266,25 @@
     "credentials_preserved_on_discovery_failure": true,
     "onboarding_lifecycle_owner": "C22"
   },
+  "antigravity_onboarding_lifecycle": {
+    "checkpoint": "C22",
+    "owner": "configured_connection_control_plane",
+    "generation_starts_onboarding": false,
+    "generation_waits_for_onboarding": false,
+    "key": "configured_connection_identity_and_credential_generation",
+    "active_session_bound": "one_per_configured_connection_generation",
+    "completed_result_cache": false,
+    "maximum_polls_per_session": 10,
+    "poll_interval_seconds": 5,
+    "pooled_transport": true,
+    "configured_proxy_preserved": true,
+    "connection_delete_cancels": true,
+    "shutdown_drains": true,
+    "failure_is_persisted_readiness_state": true,
+    "credentials_and_project_metadata_preserved_on_failure": true,
+    "explicit_connection_test_can_retry": true,
+    "idle_entries": 0
+  },
   "versions": {
     "opencode": "1.18.31",
     "custom_harness": "unknown"

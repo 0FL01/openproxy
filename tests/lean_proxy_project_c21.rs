@@ -178,7 +178,8 @@ fn project_resolution_is_canonical_and_cache_free() {
         );
     }
     assert!(execute.contains("antigravity_project_id(&request.credentials)"));
-    assert!(source.contains("pub async fn on_user_onboard"));
+    assert!(!execute.contains("on_user_onboard"));
+    assert!(!execute.contains("tokio::spawn"));
 
     let utils = include_str!("../src/core/utils/mod.rs");
     let executors = include_str!("../src/core/executor/mod.rs");

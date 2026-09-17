@@ -134,11 +134,43 @@ pub(super) async fn test_provider_connection(
     }
 
     let auth_type = connection.auth_type.trim().to_ascii_lowercase();
-    let result = if matches!(auth_type.as_str(), "apikey" | "api_key" | "cookie") {
+    let mut result = if matches!(auth_type.as_str(), "apikey" | "api_key" | "cookie") {
         test_api_key_connection(&state, &connection, &effective_proxy).await
     } else {
         test_oauth_connection(&state, &connection, &effective_proxy).await
     };
+
+    // C22: the explicit connection test is also the user-visible retry entry
+    // point for bounded Antigravity onboarding. It is never called by chat.
+    if result.valid && connection.provider == "antigravity" {
+        if let Some(canonical) = state
+            .db
+            .snapshot()
+            .provider_connections
+            .iter()
+            .find(|candidate| candidate.id == connection.id)
+            .cloned()
+        {
+            if crate::core::utils::antigravity_project::antigravity_project_id(&canonical).is_some()
+            {
+                let generation =
+                    crate::oauth::token_refresh::connection_credential_generation(&canonical);
+                if let Err(error) = state
+                    .antigravity_onboarding
+                    .ensure(
+                        state.db.clone(),
+                        state.client_pool.clone(),
+                        &canonical.id,
+                        generation,
+                    )
+                    .await
+                {
+                    result.valid = false;
+                    result.error = Some(error);
+                }
+            }
+        }
+    }
 
     persist_test_result(&state, &connection.id, result).await
 }

@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C22",
+  "next_checkpoint": "C23",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c21_cargo_1.98.1",
+    "rust_verification": "passed_through_c22_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -1152,7 +1152,7 @@
     {
       "id": "C22",
       "title": "Убрать Antigravity onboarding task из каждого запроса",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C21"
       ],
@@ -1164,7 +1164,43 @@
       "change": "Перенести onboarding в lifecycle подключения после discovery; выполняется только при необходимости для данной identity/config generation. Никакого detached polling на каждый chat. Ограничить активность, отмену при удалении подключения и число попыток setup; использовать подходящий общий transport.",
       "tests": "100 chat одного настроенного connection не запускают 100 onboarding workers. Новое подключение выполняет нужный onboarding один раз; failure/retry setup, deletion и shutdown освобождают задачу.",
       "acceptance": "Число onboarding задач определяется настройкой подключений, не chat throughput; readiness ошибки доступны пользователю без скрытого polling из generation.",
-      "rollback": "Откат lifecycle commit; не возвращать бесконтрольный spawn как recovery strategy."
+      "rollback": "Откат lifecycle commit; не возвращать бесконтрольный spawn как recovery strategy.",
+      "result": {
+        "files": [
+          "src/oauth/antigravity_onboarding.rs",
+          "src/oauth/mod.rs",
+          "src/core/executor/antigravity.rs",
+          "src/server/state.rs",
+          "src/server/api/oauth.rs",
+          "src/server/api/provider_connection_test.rs",
+          "src/server/api/admin_items.rs",
+          "src/main.rs",
+          "tests/lean_proxy_onboarding_c22.rs",
+          "tests/lean_proxy_antigravity_c12.rs",
+          "tests/lean_proxy_project_c21.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json"
+        ],
+        "generation_path": "Antigravity execute_request performs no onboardUser call, polling, sleep, or spawn. One hundred concurrent generation requests produced exactly one generation request each and zero onboarding work.",
+        "lifecycle": "Successful configured OAuth setup schedules one active-only connection/generation onboarding session. Same-generation callers share one worker; there is no completed-result cache or idle entry. An explicit connection test is the retry entry point.",
+        "bounds": "At most one active session per configured connection generation, ten polls, five-second production interval, fifteen-second HTTP-attempt timeout, and no per-session background timer after completion.",
+        "transport_and_security": "Onboarding uses ClientPool and the canonical connection's resolved proxy, preserves numeric Antigravity metadata and authorization headers, and never logs or keys state by a token.",
+        "cancellation": "Connection delete and batch delete cancel matching work. Generation changes cancel stale sessions, compare-before-persist prevents stale readiness writes, and graceful process shutdown stops admission and drains active entries.",
+        "readiness": "Bounded setup failure is persisted through existing testStatus/lastError/lastErrorAt fields while OAuth credentials and canonical project metadata remain unchanged. A later explicit retry may succeed and clear the error.",
+        "migration": "No schema or field rename. OAuth upsert now preserves project_id, expires_in, and setup diagnostics and stores discovered tierId in providerSpecificData for the lifecycle worker; unknown provider-specific fields retain their existing round-trip behavior.",
+        "verification": [
+          "cargo test --test lean_proxy_onboarding_c22 -- --nocapture: 3 passed",
+          "cargo test --test lean_proxy_project_c21 --test lean_proxy_antigravity_c12 --test oauth_non_pkce_auth_code_compat_api --test lean_proxy_contract -- --nocapture: 18 passed",
+          "cargo test --test lean_proxy_refresh_c16 --test lean_proxy_refresh_c17a --test lean_proxy_refresh_c17b --test lean_proxy_refresh_c18 --test lean_proxy_budget_c13 --test lean_proxy_onboarding_c22 --test lean_proxy_contract -- --nocapture: 28 passed",
+          "cargo test --lib antigravity --all-features -- --nocapture: 26 passed",
+          "cargo test --lib --all-features -- --test-threads=1: 1191 passed",
+          "focused clippy with -D warnings and the two documented unrelated lint allowances: passed",
+          "cargo clippy --all-targets --all-features: passed with 3 pre-existing production style warnings",
+          "cargo fmt --all -- --check, JSON parse, and git diff --check: passed"
+        ],
+        "acceptance_evidence": "One hundred concurrent chats start no onboarding workers. Thirty-two same-generation setup callers share one held loopback request; explicit 400 failure persists error state without token loss and a later retry succeeds. Deletion and shutdown cancel held HTTP bodies, release all active entries, prevent resurrection, and reject post-shutdown admission.",
+        "rollback": "Revert the C22 lifecycle commit without clearing credentials, project_id, tierId, or diagnostics. Never restore onboarding polling in execute_request; retry onboarding only from explicit configured-connection lifecycle actions."
+      }
     },
     {
       "id": "C23",

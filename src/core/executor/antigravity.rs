@@ -26,8 +26,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::core::config::app_constants::{
-    ag_chat_user_agent, cloud_code_api, load_code_assist_metadata, INTERNAL_REQUEST_HEADER_NAME,
-    INTERNAL_REQUEST_HEADER_VALUE,
+    ag_chat_user_agent, INTERNAL_REQUEST_HEADER_NAME, INTERNAL_REQUEST_HEADER_VALUE,
 };
 use crate::core::proxy::ProxyTarget;
 use crate::core::utils::antigravity_project::antigravity_project_id;
@@ -38,7 +37,7 @@ use super::{ClientPool, TransportKind, UpstreamResponse};
 
 /// Default base URL for Antigravity's Cloud Code endpoint.
 /// Chat traffic uses the daily host (bypasses prod 429); discovery
-/// (loadCodeAssist/onboardUser) stays on PROD — see oauth/antigravity.rs.
+/// (loadCodeAssist/onboardUser) stays on PROD — see the OAuth control plane.
 /// Ported from 9router v0.5.45 (fix(gemini): daily-cloudcode host switch).
 pub const ANTIGRAVITY_BASE_URL: &str = "https://daily-cloudcode-pa.googleapis.com";
 
@@ -297,66 +296,6 @@ impl AntigravityExecutor {
             HeaderValue::from_str(&serde_json::to_string(&metadata)?)?,
         );
         Ok(headers)
-    }
-
-    /// POST `onboardUser` and poll (5 s interval, up to 10 attempts) until
-    /// the server responds with `{"done": true}`.
-    ///
-    /// This is a best-effort fire-and-forget call: network errors silently
-    /// return `Ok(())` so the caller is never blocked by an unreachable
-    /// onboard endpoint.
-    pub async fn on_user_onboard(
-        access_token: &str,
-        project_id: &str,
-    ) -> Result<(), AntigravityExecutorError> {
-        let client = reqwest::Client::new();
-        let metadata = load_code_assist_metadata();
-        let metadata_json = serde_json::to_string(&metadata).unwrap_or_default();
-        let onboard_url = cloud_code_api::ONBOARD_USER;
-
-        for attempt in 0..10 {
-            let response = client
-                .post(onboard_url)
-                .header("Authorization", format!("Bearer {access_token}"))
-                .header("Content-Type", "application/json")
-                .header("User-Agent", "google-api-nodejs-client/9.15.1")
-                .header(
-                    "X-Goog-Api-Client",
-                    "google-cloud-sdk vscode_cloudshelleditor/0.1",
-                )
-                .header("Client-Metadata", &metadata_json)
-                .json(&json!({
-                    "tierId": "legacy-tier",
-                    "projectId": project_id,
-                    "metadata": metadata,
-                }))
-                .send()
-                .await;
-
-            match response {
-                Ok(resp) if resp.status().is_success() => {
-                    let result = resp.json::<Value>().await.unwrap_or(Value::Null);
-                    if result.get("done").and_then(Value::as_bool) == Some(true) {
-                        tracing::info!(
-                            "antigravity onboardUser succeeded after {} poll(s)",
-                            attempt + 1
-                        );
-                        return Ok(());
-                    }
-                }
-                Err(_) => {
-                    // Network error during onboard is non-fatal — the API
-                    // will onboard on first request anyway.
-                    return Ok(());
-                }
-                _ => {}
-            }
-
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-        }
-
-        tracing::warn!("antigravity onboardUser did not complete after 10 polls");
-        Ok(())
     }
 
     /// Sanitize a tool function name so it matches Gemini's allowed
@@ -631,16 +570,6 @@ impl AntigravityExecutor {
         // Generation is a pure local read; discovery is restricted to
         // setup/control-plane operations and never adds a warm-path RTT.
         let project_id = antigravity_project_id(&request.credentials).unwrap_or_default();
-
-        // Spawn best-effort onboardUser notification in the background so
-        // it does not block the critical path.
-        if !project_id.is_empty() {
-            let at = access_token.clone();
-            let pid = project_id.clone();
-            tokio::spawn(async move {
-                let _ = Self::on_user_onboard(&at, &pid).await;
-            });
-        }
 
         let session_id = Self::transform_request(&mut request.body, &request.credentials)?;
 

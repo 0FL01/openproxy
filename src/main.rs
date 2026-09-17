@@ -411,6 +411,9 @@ async fn main() -> anyhow::Result<()> {
             info!("Shutdown signal received — stopping server");
         }
     }
+    // C22: stop admitting onboarding work and cancel/drain the bounded
+    // per-connection lifecycle before the runtime is dropped.
+    state.antigravity_onboarding.shutdown().await;
     Ok(())
 }
 

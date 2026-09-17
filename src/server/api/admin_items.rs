@@ -241,15 +241,19 @@ async fn delete_provider(
         return not_found("Connection not found");
     }
 
-    match state
+    let deleted_id = id.clone();
+    let result = state
         .db
         .update(move |db| {
             db.provider_connections
                 .retain(|connection| connection.id != id);
         })
-        .await
-    {
-        Ok(_) => Json(json!({ "message": "Connection deleted successfully" })).into_response(),
+        .await;
+    match result {
+        Ok(_) => {
+            state.antigravity_onboarding.cancel_connection(&deleted_id);
+            Json(json!({ "message": "Connection deleted successfully" })).into_response()
+        }
         Err(error) => internal_error(error),
     }
 }
@@ -671,6 +675,7 @@ async fn batch_delete_providers(
     }
 
     let ids = req.ids;
+    let cancelled_ids = ids.clone();
     let count = ids.len();
     match state
         .db
@@ -680,7 +685,12 @@ async fn batch_delete_providers(
         })
         .await
     {
-        Ok(_) => Json(json!({ "deleted": count })).into_response(),
+        Ok(_) => {
+            for id in cancelled_ids {
+                state.antigravity_onboarding.cancel_connection(&id);
+            }
+            Json(json!({ "deleted": count })).into_response()
+        }
         Err(error) => internal_error(error),
     }
 }

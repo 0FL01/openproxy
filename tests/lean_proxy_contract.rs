@@ -252,4 +252,20 @@ fn contract_freezes_preservation_and_removal_lists() {
         manifest["antigravity_project_metadata"]["onboarding_lifecycle_owner"],
         "C22"
     );
+    assert_eq!(
+        manifest["antigravity_onboarding_lifecycle"]["generation_starts_onboarding"],
+        false
+    );
+    assert_eq!(
+        manifest["antigravity_onboarding_lifecycle"]["active_session_bound"],
+        "one_per_configured_connection_generation"
+    );
+    assert_eq!(
+        manifest["antigravity_onboarding_lifecycle"]["connection_delete_cancels"],
+        true
+    );
+    assert_eq!(
+        manifest["antigravity_onboarding_lifecycle"]["shutdown_drains"],
+        true
+    );
 }
