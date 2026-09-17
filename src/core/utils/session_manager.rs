@@ -1,28 +1,15 @@
-//! Port of `open-sse/utils/sessionManager.js`.
+//! Stateless provider session and continuation identifier derivation.
 //!
-//! Per-connection session-id manager for the Antigravity Cloud Code path.
-//! The upstream binary mints a session id once at startup (`randomUUID()
-//! + Date.now()`); since the proxy is long-running, we simulate the same
-//!   "stable for the process lifetime" behaviour by caching one id per
-//!   connection-id (typically the OAuth account email).
-//!
-//! Also provides conversation-stable session identity resolution and stable
-//! Kiro `agentContinuationId` minting (`resolve_continuation_id`). It never
-//! stores prompt or conversation content.
+//! Client-supplied conversation identifiers always win. Provider fallbacks are
+//! deterministic and namespaced by adapter plus configured connection, so they
+//! remain stable without retaining process-global client or account state.
+//! Kiro requests without a client conversation id remain intentionally
+//! ephemeral.
 
-use dashmap::DashMap;
-use once_cell::sync::Lazy;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
-
-use crate::core::config::runtime_config::memory_config;
-
-/// Hard cap on the number of cached session ids. Belt-and-suspenders against
-/// runaway growth between cleanup ticks.
-const MAX_SESSIONS: usize = 1000;
-const MAX_CONTINUATION_SESSIONS: usize = 5000;
 
 /// Client headers that may carry an upstream session id (priority order).
 const SESSION_HEADER_KEYS: &[&str] = &[
@@ -32,18 +19,6 @@ const SESSION_HEADER_KEYS: &[&str] = &[
     "x-amp-thread-id",
 ];
 
-#[derive(Debug, Clone)]
-struct Entry {
-    session_id: String,
-    last_used: Instant,
-}
-
-#[derive(Debug, Clone)]
-struct ContinuationEntry {
-    continuation_id: String,
-    last_used: Instant,
-}
-
 /// Result of resolving a conversation-stable session id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionIdentity {
@@ -52,42 +27,31 @@ pub struct SessionIdentity {
     pub ephemeral: bool,
 }
 
-static STORE: Lazy<DashMap<String, Entry>> = Lazy::new(DashMap::new);
-static CONTINUATION_STORE: Lazy<DashMap<String, ContinuationEntry>> = Lazy::new(DashMap::new);
-static CLEANUP_LOCK: Lazy<parking_lot::Mutex<Instant>> =
-    Lazy::new(|| parking_lot::Mutex::new(Instant::now()));
-
-/// Return a stable session id for `connection_id`, minting one on first use
-/// and refreshing the LRU timestamp on subsequent calls. If `connection_id`
-/// is empty, returns a fresh one-shot id (no caching).
+/// Return a stable Antigravity session id for `connection_id` without keeping
+/// process-global state. The UUID + 13 decimal digit shape remains compatible
+/// with the upstream binary's `randomUUID() + Date.now()` value. An empty
+/// connection id remains one-shot.
 pub fn derive_session_id(connection_id: &str) -> String {
     if connection_id.is_empty() {
         return generate_binary_style_id();
     }
-
-    maybe_run_cleanup();
-
-    if let Some(mut entry) = STORE.get_mut(connection_id) {
-        entry.last_used = Instant::now();
-        return entry.session_id.clone();
-    }
-
-    if STORE.len() >= MAX_SESSIONS {
-        // Pop one arbitrary entry as a soft eviction.
-        if let Some(victim) = STORE.iter().next().map(|r| r.key().clone()) {
-            STORE.remove(&victim);
-        }
-    }
-
-    let session_id = generate_binary_style_id();
-    STORE.insert(
-        connection_id.to_string(),
-        Entry {
-            session_id: session_id.clone(),
-            last_used: Instant::now(),
-        },
+    let uuid = Uuid::new_v5(
+        &Uuid::NAMESPACE_URL,
+        format!("openproxy:antigravity:session:{connection_id}").as_bytes(),
     );
-    session_id
+    let decimal_suffix = uuid.as_u128() % 10_000_000_000_000;
+    format!("{uuid}{decimal_suffix:013}")
+}
+
+fn derive_scoped_session_id(scope: &str, connection_id: &str) -> String {
+    if connection_id.is_empty() {
+        return generate_binary_style_id();
+    }
+    Uuid::new_v5(
+        &Uuid::NAMESPACE_URL,
+        format!("openproxy:{scope}:session:{connection_id}").as_bytes(),
+    )
+    .to_string()
 }
 
 /// Generate a fresh session id matching the upstream binary's format.
@@ -97,33 +61,6 @@ pub fn generate_binary_style_id() -> String {
         .map(|d| d.as_millis())
         .unwrap_or(0);
     format!("{}{now_ms}", Uuid::new_v4())
-}
-
-/// Drop all session + continuation ids. Mainly useful for tests.
-pub fn clear_session_store() {
-    STORE.clear();
-    CONTINUATION_STORE.clear();
-}
-
-/// Number of cached per-connection session entries. Useful for tests.
-pub fn cached_count() -> usize {
-    STORE.len()
-}
-
-fn maybe_run_cleanup() {
-    let interval = memory_config::SESSION_CLEANUP_INTERVAL;
-    let mut last = match CLEANUP_LOCK.try_lock() {
-        Some(g) => g,
-        None => return,
-    };
-    if last.elapsed() < interval {
-        return;
-    }
-    let ttl = memory_config::SESSION_TTL;
-    let cutoff = Instant::now() - ttl;
-    STORE.retain(|_, entry| entry.last_used >= cutoff);
-    CONTINUATION_STORE.retain(|_, entry| entry.last_used >= cutoff);
-    *last = Instant::now();
 }
 
 fn normalize_session_id(value: Option<&str>) -> Option<String> {
@@ -213,7 +150,7 @@ fn extract_client_session_id(
 
 /// Resolve a conversation-stable session id (9router `resolveSessionIdentity`).
 ///
-/// Priority: client session header/body → (non-kiro) per-connection cache →
+/// Priority: client session header/body → (non-kiro) deterministic connection id →
 /// for Kiro with no client id, mint an ephemeral one-shot id.
 pub fn resolve_session_identity(
     headers: Option<&HashMap<String, String>>,
@@ -235,13 +172,16 @@ pub fn resolve_session_identity(
         };
     }
     SessionIdentity {
-        session_id: derive_session_id(connection_id.unwrap_or("")),
+        session_id: derive_scoped_session_id(scope, connection_id.unwrap_or("")),
         ephemeral: false,
     }
 }
 
-/// Resolve a stable `agentContinuationId` for multi-turn Kiro sessions.
-/// Ephemeral sessions always get a fresh UUID.
+/// Resolve a stable, adapter/account/session-namespaced continuation UUID.
+///
+/// Kiro accepts an opaque UUID and requires it to remain stable across turns.
+/// UUIDv5 supplies that protocol property without retaining client history or a
+/// process-global continuation map. Ephemeral sessions always get a fresh UUID.
 pub fn resolve_continuation_id(
     session_id: &str,
     connection_id: Option<&str>,
@@ -251,26 +191,15 @@ pub fn resolve_continuation_id(
     if ephemeral {
         return Uuid::new_v4().to_string();
     }
-    maybe_run_cleanup();
-    let key = format!("{}:{}:{}", scope, connection_id.unwrap_or(""), session_id);
-    if let Some(mut entry) = CONTINUATION_STORE.get_mut(&key) {
-        entry.last_used = Instant::now();
-        return entry.continuation_id.clone();
-    }
-    if CONTINUATION_STORE.len() >= MAX_CONTINUATION_SESSIONS {
-        if let Some(victim) = CONTINUATION_STORE.iter().next().map(|r| r.key().clone()) {
-            CONTINUATION_STORE.remove(&victim);
-        }
-    }
-    let continuation_id = Uuid::new_v4().to_string();
-    CONTINUATION_STORE.insert(
-        key,
-        ContinuationEntry {
-            continuation_id: continuation_id.clone(),
-            last_used: Instant::now(),
-        },
-    );
-    continuation_id
+    Uuid::new_v5(
+        &Uuid::NAMESPACE_URL,
+        format!(
+            "openproxy:{scope}:continuation:{}:{session_id}",
+            connection_id.unwrap_or("")
+        )
+        .as_bytes(),
+    )
+    .to_string()
 }
 
 /// Convenience: extract connectionId / rawHeaders from the translator credentials Value.
@@ -303,41 +232,29 @@ pub fn credentials_raw_headers(credentials: Option<&Value>) -> Option<HashMap<St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn empty_connection_id_returns_uncached_value() {
-        let _guard = TEST_LOCK.lock().unwrap();
-        clear_session_store();
+    fn empty_connection_id_returns_one_shot_value() {
         let a = derive_session_id("");
         let b = derive_session_id("");
         assert_ne!(a, b);
-        // Empty connection ids are never cached.
-        assert_eq!(cached_count(), 0);
     }
 
     #[test]
-    fn same_connection_returns_same_id() {
-        let _guard = TEST_LOCK.lock().unwrap();
-        clear_session_store();
+    fn same_connection_returns_same_stateless_id() {
         let a = derive_session_id("test-conn-1");
         let b = derive_session_id("test-conn-1");
         assert_eq!(a, b);
-        // Only one entry cached for this connection.
-        assert!(cached_count() >= 1);
+        assert_eq!(a.len(), 49);
+        assert_eq!(Uuid::parse_str(&a[..36]).unwrap().get_version_num(), 5);
+        assert!(a[36..].chars().all(|character| character.is_ascii_digit()));
     }
 
     #[test]
     fn different_connections_get_different_ids() {
-        let _guard = TEST_LOCK.lock().unwrap();
-        clear_session_store();
         let a = derive_session_id("test-conn-a");
         let b = derive_session_id("test-conn-b");
         assert_ne!(a, b);
-        // At least two entries (may be more from parallel tests).
-        assert!(cached_count() >= 2);
     }
 
     #[test]
@@ -348,9 +265,54 @@ mod tests {
     }
 
     #[test]
-    fn ttl_durations_are_positive() {
-        // sanity check the runtime_config wiring
-        assert!(memory_config::SESSION_TTL > Duration::from_secs(0));
-        assert!(memory_config::SESSION_CLEANUP_INTERVAL > Duration::from_secs(0));
+    fn identities_are_namespaced_without_retained_state() {
+        let opencode = resolve_session_identity(None, None, Some("account"), "opencode");
+        let antigravity = resolve_session_identity(None, None, Some("account"), "antigravity");
+        assert_eq!(
+            opencode,
+            resolve_session_identity(None, None, Some("account"), "opencode")
+        );
+        assert_ne!(opencode.session_id, antigravity.session_id);
+
+        let first = resolve_continuation_id("client", Some("account-a"), "kiro", false);
+        assert_eq!(
+            first,
+            resolve_continuation_id("client", Some("account-a"), "kiro", false)
+        );
+        assert_ne!(
+            first,
+            resolve_continuation_id("client", Some("account-b"), "kiro", false)
+        );
+        assert_ne!(
+            first,
+            resolve_continuation_id("client", Some("account-a"), "other", false)
+        );
+    }
+
+    #[test]
+    fn one_hundred_thousand_client_sessions_retain_nothing() {
+        let first = resolve_continuation_id("session-0", Some("account"), "kiro", false);
+        for index in 0..100_000 {
+            let session = format!("session-{index}");
+            let id = resolve_continuation_id(&session, Some("account"), "kiro", false);
+            assert_eq!(Uuid::parse_str(&id).unwrap().get_version_num(), 5);
+        }
+        assert_eq!(
+            first,
+            resolve_continuation_id("session-0", Some("account"), "kiro", false)
+        );
+    }
+
+    #[test]
+    fn kiro_without_client_identity_is_ephemeral() {
+        let first = resolve_session_identity(None, None, Some("account"), "kiro");
+        let second = resolve_session_identity(None, None, Some("account"), "kiro");
+        assert!(first.ephemeral);
+        assert!(second.ephemeral);
+        assert_ne!(first.session_id, second.session_id);
+        assert_ne!(
+            resolve_continuation_id(&first.session_id, Some("account"), "kiro", true),
+            resolve_continuation_id(&first.session_id, Some("account"), "kiro", true)
+        );
     }
 }

@@ -93,17 +93,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R3 / C06.
-- Smallest next action: Audit Kiro, Antigravity, and OpenCode session/continuation maps, remove state that is not protocol-required, and byte-bound any minimal remainder without touching dashboard authentication sessions.
-- Expected evidence: Cross-client identifiers never collide or leak; any retained protocol state has a documented key, value shape, expiry, byte/count bound, and cleanup lifecycle, while empty process state is the normal case when stateless derivation suffices.
-- Stop or replan if: A provider protocol demonstrably requires stable continuation state that cannot be derived from the current request; retain only that minimal namespaced bounded state and record the evidence.
+- Closes: R3 / C07.
+- Smallest next action: Separate advertised provider/model context metadata from proxy-owned rejection/headroom policy while preserving persisted `providerContextLimits` values and OpenCode metadata.
+- Expected evidence: `/v1/models` retains accurate configured/native context metadata, existing settings round-trip unchanged, and metadata computation no longer implies autonomous request rejection policy.
+- Stop or replan if: A named provider proves one stored limit is an upstream wire requirement rather than metadata/policy; preserve that adapter-specific requirement without restoring a generic proxy heuristic.
 
 ## Current State
 
-- Resolved: R1 / C00, R2 / C01-C02, C03-C05 and C14 within R3, plus C15 within R4. Kiro semantic repair/history replay, global Claude header replay, successful-response legacy housekeeping, and redundant `Db::update` snapshot copies are gone.
-- Last relevant evidence: C15 no-op, real, failure, 32-writer/readers, and blocked-commit cancellation tests passed. Cancellation has commit-wins semantics and cannot leave SQLite ahead of the published snapshot; the full library passed 1,223/1,223.
+- Resolved: R1 / C00, R2 / C01-C02, C03-C06 and C14 within R3, plus C15 within R4. Kiro semantic repair/history replay, global Claude header replay, process-wide session/continuation maps, successful-response legacy housekeeping, and redundant `Db::update` snapshot copies are gone.
+- Last relevant evidence: C06 Kiro full-handler account/client/tool/compaction coverage, Antigravity/OpenCode adapter tests, 100,000-session stateless churn, concurrent cancellation, 1,227 library tests, and all-target/all-feature clippy passed (seven pre-existing warnings only).
 - Blocker: None; the prompt explicitly allows independent safe work when external harness/version evidence is unavailable.
-- Next: C06 session/continuation-state disposition, the first numeric dependency-ready checkpoint after the completed first-delivery sequence.
+- Next: C07 metadata-versus-context-policy separation.
 
 ## Material Decisions
 
@@ -122,6 +122,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-09-17: C05 passed. Deleted Kiro's process-wide frozen-msg0/system-prompt store without replacement, kept request-scoped protocol identifiers for C06, and verified current-only history across repeated sessions, compaction, account/model/system changes, tools, and concurrency. Real provider cache-hit/TTFT remains unverified because no permitted live Kiro credentials are available. C14 is next per the first-delivery order.
 - 2026-09-17: C14 passed. Removed successful-generation and successful-web-fetch `Db::update` cleanup, preserved all legacy diagnostic bytes as historical/inert state, kept explicit narrow clearing, and proved repeated success on a large configuration neither published a new AppDb nor let future cooldown/degraded markers suppress routing. C15 is next.
 - 2026-09-17: C15 passed. `Db::update` now performs one mutable full copy, shares old/new snapshots with blocking persistence, preserves Arc identity on no-op, publishes only after commit, and keeps commit/publication serialized even when the awaiting caller is cancelled. C06 is next as the first dependency-ready checkpoint after the frozen first-delivery sequence.
+- 2026-09-17: C06 passed. Deleted both process-wide session/continuation maps without replacement; client ids remain authoritative, Antigravity preserves its UUID-plus-digits wire shape, OpenCode fallback is a stateless namespaced UUID, and Kiro continuation is deterministically bound to the selected configured connection while anonymous requests remain ephemeral. Five full-handler Kiro turns, adapter tests, 100,000-session churn, and cancellation prove zero retained entries; C07 is next.
 
 ## Completion
 

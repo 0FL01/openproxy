@@ -417,9 +417,46 @@ impl KiroExecutor {
         Ok((response, headers))
     }
 
+    fn bind_continuation_to_connection(body: &mut Value, connection_id: &str) {
+        let Some(object) = body.as_object_mut() else {
+            return;
+        };
+        let Some(ephemeral) = object
+            .remove("_kiroSessionEphemeral")
+            .and_then(|value| value.as_bool())
+        else {
+            // Native Kiro payloads do not carry translator metadata. Preserve
+            // their caller-supplied continuation identifier unchanged.
+            return;
+        };
+        let Some(conversation_id) = object
+            .get("conversationState")
+            .and_then(|state| state.get("conversationId"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        else {
+            return;
+        };
+        let continuation_id = crate::core::utils::session_manager::resolve_continuation_id(
+            &conversation_id,
+            Some(connection_id),
+            "kiro",
+            ephemeral,
+        );
+        if let Some(state) = object
+            .get_mut("conversationState")
+            .and_then(Value::as_object_mut)
+        {
+            state.insert(
+                "agentContinuationId".to_string(),
+                Value::String(continuation_id),
+            );
+        }
+    }
+
     pub async fn execute_request(
         &self,
-        request: KiroExecutionRequest,
+        mut request: KiroExecutionRequest,
     ) -> Result<KiroExecutorResponse, KiroExecutorError> {
         if request
             .credentials
@@ -432,6 +469,8 @@ impl KiroExecutor {
                 "providerSpecificData.kiroToolCallRepair is deprecated and preserved as inert data; semantic repair and hidden generation retries are disabled"
             );
         }
+
+        Self::bind_continuation_to_connection(&mut request.body, &request.credentials.id);
 
         let urls = self.build_url(&request.model, request.stream, &request.credentials);
 

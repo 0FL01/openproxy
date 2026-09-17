@@ -461,4 +461,23 @@ mod tests {
         assert_eq!(first, second);
         assert!(Uuid::parse_str(first).is_ok());
     }
+
+    #[test]
+    fn fallback_session_is_stateless_stable_and_connection_scoped() {
+        let first_request = request(OpenCodeTier::Zen, Format::OpenAiResponses);
+        let first = OpenCodeExecutor::build_headers(&first_request).unwrap();
+        let second = OpenCodeExecutor::build_headers(&first_request).unwrap();
+        let first = first.get("x-opencode-session").unwrap().to_str().unwrap();
+        let second = second.get("x-opencode-session").unwrap().to_str().unwrap();
+        assert_eq!(first, second);
+        assert_eq!(Uuid::parse_str(first).unwrap().get_version_num(), 5);
+
+        let mut other = request(OpenCodeTier::Zen, Format::OpenAiResponses);
+        other.credentials.id = "other-connection".to_string();
+        let other = OpenCodeExecutor::build_headers(&other).unwrap();
+        assert_ne!(
+            first,
+            other.get("x-opencode-session").unwrap().to_str().unwrap()
+        );
+    }
 }

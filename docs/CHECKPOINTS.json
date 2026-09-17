@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C06",
+  "next_checkpoint": "C07",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c15_cargo_1.98.1",
+    "rust_verification": "passed_through_c06_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -327,7 +327,7 @@
     {
       "id": "C06",
       "title": "Сократить session/continuation state без разрушения протокола",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C05"
       ],
@@ -340,7 +340,36 @@
       "change": "Сначала проверить необходимость STORE/CONTINUATION_STORE для каждой используемой пары протоколов. Предпочесть клиентский session identifier. От глобальных карт отказаться там, где допустим стабильный namespaced identifier без хранения; допустимость подтвердить протоколом и тестом. Если upstream требует непрозрачный continuation state, оставить минимальное изолированное состояние с пределом байтов и жизненным циклом подключения. Не трогать AppState.sessions аутентификации.",
       "tests": "Продолжение tools между ходами, разветвление/compaction, новый пользователь, смена connection, удаление и повторное создание connection. Проверка отсутствия склейки диалогов и случайного нового session-id на каждом ходе. Рост числа давних клиентских сессий не даёт неограниченного retained state.",
       "acceptance": "Каждая оставшаяся карта имеет доказанную protocol-причину, scope и byte bound; избыточные карты удалены. Если безопасного stateless эквивалента нет, checkpoint принимается с документированным минимальным остатком, не с выдуманным протоколом.",
-      "rollback": "Откат adapter-specific изменения; не объединять независимые provider semantics в одну догадку."
+      "rollback": "Откат adapter-specific изменения; не объединять независимые provider semantics в одну догадку.",
+      "result": {
+        "completed": "2026-09-17",
+        "files": [
+          "src/core/utils/session_manager.rs",
+          "src/core/executor/kiro.rs",
+          "src/core/executor/antigravity.rs",
+          "src/core/executor/opencode.rs",
+          "src/core/translator/request/openai_to_kiro.rs",
+          "src/core/translator/request/claude_to_kiro.rs",
+          "tests/lean_proxy_session_c06.rs",
+          "contracts/lean-proxy.md"
+        ],
+        "protocol_disposition": "Both process-wide STORE and CONTINUATION_STORE were removed. Client session identifiers remain authoritative. Antigravity preserves its UUID-plus-13-digits wire shape using a deterministic UUIDv5-derived value; OpenCode fallback identities are deterministic UUIDv5 values. Both are namespaced by adapter and configured connection. Kiro keeps an ephemeral conversation/continuation for anonymous requests and derives a stable opaque UUIDv5 continuation for identified conversations, bound in KiroExecutor to the actually selected connection.",
+        "retained_state": "Zero session or continuation entries and zero retained client/account bytes. There is no TTL, cleanup worker, eviction policy, or persistent replacement because stateless derivation satisfies the required stability and isolation properties. Dashboard authentication AppState.sessions is unchanged.",
+        "tests": [
+          "cargo test --test lean_proxy_session_c06 --test lean_proxy_kiro_c05 --test lean_proxy_kiro_c03 -- --nocapture: 11 passed",
+          "cargo test --lib session_manager --all-features -- --nocapture: 7 passed, including 100000 distinct sessions",
+          "cargo test --lib antigravity --all-features -- --nocapture: 29 passed",
+          "cargo test --lib opencode --all-features -- --nocapture: 12 passed",
+          "cargo test --lib --all-features: 1227 passed",
+          "cargo clippy --test lean_proxy_session_c06 --all-features -- -D warnings -A clippy::let-and-return -A clippy::needless-return: passed",
+          "cargo clippy --all-targets --all-features: passed with 7 pre-existing warnings",
+          "cargo fmt --all -- --check and git diff --check: passed"
+        ],
+        "acceptance_evidence": "Five full-handler Kiro requests prove stable continuation across tool turns on one account, rotation on account switch and connection recreation, preservation under compacted history, new-client isolation, and removal of internal metadata before upstream. Adapter unit tests prove Antigravity/OpenCode stable connection-scoped fallback and client override. A 100000-session unit test and concurrent cancellation test exercise stateless derivation without retained growth.",
+        "cancellation": "All identifier resolution is synchronous and allocation-local; it owns no lock, task, timer, or awaitable state that cancellation can strand. The existing C03 downstream-cancellation test remains green after the Kiro executor binding change.",
+        "schema_and_data": "No SQLite, persisted setting, credential, openproxy.v1 field, dependency, or dashboard authentication session changed. Deleted maps were process-memory-only, so no migration is required.",
+        "rollback": "Revert the C06 commit. Independent Kiro, Antigravity, and OpenCode semantics remain visibly separated in their adapters; no stored data needs reconstruction."
+      }
     },
     {
       "id": "C07",

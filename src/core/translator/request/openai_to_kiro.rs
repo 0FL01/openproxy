@@ -510,7 +510,10 @@ pub fn openai_to_kiro_request(
             },
             "history": canonical_history
         },
-        "agentMode": "vibe"
+        "agentMode": "vibe",
+        // Internal request-scoped metadata. KiroExecutor removes this field
+        // after binding agentContinuationId to the selected connection.
+        "_kiroSessionEphemeral": session_identity.ephemeral
     });
 
     // JS parity (openai-to-kiro.js:343-345): NEVER send top-level

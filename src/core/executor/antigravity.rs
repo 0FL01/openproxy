@@ -8,8 +8,8 @@
 //! - Antigravity uses Gemini's request shape (`request.contents/tools/...`),
 //!   not OpenAI's. This executor expects the body to already be in that
 //!   shape (the request translator pipeline does the conversion).
-//! - A per-connection session id is derived via [`derive_session_id`] so
-//!   prompt caching survives within a single OpenProxy run.
+//! - A per-connection session id is derived statelessly via [`derive_session_id`]
+//!   so prompt caching survives without process-global retained state.
 //! - Tool function names are sanitised to Gemini's regex
 //!   `[a-zA-Z_][a-zA-Z0-9_.:\-]{0,63}`.
 //! - The `cleanJSONSchemaForAntigravity` schema-cleaning step from 9router
@@ -1194,6 +1194,47 @@ mod tests {
         assert_eq!(parts[2].len(), 4);
         assert_eq!(parts[3].len(), 4);
         assert_eq!(parts[4].len(), 12);
+    }
+
+    #[test]
+    fn stateless_session_is_stable_isolated_and_preserves_client_value() {
+        let mut account_a = ProviderConnection {
+            id: "account-a".to_string(),
+            email: Some("a@example.test".to_string()),
+            ..Default::default()
+        };
+        let mut first = json!({"request": {"contents": []}});
+        let mut second = first.clone();
+        let id_a = AntigravityExecutor::transform_request(&mut first, &account_a).unwrap();
+        assert_eq!(
+            id_a,
+            AntigravityExecutor::transform_request(&mut second, &account_a).unwrap()
+        );
+        assert_eq!(id_a.len(), 49);
+        assert_eq!(
+            uuid::Uuid::parse_str(&id_a[..36])
+                .unwrap()
+                .get_version_num(),
+            5
+        );
+        assert!(id_a[36..]
+            .chars()
+            .all(|character| character.is_ascii_digit()));
+
+        account_a.email = Some("b@example.test".to_string());
+        let mut other = json!({"request": {"contents": []}});
+        assert_ne!(
+            id_a,
+            AntigravityExecutor::transform_request(&mut other, &account_a).unwrap()
+        );
+
+        let mut supplied = json!({"request": {
+            "sessionId": "client-session", "contents": []
+        }});
+        assert_eq!(
+            AntigravityExecutor::transform_request(&mut supplied, &account_a).unwrap(),
+            "client-session"
+        );
     }
 
     #[test]
