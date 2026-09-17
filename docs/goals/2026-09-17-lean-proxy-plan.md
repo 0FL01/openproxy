@@ -93,17 +93,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R3 / C03.
-- Smallest next action: Remove Kiro semantic repair buffering and hidden second-generation behavior while preserving required AWS EventStream decoding and tool mapping.
-- Expected evidence: A valid first Kiro event reaches the client before held EOF; short valid, ellipsis, and future-action text do not trigger another generation; malformed frames fail and cancellation reaches upstream.
-- Stop or replan if: Removing repair reveals a required provider wire decoder or tool mapping dependency; preserve that protocol requirement and isolate the semantic retry/remapping behavior rather than deleting both.
+- Closes: R3 / C04.
+- Smallest next action: Remove process-wide Claude header capture/replay and pass only allowlisted metadata from the current request plus explicit adapter defaults.
+- Expected evidence: Alternating and concurrent clients/accounts never inherit each other's session/retry metadata; a request without a session ID does not inherit one; Claude CLI and OpenCode adapter fixtures remain valid.
+- Stop or replan if: A header is proven to be a provider-required adapter default rather than client session metadata; encode that default in the adapter without retaining cross-request state.
 
 ## Current State
 
-- Resolved: R1 / C00 and R2 / C01-C02. The deterministic mock harness and comparable release baseline are available without production data, credentials, paid providers, or external network access.
-- Last relevant evidence: `scripts/bench-lean` passed the normal release matrix, separate counting-allocator matrix, and two artifact validations. Every path completed 410/410 measured requests with one upstream attempt each. Warm concurrency-32 full-handler TTFC was 55,243/59,236/62,261 us p50/p95/p99, throughput was 151.22 requests/s, RSS/PSS peaks were 65,191,936/62,800,896 bytes, and counted allocation was 288,453 bytes/request. C01 harness tests remain 5/5.
+- Resolved: R1 / C00, R2 / C01-C02, and C03 within R3. Kiro now streams successful EventStream bodies without semantic buffering, prompt mutation, or hidden generation retries; the deprecated setting remains inert and durable.
+- Last relevant evidence: C03 integration tests passed 5/5: first event arrived before held EOF, nine semantic/setting combinations made exactly nine attempts without prompt mutation, malformed binary input surfaced an explicit decode error, downstream cancellation dropped the held upstream stream, and legacy values round-tripped. Kiro-focused library tests passed 107/107; all library tests passed 1,225/1,225.
 - Blocker: None; the prompt explicitly allows independent safe work when external harness/version evidence is unavailable.
-- Next: C03 Kiro semantic repair and full-response buffering removal.
+- Next: C04 process-wide Claude header cache removal.
 
 ## Material Decisions
 
@@ -117,6 +117,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-09-17: C00 passed. Added the human and machine-readable lean boundary, migration matrix, route/format inventories, source registry links, and contract tests. No runtime/configuration behavior changed; C01 is next.
 - 2026-09-17: C01 passed. Added a reusable loopback scripted upstream, controlled stream gates/failures/request capture, OAuth-shaped rotation responses, native and translated fixtures, virtual-time/barrier primitives, and an owned temporary DB. No production behavior changed; C02 is next.
 - 2026-09-17: C02 passed. The documented release benchmark measured the direct mock and full handler with equal successful SSE/tools work at cold/warm concurrency 1/8/32 over five repetitions, separately measured allocations, validated exact attempts and artifact completeness, and recorded predeclared thresholds. No runtime behavior changed; C03 is next.
+- 2026-09-17: C03 passed. Removed Kiro semantic classification, full-success-body buffering, prompt mutation, and the hidden second generation; retained incremental AWS EventStream/tool translation, made malformed frames explicit errors, preserved the deprecated setting with a one-time warning, and verified first-event delivery plus cancellation against the loopback harness. C04 is next.
 
 ## Completion
 

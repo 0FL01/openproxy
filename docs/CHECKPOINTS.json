@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C03",
+  "next_checkpoint": "C04",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_c00_cargo_1.98.1",
+    "rust_verification": "passed_through_c03_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -188,7 +188,7 @@
     {
       "id": "C03",
       "title": "Убрать Kiro semantic repair и ожидание полного ответа",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C02"
       ],
@@ -201,7 +201,32 @@
       "change": "Удалить из лёгкого пути сбор всего успешного потока ради эвристического repair и скрытую вторую генерацию с дописанной инструкцией. Разобрать зависимости repair-функций и удалить ставшие мёртвыми. Для ранее явно включённой настройки провести объявленную миграцию/депрекацию, не молча проигнорировать её. Сохранить обязательный декодер Kiro/AWS EventStream и корректное преобразование tools.",
       "tests": "Mock отдаёт валидное первое событие и удерживает EOF: клиент получает событие до EOF. Короткий валидный ответ, многоточие и текст будущего действия не запускают второй запрос. Некорректный frame возвращает ошибку, а не автоматически исправленный ответ. Отмена клиента прерывает upstream.",
       "acceptance": "Для обычного Kiro stream нет полного repair buffer, семантической подмены prompt и второй генерации. Принятие подтверждено event-before-EOF тестом, а не только снижением RSS.",
-      "rollback": "Откатить отдельный commit без потери настроек/секретов; не возвращать repair незаметно как fallback при любой ошибке."
+      "rollback": "Откатить отдельный commit без потери настроек/секретов; не возвращать repair незаметно как fallback при любой ошибке.",
+      "result": {
+        "completed": "2026-09-17",
+        "files": [
+          "src/core/executor/kiro.rs",
+          "src/core/translator/registry.rs",
+          "src/core/translator/response/kiro_to_openai.rs",
+          "tests/common/lean_harness.rs",
+          "tests/lean_proxy_kiro_c03.rs",
+          "contracts/lean-proxy.md"
+        ],
+        "behavior": "Successful Kiro responses now pass their reqwest body directly into the existing incremental AWS EventStream translator. The executor no longer collects a complete successful response, classifies semantic content, mutates the prompt, or starts a hidden second generation. The retired kiroToolCallRepair value is preserved verbatim, has no behavioral effect, and emits one process-wide deprecation warning when encountered.",
+        "protocol_preservation": "The bounded AWS EventStream decoder and Kiro tool assembler remain active. Invalid frames now emit a terminal kiro_eventstream_decode_error SSE frame instead of being swallowed or entering repair. Explicit configured Kiro provider-node endpoints are honored for deterministic routing and testability; default Kiro endpoint ordering is unchanged.",
+        "tests": [
+          "cargo test --test lean_proxy_kiro_c03 --test kiro_executor -- --nocapture: 29 passed, 8 ignored pre-existing live/mock-incompatible tests",
+          "cargo test --lib kiro --all-features: 107 passed",
+          "cargo test --lib --all-features: 1225 passed",
+          "cargo clippy --test lean_proxy_kiro_c03 --all-features -- -D warnings -A clippy::let-and-return -A clippy::needless-return: passed",
+          "cargo clippy --all-targets --all-features: passed with 7 pre-existing warnings",
+          "cargo fmt --all -- --check and git diff --check: passed"
+        ],
+        "acceptance_evidence": "A held-EOF full-handler test observed the first translated Kiro content event before EOF. Nine content/legacy-setting combinations made exactly nine upstream requests and retained the original prompt. A corrupt prelude CRC produced kiro_eventstream_decode_error with one request. Dropping the downstream body caused the held upstream body to be dropped within one second.",
+        "persistence": "Temporary SQLite coverage confirms true, false, and absent providerSpecificData.kiroToolCallRepair states remain distinct and round-trip without destructive migration.",
+        "network_and_data": "Only an ephemeral 127.0.0.1 upstream and temporary SQLite databases were used; no production DB, credentials, paid provider, or external network was accessed.",
+        "rollback": "Revert the C03 commit. The deprecated setting remains stored, so rollback does not require reconstructing user configuration or secrets."
+      }
     },
     {
       "id": "C04",

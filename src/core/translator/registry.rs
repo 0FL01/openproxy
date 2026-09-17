@@ -204,6 +204,8 @@ pub struct OllamaResponseState {
 pub struct KiroResponseState {
     pub event_buffer: Vec<u8>,
     pub current_event_type: Option<String>,
+    /// A terminal EventStream decode/shape error was already emitted.
+    pub stream_failed: bool,
     /// Generic state used by kiro_to_openai_response.
     pub state: std::collections::HashMap<String, Value>,
     /// Streaming assembler for the binary EventStream path.
@@ -611,6 +613,9 @@ impl TranslationRegistry {
             let _ = transform;
         }
         if source == Format::Kiro || target == Format::Kiro {
+            if state.kiro.stream_failed {
+                return Vec::new();
+            }
             if let Some(assembler) = state.kiro.assembler.as_mut() {
                 let chunks = assembler.finish();
                 let mut out = Vec::new();

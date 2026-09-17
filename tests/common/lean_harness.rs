@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,6 +33,7 @@ pub struct ScriptedResponse {
     pub inter_chunk_delay: Duration,
     pub wait_before_first: Option<Arc<Notify>>,
     pub hold_eof: Option<Arc<Notify>>,
+    pub notify_on_body_drop: Option<Arc<Notify>>,
     pub fail_after_chunks: bool,
 }
 
@@ -44,6 +47,7 @@ impl ScriptedResponse {
             inter_chunk_delay: Duration::ZERO,
             wait_before_first: None,
             hold_eof: None,
+            notify_on_body_drop: None,
             fail_after_chunks: false,
         }
     }
@@ -57,6 +61,7 @@ impl ScriptedResponse {
             inter_chunk_delay: Duration::ZERO,
             wait_before_first: None,
             hold_eof: None,
+            notify_on_body_drop: None,
             fail_after_chunks: false,
         }
     }
@@ -80,6 +85,11 @@ impl ScriptedResponse {
 
     pub fn holding_eof(mut self, release: Arc<Notify>) -> Self {
         self.hold_eof = Some(release);
+        self
+    }
+
+    pub fn notifying_on_body_drop(mut self, notification: Arc<Notify>) -> Self {
+        self.notify_on_body_drop = Some(notification);
         self
     }
 
@@ -198,7 +208,18 @@ async fn mock_handler(State(state): State<MockState>, request: Request<Body>) ->
             .expect("script-exhausted response");
     };
 
+    struct BodyDropNotification(Option<Arc<Notify>>);
+
+    impl Drop for BodyDropNotification {
+        fn drop(&mut self) {
+            if let Some(notification) = self.0.take() {
+                notification.notify_one();
+            }
+        }
+    }
+
     let stream = async_stream::stream! {
+        let _drop_notification = BodyDropNotification(script.notify_on_body_drop.clone());
         if let Some(release) = script.wait_before_first {
             release.notified().await;
         }

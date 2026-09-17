@@ -44,7 +44,7 @@ Persisted types intentionally preserve unknown fields through `extra` and `provi
 
 | State | Transition contract |
 |---|---|
-| `providerSpecificData.kiroToolCallRepair` | C03 stops semantic repair and second generation for all values; preserve the stored key/value and identify it as deprecated. |
+| `providerSpecificData.kiroToolCallRepair` | C03 stopped semantic repair and second generation for all values. The stored key/value remains exportable and round-trips unchanged; its first runtime encounter per process emits a deprecation warning and has no effect on generation. |
 | Process-wide Claude header cache | C04 deletes it without migration; only current-request allowlisted headers and explicit adapter defaults are used. |
 | Kiro session-start replay | C05 deletes it without migration; the current request is the only content source. |
 | Session/continuation maps | C06 retains only protocol-proven, byte-bounded continuation state; never touch dashboard auth `AppState.sessions`. |

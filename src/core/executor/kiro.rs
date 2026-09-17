@@ -1,20 +1,15 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use hyper::http;
 use hyper::http::uri::InvalidUri;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 /// Maximum total AWS EventStream message length (1 MiB).
 const MAX_EVENTSTREAM_MESSAGE_LENGTH: usize = 1024 * 1024;
-
-/// Maximum bytes buffered for a repair attempt (JS `KIRO_REPAIR_BUFFER_MAX_BYTES`).
-const KIRO_REPAIR_BUFFER_MAX_BYTES: usize = 8 * 1024 * 1024;
-
-/// Heartbeat cadence for the integrity gate (JS `KIRO_REPAIR_HEARTBEAT_MS`).
-pub const KIRO_REPAIR_HEARTBEAT_MS: u64 = 10_000;
 
 use crate::core::proxy::ProxyTarget;
 use crate::types::{ProviderConnection, ProviderNode};
@@ -41,6 +36,7 @@ const KIRO_CODEWHISPERER_TARGET: &str =
     "AmazonCodeWhispererStreamingService.GenerateAssistantResponse";
 const KIRO_REGION: &str = "us-east-1";
 const KIRO_SERVICE: &str = "codewhisperer";
+static KIRO_REPAIR_DEPRECATION_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Rewrite the AWS region segment of an amazonaws.com host, e.g.
 /// `q.us-east-1.amazonaws.com` → `q.{region}.amazonaws.com`.
@@ -66,308 +62,6 @@ fn normalize_kiro_model(model: &str) -> String {
         return stripped.to_string();
     }
     model.to_string()
-}
-
-// ==================== INTEGRITY REPAIR LOOP (9router runIntegrityRecovery) ====================
-//
-// When the first attempt ends with a retryable disposition — an ellipsis-only
-// answer, a "short future action" final, or an invalid tool_call wrapper — the
-// JS executor retries ONCE with a repair instruction appended to the current
-// user turn (kiro.js runIntegrityRecovery, 411-479). The repair is gated by the
-// per-account `kiroToolCallRepair` flag (default on). A second non-complete
-// attempt surfaces as an SSE error with the `kiro_*` code.
-
-/// Max chars for the "short future action" heuristic (9router
-/// KIRO_SHORT_FINAL_MAX_CHARS).
-const KIRO_SHORT_FINAL_MAX_CHARS: usize = 800;
-
-/// The classification of a completed (non-repaired) first attempt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KiroRepairKind {
-    /// Answer is exactly "..." or "…".
-    Ellipsis,
-    /// Final only announced a future action.
-    ShortFinal,
-    /// A tool_call wrapper was malformed (missing name / arguments).
-    InvalidTool,
-    /// No repair needed.
-    None,
-}
-
-/// True when the content is only an ellipsis (9router isEllipsisOnly).
-pub fn is_ellipsis_only(content: &str) -> bool {
-    matches!(content.trim(), "..." | "…")
-}
-
-/// True when the content reads like a future-action announcement rather than
-/// a completed answer (9router isShortFutureAction). The English/Chinese
-/// regexes mirror kiro.js lines 46-56.
-pub fn is_short_future_action(content: &str) -> bool {
-    let text = content.trim().replace('’', "'");
-    if text.is_empty() {
-        return false;
-    }
-    // Observed whole-response signature (kiro.js OBSERVED_TRAILING_FUTURE_ACTION).
-    if text.len() > 20
-        && text.starts_with("目前證據顯示")
-        && text.contains("最後補查 504 access log")
-    {
-        return true;
-    }
-    // English future action with a result clause → already completed.
-    if english_future_action().is_match(&text) && english_result_clause().is_match(&text) {
-        return false;
-    }
-    // Chinese future action with a result clause → already completed.
-    if chinese_future_action().is_match(&text) && chinese_result_clause().is_match(&text) {
-        return false;
-    }
-    text.len() <= KIRO_SHORT_FINAL_MAX_CHARS
-        && short_future_action().is_match(&text)
-        && !user_wait().is_match(&text)
-        && !completed_final().is_match(&text)
-        && !result_evidence().is_match(&text)
-}
-
-// English / Chinese future-action detection (kiro.js SHORT_FUTURE_ACTION +
-// companions). Each regex is compiled once and cached process-wide.
-macro_rules! kiro_re {
-    ($name:ident, $pattern:expr_2021) => {
-        fn $name() -> &'static regex::Regex {
-            static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-            RE.get_or_init(|| regex::Regex::new($pattern).expect("static kiro regex"))
-        }
-    };
-}
-
-kiro_re!(
-    short_future_action,
-    r"(?i)^(?:(?:(?:現在|接著|接下來|下一步)[，,:：\s]*(?:我(?:只)?(?:會|要|將|再)?\s*)?|我只再)(?:補|查|確認|驗證|追(?:查|蹤)?|繼續|檢查|測試)|我(?:會|要|將)(?:再|重新)?(?:補(?:齊|查)?|抓取|查(?:詢)?|確認|驗證|追(?:查|蹤)?|繼續|檢查|測試)|(?:(?:next|now|then)\b[\s,:-]*)?(?:i(?:'ll| will| am going to| need to)|let me)\s+(?:verify|check|confirm|validate|investigate|trace|continue|follow up|test)\b)"
-);
-kiro_re!(
-    english_future_action,
-    r"(?i)^(?:(?:next|now|then)\b[\s,:-]*)?(?:i(?:'ll| will| am going to| need to)|let me)\s+(?:verify|check|confirm|validate|investigate|trace|continue|follow up|test)\b"
-);
-kiro_re!(
-    english_result_clause,
-    r"(?i)(?:[:;\n]|[.!?]\s+\S|\b(?:status|checksum|response|deployment)\s+(?:is|are|was|were|matches?|equals?|returned)\b)"
-);
-kiro_re!(
-    chinese_future_action,
-    r"^(?:(?:現在|接著|接下來|下一步)[，,:：\s]*(?:我(?:只)?(?:會|要|將|再)?\s*)?|我只再|我(?:會|要|將)(?:再|重新)?)(?:補|抓取|查|確認|驗證|追|繼續|檢查|測試)"
-);
-kiro_re!(
-    chinese_result_clause,
-    r"(?:[。！？]\s*\S|(?:版本|狀態|回應|結果|部署|校驗碼)(?:是|為|等於|顯示))"
-);
-kiro_re!(
-    user_wait,
-    r"(?i)(?:請(?:你|先)|你(?:先|需要|可以|提供|確認|批准|允許)|等待(?:你|使用者)|等你|核准|同意|授權|\b(?:after|when|once)\s+you\b|\byour\s+(?:approval|confirmation|permission|input)\b|\bwait(?:ing)?\s+for\s+you\b|\bplease\s+(?:approve|confirm|provide|send)\b)"
-);
-kiro_re!(
-    completed_final,
-    r"(?i)(?:已(?:經)?完成|完成(?:了|驗證|確認)|修復完成|確認無誤|驗證(?:完成|通過)|測試(?:均)?通過|結論|總結|\b(?:done|completed|fixed|verified|confirmed|passed|in conclusion|summary)\b|\b(?:is|are) complete\b)"
-);
-kiro_re!(
-    result_evidence,
-    r"(?i)(?:顯示|發現|因此|成功|失敗|正常|無錯誤|沒有錯誤|\b(?:found|shows?|showed|because|therefore|succeeded|failed|healthy|green|no errors?)\b)"
-);
-
-/// The repair instruction appended to the current user turn for a given kind
-/// (9router REPAIR_INSTRUCTIONS, kiro.js 41-45).
-pub fn repair_instruction(kind: KiroRepairKind) -> &'static str {
-    match kind {
-        KiroRepairKind::Ellipsis => "Retry the previous response because it ended with only an ellipsis. Return the complete final answer, not only ... or ….",
-        KiroRepairKind::ShortFinal => "Retry the previous response because its final only announced a future action. Complete the check now and return the result or a concrete blocker.",
-        KiroRepairKind::InvalidTool => "Retry the previous response because its Kiro tool_call wrapper was malformed. If you use the wrapper tool named tool_call, its input must contain a non-empty name and an arguments field.",
-        KiroRepairKind::None => "Retry the previous incomplete Kiro response.",
-    }
-}
-
-/// Append the repair instruction to the current user turn, never to a
-/// top-level `systemPrompt` (9router appendRepairInstruction, kiro.js
-/// 130-143: kiro.dev answers any body carrying that field with 400
-/// REQUEST_BODY_INVALID). Returns a cloned body.
-pub fn append_repair_instruction(body: &Value, kind: KiroRepairKind) -> Value {
-    let mut repaired = body.clone();
-    let instruction = repair_instruction(kind);
-    if let Some(msg) = repaired
-        .get_mut("conversationState")
-        .and_then(|s| s.get_mut("currentMessage"))
-        .and_then(|m| m.get_mut("userInputMessage"))
-    {
-        let existing = msg.get("content").and_then(Value::as_str).unwrap_or("");
-        let joined = if existing.is_empty() {
-            instruction.to_string()
-        } else {
-            format!("{existing}\n\n{instruction}")
-        };
-        if let Some(obj) = msg.as_object_mut() {
-            obj.insert("content".to_string(), Value::String(joined));
-        }
-    }
-    repaired
-}
-
-/// Accumulated output of a full first attempt, used to classify whether a
-/// repair retry is warranted (9router `readIntegrityAttempt` output).
-#[derive(Debug, Clone, Default)]
-pub struct KiroAttemptOutput {
-    pub content: String,
-    pub reasoning: String,
-    pub has_tool_calls: bool,
-    pub saw_error: bool,
-}
-
-/// Inspect a raw OpenAI-chunk SSE body and accumulate content/reasoning/tool
-/// calls (9router `inspectSSEChunk`). Malformed lines are skipped silently —
-/// the transform path diagnoses them.
-pub fn inspect_sse_body(body: &[u8], output: &mut KiroAttemptOutput) {
-    let text = String::from_utf8_lossy(body);
-    for line in text.lines() {
-        let line = line.trim();
-        if let Some(data) = line.strip_prefix("data: ") {
-            let data = data.trim();
-            if data.is_empty() || data == "[DONE]" {
-                continue;
-            }
-            let Ok(event) = serde_json::from_str::<Value>(data) else {
-                continue;
-            };
-            if event.get("error").is_some() {
-                output.saw_error = true;
-            }
-            if let Some(choices) = event.get("choices").and_then(Value::as_array) {
-                for choice in choices {
-                    let Some(delta) = choice.get("delta") else {
-                        continue;
-                    };
-                    if let Some(c) = delta.get("content").and_then(Value::as_str) {
-                        output.content.push_str(c);
-                    }
-                    if let Some(r) = delta.get("reasoning_content").and_then(Value::as_str) {
-                        output.reasoning.push_str(r);
-                    }
-                    if delta
-                        .get("tool_calls")
-                        .and_then(Value::as_array)
-                        .is_some_and(|t| !t.is_empty())
-                    {
-                        output.has_tool_calls = true;
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Classify a completed first attempt (9router `readIntegrityAttempt` tail):
-/// ellipsis / short_final when no tool calls and the content looks truncated;
-/// otherwise no repair.
-pub fn classify_attempt(output: &KiroAttemptOutput) -> KiroRepairKind {
-    if output.has_tool_calls || output.saw_error {
-        return KiroRepairKind::None;
-    }
-    if is_ellipsis_only(&output.content)
-        || (output.content.trim().is_empty() && is_ellipsis_only(&output.reasoning))
-    {
-        return KiroRepairKind::Ellipsis;
-    }
-    if is_short_future_action(&output.content) {
-        return KiroRepairKind::ShortFinal;
-    }
-    KiroRepairKind::None
-}
-
-/// Emit an SSE error frame with a `kiro_*` code, mirroring JS `encodeSSEError`
-/// (kiro.js:187-194): `data: {"error":{...}}` then `data: [DONE]`.
-pub fn encode_sse_error(code: &str, message: &str, details: Option<Value>) -> Vec<u8> {
-    let mut err = serde_json::Map::new();
-    err.insert("message".into(), Value::String(message.to_string()));
-    err.insert("type".into(), Value::String("upstream_error".to_string()));
-    err.insert("code".into(), Value::String(code.to_string()));
-    if let Some(d) = details {
-        err.insert("details".into(), d);
-    }
-    let frame = json!({ "error": Value::Object(err) });
-    let mut out = Vec::new();
-    out.extend_from_slice(
-        format!(
-            "data: {}\n\n",
-            serde_json::to_string(&frame).unwrap_or_default()
-        )
-        .as_bytes(),
-    );
-    out.extend_from_slice(b"data: [DONE]\n\n");
-    out
-}
-
-/// Classify a stop disposition (9router `stopDisposition`, kiro.js:147-156).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StopDisposition {
-    Complete,
-    ToolUse,
-    Length,
-    RetryableProtocolFailure,
-    TerminalIncomplete,
-    TerminalRefusal,
-    UnknownFailure,
-}
-
-pub fn stop_disposition(stop_reason: Option<&str>, has_tool_calls: bool) -> StopDisposition {
-    let reason = stop_reason.unwrap_or("").trim();
-    if reason.is_empty() {
-        if has_tool_calls {
-            return StopDisposition::ToolUse;
-        }
-        return StopDisposition::Complete;
-    }
-    match reason.to_ascii_lowercase().as_str() {
-        "tool_use" | "tool_calls" => StopDisposition::ToolUse,
-        "length" => StopDisposition::Length,
-        "max_tokens" => {
-            if has_tool_calls {
-                StopDisposition::TerminalIncomplete
-            } else {
-                StopDisposition::Length
-            }
-        }
-        "model_context_window_exceeded" | "cancelled" | "pause_turn" => {
-            StopDisposition::TerminalIncomplete
-        }
-        "content_filter" | "recitation" => StopDisposition::RetryableProtocolFailure,
-        "refusal" | "end_turn_refusal" | "model_refusal" => StopDisposition::TerminalRefusal,
-        "complete" | "end_turn" | "stop" => StopDisposition::Complete,
-        "malformed_function_call" | "malformed_tool_call" => StopDisposition::TerminalIncomplete,
-        _ => StopDisposition::UnknownFailure,
-    }
-}
-
-/// Decode a raw kiro response body (binary AWS EventStream) into OpenAI-shaped
-/// SSE text by feeding it through the shared `kiro_to_openai_streaming`
-/// transform. This is the decode-first step the JS `readIntegrityAttempt`
-/// performs before classification (kiro.js:517-524).
-pub fn decode_body_to_sse(body: &[u8]) -> String {
-    let mut state = crate::core::translator::registry::ResponseTransformState::default();
-    let mut sse = String::new();
-    // Feed the body in one chunk (the transform buffers partial frames).
-    let lines = crate::core::translator::response::kiro_to_openai::kiro_to_openai_streaming(
-        body, &mut state,
-    );
-    for line in lines {
-        sse.push_str(&line);
-        sse.push('\n');
-    }
-    sse
-}
-
-/// Classify a fully-buffered raw kiro body by first decoding to SSE, then
-/// inspecting the transformed chunks. Returns the repair kind.
-pub fn classify_buffered_body(body: &[u8]) -> KiroRepairKind {
-    let sse = decode_body_to_sse(body);
-    let mut output = KiroAttemptOutput::default();
-    inspect_sse_body(sse.as_bytes(), &mut output);
-    classify_attempt(&output)
 }
 
 pub struct KiroExecutorResponse {
@@ -499,6 +193,22 @@ impl KiroExecutor {
         _stream: bool,
         credentials: &ProviderConnection,
     ) -> Vec<String> {
+        if let Some(base_url) = self
+            .provider_node
+            .as_ref()
+            .and_then(|node| node.base_url.as_deref())
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+        {
+            let base_url = base_url.trim_end_matches('/');
+            let endpoint = if base_url.ends_with("/generateAssistantResponse") {
+                base_url.to_string()
+            } else {
+                format!("{base_url}/generateAssistantResponse")
+            };
+            return vec![endpoint];
+        }
+
         let base_urls: Vec<String> = KIRO_BASE_URLS.iter().map(|s| (*s).to_string()).collect();
 
         // 9router getOrderedBaseUrls regionalization: rewrite the AWS region
@@ -663,7 +373,7 @@ impl KiroExecutor {
     }
 
     /// Send the request to one URL and return the raw response (headers +
-    /// post). Shared by the URL failover loop and the integrity repair retry.
+    /// body). Shared by the configured Kiro endpoint failover loop.
     async fn send_one(
         &self,
         url: &str,
@@ -711,6 +421,18 @@ impl KiroExecutor {
         &self,
         request: KiroExecutionRequest,
     ) -> Result<KiroExecutorResponse, KiroExecutorError> {
+        if request
+            .credentials
+            .provider_specific_data
+            .contains_key("kiroToolCallRepair")
+            && !KIRO_REPAIR_DEPRECATION_WARNED.swap(true, Ordering::Relaxed)
+        {
+            tracing::warn!(
+                target: "openproxy::executor::kiro",
+                "providerSpecificData.kiroToolCallRepair is deprecated and preserved as inert data; semantic repair and hidden generation retries are disabled"
+            );
+        }
+
         let urls = self.build_url(&request.model, request.stream, &request.credentials);
 
         // Try each URL with failover
@@ -748,203 +470,6 @@ impl KiroExecutor {
                     });
                     continue;
                 }
-                // 9router integrity repair (kiro.js attachIntegrityGate +
-                // runIntegrityRecovery): when enabled (per-account
-                // kiroToolCallRepair, default on) and the response is a
-                // complete SSE body, classify it and retry ONCE with a
-                // repair instruction appended to the current user turn when
-                // the first attempt ended retryably (ellipsis / short
-                // future action). The response is otherwise returned
-                // untouched so the streaming path stays first-class.
-                let repair_enabled = request
-                    .credentials
-                    .provider_specific_data
-                    .get("kiroToolCallRepair")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(true);
-
-                if repair_enabled && status == 200 {
-                    // Buffer the body with a bounded cap (JS KIRO_REPAIR_BUFFER_MAX_BYTES).
-                    let mut full = Vec::new();
-                    {
-                        use futures_util::StreamExt;
-                        let mut stream = response.bytes_stream();
-                        let mut over_budget = false;
-                        while let Some(chunk) = stream.next().await {
-                            match chunk {
-                                Ok(bytes) => {
-                                    if full.len() + bytes.len() > KIRO_REPAIR_BUFFER_MAX_BYTES {
-                                        over_budget = true;
-                                        break;
-                                    }
-                                    full.extend_from_slice(&bytes);
-                                }
-                                Err(e) => {
-                                    return Ok(KiroExecutorResponse {
-                                        response: UpstreamResponse::Reqwest(
-                                            http::Response::builder()
-                                                .status(200)
-                                                .header("content-type", "text/event-stream")
-                                                .body(reqwest::Body::from(encode_sse_error(
-                                                    "kiro_integrity_buffer_exceeded",
-                                                    "Kiro integrity repair buffer exceeded the 8 MiB cap",
-                                                    None,
-                                                )))
-                                                .map_err(KiroExecutorError::InvalidRequest)?
-                                                .into(),
-                                        ),
-                                        url: url.clone(),
-                                        headers,
-                                        transformed_body: request.body.clone(),
-                                        transport: TransportKind::Reqwest,
-                                    });
-                                }
-                            }
-                        }
-                        if over_budget {
-                            return Ok(KiroExecutorResponse {
-                                response: UpstreamResponse::Reqwest(
-                                    http::Response::builder()
-                                        .status(200)
-                                        .header("content-type", "text/event-stream")
-                                        .body(reqwest::Body::from(encode_sse_error(
-                                            "kiro_integrity_buffer_exceeded",
-                                            "Kiro integrity repair buffer exceeded the 8 MiB cap",
-                                            None,
-                                        )))
-                                        .map_err(KiroExecutorError::InvalidRequest)?
-                                        .into(),
-                                ),
-                                url: url.clone(),
-                                headers,
-                                transformed_body: request.body.clone(),
-                                transport: TransportKind::Reqwest,
-                            });
-                        }
-                    }
-
-                    // Decode-first classification: the body is binary AWS
-                    // EventStream, so decode to SSE before inspecting (JS
-                    // readIntegrityAttempt transforms first).
-                    let kind = classify_buffered_body(&full);
-                    if kind != KiroRepairKind::None {
-                        // One bounded retry with the repair instruction
-                        // appended to the current user turn (9router
-                        // runIntegrityRecovery). The retry goes through the
-                        // same per-URL send so SigV4/bearer auth is rebuilt.
-                        let repaired_body = append_repair_instruction(&request.body, kind);
-                        let retry = self
-                            .send_one(url, &repaired_body, &request.credentials, request.stream)
-                            .await;
-                        match retry {
-                            Ok((retry_response, retry_headers)) => {
-                                // Diagnose the retry: if it is still not
-                                // complete, emit the matching kiro_*_retry_failed
-                                // code (JS runIntegrityRecovery, kiro.js:457-478).
-                                let retry_status = retry_response.status().as_u16();
-                                if retry_status == 200 {
-                                    let retry_bytes = retry_response
-                                        .bytes()
-                                        .await
-                                        .map_err(KiroExecutorError::Request)?;
-                                    let retry_kind = classify_buffered_body(&retry_bytes);
-                                    if retry_kind == KiroRepairKind::None {
-                                        // Complete: return the retry response.
-                                        return Ok(KiroExecutorResponse {
-                                            response: UpstreamResponse::Reqwest(
-                                                http::Response::builder()
-                                                    .status(200)
-                                                    .header("content-type", "text/event-stream")
-                                                    .header("cache-control", "no-cache")
-                                                    .body(reqwest::Body::from(retry_bytes))
-                                                    .map_err(KiroExecutorError::InvalidRequest)?
-                                                    .into(),
-                                            ),
-                                            url: url.clone(),
-                                            headers: retry_headers,
-                                            transformed_body: request.body.clone(),
-                                            transport: TransportKind::Reqwest,
-                                        });
-                                    }
-                                    // Retry still failed — emit the specific code.
-                                    let code = match retry_kind {
-                                        KiroRepairKind::Ellipsis => "kiro_ellipsis_retry_failed",
-                                        KiroRepairKind::ShortFinal => {
-                                            "kiro_short_final_retry_failed"
-                                        }
-                                        KiroRepairKind::InvalidTool => {
-                                            "kiro_tool_call_repair_retry_failed"
-                                        }
-                                        KiroRepairKind::None => {
-                                            "kiro_missing_terminal_retry_failed"
-                                        }
-                                    };
-                                    return Ok(KiroExecutorResponse {
-                                        response: UpstreamResponse::Reqwest(
-                                            http::Response::builder()
-                                                .status(200)
-                                                .header("content-type", "text/event-stream")
-                                                .body(reqwest::Body::from(encode_sse_error(
-                                                    code,
-                                                    "Kiro integrity validation failed after one bounded retry",
-                                                    Some(json!({ "kind": format!("{retry_kind:?}") })),
-                                                )))
-                                                .map_err(KiroExecutorError::InvalidRequest)?
-                                                .into(),
-                                        ),
-                                        url: url.clone(),
-                                        headers: retry_headers,
-                                        transformed_body: request.body.clone(),
-                                        transport: TransportKind::Reqwest,
-                                    });
-                                }
-                                // Retry returned non-200 → upstream error.
-                                let body = String::from_utf8_lossy(
-                                    &retry_response.bytes().await.unwrap_or_default(),
-                                )
-                                .to_string();
-                                return Ok(KiroExecutorResponse {
-                                    response: UpstreamResponse::Reqwest(
-                                        http::Response::builder()
-                                            .status(200)
-                                            .header("content-type", "text/event-stream")
-                                            .body(reqwest::Body::from(encode_sse_error(
-                                                "kiro_integrity_retry_upstream_error",
-                                                &format!("Kiro integrity retry failed with HTTP {retry_status}: {body}"),
-                                                Some(json!({ "status": retry_status })),
-                                            )))
-                                            .map_err(KiroExecutorError::InvalidRequest)?
-                                            .into(),
-                                    ),
-                                    url: url.clone(),
-                                    headers: retry_headers,
-                                    transformed_body: request.body.clone(),
-                                    transport: TransportKind::Reqwest,
-                                });
-                            }
-                            Err(e) => {
-                                last_error = Some(e);
-                                continue;
-                            }
-                        }
-                    }
-                    // Not retryable: return the buffered first attempt
-                    // (already OpenAI-chunk SSE).
-                    let http_response = http::Response::builder()
-                        .status(200)
-                        .header("content-type", "text/event-stream")
-                        .header("cache-control", "no-cache")
-                        .body(reqwest::Body::from(full))
-                        .map_err(KiroExecutorError::InvalidRequest)?;
-                    return Ok(KiroExecutorResponse {
-                        response: UpstreamResponse::Reqwest(http_response.into()),
-                        url: url.clone(),
-                        headers,
-                        transformed_body: request.body.clone(),
-                        transport: TransportKind::Reqwest,
-                    });
-                }
-
                 return Ok(KiroExecutorResponse {
                     response: UpstreamResponse::Reqwest(response),
                     url: url.clone(),
@@ -1536,98 +1061,6 @@ mod tests {
             .any(|u| u.contains("codewhisperer.eu-west-1.amazonaws.com")));
     }
 
-    #[test]
-    fn test_is_ellipsis_only() {
-        assert!(is_ellipsis_only("..."));
-        assert!(is_ellipsis_only("…"));
-        assert!(is_ellipsis_only("  ...  "));
-        assert!(!is_ellipsis_only("... and more"));
-        assert!(!is_ellipsis_only("complete answer"));
-        assert!(!is_ellipsis_only(""));
-    }
-
-    #[test]
-    fn test_is_short_future_action() {
-        // English future-action announcement.
-        assert!(is_short_future_action("I'll verify the deployment now"));
-        assert!(is_short_future_action("Let me check the logs"));
-        assert!(is_short_future_action("Next, I will confirm the checksum"));
-        // With a result clause → already completed.
-        assert!(!is_short_future_action("I'll verify the status is green"));
-        // Too long (over 800 chars) → not short.
-        assert!(!is_short_future_action(&"I'll check ".repeat(120)));
-        // Completed-language → not a future action.
-        assert!(!is_short_future_action("done, verified and confirmed"));
-        // Chinese future action.
-        assert!(is_short_future_action("接下來我會檢查日誌"));
-        assert!(is_short_future_action("我會檢查日誌"));
-        assert!(!is_short_future_action("驗證完成，無錯誤"));
-    }
-
-    #[test]
-    fn test_classify_attempt() {
-        // Ellipsis-only content → repair.
-        let mut output = KiroAttemptOutput::default();
-        output.content = "...".to_string();
-        assert_eq!(classify_attempt(&output), KiroRepairKind::Ellipsis);
-
-        // Short future action → repair.
-        let mut output2 = KiroAttemptOutput::default();
-        output2.content = "I'll check the logs next".to_string();
-        assert_eq!(classify_attempt(&output2), KiroRepairKind::ShortFinal);
-
-        // Complete answer → no repair.
-        let mut output3 = KiroAttemptOutput::default();
-        output3.content = "The checksum matches and the deployment is green.".to_string();
-        assert_eq!(classify_attempt(&output3), KiroRepairKind::None);
-
-        // Tool calls → no repair (tools are legitimately terminal).
-        let mut output4 = KiroAttemptOutput::default();
-        output4.content = "...".to_string();
-        output4.has_tool_calls = true;
-        assert_eq!(classify_attempt(&output4), KiroRepairKind::None);
-    }
-
-    #[test]
-    fn test_append_repair_instruction() {
-        // JS parity (kiro.js 130-143): the instruction goes into the current
-        // user turn, never into a top-level `systemPrompt` (400
-        // REQUEST_BODY_INVALID).
-        let body = serde_json::json!({
-            "conversationState": {
-                "currentMessage": { "userInputMessage": { "content": "hi" } }
-            }
-        });
-        let repaired = append_repair_instruction(&body, KiroRepairKind::Ellipsis);
-        assert!(repaired.get("systemPrompt").is_none());
-        let content = repaired["conversationState"]["currentMessage"]["userInputMessage"]
-            ["content"]
-            .as_str()
-            .unwrap();
-        assert!(content.starts_with("hi"));
-        assert!(content.contains("ellipsis"));
-        // Original body untouched.
-        assert_eq!(
-            body["conversationState"]["currentMessage"]["userInputMessage"]["content"],
-            "hi"
-        );
-
-        // Empty current content → instruction becomes the whole content.
-        let bare = serde_json::json!({
-            "conversationState": {
-                "currentMessage": { "userInputMessage": { "content": "" } }
-            }
-        });
-        let repaired2 = append_repair_instruction(&bare, KiroRepairKind::InvalidTool);
-        assert!(repaired2.get("systemPrompt").is_none());
-        assert!(
-            repaired2["conversationState"]["currentMessage"]["userInputMessage"]["content"]
-                .as_str()
-                .unwrap()
-                .contains("tool_call")
-        );
-    }
-
     fn oauth_credentials() -> ProviderConnection {
         let mut psd = std::collections::BTreeMap::new();
         psd.insert("authMethod".to_string(), serde_json::json!("oauth"));
@@ -1681,137 +1114,6 @@ mod tests {
         assert!(urls[0].contains("://q."));
         assert!(urls[1].contains("codewhisperer."));
         assert!(urls[2].contains("kiro.dev"));
-    }
-
-    #[test]
-    fn test_inspect_sse_body() {
-        let sse = concat!(
-            "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"hel\"}}]}\n\n",
-            "data: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}\n\n",
-            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think\"}}]}\n\n",
-            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{}]}}]}\n\n",
-            "data: [DONE]\n\n",
-        );
-        let mut output = KiroAttemptOutput::default();
-        inspect_sse_body(sse.as_bytes(), &mut output);
-        assert_eq!(output.content, "hello");
-        assert_eq!(output.reasoning, "think");
-        assert!(output.has_tool_calls);
-        assert!(!output.saw_error);
-
-        // An error frame marks saw_error.
-        let err_sse = "data: {\"error\":{\"message\":\"boom\"}}\n\n";
-        let mut out2 = KiroAttemptOutput::default();
-        inspect_sse_body(err_sse.as_bytes(), &mut out2);
-        assert!(out2.saw_error);
-    }
-
-    #[test]
-    fn encode_sse_error_emits_kiro_code() {
-        let bytes = encode_sse_error("kiro_ellipsis_retry_failed", "repair failed", None);
-        let text = String::from_utf8(bytes).unwrap();
-        assert!(text.contains("kiro_ellipsis_retry_failed"));
-        assert!(text.contains("\"type\":\"upstream_error\""));
-        assert!(text.contains("repair failed"));
-        assert!(text.contains("data: [DONE]"));
-    }
-
-    #[test]
-    fn stop_disposition_classifies() {
-        assert_eq!(stop_disposition(None, false), StopDisposition::Complete);
-        assert_eq!(stop_disposition(None, true), StopDisposition::ToolUse);
-        assert_eq!(
-            stop_disposition(Some("tool_use"), false),
-            StopDisposition::ToolUse
-        );
-        assert_eq!(
-            stop_disposition(Some("length"), false),
-            StopDisposition::Length
-        );
-        assert_eq!(
-            stop_disposition(Some("content_filter"), false),
-            StopDisposition::RetryableProtocolFailure
-        );
-        assert_eq!(
-            stop_disposition(Some("refusal"), false),
-            StopDisposition::TerminalRefusal
-        );
-        assert_eq!(
-            stop_disposition(Some("malformed_function_call"), false),
-            StopDisposition::TerminalIncomplete
-        );
-        assert_eq!(
-            stop_disposition(Some("end_turn"), false),
-            StopDisposition::Complete
-        );
-        assert_eq!(
-            stop_disposition(Some("mystery"), false),
-            StopDisposition::UnknownFailure
-        );
-        // Truncation stop reasons (9router v0.5.55).
-        assert_eq!(
-            stop_disposition(Some("model_context_window_exceeded"), false),
-            StopDisposition::TerminalIncomplete
-        );
-        assert_eq!(
-            stop_disposition(Some("cancelled"), false),
-            StopDisposition::TerminalIncomplete
-        );
-        assert_eq!(
-            stop_disposition(Some("pause_turn"), false),
-            StopDisposition::TerminalIncomplete
-        );
-        // max_tokens: Length without tool calls, TerminalIncomplete with tool calls.
-        assert_eq!(
-            stop_disposition(Some("max_tokens"), false),
-            StopDisposition::Length
-        );
-        assert_eq!(
-            stop_disposition(Some("max_tokens"), true),
-            StopDisposition::TerminalIncomplete
-        );
-    }
-
-    #[test]
-    fn classify_buffered_body_uses_decode_first() {
-        // The decode-first fix: a raw kiro binary EventStream body carrying an
-        // assistantResponseEvent with content "..." must decode to SSE and
-        // classify as Ellipsis. Build a minimal AWS EventStream frame.
-        fn make_frame(event_type: &str, payload: &str) -> Vec<u8> {
-            let mut header_bytes = Vec::new();
-            let name = b":event-type";
-            header_bytes.push(name.len() as u8);
-            header_bytes.extend_from_slice(name);
-            header_bytes.push(7u8); // string
-            header_bytes.extend_from_slice(&(event_type.len() as u16).to_be_bytes());
-            header_bytes.extend_from_slice(event_type.as_bytes());
-            let payload_bytes = payload.as_bytes();
-            let total = 12 + header_bytes.len() + payload_bytes.len() + 4;
-            let mut frame = Vec::new();
-            frame.extend_from_slice(&(total as u32).to_be_bytes());
-            frame.extend_from_slice(&(header_bytes.len() as u32).to_be_bytes());
-            let prelude_crc = crc32fast::hash(&frame[..8]);
-            frame.extend_from_slice(&prelude_crc.to_be_bytes());
-            frame.extend_from_slice(&header_bytes);
-            frame.extend_from_slice(payload_bytes);
-            let msg_crc = crc32fast::hash(&frame);
-            frame.extend_from_slice(&msg_crc.to_be_bytes());
-            frame
-        }
-
-        // Ellipsis-only content → Ellipsis.
-        let ellipsis_body = make_frame("assistantResponseEvent", r#"{"content":"..."}"#);
-        let kind = classify_buffered_body(&ellipsis_body);
-        assert_eq!(
-            kind,
-            KiroRepairKind::Ellipsis,
-            "binary assistantResponseEvent with content '...' must classify as Ellipsis"
-        );
-
-        // A normal completion does not repair.
-        let ok_body = make_frame("assistantResponseEvent", r#"{"content":"all done"}"#);
-        let kind = classify_buffered_body(&ok_body);
-        assert_eq!(kind, KiroRepairKind::None);
     }
 
     #[test]

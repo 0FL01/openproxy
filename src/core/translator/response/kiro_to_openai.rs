@@ -222,6 +222,10 @@ use crate::core::translator::registry::ResponseTransformState;
 /// Falls back to the legacy JSON path for callers that already hand us
 /// decoded JSON events (e.g. tests, or a provider that skipped EventStream).
 pub fn kiro_to_openai_streaming(chunk: &[u8], state: &mut ResponseTransformState) -> Vec<String> {
+    if state.kiro.stream_failed {
+        return Vec::new();
+    }
+
     // Legacy JSON path: if the chunk parses as JSON with an _eventType or
     // chat.completion.chunk, use kiro_to_openai_response.
     if let Ok(val) = serde_json::from_slice::<serde_json::Value>(chunk) {
@@ -246,7 +250,23 @@ pub fn kiro_to_openai_streaming(chunk: &[u8], state: &mut ResponseTransformState
 
     let events = match crate::core::executor::EventStreamDecoder::decode_chunk(buffer) {
         Ok(events) => events,
-        Err(_) => return vec![],
+        Err(error) => {
+            buffer.clear();
+            state.kiro.stream_failed = true;
+            return vec![
+                format!(
+                    "data: {}\n\n",
+                    serde_json::json!({
+                        "error": {
+                            "message": format!("Invalid Kiro EventStream frame: {error:?}"),
+                            "type": "upstream_error",
+                            "code": "kiro_eventstream_decode_error"
+                        }
+                    })
+                ),
+                "data: [DONE]\n\n".to_string(),
+            ];
+        }
     };
     if events.is_empty() {
         return vec![];
@@ -293,6 +313,7 @@ pub fn kiro_to_openai_streaming(chunk: &[u8], state: &mut ResponseTransformState
                 })
             ));
             out.push("data: [DONE]\n\n".to_string());
+            state.kiro.stream_failed = true;
             continue;
         }
         // Delegate to the assembler (per-event).
@@ -314,6 +335,7 @@ pub fn kiro_to_openai_streaming(chunk: &[u8], state: &mut ResponseTransformState
                         })
                     ));
                     out.push("data: [DONE]\n\n".to_string());
+                    state.kiro.stream_failed = true;
                     break;
                 }
             }
