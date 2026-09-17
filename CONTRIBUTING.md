@@ -5,7 +5,7 @@
 > **Single source of truth for daily workflow:** run `./scripts/dev.sh` — it builds the backend and starts the server. Tests are explicit cargo commands (see [Testing](#testing)).
 
 Related docs:
-- **Git conventions (branch naming, commit messages, atomic commits, PR hygiene):** [`docs/git-conventions.md`](docs/git-conventions.md)
+- **Git conventions (commit messages, atomic commits, PR hygiene):** [`docs/git-conventions.md`](docs/git-conventions.md)
 - **Agent intelligence brief:** [`AGENTS.md`](AGENTS.md) — architecture, secrets policy, schema stability
 - **Pipeline order & intentional behavior:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 

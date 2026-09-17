@@ -6,52 +6,7 @@ Systematic git hygiene keeps `main` bisectable, revertible, and reviewable. This
 
 ---
 
-## 1. Branching
-
-### Naming
-
-```
-<type>/<short-kebab-description>
-```
-
-`<type>` mirrors the primary commit type on the branch:
-
-| Type | When |
-|------|------|
-| `feat/` | New provider, endpoint, dashboard feature |
-| `fix/` | Bug fix, parity gap, regression |
-| `docs/` | Docs only |
-| `chore/` | Tooling, CI, deps, `scripts/dev.sh` |
-| `refactor/` | Behavior-preserving restructure |
-| `test/` | Tests / snapshots only |
-| `build/` | Build / packaging |
-| `ci/` | GitHub Actions |
-| `perf/` | Performance |
-
-Examples from this repo (real):
-- `fix/provider-parity-claude-scopes`
-- `fix/oauth-secrets`
-- `fix/zen-catalog`
-- `add-nvidia-model-aliases`
-- `pr-335` / `pr-374` (numbered PR branches — acceptable for small fixes)
-
-Keep branches short-lived. Rebase onto `main` before opening a PR; don't merge `main` into the branch.
-
-### Lifecycle
-
-```bash
-git checkout main && git pull
-git checkout -b feat/kilocode-discovery
-# ... atomic commits ...
-git push -u origin feat/kilocode-discovery
-gh pr create --fill   # or open via GitHub UI with the PR template
-```
-
-Delete the branch after merge. CI cancels in-flight runs on the same ref (`concurrency: cancel-in-progress: true`).
-
----
-
-## 2. Commit Messages — Conventional Commits
+## 1. Commit Messages — Conventional Commits
 
 ### Format
 
@@ -99,7 +54,7 @@ Add `!` after `type(scope)` and a `BREAKING CHANGE:` footer. This requires a `v2
 
 ---
 
-## 3. Atomic Commits — The Hard Rule
+## 2. Atomic Commits — The Hard Rule
 
 One logical change per commit. A commit is atomic if:
 
@@ -136,7 +91,7 @@ git check-ignore -v opencode.json  # verify ignored
 
 ---
 
-## 4. Verification Before Each Commit
+## 3. Verification Before Each Commit
 
 Run the same checks CI runs — locally, every commit:
 
@@ -159,7 +114,7 @@ If CI fails, fix it in a new commit — don't amend pushed history (see below).
 
 ---
 
-## 5. History Hygiene
+## 4. History Hygiene
 
 - **Before push:** rebase to keep history linear.
   ```bash
@@ -177,7 +132,7 @@ Never commit failing tests or WIP. Never bypass hooks with `--no-verify` unless 
 
 ---
 
-## 6. Pull Requests
+## 5. Pull Requests
 
 PRs use `.github/pull_request_template.md` — fill in:
 
@@ -198,14 +153,14 @@ Draft PRs for early feedback: `gh pr create --draft`.
 
 ---
 
-## 7. Issues & Beads
+## 6. Issues & Beads
 
 - **GitHub Issues:** search before creating (`gh search issues "kilocode"`). Use templates in `.github/ISSUE_TEMPLATE/` — Bug Report / Feature Request. Include repro steps, `openproxy --version`, and whether `cargo test --lib --all-features` reproduces.
 - **Beads (parity work):** epics like `openproxy-9router-parity-v0550-pnc` live in `br` / `bv --robot-next`. For provider parity, check OmniRoute (`/tmp/omniroute_v3850/src/managed/`) before filing — link the relevant file in the issue.
 
 ---
 
-## 8. Releases & Tags
+## 7. Releases & Tags
 
 - Version lives in `Cargo.toml` (`0.2.0`). Tags `v*` trigger `.github/workflows/release.yml` (GHCR image + GitHub Release).
 - Tag from green `main`:
@@ -220,7 +175,7 @@ Draft PRs for early feedback: `gh pr create --draft`.
 
 ---
 
-## 9. Secrets — The Non-Negotiable
+## 8. Secrets — The Non-Negotiable
 
 - Never commit `opencode.json`, `.env*`, `*.pem`, `~/.openproxy/db.json`, `~/.openproxy/admin.key`, or any string matching `sk-`, `Bearer`, `refresh_token`.
 - Before `git add`: `git status` → `git diff --cached` → `git restore --staged <file>` if needed → `git check-ignore -v <file>`.
@@ -230,10 +185,9 @@ See `AGENTS.md` § Local Config & Secrets — Never Commit and `CONTRIBUTING.md`
 
 ---
 
-## 10. Quick Checklist (copy into commit/PR)
+## 9. Quick Checklist (copy into commit/PR)
 
 ```
-- [ ] Branch name: <type>/<kebab-description>
 - [ ] Commits: Conventional Commits, atomic, bisectable
 - [ ] git status / git diff --cached reviewed — no secrets or stray files
 - [ ] cargo fmt --check / cargo clippy --all-targets --all-features — green
