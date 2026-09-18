@@ -268,4 +268,28 @@ fn contract_freezes_preservation_and_removal_lists() {
         manifest["antigravity_onboarding_lifecycle"]["shutdown_drains"],
         true
     );
+    assert_eq!(
+        manifest["claude_quota_retrieval"]["access_token_keyed_cache"],
+        false
+    );
+    assert_eq!(
+        manifest["claude_quota_retrieval"]["completed_result_cache"],
+        false
+    );
+    assert_eq!(
+        manifest["claude_quota_retrieval"]["stale_success_returned_after_error"],
+        false
+    );
+    assert_eq!(
+        manifest["claude_quota_retrieval"]["historical_token_entries"],
+        0
+    );
+    assert_eq!(
+        manifest["claude_quota_retrieval"]["singleflight_enabled"],
+        false
+    );
+    assert_eq!(
+        manifest["claude_quota_retrieval"]["dashboard_poll_interval_seconds"],
+        60
+    );
 }

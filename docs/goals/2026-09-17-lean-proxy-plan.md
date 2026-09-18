@@ -93,17 +93,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R4 / C23.
-- Smallest next action: Delete the access-token-keyed completed Claude quota cache and ineffective `OnceCell` map while preserving explicit on-demand quota fetch and, only where concurrent callers need it, active-only connection-scoped singleflight.
-- Expected evidence: Success/error/cancellation/concurrent quota callers retain no completed result or historical token key; token rotation leaves zero idle entries and UI request frequency remains bounded.
-- Stop or replan if: A provider requires a stable quota snapshot for protocol correctness; preserve explicit stale/error metadata rather than returning cached data as fresh.
+- Closes: R4 / C24.
+- Smallest next action: Remove default provider health probing and orphan breaker state from the lightweight lifecycle while preserving explicit manual diagnostics, honest unknown/stale status, and application liveness independent of upstream availability.
+- Expected evidence: Idle default configuration performs no provider health HTTP; `/health` remains healthy with dead upstreams; explicit diagnostics keep timestamps; legacy degraded fields remain inert for routing.
+- Stop or replan if: A security control depends on the health registry; preserve that narrow control and remove only diagnostic/routing-orphan state rather than weakening protection.
 
 ## Current State
 
-- Resolved: R1 / C00, R2 / C01-C02, R3 / C03-C14, plus C15-C22 within R4. Proxy-owned semantic/header/history replay, heuristic context policy, client-identity passthrough gating, all three executor temporal retry schedulers, successful-response legacy housekeeping, token-keyed completed refresh results, generation-path remote catalog waits, both process-wide Antigravity project maps, and request-scoped onboarding workers are gone. C13 provides the single bounded request-scoped generation/account/auth planner; C16-C18 provide one active-only connection/generation refresh service used by every configured caller; C19-C20 publish immutable OpenCode and Codex model metadata outside generation; C21-C22 make project metadata and onboarding configured-connection lifecycle concerns.
-- Last relevant evidence: One hundred concurrent Antigravity generation requests performed no onboarding work. Thirty-two same-generation setup callers shared one worker; failure/retry, deletion, generation change, and shutdown left zero active entries while preserving credentials and project metadata.
+- Resolved: R1 / C00, R2 / C01-C02, R3 / C03-C14, plus C15-C23 within R4. Proxy-owned semantic/header/history replay, heuristic context policy, client-identity passthrough gating, all three executor temporal retry schedulers, successful-response legacy housekeeping, token-keyed completed refresh/quota results, generation-path remote catalog waits, both process-wide Antigravity project maps, and request-scoped onboarding workers are gone. C13 provides the single bounded request-scoped generation/account/auth planner; C16-C18 provide one active-only connection/generation refresh service used by every configured caller; C19-C20 publish immutable OpenCode and Codex model metadata outside generation; C21-C22 make project metadata and onboarding configured-connection lifecycle concerns; C23 makes Claude quota an uncached explicit control-plane read.
+- Last relevant evidence: Current Claude quota success/error/cancellation/concurrency tests retain no completed result, full-token key, stale payload, or unfinished entry. Dashboard polling remains one minute and hidden-page-aware; auto-ping remains explicit per-connection opt-in.
 - Blocker: None; the prompt explicitly allows independent safe work when external harness/version evidence is unavailable.
-- Next: C23 remove the Claude quota completed-result/token cache while preserving explicit on-demand quota retrieval.
+- Next: C24 remove default health probes and orphan breaker state while preserving explicit diagnostics and liveness.
 
 ## Material Decisions
 
@@ -138,6 +138,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-09-18: C20 passed. Replaced Codex per-connection read/HTTP mutexes with an ArcSwap-published supporter index and pre-merged active union. Generation and metadata routes read synchronously; one bounded process task plus explicit discovery/test actions refresh remotely and publish atomically. Known chats ignore held refresh, failed refresh retains the prior Arc, inactive/deleted/identity-changed connections reconcile away, and cold unknown models cannot route to arbitrary accounts. C21 is next.
 - 2026-09-18: C21 passed. Deleted the active connection-id TTL project cache and the proven-dead token-keyed duplicate, consolidated canonical/legacy project parsing, and made Antigravity generation read only the selected connection snapshot with no loadCodeAssist or project lock. Concurrent first uses stay local, delete/recreate cannot restore old metadata, and setup discovery failure is explicit while credentials remain durable. C22 is next.
 - 2026-09-18: C22 passed. Deleted Antigravity onboarding polling/spawn from generation and replaced setup polling with one active-only connection/generation lifecycle using pooled proxy-aware transport, bounded attempts, readiness diagnostics, explicit test retry, delete cancellation, and shutdown drain. One hundred chats start zero onboarding workers; C23 is next.
+- 2026-09-18: C23 passed. Deleted Claude quota's access-token-keyed five-minute result/error cache, stale-on-error replay, and ineffective OnceCell map without replacement. Explicit success/error/cancellation and twenty-four concurrent callers retain no historical or in-flight state; dashboard polling remains sixty-second and hidden-page-aware. C24 is next.
 
 ## Completion
 

@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C23",
+  "next_checkpoint": "C24",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c22_cargo_1.98.1",
+    "rust_verification": "passed_through_c23_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -1205,7 +1205,7 @@
     {
       "id": "C23",
       "title": "Удалить Claude quota result cache и ложную дедупликацию",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C17B"
       ],
@@ -1218,7 +1218,37 @@
       "change": "Удалить completed quota JSON cache с access-token keys и OnceCell map, которая не заполняется. Получать quota по явному control-plane запросу. Только при нужной конкуренции одного connection использовать корректную отменяемую in-flight координацию без сохранения завершённых результатов. Не выдавать stale snapshot за fresh данные.",
       "tests": "Успех, HTTP/JSON error, cancellation и конкурентные callers; не остаются незавершённые записи. Token rotation не накапливает map entries. При выбранном singleflight точно один upstream quota request на одновременную группу.",
       "acceptance": "Кэши удалены, on-demand quota не утрачена; частота запросов UI проверена отдельно, чтобы удаление не породило шторм опросов. Исправление не называется снижением hot-path chat RAM без замера.",
-      "rollback": "Откат конкретного control-plane изменения; не возвращать stale data с ложным timestamp."
+      "rollback": "Откат конкретного control-plane изменения; не возвращать stale data с ложным timestamp.",
+      "result": {
+        "files": [
+          "src/core/usage/quota_fetcher.rs",
+          "src/server/api/usage.rs",
+          "tests/lean_proxy_quota_c23.rs",
+          "tests/lean_proxy_contract.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json",
+          "docs/CHECKPOINTS.json",
+          "docs/goals/2026-09-17-lean-proxy-plan.md"
+        ],
+        "cache_removal": "Deleted the full-access-token-keyed five-minute completed Claude quota result/error map, stale fallback, ineffective OnceCell in-flight map, and all associated TTL/map helpers. No replacement cache, LRU, timer, or persisted snapshot was added.",
+        "request_contract": "Claude quota remains an explicit stateless control-plane HTTP request. Success, authentication failure, other HTTP failure, malformed JSON, and cancellation return or propagate only the current operation's result; a prior success is never presented as fresh after failure.",
+        "concurrency": "No quota singleflight was added because the previous implementation never actually coalesced concurrent requests and quota GET is idempotent. Twenty-four concurrent explicit callers issue exactly one request each and leave no in-flight or historical state.",
+        "refresh_boundary": "Credential refresh remains connection/generation-coordinated by C17B before quota retrieval. C23 does not add a refresh owner or alter proactive OAuth refresh.",
+        "polling": "The dashboard remains bounded to a sixty-second interval, pauses while document.hidden, and performs explicit requests. Quota auto-ping remains sixty-second and requires per-connection opt-in; its worker lifecycle remains C25-owned.",
+        "non_claim": "The change removes control-plane historical token/result retention and is not reported as a measured reduction of chat hot-path RAM.",
+        "verification": [
+          "cargo test --test lean_proxy_quota_c23 -- --nocapture: 3 passed",
+          "cargo test --lib quota_fetcher --all-features -- --nocapture: 24 passed",
+          "cargo test --test lean_proxy_refresh_c17b --test lean_proxy_refresh_c18 --test lean_proxy_quota_c23 -- --nocapture: 9 passed",
+          "cargo test --test lean_proxy_quota_c23 --test lean_proxy_contract --test lean_proxy_refresh_c17b --test lean_proxy_refresh_c18 -- --nocapture: 13 passed",
+          "cargo test --lib --all-features -- --test-threads=1: 1191 passed",
+          "focused clippy with documented unrelated production lint allowances: passed",
+          "cargo clippy --all-targets --all-features: passed with 3 pre-existing production style warnings",
+          "cargo fmt --all -- --check, JSON parse, and git diff --check: passed"
+        ],
+        "acceptance_evidence": "Two sequential successes perform two upstream requests; following 401, 500, and malformed JSON return current errors rather than stale data. Cancelling a held response drops the upstream body and a later call succeeds. Twenty-four distinct concurrent token callers complete independently, and source census proves there is no cache, full-token key, completed result, or unfinished-entry map.",
+        "rollback": "Revert the C23 control-plane commit without changing credentials, refresh coordination, auto-ping settings, or usage response shape. Never restore stale quota payloads as current data."
+      }
     },
     {
       "id": "C24",

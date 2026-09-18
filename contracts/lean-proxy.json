@@ -285,6 +285,23 @@
     "explicit_connection_test_can_retry": true,
     "idle_entries": 0
   },
+  "claude_quota_retrieval": {
+    "checkpoint": "C23",
+    "owner": "explicit_control_plane_request",
+    "access_token_keyed_cache": false,
+    "completed_result_cache": false,
+    "stale_success_returned_after_error": false,
+    "unfinished_in_flight_entries": 0,
+    "historical_token_entries": 0,
+    "singleflight_enabled": false,
+    "concurrent_request_behavior": "one_upstream_request_per_explicit_caller",
+    "caller_cancellation_retains_state": false,
+    "refresh_owner": "connection_refresh_coordinator",
+    "dashboard_poll_interval_seconds": 60,
+    "dashboard_hidden_page_polling": false,
+    "quota_auto_ping_requires_connection_opt_in": true,
+    "hot_path_chat_ram_reduction_claimed": false
+  },
   "versions": {
     "opencode": "1.18.31",
     "custom_harness": "unknown"
