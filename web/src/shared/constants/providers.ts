@@ -7,9 +7,8 @@ import type {
   AuthMethod
 } from "../../types";
 
-// Free Providers (kiro first)
+// Free Providers
 export const FREE_PROVIDERS: Record<string, Provider> = {
-  kiro: { id: "kiro", alias: "kr", name: "Kiro AI", icon: "psychology_alt", color: "#FF6B35", website: "https://kiro.dev", notice: { signupUrl: "https://kiro.dev" } },
   qwen: { id: "qwen", alias: "qw", name: "Qwen Code", icon: "psychology", color: "#10B981", deprecated: true, deprecationNotice: "Qwen OAuth free tier was discontinued by Alibaba on 2026-04-15. New connections will not work.", website: "https://chat.qwen.ai", notice: { signupUrl: "https://chat.qwen.ai" }, serviceKinds: ["llm"] },
   // gitlab: { id: "gitlab", alias: "gl", name: "GitLab Duo", icon: "code", color: "#FC6D26" },
   // codebuddy: { id: "codebuddy", alias: "cb", name: "CodeBuddy", icon: "smart_toy", color: "#006EFF" },
@@ -51,7 +50,6 @@ export const FREE_TIER_PROVIDER_IDS: string[] = [
   "mistral",
   "llm7",
   "sambanova",
-  "kiro",
 ];
 
 // O(1) membership lookup derived from the canonical ID list.
@@ -393,21 +391,6 @@ export const FREE_TIER_INFO: Record<string, FreeTierInfo> = {
     lastVerified: "2026-08-27",
     source: "https://github.com/open-free-llm-api/awesome-freellm-apis",
   },
-  kiro: {
-    accessModel: "Permanent free tier",
-    creditCard: "none",
-    rateLimit: "50 credits/month (open-weight models + Claude Sonnet 4.5); upgrades start at $20/mo",
-    maxContext: "1M tokens",
-    freeModels: 12,
-    productionAllowed: false,
-    caveats: [
-      "Free tier: 50 credits/month, no card for social/AWS Builder ID sign-up.",
-      "Access to open-weight models (Qwen3 Coder Next, DeepSeek 3.2, MiniMax M2.1) and Claude Sonnet 4.5, subject to rate limits.",
-      "Not available in AWS GovCloud (US).",
-    ],
-    lastVerified: "2026-08-27",
-    source: "https://kiro.dev/pricing/",
-  },
   huggingface: {
     accessModel: "Permanent free tier",
     creditCard: "none",
@@ -483,7 +466,6 @@ export const ID_TO_ALIAS: Record<string, string> = Object.values(AI_PROVIDERS).r
 export const USAGE_SUPPORTED_PROVIDERS: string[] = [
   "claude",
   "antigravity",
-  "kiro",
   "github",
   "codex",
   "kimi",

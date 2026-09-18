@@ -306,7 +306,7 @@ export function calculatePercentage(used: number, total: number): number {
 
 /**
  * Parse provider-specific quota structures into normalized array
- * @param provider - Provider name (github, antigravity, codex, kiro, claude)
+ * @param provider - Provider name (github, antigravity, codex, claude)
  * @param data - Raw quota data from provider
  * @returns Normalized quota objects with { name, used, total, resetAt }
  */
@@ -348,20 +348,6 @@ export function parseQuotaData(provider: string, data: RawQuotaData | null | und
         break;
 
       case "codex":
-        if (data.quotas) {
-          Object.entries(data.quotas).forEach(([quotaType, quota]: [string, QuotaEntry]) => {
-            normalizedQuotas.push({
-              name: quotaType,
-              used: quota.used || 0,
-              total: quota.total || 0,
-              resetAt: quota.resetAt || null,
-              recurring: (quota as any).recurring !== false,
-            });
-          });
-        }
-        break;
-
-      case "kiro":
         if (data.quotas) {
           Object.entries(data.quotas).forEach(([quotaType, quota]: [string, QuotaEntry]) => {
             normalizedQuotas.push({

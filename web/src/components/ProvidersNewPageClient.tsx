@@ -343,11 +343,6 @@ export default function ProvidersNewPageClient() {
                 {selected.provider.name}
               </span>
               .
-              {selected.id === "kiro" && (
-                <span className="mt-1 block text-xs">
-                  Kiro also supports API-key auth from the provider detail page.
-                </span>
-              )}
             </div>
           )}
 

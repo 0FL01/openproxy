@@ -245,7 +245,7 @@ The same instructions in machine-readable form live at [`.agents/skills/openprox
 |---|---|---|---|
 | OAuth subscription | Claude Code, Codex, GitHub Copilot, Cursor, Antigravity | OAuth (PKCE) | Use your existing subscription quota. Auto-refresh. |
 | API key | OpenAI, Anthropic, Gemini, OpenRouter, GLM, Kimi, MiniMax, DeepSeek, Groq, xAI, Mistral, Perplexity, Together, Fireworks, Cerebras, Cohere, NVIDIA, SiliconFlow, Nebius, Chutes, Hyperbolic, custom OpenAI/Anthropic-compatible endpoints | API key | 40+ supported. |
-| Free | Kiro AI (Claude 4.5 + GLM-5 + MiniMax), OpenCode Free, Vertex AI ($300 trial credits) | OAuth / no auth / GCP service account | Best for fallback tiers. |
+| Free | OpenCode Free, Vertex AI ($300 trial credits) | OAuth / no auth / GCP service account | Best for fallback tiers. |
 
 Configure providers from the dashboard (`Providers` tab) or via `openproxy provider` CLI subcommands. Each provider supports multiple accounts; OpenProxy prefers the lowest-priority-number account and tries each remaining account once after an upstream failure. Every new client request starts with the preferred account; upstream `Retry-After` is forwarded to the client rather than enforced by the proxy.
 
@@ -314,7 +314,7 @@ They are compiled into the binary and require a rebuild to change:
 | Gemini CLI version string | `src/core/config/app_constants.rs` | `0.34.0` |
 | GitHub Copilot versions | `src/core/config/app_constants.rs` | Chat `0.38.0`, VS Code `1.110.0` |
 | Default tool-name decoys | `src/core/config/app_constants.rs` | Claude Code / Antigravity tool sets |
-| Kiro suffixes & system prompt | `src/core/config/kiro_constants.rs` | `-agentic`, `-thinking` |
+| Kiro suffixes & system prompt (retired) | `src/core/config/kiro_constants.rs` | `-agentic`, `-thinking` |
 | Thinking-mode signatures | `src/core/config/default_thinking_signature.rs` | Claude, AG, Vertex, Gemini CLI |
 
 ---

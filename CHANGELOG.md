@@ -1,3 +1,10 @@
+# Unreleased
+
+## Breaking
+- remove kiro provider (retired)
+
+---
+
 # v0.2.0 (2026-07-12)
 
 ## 9router v0.5.30 full parity — 101 beads closed

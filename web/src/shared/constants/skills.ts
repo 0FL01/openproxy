@@ -44,7 +44,7 @@ export const SKILLS: Skill[] = [
   {
     id: "openproxy-providers",
     name: "Providers",
-    description: "Configure AI providers: OAuth (Claude Code, Codex, Copilot, Cursor), API key (OpenAI, Anthropic, Gemini — 40+), and free tiers (Kiro AI, Vertex AI).",
+    description: "Configure AI providers: OAuth (Claude Code, Codex, Copilot, Cursor), API key (OpenAI, Anthropic, Gemini — 40+), and free tiers (Vertex AI).",
     endpoint: null,
     icon: "cloud",
   },

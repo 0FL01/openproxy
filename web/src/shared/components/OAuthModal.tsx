@@ -18,11 +18,6 @@ interface OAuthModalProps {
   onClose: () => void;
   /** Extra metadata passed to /authorize and /exchange (e.g. gitlab clientId/baseUrl) */
   oauthMeta?: Record<string, string>;
-  /** Optional Kiro IDC config for AWS IAM Identity Center device flow */
-  idcConfig?: {
-    startUrl?: string;
-    region?: string;
-  };
 }
 
 interface AuthData {
@@ -49,7 +44,7 @@ interface DeviceData {
   _startUrl?: string;
 }
 
-export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, onClose, oauthMeta, idcConfig }: OAuthModalProps) {
+export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, onClose, oauthMeta }: OAuthModalProps) {
   const [step, setStep] = useState<"waiting" | "input" | "success" | "error">("waiting");
   const [authData, setAuthData] = useState<AuthData | null>(null);
   const [callbackUrl, setCallbackUrl] = useState("");
@@ -189,11 +184,10 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     try {
       setError(null);
 
-      // Must match backend device-code providers (oauth.rs is_device_code_provider + kiro/grok-cli)
+      // Must match backend device-code providers (oauth.rs is_device_code_provider + grok-cli)
       const deviceCodeProviders = [
         "github",
         "qwen",
-        "kiro",
         "kimi",
         "kimi-coding",
         "kilocode",
@@ -207,13 +201,6 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         setStep("waiting");
 
         const deviceCodeUrl = new URL(`/api/oauth/${provider}/device-code`, window.location.origin);
-        if (provider === "kiro" && idcConfig?.startUrl) {
-          deviceCodeUrl.searchParams.set("start_url", idcConfig.startUrl);
-          if (idcConfig.region) {
-            deviceCodeUrl.searchParams.set("region", idcConfig.region);
-          }
-          deviceCodeUrl.searchParams.set("auth_method", "idc");
-        }
         const res = await fetch(deviceCodeUrl.toString());
         const data = await res.json();
         if (!res.ok) throw new Error(data.error);
@@ -223,15 +210,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         const verifyUrl = data.verification_uri_complete || data.verification_uri;
         if (verifyUrl) window.open(verifyUrl, "_blank", "noopener,noreferrer");
 
-        const extraData = provider === "kiro"
-          ? {
-              _clientId: data._clientId,
-              _clientSecret: data._clientSecret,
-              _region: data._region,
-              _authMethod: data._authMethod,
-              _startUrl: data._startUrl,
-            }
-          : null;
+        const extraData = null;
         startPolling(
           data.device_code,
           data.codeVerifier,
@@ -340,7 +319,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       setError((err as Error).message);
       setStep("error");
     }
-  }, [provider, isLocalhost, startPolling, oauthMeta, idcConfig]);
+  }, [provider, isLocalhost, startPolling, oauthMeta]);
 
   useEffect(() => {
     if (isOpen && provider) {

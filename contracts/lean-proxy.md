@@ -40,6 +40,8 @@ It preserves user custom/enabled/disabled models and canonical `opencode.source`
 
 The `openproxy.v1.*` namespace remains additive-only. Retired behavior is not assigned a new meaning under an existing field.
 
+Retired providers (additive, history preserved): `kiro` (`provider_target_formats: kiro → kiro`; request pairs `claude->kiro`, `openai->kiro`; response pairs `kiro->claude`, `kiro->openai`) is retired — remove kiro provider (retired). Frozen entries in `lean-proxy.json` above are retained unchanged.
+
 ## Legacy data and migration
 
 Persisted types intentionally preserve unknown fields through `extra` and `providerSpecificData`. Lean migrations therefore obey these rules:

@@ -62,7 +62,6 @@ export default function ProviderLimitCard({
       github: "#000000",
       antigravity: "#4285F4",
       codex: "#10A37F",
-      kiro: "#FF9900",
       claude: "#D97757",
     };
     return colors[provider?.toLowerCase() || ""] || "#6B7280";

@@ -95,6 +95,16 @@
     "vertex->openai",
     "antigravity->openai"
   ],
+  "retired_providers": {
+    "kiro": {
+      "status": "retired",
+      "provider_target_format": "kiro",
+      "retired_request_transforms": ["claude->kiro", "openai->kiro"],
+      "retired_response_transforms": ["kiro->claude", "kiro->openai"],
+      "history_preserved": true,
+      "note": "remove kiro provider (retired); frozen provider_target_formats and registered transform entries above are retained unchanged for history"
+    }
+  },
   "preserved_contracts": [
     "provider_credentials_and_oauth",
     "bounded_account_fallback",

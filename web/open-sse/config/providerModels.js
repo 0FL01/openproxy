@@ -113,15 +113,6 @@ export const PROVIDER_MODELS = {
     { id: "text-embedding-3-small", name: "Text Embedding 3 Small (GitHub)", type: "embedding" },
     { id: "text-embedding-3-large", name: "Text Embedding 3 Large (GitHub)", type: "embedding" },
   ],
-  kr: [  // Kiro AI
-    // { id: "claude-opus-4.5", name: "Claude Opus 4.5" },
-    { id: "claude-sonnet-4.5", name: "Claude Sonnet 4.5" },
-    { id: "claude-haiku-4.5", name: "Claude Haiku 4.5" },
-    { id: "deepseek-3.2", name: "DeepSeek 3.2", strip: ["image", "audio"] },
-    { id: "qwen3-coder-next", name: "Qwen3 Coder Next", strip: ["image", "audio"] },
-    { id: "glm-5", name: "GLM 5" },
-    { id: "MiniMax-M2.5", name: "MiniMax M2.5" },
-  ],
   cu: [  // Cursor IDE
     { id: "default", name: "Auto (Server Picks)" },
     { id: "claude-4.5-opus-high-thinking", name: "Claude 4.5 Opus High Thinking" },
@@ -622,7 +613,6 @@ const OAUTH_ALIASES = {
   qwen: "qw",
   antigravity: "ag",
   github: "gh",
-  kiro: "kr",
   cursor: "cu",
   "kimi-coding": "kmc",
   kilocode: "kc",
