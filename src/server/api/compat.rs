@@ -35,10 +35,16 @@ pub async fn messages(
         .as_ref()
         .ok()
         .and_then(|b| b.get("model").and_then(|m| m.as_str()));
-    let _log = crate::server::request_logger::RequestLog::start("POST", "/v1/messages", model);
+    let request_id = crate::server::request_logger::new_request_id();
+    let _log = crate::server::request_logger::RequestLog::start(
+        "POST",
+        "/v1/messages",
+        model,
+        Some(request_id.clone()),
+    );
     let response = forward_compat(state, headers, body, CompatMode::Messages).await;
     _log.finish(response.status().as_u16());
-    response
+    crate::server::request_logger::attach_request_id(response, &request_id)
 }
 
 pub async fn responses(
@@ -50,7 +56,13 @@ pub async fn responses(
         .as_ref()
         .ok()
         .and_then(|b| b.get("model").and_then(|m| m.as_str()));
-    let _log = crate::server::request_logger::RequestLog::start("POST", "/v1/responses", model);
+    let request_id = crate::server::request_logger::new_request_id();
+    let _log = crate::server::request_logger::RequestLog::start(
+        "POST",
+        "/v1/responses",
+        model,
+        Some(request_id.clone()),
+    );
     let response = forward_compat(
         state,
         headers,
@@ -59,7 +71,7 @@ pub async fn responses(
     )
     .await;
     _log.finish(response.status().as_u16());
-    response
+    crate::server::request_logger::attach_request_id(response, &request_id)
 }
 
 pub async fn responses_compact(
@@ -71,8 +83,13 @@ pub async fn responses_compact(
         .as_ref()
         .ok()
         .and_then(|b| b.get("model").and_then(|m| m.as_str()));
-    let _log =
-        crate::server::request_logger::RequestLog::start("POST", "/v1/responses/compact", model);
+    let request_id = crate::server::request_logger::new_request_id();
+    let _log = crate::server::request_logger::RequestLog::start(
+        "POST",
+        "/v1/responses/compact",
+        model,
+        Some(request_id.clone()),
+    );
     let response = forward_compat(
         state,
         headers,
@@ -81,7 +98,7 @@ pub async fn responses_compact(
     )
     .await;
     _log.finish(response.status().as_u16());
-    response
+    crate::server::request_logger::attach_request_id(response, &request_id)
 }
 
 pub async fn count_tokens(

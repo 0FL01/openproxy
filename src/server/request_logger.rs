@@ -32,6 +32,31 @@ fn strip_ansi(s: &str) -> String {
     result
 }
 
+/// Response header carrying the server-side request id on errors.
+/// Lets a client reporting an HTTP 500 correlate it to one stderr line
+/// via grep. The id is never persisted (C35: no correlation internals).
+pub const REQUEST_ID_HEADER: &str = "x-openproxy-request-id";
+
+/// Short non-unique request id for log correlation within a time window
+/// (32 bits — a grep hint, not a global identifier).
+pub fn new_request_id() -> String {
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    id[..8].to_string()
+}
+
+/// Attach the request id to an error response. Success responses stay
+/// header-free (quiet by default).
+pub fn attach_request_id(
+    mut response: axum::response::Response,
+    request_id: &str,
+) -> axum::response::Response {
+    if response.status().as_u16() >= 400 {
+        if let Ok(value) = axum::http::HeaderValue::from_str(request_id) {
+            response.headers_mut().insert(REQUEST_ID_HEADER, value);
+        }
+    }
+    response
+}
 fn log_both(terminal_line: &str) {
     eprintln!("{}", terminal_line);
     let clean = strip_ansi(terminal_line);
@@ -42,10 +67,16 @@ pub struct RequestLog {
     method: &'static str,
     path: String,
     start: Instant,
+    request_id: Option<String>,
 }
 
 impl RequestLog {
-    pub fn start(method: &'static str, path: &str, model: Option<&str>) -> Self {
+    pub fn start(
+        method: &'static str,
+        path: &str,
+        model: Option<&str>,
+        request_id: Option<String>,
+    ) -> Self {
         let time = Local::now().format("%H:%M:%S");
         match model {
             Some(m) => log_both(&format!(
@@ -58,6 +89,7 @@ impl RequestLog {
             method,
             path: path.to_owned(),
             start: Instant::now(),
+            request_id,
         }
     }
 
@@ -65,10 +97,16 @@ impl RequestLog {
         let elapsed = self.start.elapsed().as_millis() as u64;
         let icon = if status < 400 { "📤" } else { "💥" };
         let time = Local::now().format("%H:%M:%S");
-        log_both(&format!(
-            "[{}] {} {} ({}ms) {} {}",
-            time, icon, status, elapsed, self.method, self.path
-        ));
+        match &self.request_id {
+            Some(id) => log_both(&format!(
+                "[{}] {} {} ({}ms) {} {} id={}",
+                time, icon, status, elapsed, self.method, self.path, id
+            )),
+            None => log_both(&format!(
+                "[{}] {} {} ({}ms) {} {}",
+                time, icon, status, elapsed, self.method, self.path
+            )),
+        }
     }
 }
 

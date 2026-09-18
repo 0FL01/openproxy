@@ -198,13 +198,18 @@ pub async fn chat_completions(
         .as_ref()
         .ok()
         .and_then(|b| b.get("model").and_then(|m| m.as_str()));
-    let _log =
-        crate::server::request_logger::RequestLog::start("POST", "/v1/chat/completions", model);
+    let request_id = crate::server::request_logger::new_request_id();
+    let _log = crate::server::request_logger::RequestLog::start(
+        "POST",
+        "/v1/chat/completions",
+        model,
+        Some(request_id.clone()),
+    );
     let response = with_cors_response(
         chat_completions_for_endpoint(state, headers, body, Some("/v1/chat/completions")).await,
     );
     _log.finish(response.status().as_u16());
-    response
+    crate::server::request_logger::attach_request_id(response, &request_id)
 }
 
 pub async fn dashboard_chat_completions(
@@ -3541,6 +3546,10 @@ fn with_cors_response(mut response: Response) -> Response {
     response.headers_mut().insert(
         header::ACCESS_CONTROL_ALLOW_METHODS,
         HeaderValue::from_static("GET, POST, OPTIONS"),
+    );
+    response.headers_mut().insert(
+        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        HeaderValue::from_static("x-openproxy-request-id"),
     );
     response
 }
