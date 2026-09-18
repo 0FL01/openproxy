@@ -43,8 +43,8 @@ pub async fn messages(
         Some(request_id.clone()),
     );
     let response = forward_compat(state, headers, body, CompatMode::Messages).await;
-    _log.finish(response.status().as_u16());
-    crate::server::request_logger::attach_request_id(response, &request_id)
+    let response = crate::server::request_logger::attach_request_id(response, &request_id);
+    _log.watch(response)
 }
 
 pub async fn responses(
@@ -70,8 +70,8 @@ pub async fn responses(
         CompatMode::Responses { compact: false },
     )
     .await;
-    _log.finish(response.status().as_u16());
-    crate::server::request_logger::attach_request_id(response, &request_id)
+    let response = crate::server::request_logger::attach_request_id(response, &request_id);
+    _log.watch(response)
 }
 
 pub async fn responses_compact(
@@ -97,8 +97,8 @@ pub async fn responses_compact(
         CompatMode::Responses { compact: true },
     )
     .await;
-    _log.finish(response.status().as_u16());
-    crate::server::request_logger::attach_request_id(response, &request_id)
+    let response = crate::server::request_logger::attach_request_id(response, &request_id);
+    _log.watch(response)
 }
 
 pub async fn count_tokens(

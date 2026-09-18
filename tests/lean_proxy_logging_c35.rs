@@ -188,7 +188,9 @@ async fn lean_start_finish_preserves_order_and_metadata_only() {
         cache_creation_input_tokens: None,
         extra: Default::default(),
     };
-    attempt.finish("success", Some(200), Some(&usage), None).await;
+    attempt
+        .finish("success", Some(200), Some(&usage), None)
+        .await;
     assert!(
         request_log_flush_with_budget(Duration::from_secs(5)).await,
         "lean finish must drain"

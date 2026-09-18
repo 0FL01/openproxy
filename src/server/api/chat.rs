@@ -208,8 +208,8 @@ pub async fn chat_completions(
     let response = with_cors_response(
         chat_completions_for_endpoint(state, headers, body, Some("/v1/chat/completions")).await,
     );
-    _log.finish(response.status().as_u16());
-    crate::server::request_logger::attach_request_id(response, &request_id)
+    let response = crate::server::request_logger::attach_request_id(response, &request_id);
+    _log.watch(response)
 }
 
 pub async fn dashboard_chat_completions(
@@ -223,14 +223,24 @@ pub async fn dashboard_chat_completions(
 
     let body = normalize_dashboard_chat_request_body(&state, body);
 
-    chat_completions_impl(
+    // Error-only terminal logging, same one-line policy as public routes.
+    let request_id = crate::server::request_logger::new_request_id();
+    let _log = crate::server::request_logger::RequestLog::start(
+        "POST",
+        "/api/dashboard/chat/completions",
+        None,
+        Some(request_id.clone()),
+    );
+    let response = chat_completions_impl(
         state,
         headers,
         body,
         Some("/api/dashboard/chat/completions"),
         false,
     )
-    .await
+    .await;
+    let response = crate::server::request_logger::attach_request_id(response, &request_id);
+    _log.watch(response)
 }
 
 fn normalize_dashboard_chat_request_body(

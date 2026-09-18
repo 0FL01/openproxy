@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use tokio::sync::broadcast;
 
-pub const DEFAULT_CONSOLE_LOG_MAX_LINES: usize = 200;
+pub const DEFAULT_CONSOLE_LOG_MAX_LINES: usize = 400;
 
 static SHARED_CONSOLE_LOG_BUFFER: OnceLock<Arc<ConsoleLogBuffer>> = OnceLock::new();
 

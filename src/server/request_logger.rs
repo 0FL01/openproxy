@@ -1,6 +1,11 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
+use axum::body::Body;
+use axum::http::header;
+use axum::response::Response;
 use chrono::Local;
+use http_body_util::{BodyExt, StreamBody};
 
 use crate::server::console_logs::shared_console_log_buffer;
 
@@ -68,52 +73,185 @@ pub struct RequestLog {
     path: String,
     start: Instant,
     request_id: Option<String>,
+    finished: AtomicBool,
 }
 
 impl RequestLog {
+    /// Silent constructor: no entry line. Exactly one terminal line is
+    /// emitted later by `finish` (errors only), `watch` (abort only), or
+    /// `Drop` (aborted before any outcome).
     pub fn start(
         method: &'static str,
         path: &str,
         model: Option<&str>,
         request_id: Option<String>,
     ) -> Self {
-        let time = Local::now().format("%H:%M:%S");
-        match model {
-            Some(m) => log_both(&format!(
-                "\x1b[36m[{}] 📥 {} {} model={}\x1b[0m",
-                time, method, path, m
-            )),
-            None => log_both(&format!("\x1b[36m[{}] 📥 {} {}\x1b[0m", time, method, path)),
-        }
+        let _ = model;
         Self {
             method,
             path: path.to_owned(),
             start: Instant::now(),
             request_id,
+            finished: AtomicBool::new(false),
         }
     }
 
-    pub fn finish(self, status: u16) {
+    /// Header-time outcome. Logs only failures (`status >= 400`).
+    /// Idempotent: only the first terminal call emits.
+    pub fn finish(&self, status: u16) {
+        if status < 400 || self.finished.swap(true, Ordering::AcqRel) {
+            return;
+        }
         let elapsed = self.start.elapsed().as_millis() as u64;
-        let icon = if status < 400 { "📤" } else { "💥" };
         let time = Local::now().format("%H:%M:%S");
         match &self.request_id {
             Some(id) => log_both(&format!(
-                "[{}] {} {} ({}ms) {} {} id={}",
-                time, icon, status, elapsed, self.method, self.path, id
+                "[{}] 💥 {} ({}ms) {} {} id={}",
+                time, status, elapsed, self.method, self.path, id
             )),
             None => log_both(&format!(
-                "[{}] {} {} ({}ms) {} {}",
-                time, icon, status, elapsed, self.method, self.path
+                "[{}] 💥 {} ({}ms) {} {}",
+                time, status, elapsed, self.method, self.path
             )),
+        }
+    }
+
+    /// Silent terminal mark for completed non-stream responses.
+    pub fn complete(&self) {
+        self.finished.store(true, Ordering::Release);
+    }
+
+    /// Abort outcome with a cause. Idempotent: only the first terminal
+    /// call emits. Logging is sync and infallible (safe in `Drop`).
+    pub fn abort(&self, cause: &'static str) {
+        if self.finished.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let elapsed = self.start.elapsed().as_millis() as u64;
+        let time = Local::now().format("%H:%M:%S");
+        match &self.request_id {
+            Some(id) => log_both(&format!(
+                "[{}] 💥 aborted cause={} ({}ms) {} {} id={}",
+                time, cause, elapsed, self.method, self.path, id
+            )),
+            None => log_both(&format!(
+                "[{}] 💥 aborted cause={} ({}ms) {} {}",
+                time, cause, elapsed, self.method, self.path
+            )),
+        }
+    }
+
+    /// Terminal handling for a handler response. Errors log immediately;
+    /// successful SSE streams get a pass-through abort guard (clean EOF is
+    /// silent, interruption emits one abort line); anything else completes
+    /// silently. Consumes the log so `Drop` stays quiet afterwards.
+    pub fn watch(mut self, response: Response) -> Response {
+        let status = response.status().as_u16();
+        if status >= 400 {
+            self.finish(status);
+            return response;
+        }
+        let is_sse = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|content_type| content_type.starts_with("text/event-stream"));
+        if !is_sse {
+            self.complete();
+            return response;
+        }
+        // Silence the outer Drop: from here the stream guard owns the outcome.
+        self.complete();
+        let (parts, body) = response.into_parts();
+        let mut watch = AbortWatch {
+            method: self.method,
+            path: std::mem::take(&mut self.path),
+            start: self.start,
+            request_id: self.request_id.take(),
+            done: false,
+        };
+        let mut data_stream = body.into_data_stream();
+        let stream = async_stream::stream! {
+            use futures_util::StreamExt;
+            while let Some(item) = data_stream.next().await {
+                match item {
+                    Ok(bytes) => {
+                        yield Ok(hyper::body::Frame::data(bytes));
+                    }
+                    Err(error) => {
+                        watch.fail("upstream_error");
+                        yield Err(std::io::Error::new(std::io::ErrorKind::Other, error));
+                        return;
+                    }
+                }
+            }
+            watch.complete();
+        };
+        Response::from_parts(parts, Body::new(StreamBody::new(stream)))
+    }
+}
+
+impl Drop for RequestLog {
+    fn drop(&mut self) {
+        // Panic, cancellation, or disconnect before any outcome:
+        // never go silent, emit one generic abort line.
+        if !self.finished.swap(true, Ordering::AcqRel) {
+            let elapsed = self.start.elapsed().as_millis() as u64;
+            let time = Local::now().format("%H:%M:%S");
+            match &self.request_id {
+                Some(id) => log_both(&format!(
+                    "[{}] 💥 aborted cause=cancelled ({}ms) {} {} id={}",
+                    time, elapsed, self.method, self.path, id
+                )),
+                None => log_both(&format!(
+                    "[{}] 💥 aborted cause=cancelled ({}ms) {} {}",
+                    time, elapsed, self.method, self.path
+                )),
+            }
         }
     }
 }
 
-pub fn stream(event: &str, data: Option<&str>) {
-    let time = Local::now().format("%H:%M:%S");
-    match data {
-        Some(d) => log_both(&format!("[{}] 🌊 [STREAM] {} {}", time, event, d)),
-        None => log_both(&format!("[{}] 🌊 [STREAM] {}", time, event)),
+/// Stream-owned abort guard: clean EOF completes silently, upstream
+/// transport death fails loudly, early drop (client disconnect, cancel,
+/// unwind) reports `client_disconnect`. Sync/infallible only.
+struct AbortWatch {
+    method: &'static str,
+    path: String,
+    start: Instant,
+    request_id: Option<String>,
+    done: bool,
+}
+
+impl AbortWatch {
+    fn fail(&mut self, cause: &'static str) {
+        if self.done {
+            return;
+        }
+        self.done = true;
+        let elapsed = self.start.elapsed().as_millis() as u64;
+        let time = Local::now().format("%H:%M:%S");
+        match &self.request_id {
+            Some(id) => log_both(&format!(
+                "[{}] 💥 aborted cause={} ({}ms) {} {} id={}",
+                time, cause, elapsed, self.method, self.path, id
+            )),
+            None => log_both(&format!(
+                "[{}] 💥 aborted cause={} ({}ms) {} {}",
+                time, cause, elapsed, self.method, self.path
+            )),
+        }
+    }
+
+    fn complete(&mut self) {
+        self.done = true;
+    }
+}
+
+impl Drop for AbortWatch {
+    fn drop(&mut self) {
+        if !self.done {
+            self.fail("client_disconnect");
+        }
     }
 }
