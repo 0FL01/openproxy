@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C39",
+  "next_checkpoint": "C40",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c38_cargo_1.98.1",
+    "rust_verification": "passed_through_c39_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -2007,7 +2007,7 @@
     {
       "id": "C39",
       "title": "Вывести standalone harness-like web tools из proxy core",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C00",
         "C38"
@@ -2020,7 +2020,24 @@
       "change": "Составить точный список самостоятельных web-fetch/search execution функций и клиентов. Неиспользуемые удалить; востребованные перенести на harness/plugin boundary с понятным переходом. Не удалять forwarding tools, provider-native web_search, tool_result или явно вызванный /responses/compact: это transport API, а не автономный агент.",
       "tests": "Сохранённые endpoints/schema tests, tool protocol roundtrip, native Responses compact forwarding. Удалённые convenience routes имеют объявленную депрекацию/версию/альтернативный consumer, не случайный 404 после релиза.",
       "acceptance": "В core не появляется собственный agent tool runner. Проверенное отсутствие consumers фиксируется; неподтверждённая «дублируемость» сама по себе не основание ломать публичный API.",
-      "rollback": "Откат route/module removal без потери настройки провайдеров; миграцию потребителей проводить отдельно."
+      "rollback": "Откат route/module removal без потери настройки провайдеров; миграцию потребителей проводить отдельно.",
+      "result": {
+        "completed": "2026-09-18",
+        "disposition": "retained_with_boundary",
+        "files": [
+          "src/server/api/web_fetch.rs",
+          "tests/lean_proxy_web_tools_c39.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json"
+        ],
+        "behavior": "Inventory pins the exact 15-helper execution allowlist for POST /v1/web/fetch and forbids agent-runner markers (spawn/sleep/history/session/tool_calls/retry). Confirmed consumers (8 integration tests, CORS contract, skills page, v1 index) make removal an undeclared public-API break, so retention with guards is the evidence-backed outcome. Native web_search/tool_result/compact paths verified independent of the convenience module.",
+        "tests": [
+          "cargo test --test lean_proxy_web_tools_c39: 4 passed",
+          "cargo test --test web_fetch_api: 8 passed"
+        ],
+        "measurements": "not measured; boundary-only checkpoint, no workload or payload change",
+        "rollback": "Revert the C39 commit; no route, schema, or payload changed."
+      }
     },
     {
       "id": "C40",

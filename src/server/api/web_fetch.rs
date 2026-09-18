@@ -1,6 +1,15 @@
 //! `/v1/web/fetch` — Web URL extraction endpoint.
 //! Baseline parity: POST + OPTIONS, conditional auth, per-account fallback,
 //! exact normalized response envelope.
+//!
+//! C39 harness boundary: this is a single provider-routed extraction call,
+//! not an agent tool runner. The module must never grow a tool loop, history/
+//! session store, temporal retry scheduler, or background task; account
+//! fallback is the only loop and it is bounded by the configured-connection
+//! count. Consumers: `tests/web_fetch_api.rs`, the public CORS contract, and
+//! the dashboard skills page. Provider-native `web_search` forwarding,
+//! `tool_result` handling, and `/responses/compact` live elsewhere and must
+//! not depend on this module.
 
 use std::collections::HashSet;
 

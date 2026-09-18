@@ -708,5 +708,35 @@
     "providers_available_models_kept": true,
     "model_select_modal_kept": true,
     "opencode_discovery_kept": true
+  },
+  "standalone_web_tools": {
+    "checkpoint": "C39",
+    "disposition": "retained_with_boundary",
+    "inventory": [
+      "src/server/api/web_fetch.rs: POST /v1/web/fetch single provider-routed extraction"
+    ],
+    "execution_helpers": [
+      "handle_web_fetch",
+      "execute_single_fetch",
+      "do_fetch",
+      "build_fetch_request",
+      "resolve_fetch_provider",
+      "select_fetch_connection",
+      "normalize_fetch_response",
+      "check_private_ip/is_private_ip"
+    ],
+    "loops": "per-account fallback bounded by configured-connection count only",
+    "agent_runner_markers_present": false,
+    "confirmed_consumers": [
+      "tests/web_fetch_api.rs (8)",
+      "tests/v1_public_cors_api.rs",
+      "web skills page",
+      "v1 endpoint index"
+    ],
+    "provider_native_web_search_forwarding_removed": false,
+    "tool_result_removed": false,
+    "responses_compact_removed": false,
+    "native_paths_depend_on_web_fetch": false,
+    "relocation_target_exists": false
   }
 }
