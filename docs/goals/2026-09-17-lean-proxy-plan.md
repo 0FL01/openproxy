@@ -93,10 +93,10 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R6 / C35.
-- Smallest next action: Remove audit I/O from the lean first-chunk path behind an explicit bounded metadata logging mode with overflow/drop accounting.
-- Expected evidence: Lean first event does not wait for SQLite; overflow/order/crash-flush/cancellation/secret-redaction gates green at equal logging contract.
-- Stop or replan if: Change silently weakens prior durability or hides config/credential persistence; keep durable mode honest.
+- Closes: R6 / C36.
+- Smallest next action: Enforce early admission with a permit held for the whole response body, refusing overload before JSON extraction.
+- Expected evidence: Active LLM buffers peak under config at equal servable concurrency; slow/cancel/timeout paths release permits on every error.
+- Stop or replan if: Overload rejection is counted as memory success or health/admin starve; keep slow-stream tolerance.
 
 ## Current State
 

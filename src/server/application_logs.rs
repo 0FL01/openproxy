@@ -1,8 +1,291 @@
-//! Durable metadata-only logs for authenticated provider attempts.
+//! Metadata-only logs for authenticated provider attempts.
+//!
+//! C35 logging contract: one bounded events-and-bytes pipeline feeds a single
+//! background SQLite writer, so generation never spawns a task per log event.
+//! `durable` mode (default) awaits the insert before upstream and awaits the
+//! finish update afterwards — honest I/O/backpressure, no zero-wait claim.
+//! `lean` mode (`OPENPROXY_REQUEST_LOG_MODE=lean`) only enqueues metadata
+//! without waiting: the first upstream byte never waits for SQLite, a full
+//! queue increments an explicit drop counter instead of growing, and the last
+//! queued entries may be lost on crash/shutdown past the flush budget.
+//! Config/credential persistence paths are untouched and always durable.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
+
+/// Lean logging bounds: one shared pipeline, bounded by events AND bytes.
+pub const LEAN_LOG_QUEUE_EVENTS: usize = 512;
+pub const LEAN_LOG_QUEUE_BYTES: usize = 512 * 1024;
+pub const LEAN_LOG_MAX_EVENT_BYTES: usize = 8 * 1024;
+const LEAN_LOG_FIELD_BYTES: usize = 256;
+
+/// Request-log durability mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestLogMode {
+    Lean,
+    Durable,
+}
+
+/// Resolve the log mode. Defaults to `durable` so existing guarantees are
+/// preserved unless lean is explicitly opted in; migration is never silent.
+pub fn request_log_mode() -> RequestLogMode {
+    match std::env::var("OPENPROXY_REQUEST_LOG_MODE") {
+        Ok(value) if value.eq_ignore_ascii_case("lean") => RequestLogMode::Lean,
+        _ => RequestLogMode::Durable,
+    }
+}
+
+/// (queue events, queue bytes, max event bytes) for contracts/tests.
+pub fn request_log_bounds() -> (usize, usize, usize) {
+    (
+        LEAN_LOG_QUEUE_EVENTS,
+        LEAN_LOG_QUEUE_BYTES,
+        LEAN_LOG_MAX_EVENT_BYTES,
+    )
+}
+
+/// Number of lean log operations dropped on overflow since process start.
+pub fn request_log_dropped() -> u64 {
+    log_service().dropped.load(Ordering::Acquire)
+}
+
+/// Currently queued (not yet written) lean log bytes.
+pub fn request_log_queued_bytes() -> usize {
+    log_service().queued_bytes.load(Ordering::Acquire)
+}
+
+/// Wait until the lean queue drains or `budget` elapses. Returns true when
+/// drained. Crash/shutdown callers must pass an explicit budget and treat
+/// `false` as honest loss, never as silent success.
+pub async fn request_log_flush_with_budget(budget: Duration) -> bool {
+    let service = log_service();
+    let start = Instant::now();
+    loop {
+        if service.queued_bytes.load(Ordering::Acquire) == 0 {
+            return true;
+        }
+        if start.elapsed() >= budget {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+fn truncate_field(value: &str) -> String {
+    if value.len() <= LEAN_LOG_FIELD_BYTES {
+        return value.to_string();
+    }
+    let mut end = LEAN_LOG_FIELD_BYTES;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
+}
+
+enum LogOpKind {
+    Insert {
+        id: String,
+        timestamp: String,
+        provider: String,
+        model: String,
+        api_key_id: String,
+        api_key_name: String,
+        data: Value,
+    },
+    Finish {
+        id: String,
+        status: String,
+        data: Value,
+    },
+}
+
+struct LogOp {
+    db: Arc<Db>,
+    kind: LogOpKind,
+    bytes: usize,
+}
+
+fn op_bytes(kind: &LogOpKind) -> usize {
+    match kind {
+        LogOpKind::Insert {
+            id,
+            timestamp,
+            provider,
+            model,
+            api_key_id,
+            api_key_name,
+            data,
+        } => {
+            id.len()
+                + timestamp.len()
+                + provider.len()
+                + model.len()
+                + api_key_id.len()
+                + api_key_name.len()
+                + serde_json::to_string(data).map(|s| s.len()).unwrap_or(0)
+        }
+        LogOpKind::Finish { id, status, data } => {
+            id.len() + status.len() + serde_json::to_string(data).map(|s| s.len()).unwrap_or(0)
+        }
+    }
+}
+
+struct LogService {
+    tx: tokio::sync::mpsc::Sender<LogOp>,
+    rx: std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<LogOp>>>,
+    writer_started: AtomicBool,
+    dropped: AtomicU64,
+    queued_bytes: AtomicUsize,
+}
+
+fn log_service() -> &'static LogService {
+    static SERVICE: OnceLock<LogService> = OnceLock::new();
+    SERVICE.get_or_init(|| {
+        let (tx, rx) = tokio::sync::mpsc::channel::<LogOp>(LEAN_LOG_QUEUE_EVENTS);
+        LogService {
+            tx,
+            rx: std::sync::Mutex::new(Some(rx)),
+            writer_started: AtomicBool::new(false),
+            dropped: AtomicU64::new(0),
+            queued_bytes: AtomicUsize::new(0),
+        }
+    })
+}
+
+/// Ensure exactly one background writer consumes the queue. Safe to call from
+/// any async log path; spawns once on first use inside a runtime. Entries
+/// queued before any runtime existed stay ordered in the channel and drain
+/// once the writer starts.
+fn ensure_log_writer() {
+    let service = log_service();
+    if service.writer_started.load(Ordering::Acquire) {
+        return;
+    }
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    // Only one caller wins the flag and takes the receiver, so exactly one
+    // consumer ever exists and start/finish order is preserved.
+    if service
+        .writer_started
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    let rx = service.rx.lock().ok().and_then(|mut guard| guard.take());
+    if let Some(rx) = rx {
+        runtime.spawn(log_writer_task(rx));
+    }
+}
+
+async fn log_writer_task(mut rx: tokio::sync::mpsc::Receiver<LogOp>) {
+    while let Some(op) = rx.recv().await {
+        let bytes = op.bytes;
+        write_op_blocking(op).await;
+        log_service().queued_bytes.fetch_sub(
+            bytes.min(LEAN_LOG_QUEUE_BYTES + LEAN_LOG_MAX_EVENT_BYTES),
+            Ordering::AcqRel,
+        );
+    }
+}
+
+async fn write_op_blocking(op: LogOp) {
+    let result = tokio::task::spawn_blocking(move || match op.kind {
+        LogOpKind::Insert {
+            id,
+            timestamp,
+            provider,
+            model,
+            api_key_id,
+            api_key_name,
+            data,
+        } => op.db.sqlite.with_conn(|conn| {
+            request_repo::insert(
+                conn,
+                &NewRequestDetail {
+                    id: &id,
+                    timestamp: &timestamp,
+                    provider: Some(&provider),
+                    model: Some(&model),
+                    connection_id: None,
+                    status: "pending",
+                    api_key_id: Some(&api_key_id),
+                    api_key_name: Some(&api_key_name),
+                    correlation_id: None,
+                    data: &data,
+                },
+            )
+        }),
+        LogOpKind::Finish { id, status, data } => op
+            .db
+            .sqlite
+            .with_conn(|conn| request_repo::finish(conn, &id, &status, &data))
+            .map(|_| ()),
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(target: "openproxy::logs", %error, "background request log write failed");
+        }
+        Err(error) => {
+            tracing::warn!(target: "openproxy::logs", %error, "request log writer task failed");
+        }
+    }
+}
+
+/// Non-blocking bounded enqueue shared by every lean log path. Returns false
+/// (and counts one drop) when the event exceeds the per-event cap or the
+/// events/bytes pipeline is full. Never blocks, never spawns per-event tasks.
+fn try_enqueue_lean(db: Arc<Db>, kind: LogOpKind) -> bool {
+    ensure_log_writer();
+    let bytes = op_bytes(&kind);
+    if bytes > LEAN_LOG_MAX_EVENT_BYTES {
+        log_service().dropped.fetch_add(1, Ordering::AcqRel);
+        tracing::warn!(
+            target: "openproxy::logs",
+            bytes,
+            max = LEAN_LOG_MAX_EVENT_BYTES,
+            "dropping oversized request log event"
+        );
+        return false;
+    }
+    let service = log_service();
+    // Reserve bytes first with a CAS loop so concurrent enqueuers cannot
+    // jointly overshoot the byte cap.
+    loop {
+        let queued = service.queued_bytes.load(Ordering::Acquire);
+        if queued.saturating_add(bytes) > LEAN_LOG_QUEUE_BYTES {
+            service.dropped.fetch_add(1, Ordering::AcqRel);
+            tracing::warn!(
+                target: "openproxy::logs",
+                "dropping request log event: byte queue full"
+            );
+            return false;
+        }
+        if service
+            .queued_bytes
+            .compare_exchange(queued, queued + bytes, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            break;
+        }
+    }
+    match service.tx.try_send(LogOp { db, kind, bytes }) {
+        Ok(()) => true,
+        Err(_) => {
+            service.queued_bytes.fetch_sub(bytes, Ordering::AcqRel);
+            service.dropped.fetch_add(1, Ordering::AcqRel);
+            tracing::warn!(
+                target: "openproxy::logs",
+                "dropping request log event: event queue full"
+            );
+            false
+        }
+    }
+}
 
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -23,73 +306,124 @@ pub struct RequestLogContext {
     route: String,
     api_key_id: String,
     api_key_name: String,
+    mode: RequestLogMode,
 }
 
 impl RequestLogContext {
     pub fn new(db: Arc<Db>, api_key: &ApiKey, route: &str) -> Self {
+        Self::new_with_mode(db, api_key, route, request_log_mode())
+    }
+
+    pub fn new_with_mode(db: Arc<Db>, api_key: &ApiKey, route: &str, mode: RequestLogMode) -> Self {
         Self {
             db,
-            route: route.to_string(),
-            api_key_id: api_key.id.clone(),
-            api_key_name: api_key.name.clone(),
+            route: truncate_field(route),
+            api_key_id: truncate_field(&api_key.id),
+            api_key_name: truncate_field(&api_key.name),
+            mode,
         }
     }
 
-    pub async fn start_attempt(&self, provider: &str, model: &str) -> Option<AttemptLog> {
-        let id = uuid::Uuid::new_v4().to_string();
-        let timestamp = Utc::now().to_rfc3339();
-        let data = json!({
+    pub fn mode(&self) -> RequestLogMode {
+        self.mode
+    }
+
+    fn start_data(&self) -> Value {
+        json!({
             "route": self.route,
             "statusCode": Value::Null,
             "durationMs": 0,
             "inputTokens": Value::Null,
             "outputTokens": Value::Null,
             "cachedTokens": Value::Null,
-        });
-        let sqlite = self.db.sqlite.clone();
-        let record_id = id.clone();
-        let record_timestamp = timestamp.clone();
-        let record_provider = provider.to_string();
-        let record_model = model.to_string();
-        let api_key_id = self.api_key_id.clone();
-        let api_key_name = self.api_key_name.clone();
-        let record_data = data.clone();
-        let inserted = tokio::task::spawn_blocking(move || {
-            sqlite.with_conn(|conn| {
-                request_repo::insert(
-                    conn,
-                    &NewRequestDetail {
-                        id: &record_id,
-                        timestamp: &record_timestamp,
-                        provider: Some(&record_provider),
-                        model: Some(&record_model),
-                        connection_id: None,
-                        status: "pending",
-                        api_key_id: Some(&api_key_id),
-                        api_key_name: Some(&api_key_name),
-                        correlation_id: None,
-                        data: &record_data,
-                    },
-                )
-            })
         })
-        .await;
+    }
 
-        match inserted {
-            Ok(Ok(())) => Some(AttemptLog {
-                db: self.db.clone(),
-                id,
-                started: Instant::now(),
-                data,
-                finished: Arc::new(AtomicBool::new(false)),
-            }),
-            Ok(Err(error)) => {
-                tracing::warn!(target: "openproxy::logs", %error, "failed to start request log");
-                None
+    pub async fn start_attempt(&self, provider: &str, model: &str) -> Option<AttemptLog> {
+        let provider = truncate_field(provider);
+        let model = truncate_field(model);
+        let id = uuid::Uuid::new_v4().to_string();
+        let timestamp = Utc::now().to_rfc3339();
+        let data = self.start_data();
+        match self.mode {
+            // Lean: enqueue only. Never waits for SQLite, so the first
+            // upstream byte cannot be gated on audit I/O. Overflow drops with
+            // an explicit counter instead of growing.
+            RequestLogMode::Lean => {
+                let enqueued = try_enqueue_lean(
+                    self.db.clone(),
+                    LogOpKind::Insert {
+                        id: id.clone(),
+                        timestamp,
+                        provider,
+                        model,
+                        api_key_id: self.api_key_id.clone(),
+                        api_key_name: self.api_key_name.clone(),
+                        data: data.clone(),
+                    },
+                );
+                if !enqueued {
+                    return None;
+                }
+                Some(AttemptLog {
+                    db: self.db.clone(),
+                    id,
+                    started: Instant::now(),
+                    data,
+                    finished: Arc::new(AtomicBool::new(false)),
+                    lean: true,
+                })
             }
-            Err(error) => {
-                tracing::warn!(target: "openproxy::logs", %error, "request log task failed");
-                None
+            // Durable: synchronous insert before upstream with backpressure.
+            // Honest I/O cost, never advertised as zero-wait.
+            RequestLogMode::Durable => {
+                let sqlite = self.db.sqlite.clone();
+                let record_id = id.clone();
+                let record_timestamp = timestamp.clone();
+                let record_provider = provider.clone();
+                let record_model = model.clone();
+                let api_key_id = self.api_key_id.clone();
+                let api_key_name = self.api_key_name.clone();
+                let record_data = data.clone();
+                let inserted = tokio::task::spawn_blocking(move || {
+                    sqlite.with_conn(|conn| {
+                        request_repo::insert(
+                            conn,
+                            &NewRequestDetail {
+                                id: &record_id,
+                                timestamp: &record_timestamp,
+                                provider: Some(&record_provider),
+                                model: Some(&record_model),
+                                connection_id: None,
+                                status: "pending",
+                                api_key_id: Some(&api_key_id),
+                                api_key_name: Some(&api_key_name),
+                                correlation_id: None,
+                                data: &record_data,
+                            },
+                        )
+                    })
+                })
+                .await;
+
+                match inserted {
+                    Ok(Ok(())) => Some(AttemptLog {
+                        db: self.db.clone(),
+                        id,
+                        started: Instant::now(),
+                        data,
+                        finished: Arc::new(AtomicBool::new(false)),
+                        lean: false,
+                    }),
+                    Ok(Err(error)) => {
+                        tracing::warn!(target: "openproxy::logs", %error, "failed to start request log");
+                        None
+                    }
+                    Err(error) => {
+                        tracing::warn!(target: "openproxy::logs", %error, "request log task failed");
+                        None
+                    }
+                }
             }
         }
     }
@@ -101,6 +435,7 @@ pub struct AttemptLog {
     started: Instant,
     data: Value,
     finished: Arc<AtomicBool>,
+    lean: bool,
 }
 
 impl AttemptLog {
@@ -114,7 +449,19 @@ impl AttemptLog {
             return;
         }
         let data = self.finished_data(status_code, tokens);
-        persist_finish(self.db.clone(), self.id.clone(), status, data).await;
+        if self.lean {
+            // Lean: enqueue the finish without waiting for SQLite.
+            try_enqueue_lean(
+                self.db.clone(),
+                LogOpKind::Finish {
+                    id: self.id.clone(),
+                    status: status.to_string(),
+                    data,
+                },
+            );
+        } else {
+            persist_finish(self.db.clone(), self.id.clone(), status, data).await;
+        }
         self.finished.store(true, Ordering::Release);
     }
 
@@ -146,15 +493,21 @@ impl Drop for AttemptLog {
         if self.finished.swap(true, Ordering::AcqRel) {
             return;
         }
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        // C35: cancellation/interruption never spawns an unbounded detached
+        // task. Enqueue best-effort through the same bounded pipeline in both
+        // modes; overflow is counted explicitly instead of growing.
+        if tokio::runtime::Handle::try_current().is_err() {
             return;
-        };
+        }
         let data = self.finished_data(None, None);
-        let db = self.db.clone();
-        let id = self.id.clone();
-        runtime.spawn(async move {
-            persist_finish(db, id, "interrupted", data).await;
-        });
+        try_enqueue_lean(
+            self.db.clone(),
+            LogOpKind::Finish {
+                id: self.id.clone(),
+                status: "interrupted".to_string(),
+                data,
+            },
+        );
     }
 }
 

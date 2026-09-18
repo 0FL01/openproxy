@@ -621,5 +621,35 @@
     "web/src/shared/models/availableModels.ts:buildAvailableModels",
     "web/src/shared/components/ModelSelectModal.tsx",
     "plugins/openproxy-models.js"
-  ]
+  ],
+  "request_attempt_logging": {
+    "checkpoint": "C35",
+    "default_mode": "durable",
+    "lean_opt_in": "OPENPROXY_REQUEST_LOG_MODE=lean",
+    "pipeline": "single_background_sqlite_writer",
+    "queue_events": 512,
+    "queue_bytes": 524288,
+    "max_event_bytes": 8192,
+    "field_truncation_bytes": 256,
+    "task_per_event": false,
+    "lean_start_waits_for_sqlite": false,
+    "lean_finish_waits_for_sqlite": false,
+    "durable_start_waits_for_sqlite": true,
+    "durable_finish_waits_for_sqlite": true,
+    "overflow_policy": "drop_with_explicit_counter",
+    "drop_counter": "request_log_dropped()",
+    "queued_bytes_gauge": "request_log_queued_bytes()",
+    "flush_api": "request_log_flush_with_budget(timeout)->bool",
+    "crash_loss": "queued_not_yet_written_entries_may_be_lost_in_lean",
+    "stored_fields": [
+      "route",
+      "statusCode",
+      "durationMs",
+      "inputTokens",
+      "outputTokens",
+      "cachedTokens"
+    ],
+    "payload_bodies_stored": false,
+    "config_and_credentials_always_durable": true
+  }
 }
