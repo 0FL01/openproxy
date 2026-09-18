@@ -3,7 +3,6 @@
 //! Supports:
 //! - PKCE Authorization Code Flow (claude, codex, gitlab)
 //! - Device Code Flow (github, kimi-coding, kilocode, codebuddy)
-//! - Import Token (cursor)
 
 use base64::Engine;
 use rand::RngCore;
@@ -296,58 +295,6 @@ pub fn needs_refresh(expires_at: &Option<String>) -> bool {
 pub fn expires_at_from_seconds(expires_in: i64) -> String {
     let expires = chrono::Utc::now() + chrono::Duration::seconds(expires_in);
     expires.to_rfc3339()
-}
-
-// Cursor import module - for importing tokens from Cursor's SQLite config.db
-pub mod cursor_import {
-    use crate::oauth::{expires_at_from_seconds, TokenResponse};
-
-    #[derive(Clone)]
-    pub struct CursorTokens {
-        pub access_token: String,
-        pub refresh_token: Option<String>,
-        pub expires_at: Option<String>,
-    }
-
-    /// Read tokens from Cursor's SQLite config.db
-    pub fn read_cursor_tokens(config_path: &str) -> Result<CursorTokens, String> {
-        let conn = rusqlite::Connection::open(config_path)
-            .map_err(|e| format!("Failed to open SQLite: {}", e))?;
-
-        let result = conn
-            .query_row(
-                "SELECT access_token, refresh_token, expires_at FROM user_authentication LIMIT 1",
-                [],
-                |row| {
-                    let access_token: String = row.get(0)?;
-                    let refresh_token: Option<String> = row.get(1)?;
-                    let expires_at_raw: Option<i64> = row.get(2)?;
-                    Ok((access_token, refresh_token, expires_at_raw))
-                },
-            )
-            .map_err(|e| format!("Failed to query: {}", e))?;
-
-        let (access_token, refresh_token, expires_at_raw) = result;
-        let expires_at = expires_at_raw.map(expires_at_from_seconds);
-
-        Ok(CursorTokens {
-            access_token,
-            refresh_token,
-            expires_at,
-        })
-    }
-
-    /// Convert CursorTokens to TokenResponse
-    pub fn to_token_response(cursor: CursorTokens) -> TokenResponse {
-        TokenResponse {
-            access_token: cursor.access_token,
-            refresh_token: cursor.refresh_token,
-            expires_in: None,
-            id_token: None,
-            token_type: Some("Bearer".to_string()),
-            scope: None,
-        }
-    }
 }
 
 // GitLab PAT (Personal Access Token) support

@@ -173,11 +173,6 @@ fn source_guards_keep_c31_separate_from_c32_c33_and_sparse_vectors() {
     assert!(limits.contains("checked_add(fragment.len())"));
     assert!(limits.contains("try_reserve(fragment.len())"));
 
-    let cursor = std::fs::read_to_string(root.join("src/core/executor/cursor.rs")).unwrap();
-    assert!(cursor.contains("Vec<CursorToolCallAccum>"));
-    assert!(!cursor.contains("tool_call_map: HashMap"));
-    assert!(cursor.contains("checked_append("));
-
     assert!(!converter.contains("let mut final_retained_bytes = 0usize"));
     let registry = std::fs::read_to_string(root.join("src/core/translator/registry.rs")).unwrap();
     assert!(registry.contains("if state.failure.is_some()"));

@@ -65,18 +65,6 @@ pub struct OllamaStreamingState {
     pub message_idx: usize,
 }
 
-/// Cursor Connect Protocol streaming state
-#[derive(Debug, Clone, Default)]
-pub struct CursorStreamingState {
-    pub base: StreamingBase,
-    /// Raw frame buffer for binary protocol
-    pub frame_buffer: Vec<u8>,
-    /// Decompressed buffer
-    pub decompress_buffer: Vec<u8>,
-    /// Track if inside message
-    pub in_message: bool,
-}
-
 /// CommandCode NDJSON streaming state
 #[derive(Debug, Clone, Default)]
 pub struct CommandCodeStreamingState {

@@ -38,7 +38,6 @@ fn contract_provider_formats_match_the_runtime_registry() {
         ("gemini", Format::Gemini),
         ("vertex", Format::Vertex),
         ("codex", Format::OpenAiResponses),
-        ("cursor", Format::Cursor),
         ("ollama", Format::Ollama),
         ("antigravity", Format::Antigravity),
         ("commandcode", Format::CommandCode),

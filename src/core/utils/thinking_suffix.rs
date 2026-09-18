@@ -148,8 +148,8 @@ pub fn resolve_thinking_native(
                 ThinkingNative::GeminiBudget
             }
         }
-        // Cursor / Ollama / CommandCode: leave body alone (executors normalize).
-        Format::Cursor | Format::Ollama | Format::CommandCode => ThinkingNative::Noop,
+        // Ollama / CommandCode: leave body alone (executors normalize).
+        Format::Ollama | Format::CommandCode => ThinkingNative::Noop,
     }
 }
 

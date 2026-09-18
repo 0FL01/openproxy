@@ -427,6 +427,24 @@ async fn chat_completions_impl(
     if resolved.provider.as_deref() == Some("kiro") {
         return json_error_response(StatusCode::GONE, "provider kiro retired");
     }
+    // Cursor / Windsurf / Grok backends retired: fail loudly instead of silently misrouting.
+    if matches!(
+        resolved.provider.as_deref(),
+        Some(
+            "cursor"
+                | "cu"
+                | "windsurf"
+                | "ws"
+                | "grok-web"
+                | "gw"
+                | "grok-cli"
+                | "gcli"
+                | "gb"
+                | "grok-build"
+        )
+    ) {
+        return json_error_response(StatusCode::GONE, "provider retired");
+    }
 
     // Convert headers once for client-tool detection and provider dispatch.
     let headers_map: std::collections::HashMap<String, String> = headers
@@ -1029,17 +1047,14 @@ async fn forward_with_provider_fallback(
         use crate::core::executor::{
             AntigravityExecutionRequest, AntigravityExecutor, AzureExecutionRequest, AzureExecutor,
             CodexExecutionRequest, CodexExecutor, CommandCodeExecutionRequest, CommandCodeExecutor,
-            CursorExecutionRequest, CursorExecutor, DefaultExecutor, DevinCliExecutor,
-            DevinExecutionRequest, GithubExecutionRequest, GithubExecutor, GrokWebExecutionRequest,
-            GrokWebExecutor, KimchiExecutor, OpenCodeExecutionRequest, OpenCodeExecutor,
+            DefaultExecutor, DevinCliExecutor, DevinExecutionRequest, GithubExecutionRequest,
+            GithubExecutor, KimchiExecutor, OpenCodeExecutionRequest, OpenCodeExecutor,
             OpenCodeTier, ProviderExecutionRequest, ProviderExecutionResponse, ProviderExecutor,
             QwenExecutionRequest, QwenExecutor, TraeExecutionRequest, TraeExecutor,
-            VertexExecutionRequest, VertexExecutor, WindsurfExecutionRequest, WindsurfExecutor,
+            VertexExecutionRequest, VertexExecutor,
         };
 
         let is_codex_model = provider == "codex";
-        let is_cursor_model =
-            model.starts_with("cursor/") || provider == "cu" || provider == "cursor";
         let executor_result: Result<ProviderExecutionResponse, ProviderAttemptError> = async {
             if provider == "vertex" || provider == "vertex-partner" || provider == "vxp" {
                 let executor = VertexExecutor::new(state.client_pool.clone(), provider_node)
@@ -1101,35 +1116,6 @@ async fn forward_with_provider_fallback(
                             retry_after: None,
                             upstream_body: None,
                         }
-                    })?;
-                Ok(ProviderExecutionResponse {
-                    response: result.response,
-                    url: result.url,
-                    headers: result.headers,
-                    transport: result.transport,
-                })
-            } else if is_cursor_model {
-                let executor = CursorExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("Cursor executor creation failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                let result = executor
-                    .execute(CursorExecutionRequest {
-                        model: model.to_string(),
-                        body: request_body.clone(),
-                        stream,
-                        credentials: connection.clone(),
-                        proxy,
-                    })
-                    .await
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("Cursor execution failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
                     })?;
                 Ok(ProviderExecutionResponse {
                     response: result.response,
@@ -1310,52 +1296,6 @@ async fn forward_with_provider_fallback(
                     .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("Antigravity execution failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                Ok(ProviderExecutionResponse {
-                    response: result.response,
-                    url: result.url,
-                    headers: result.headers,
-                    transport: result.transport,
-                })
-            } else if provider == "grok-web" {
-                let executor = GrokWebExecutor::new(state.client_pool.clone());
-                let result = executor
-                    .execute_request(GrokWebExecutionRequest {
-                        model: model.to_string(),
-                        body: request_body.clone(),
-                        stream,
-                        credentials: connection.clone(),
-                        proxy,
-                    })
-                    .await
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("GrokWeb execution failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                Ok(ProviderExecutionResponse {
-                    response: result.response,
-                    url: result.url,
-                    headers: result.headers,
-                    transport: result.transport,
-                })
-            } else if provider == "windsurf" || provider == "ws" {
-                let executor = WindsurfExecutor::new(state.client_pool.clone());
-                let result = executor
-                    .execute_request(WindsurfExecutionRequest {
-                        model: model.to_string(),
-                        body: request_body.clone(),
-                        stream,
-                        credentials: connection.clone(),
-                        proxy,
-                    })
-                    .await
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("Windsurf execution failed: {:?}", e),
                         retry_after: None,
                         upstream_body: None,
                     })?;
@@ -1565,40 +1505,6 @@ async fn forward_with_provider_fallback(
                     .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("MimoFree execution failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                Ok(ProviderExecutionResponse {
-                    response: result.response,
-                    url: result.url,
-                    headers: result.headers,
-                    transport: result.transport,
-                })
-            } else if provider == "grok-cli"
-                || provider == "gcli"
-                || provider == "gb"
-                || provider == "grok-build"
-            {
-                use crate::core::executor::{GrokCliExecutionRequest, GrokCliExecutor};
-                let executor = GrokCliExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("GrokCli executor creation failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                let result = executor
-                    .execute_request(GrokCliExecutionRequest {
-                        model: model.to_string(),
-                        body: request_body.clone(),
-                        stream: true, // forceStream (9router)
-                        credentials: connection.clone(),
-                        proxy,
-                    })
-                    .await
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("GrokCli execution failed: {:?}", e),
                         retry_after: None,
                         upstream_body: None,
                     })?;
@@ -1933,7 +1839,7 @@ fn eligible_connection_count_with_supporters(
 }
 
 fn is_no_auth_provider(provider: &str) -> bool {
-    matches!(provider, "opencode" | "opencode-zen" | "grok-web")
+    matches!(provider, "opencode" | "opencode-zen")
 }
 
 fn virtual_no_auth_connection(provider: &str) -> ProviderConnection {
@@ -2960,11 +2866,9 @@ fn dashboard_transformer_for_format(
         Format::Gemini | Format::Vertex | Format::Antigravity => transformer_for_provider("gemini"),
         Format::Ollama => transformer_for_provider("ollama"),
         Format::CommandCode => transformer_for_provider("commandcode"),
-        Format::OpenAi
-        | Format::OpenAiResponses
-        | Format::OpenAiResponse
-        | Format::Codex
-        | Format::Cursor => transformer_for_provider("openai"),
+        Format::OpenAi | Format::OpenAiResponses | Format::OpenAiResponse | Format::Codex => {
+            transformer_for_provider("openai")
+        }
     }
 }
 

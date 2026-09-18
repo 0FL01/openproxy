@@ -473,11 +473,6 @@ async fn get_formats() -> Json<Vec<FormatInfo>> {
             name: "OpenAI Responses".into(),
             description: "OpenAI Responses API format".into(),
         },
-        FormatInfo {
-            id: "cursor".into(),
-            name: "Cursor".into(),
-            description: "Cursor format".into(),
-        },
     ])
 }
 

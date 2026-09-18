@@ -18,9 +18,6 @@ pub fn provider_requires_streaming(provider: &str) -> bool {
             | "codebuddy-cn"
             | "codebuddy-intl"
             | "cbai"
-            | "grok-cli"
-            | "gcli"
-            | "gb"
     )
 }
 

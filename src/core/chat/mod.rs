@@ -34,7 +34,7 @@ pub struct TransportMatch {
 /// `modelTargetFormat || resolveTransport(provider, sourceFormat)?.format || getTargetFormat(provider)`
 #[derive(Debug, Clone)]
 pub struct RequestPlan {
-    /// The provider name (e.g. "openai", "claude", "cursor")
+    /// The provider name (e.g. "openai", "claude", "codex")
     pub provider: String,
     /// The resolved model name (alias / client-facing id)
     pub model: String,
@@ -356,10 +356,6 @@ mod tests {
             Format::Gemini
         );
         assert_eq!(
-            registry::get_target_format_for_provider("cursor"),
-            Format::Cursor
-        );
-        assert_eq!(
             registry::get_target_format_for_provider("codex"),
             Format::OpenAiResponses
         );
@@ -478,7 +474,6 @@ mod tests {
     #[test]
     fn resolve_transport_none_for_single_endpoint() {
         assert!(resolve_transport("openai", Format::OpenAi).is_none());
-        assert!(resolve_transport("cursor", Format::Cursor).is_none());
     }
 
     #[test]

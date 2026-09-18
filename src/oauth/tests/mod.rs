@@ -1,4 +1,4 @@
-//! Extended OAuth tests covering PKCE, device code flow, cursor import, and GitLab
+//! Extended OAuth tests covering PKCE, device code flow, and GitLab
 
 use super::*;
 
@@ -141,52 +141,6 @@ mod device_code_extended_tests {
         assert_eq!(resp.access_token, "t");
         assert!(resp.refresh_token.is_none());
         assert!(resp.expires_in.is_none());
-    }
-}
-
-mod cursor_import_extended_tests {
-    use crate::oauth::cursor_import;
-
-    #[test]
-    fn test_cursor_tokens_struct() {
-        let tokens = cursor_import::CursorTokens {
-            access_token: "test_access".to_string(),
-            refresh_token: Some("test_refresh".to_string()),
-            expires_at: Some("2025-01-01T00:00:00Z".to_string()),
-        };
-        assert_eq!(tokens.access_token, "test_access");
-        assert!(tokens.refresh_token.is_some());
-    }
-
-    #[test]
-    fn test_to_token_response() {
-        let tokens = cursor_import::CursorTokens {
-            access_token: "cursor_token".to_string(),
-            refresh_token: Some("cursor_refresh".to_string()),
-            expires_at: Some("2025-01-01T00:00:00Z".to_string()),
-        };
-        let resp = cursor_import::to_token_response(tokens);
-        assert_eq!(resp.access_token, "cursor_token");
-        assert_eq!(resp.refresh_token, Some("cursor_refresh".to_string()));
-        assert_eq!(resp.token_type, Some("Bearer".to_string()));
-    }
-
-    #[test]
-    fn test_to_token_response_no_refresh() {
-        let tokens = cursor_import::CursorTokens {
-            access_token: "access_only".to_string(),
-            refresh_token: None,
-            expires_at: None,
-        };
-        let resp = cursor_import::to_token_response(tokens);
-        assert_eq!(resp.access_token, "access_only");
-        assert!(resp.refresh_token.is_none());
-    }
-
-    #[test]
-    fn test_read_invalid_path() {
-        let result = cursor_import::read_cursor_tokens("/nonexistent/path/config.db");
-        assert!(result.is_err());
     }
 }
 

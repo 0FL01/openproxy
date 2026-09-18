@@ -5,7 +5,6 @@
 
 pub mod antigravity_project;
 pub mod client_detector;
-pub mod cursor_checksum;
 pub mod error;
 pub mod reasoning_content_injector;
 pub mod session_manager;

@@ -2,7 +2,6 @@
 
 pub mod claude_to_openai;
 pub mod commandcode_to_openai;
-pub mod cursor_to_openai;
 pub mod gemini_to_openai;
 pub mod non_streaming;
 pub mod ollama_to_openai;

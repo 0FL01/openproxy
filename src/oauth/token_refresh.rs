@@ -1182,7 +1182,6 @@ pub async fn dispatch_oauth_refresh(
         "codebuddy-cn" => refresh_with_retry(|| refresh_codebuddy_cn_token(refresh_token)).await,
         "openai" => refresh_with_retry(|| refresh_openai_token(refresh_token)).await,
         "github" => refresh_with_retry(|| refresh_github_token(refresh_token)).await,
-        "grok-cli" | "gcli" | "gb" => refresh_with_retry(|| refresh_xai_token(refresh_token)).await,
         "trae" | "marscode" => refresh_with_retry(|| refresh_trae_token(refresh_token)).await,
         "codebuddy-intl" | "cbai" => {
             refresh_with_retry(|| refresh_codebuddy_intl_token(refresh_token)).await

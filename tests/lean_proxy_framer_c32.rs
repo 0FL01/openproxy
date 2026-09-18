@@ -720,6 +720,6 @@ fn active_paths_use_shared_framer_and_keep_binary_protocols_separate() {
     ] {
         assert!(registry.contains(format), "missing framing for {format}");
     }
-    assert!(registry.contains("pub frame_buffer: Vec<u8>"));
-    assert!(registry.contains("pub event_buffer: Vec<u8>"));
+    assert!(!registry.contains("pub frame_buffer: Vec<u8>"));
+    assert!(!registry.contains("pub event_buffer: Vec<u8>"));
 }

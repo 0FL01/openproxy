@@ -7,12 +7,9 @@ mod codebuddy_cn;
 mod codebuddy_intl;
 mod codex;
 mod commandcode;
-mod cursor;
 mod default;
 mod devin_cli;
 mod github;
-mod grok_cli;
-mod grok_web;
 mod kimchi;
 mod mimo_free;
 mod ollama;
@@ -22,8 +19,6 @@ mod qwen;
 mod strip_unsupported;
 mod trae;
 mod vertex;
-mod windsurf;
-mod xai;
 mod zed;
 
 pub use antigravity::{
@@ -57,10 +52,6 @@ pub use commandcode::{
     CommandCodeExecutionRequest, CommandCodeExecutor, CommandCodeExecutorError,
     CommandCodeExecutorResponse,
 };
-pub use cursor::{
-    parse_cursor_sse_events, CursorExecutionRequest, CursorExecutor, CursorExecutorError,
-    CursorExecutorResponse, SseEvent,
-};
 pub use default::{
     provider_config_base_url, select_anthropic_beta, DefaultExecutor, ExecutionRequest,
     ExecutionResponse, ExecutorError, PreparedUpstreamBody, ProviderConfig, TransportKind,
@@ -69,14 +60,6 @@ pub use default::{
 pub use devin_cli::{DevinCliExecutor, DevinExecutionRequest, DevinExecutorResponse};
 pub use github::{
     GithubExecutionRequest, GithubExecutor, GithubExecutorError, GithubExecutorResponse,
-};
-pub use grok_cli::{
-    count_grok_cli_user_turns, reset_grok_cli_turn_store, resolve_effort_from_model,
-    resolve_grok_cli_turn_idx, GrokCliExecutionRequest, GrokCliExecutor, GrokCliExecutorError,
-    GrokCliExecutorResponse,
-};
-pub use grok_web::{
-    GrokWebExecutionRequest, GrokWebExecutor, GrokWebExecutorError, GrokWebExecutorResponse,
 };
 pub use kimchi::KimchiExecutor;
 pub use mimo_free::{MimoFreeExecutionRequest, MimoFreeExecutor, MimoFreeExecutorResponse};
@@ -96,10 +79,6 @@ pub use trae::{TraeExecutionRequest, TraeExecutor, TraeExecutorError, TraeExecut
 pub use vertex::{
     VertexExecutionRequest, VertexExecutor, VertexExecutorError, VertexExecutorResponse,
 };
-pub use windsurf::{
-    WindsurfExecutionRequest, WindsurfExecutor, WindsurfExecutorError, WindsurfExecutorResponse,
-};
-pub use xai::{XaiExecutionRequest, XaiExecutor, XaiExecutorError, XaiExecutorResponse};
 pub use zed::{ZedExecutionRequest, ZedExecutor, ZedExecutorResponse};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

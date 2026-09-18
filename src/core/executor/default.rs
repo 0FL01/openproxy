@@ -208,10 +208,6 @@ static PROVIDER_CONFIGS: Lazy<BTreeMap<&'static str, ProviderConfig>> = Lazy::ne
             ProviderConfig::gemini("https://cloudcode-pa.googleapis.com/v1internal"),
         ),
         (
-            "grok-web",
-            ProviderConfig::openai("https://grok.com/rest/app-chat/conversations/new"),
-        ),
-        (
             "xiaomi-mimo",
             ProviderConfig::openai("https://api.xiaomimimo.com/v1/chat/completions"),
         ),
@@ -274,14 +270,6 @@ static PROVIDER_CONFIGS: Lazy<BTreeMap<&'static str, ProviderConfig>> = Lazy::ne
         (
             "glhf",
             ProviderConfig::openai("https://glhf.chat/api/openai/v1/chat/completions"),
-        ),
-        (
-            "cursor",
-            ProviderConfig::openai("https://api.cursor.sh/v1/chat/completions"),
-        ),
-        (
-            "cu",
-            ProviderConfig::openai("https://api.cursor.sh/v1/chat/completions"),
         ),
         (
             "codebuddy-cn",

@@ -2,7 +2,6 @@ mod claude_settings;
 mod cline_settings;
 mod cowork_settings;
 mod deepseek_tui_settings;
-mod grok_build_settings;
 mod hermes_settings;
 mod jcode_settings;
 mod kilo_settings;
@@ -2151,7 +2150,6 @@ pub fn routes() -> Router<AppState> {
         .merge(cline_settings::routes())
         .merge(cowork_settings::routes())
         .merge(deepseek_tui_settings::routes())
-        .merge(grok_build_settings::routes())
         .merge(hermes_settings::routes())
         .merge(jcode_settings::routes())
         .merge(kilo_settings::routes())
@@ -2231,7 +2229,6 @@ async fn get_all_statuses(State(state): State<AppState>, headers: HeaderMap) -> 
         deepseek_tui,
         jcode,
         copilot,
-        grok_build,
     ) = tokio::join!(
         async {
             response_json_value(
@@ -2299,13 +2296,6 @@ async fn get_all_statuses(State(state): State<AppState>, headers: HeaderMap) -> 
             response_json_value(get_copilot_settings(State(state.clone()), headers.clone()).await)
                 .await
         },
-        async {
-            response_json_value(
-                grok_build_settings::get_grok_build_settings(State(state.clone()), headers.clone())
-                    .await,
-            )
-            .await
-        },
     );
 
     let mut statuses = serde_json::Map::new();
@@ -2321,7 +2311,6 @@ async fn get_all_statuses(State(state): State<AppState>, headers: HeaderMap) -> 
     statuses.insert("deepseek-tui".into(), deepseek_tui);
     statuses.insert("jcode".into(), jcode);
     statuses.insert("copilot".into(), copilot);
-    statuses.insert("grok-build".into(), grok_build);
 
     Json(Value::Object(statuses)).into_response()
 }

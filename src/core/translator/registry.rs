@@ -39,14 +39,12 @@ pub enum Format {
     Vertex,
     Codex,
     Antigravity,
-    Cursor,
     Ollama,
     CommandCode,
 }
 
 impl Format {
-    /// Incremental text framing used on this format's streaming wire. Cursor
-    /// retains its protocol-specific binary framer.
+    /// Incremental text framing used on this format's streaming wire.
     pub fn text_stream_mode(
         self,
         content_type: Option<&str>,
@@ -54,7 +52,6 @@ impl Format {
         use crate::core::stream_framing::TextStreamMode;
 
         match self {
-            Self::Cursor => None,
             Self::Ollama => Some(TextStreamMode::Lines),
             Self::CommandCode => {
                 if content_type.is_some_and(|value| value.contains("text/event-stream")) {
@@ -85,7 +82,6 @@ impl Format {
             "vertex" => Some(Self::Vertex),
             "codex" => Some(Self::Codex),
             "antigravity" => Some(Self::Antigravity),
-            "cursor" => Some(Self::Cursor),
             "ollama" => Some(Self::Ollama),
             "commandcode" | "command-code" => Some(Self::CommandCode),
             _ => None,
@@ -102,7 +98,6 @@ impl Format {
             Self::Vertex => "vertex",
             Self::Codex => "codex",
             Self::Antigravity => "antigravity",
-            Self::Cursor => "cursor",
             Self::Ollama => "ollama",
             Self::CommandCode => "commandcode",
         }
@@ -150,8 +145,6 @@ pub struct ResponseTransformState {
     pub gemini: GeminiResponseState,
     /// Responses API state
     pub responses: ResponsesResponseState,
-    /// Cursor streaming state
-    pub cursor: CursorResponseState,
     /// Ollama streaming state
     pub ollama: OllamaResponseState,
     /// CommandCode streaming state
@@ -387,15 +380,6 @@ pub struct ResponsesResponseState {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct CursorResponseState {
-    pub frame_buffer: Vec<u8>,
-    pub decompress_buffer: Vec<u8>,
-    pub in_message: bool,
-    /// Generic state used by cursor_to_openai_response.
-    pub state: serde_json::Map<String, Value>,
-}
-
-#[derive(Debug, Clone, Default)]
 pub struct OllamaResponseState {
     pub message_idx: usize,
     /// Generic state used by ollama_to_openai_response.
@@ -503,13 +487,13 @@ pub fn detect_source_format(body: &Value) -> Format {
     Format::OpenAi
 }
 
-/// Detect source format from endpoint path (+ optional body for Cursor CLI).
+/// Detect source format from endpoint path (+ optional body for Responses-shaped input).
 /// Mirrors open-sse/translator/formats.js:detectFormatByEndpoint.
 pub fn detect_source_format_by_endpoint(path: &str) -> Option<Format> {
     detect_source_format_by_endpoint_with_body(path, None)
 }
 
-/// Body-aware endpoint detection (Cursor CLI: /v1/chat/completions + input[] → openai).
+/// Body-aware endpoint detection (/v1/chat/completions + input[] → openai).
 pub fn detect_source_format_by_endpoint_with_body(
     path: &str,
     body: Option<&Value>,
@@ -520,7 +504,7 @@ pub fn detect_source_format_by_endpoint_with_body(
     if path.contains("/v1/messages") {
         return Some(Format::Claude);
     }
-    // Cursor CLI sends Responses-shaped `input` on chat/completions — force OpenAI
+    // Responses-shaped `input` on chat/completions — force OpenAI
     if path.contains("/v1/chat/completions") {
         if let Some(b) = body {
             if b.get("input").and_then(Value::as_array).is_some() {
@@ -551,8 +535,7 @@ pub fn get_target_format_for_provider(provider: &str) -> Format {
         "glm" => Format::OpenAi,
         "gemini" => Format::Gemini,
         "vertex" | "vertex-partner" => Format::Vertex,
-        "codex" | "grok-cli" | "gcli" | "gb" | "perplexity-agent" => Format::OpenAiResponses,
-        "cursor" | "cu" => Format::Cursor,
+        "codex" | "perplexity-agent" => Format::OpenAiResponses,
         "ollama" | "ollama-cloud" => Format::Ollama,
         "antigravity" => Format::Antigravity,
         "commandcode" | "command-code" => Format::CommandCode,
@@ -1300,14 +1283,12 @@ pub fn global_registry() -> &'static TranslationRegistry {
     };
     use crate::core::translator::request::openai_to_claude::openai_to_claude_request;
     use crate::core::translator::request::openai_to_commandcode::openai_to_commandcode_request;
-    use crate::core::translator::request::openai_to_cursor::openai_to_cursor_request;
     use crate::core::translator::request::openai_to_gemini::openai_to_antigravity_request;
     use crate::core::translator::request::openai_to_gemini::openai_to_gemini_request;
     use crate::core::translator::request::openai_to_ollama::openai_to_ollama_request;
     use crate::core::translator::request::openai_to_vertex::openai_to_vertex_request;
     use crate::core::translator::response::claude_to_openai::claude_to_openai_streaming;
     use crate::core::translator::response::commandcode_to_openai::commandcode_to_openai_response;
-    use crate::core::translator::response::cursor_to_openai::cursor_to_openai_streaming;
     use crate::core::translator::response::gemini_to_openai::gemini_to_openai_streaming;
     use crate::core::translator::response::ollama_to_openai::ollama_to_openai_streaming;
     use crate::core::translator::response::openai_responses::{
@@ -1350,11 +1331,6 @@ pub fn global_registry() -> &'static TranslationRegistry {
             Format::OpenAi,
             Format::Vertex,
             openai_to_vertex_request as RequestTransformFn,
-        );
-        reg.register_request(
-            Format::OpenAi,
-            Format::Cursor,
-            openai_to_cursor_request as RequestTransformFn,
         );
         reg.register_request(
             Format::OpenAi,
@@ -1410,11 +1386,6 @@ pub fn global_registry() -> &'static TranslationRegistry {
             Format::Ollama,
             Format::OpenAi,
             ollama_to_openai_streaming as ResponseTransformFn,
-        );
-        reg.register_response(
-            Format::Cursor,
-            Format::OpenAi,
-            cursor_to_openai_streaming as ResponseTransformFn,
         );
         reg.register_response(
             Format::OpenAiResponses,

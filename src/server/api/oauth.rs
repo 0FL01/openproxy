@@ -559,7 +559,6 @@ fn is_device_code_provider(provider: &str) -> bool {
             | "codebuddy"
             | "codebuddy-cn"
             | "codebuddy-intl"
-            | "grok-cli"
             | "qwen"
     )
 }
@@ -715,13 +714,6 @@ fn decode_cline_exchange_code(code: &str) -> Option<Value> {
 }
 
 const GITLAB_DEFAULT_BASE: &str = "https://gitlab.com";
-const CURSOR_ACCESS_TOKEN_KEYS: &[&str] = &["cursorAuth/accessToken", "cursorAuth/token"];
-const CURSOR_MACHINE_ID_KEYS: &[&str] = &[
-    "storage.serviceMachineId",
-    "storage.machineId",
-    "telemetry.machineId",
-];
-
 fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1258,189 +1250,11 @@ fn decode_jwt_claims(access_token: &str) -> Option<Value> {
     serde_json::from_slice(&decoded).ok()
 }
 
-fn cursor_home_dir() -> PathBuf {
+fn user_home_dir() -> PathBuf {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
-}
-
-fn cursor_candidate_paths() -> Vec<PathBuf> {
-    let home = cursor_home_dir();
-    match std::env::consts::OS {
-        "macos" => vec![
-            home.join("Library/Application Support/Cursor/User/globalStorage/state.vscdb"),
-            home.join(
-                "Library/Application Support/Cursor - Insiders/User/globalStorage/state.vscdb",
-            ),
-        ],
-        "windows" => {
-            let app_data = std::env::var_os("APPDATA")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home.join("AppData").join("Roaming"));
-            let local_app_data = std::env::var_os("LOCALAPPDATA")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home.join("AppData").join("Local"));
-            vec![
-                app_data
-                    .join("Cursor")
-                    .join("User")
-                    .join("globalStorage")
-                    .join("state.vscdb"),
-                app_data
-                    .join("Cursor - Insiders")
-                    .join("User")
-                    .join("globalStorage")
-                    .join("state.vscdb"),
-                local_app_data
-                    .join("Cursor")
-                    .join("User")
-                    .join("globalStorage")
-                    .join("state.vscdb"),
-                local_app_data
-                    .join("Programs")
-                    .join("Cursor")
-                    .join("User")
-                    .join("globalStorage")
-                    .join("state.vscdb"),
-            ]
-        }
-        _ => vec![
-            home.join(".config")
-                .join("Cursor")
-                .join("User")
-                .join("globalStorage")
-                .join("state.vscdb"),
-            home.join(".config")
-                .join("cursor")
-                .join("User")
-                .join("globalStorage")
-                .join("state.vscdb"),
-        ],
-    }
-}
-
-fn normalize_cursor_db_value(value: &str) -> String {
-    match serde_json::from_str::<Value>(value) {
-        Ok(Value::String(parsed)) => parsed,
-        _ => value.to_string(),
-    }
-}
-
-fn extract_cursor_tokens_from_db(
-    db_path: &std::path::Path,
-) -> Result<(Option<String>, Option<String>), rusqlite::Error> {
-    let connection =
-        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-
-    let query = |keys: &[&str]| -> Result<Option<String>, rusqlite::Error> {
-        for key in keys {
-            let value: Option<String> = connection
-                .query_row(
-                    "SELECT value FROM itemTable WHERE key=? LIMIT 1",
-                    [key],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if let Some(value) = value {
-                return Ok(Some(normalize_cursor_db_value(&value)));
-            }
-        }
-        Ok(None)
-    };
-
-    Ok((
-        query(CURSOR_ACCESS_TOKEN_KEYS)?,
-        query(CURSOR_MACHINE_ID_KEYS)?,
-    ))
-}
-
-fn cursor_is_installed() -> bool {
-    if std::env::consts::OS != "linux" {
-        return true;
-    }
-
-    if Command::new("which")
-        .arg("cursor")
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
-    {
-        return true;
-    }
-
-    cursor_home_dir()
-        .join(".local")
-        .join("share")
-        .join("applications")
-        .join("cursor.desktop")
-        .is_file()
-}
-
-fn cursor_import_instructions() -> Value {
-    json!({
-        "provider": "cursor",
-        "method": "import_token",
-        "instructions": {
-            "title": "How to get your Cursor token",
-            "steps": [
-                "1. Open Cursor IDE and make sure you're logged in",
-                "2. Find the state.vscdb file:",
-                "   - Linux: ~/.config/Cursor/User/globalStorage/state.vscdb",
-                "   - macOS: /Users/<user>/Library/Application Support/Cursor/User/globalStorage/state.vscdb",
-                "   - Windows: %APPDATA%\\Cursor\\User\\globalStorage\\state.vscdb",
-                "3. Open the database with SQLite browser or CLI:",
-                "   sqlite3 state.vscdb \"SELECT value FROM itemTable WHERE key='cursorAuth/accessToken'\"",
-                "4. Also get the machine ID:",
-                "   sqlite3 state.vscdb \"SELECT value FROM itemTable WHERE key='storage.serviceMachineId'\"",
-                "5. Paste both values in the form below"
-            ],
-            "alternativeMethod": [
-                "Or use this one-liner to get both values:",
-                "sqlite3 state.vscdb \"SELECT key, value FROM itemTable WHERE key IN ('cursorAuth/accessToken', 'storage.serviceMachineId')\""
-            ]
-        },
-        "requiredFields": [
-            {
-                "name": "accessToken",
-                "label": "Access Token",
-                "description": "From cursorAuth/accessToken in state.vscdb",
-                "type": "textarea"
-            },
-            {
-                "name": "machineId",
-                "label": "Machine ID",
-                "description": "From storage.serviceMachineId in state.vscdb",
-                "type": "text"
-            }
-        ]
-    })
-}
-
-fn validate_cursor_import_token(
-    access_token: &str,
-    machine_id: &str,
-) -> Result<(String, String), String> {
-    if access_token.is_empty() {
-        return Err("Access token is required".to_string());
-    }
-    if machine_id.is_empty() {
-        return Err("Machine ID is required".to_string());
-    }
-    if access_token.len() < 50 {
-        return Err("Invalid token format. Token appears too short.".to_string());
-    }
-
-    let normalized_machine_id = machine_id.replace('-', "");
-    if normalized_machine_id.len() < 32
-        || !normalized_machine_id
-            .chars()
-            .all(|ch| ch.is_ascii_hexdigit())
-    {
-        return Err("Invalid machine ID format. Expected UUID format.".to_string());
-    }
-
-    Ok((access_token.to_string(), machine_id.to_string()))
 }
 
 async fn gitlab_pat_auth(
@@ -1573,168 +1387,6 @@ async fn gitlab_pat_auth(
     }
 }
 
-async fn cursor_import_instructions_route() -> Response {
-    Json(cursor_import_instructions()).into_response()
-}
-
-async fn cursor_import_auth(
-    State(state): State<AppState>,
-    request: axum::extract::Request,
-) -> Response {
-    let body = match axum::body::to_bytes(request.into_body(), 64 * 1024).await {
-        Ok(bytes) => bytes,
-        Err(error) => return internal_error_response(error.to_string()),
-    };
-
-    let body: Value = match serde_json::from_slice(&body) {
-        Ok(value) => value,
-        Err(error) => return internal_error_response(error.to_string()),
-    };
-
-    let Some(access_token_raw) = body.get("accessToken").and_then(Value::as_str) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "Access token is required" })),
-        )
-            .into_response();
-    };
-    if access_token_raw.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "Access token is required" })),
-        )
-            .into_response();
-    }
-
-    let Some(machine_id_raw) = body.get("machineId").and_then(Value::as_str) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "Machine ID is required" })),
-        )
-            .into_response();
-    };
-    if machine_id_raw.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "Machine ID is required" })),
-        )
-            .into_response();
-    }
-
-    let access_token = access_token_raw.trim();
-    let machine_id = machine_id_raw.trim();
-    let (validated_access_token, validated_machine_id) =
-        match validate_cursor_import_token(access_token, machine_id) {
-            Ok(value) => value,
-            Err(error) => return internal_error_response(error),
-        };
-
-    let claims = decode_jwt_claims(&validated_access_token);
-    let email = claims
-        .as_ref()
-        .and_then(|value| value.get("email"))
-        .or_else(|| claims.as_ref().and_then(|value| value.get("sub")))
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let user_id = claims
-        .as_ref()
-        .and_then(|value| value.get("sub"))
-        .or_else(|| claims.as_ref().and_then(|value| value.get("user_id")))
-        .and_then(Value::as_str)
-        .map(str::to_string);
-
-    let mut provider_specific_data = std::collections::BTreeMap::from([
-        (
-            "machineId".to_string(),
-            Value::String(validated_machine_id.clone()),
-        ),
-        (
-            "authMethod".to_string(),
-            Value::String("imported".to_string()),
-        ),
-        (
-            "provider".to_string(),
-            Value::String("Imported".to_string()),
-        ),
-    ]);
-    if let Some(user_id) = user_id {
-        provider_specific_data.insert("userId".to_string(), Value::String(user_id));
-    }
-
-    let connection = ProviderConnection {
-        provider: "cursor".to_string(),
-        auth_type: "oauth".to_string(),
-        email: email.clone(),
-        access_token: Some(validated_access_token),
-        refresh_token: None,
-        expires_at: Some((chrono::Utc::now() + chrono::Duration::seconds(86_400)).to_rfc3339()),
-        test_status: Some("active".to_string()),
-        provider_specific_data,
-        ..Default::default()
-    };
-
-    match create_imported_oauth_connection(&state, connection).await {
-        Ok(connection) => Json(json!({
-            "success": true,
-            "connection": {
-                "id": connection.id,
-                "provider": connection.provider,
-                "email": connection.email
-            }
-        }))
-        .into_response(),
-        Err(error) => internal_error_response(error.to_string()),
-    }
-}
-
-async fn cursor_auto_import_route() -> Response {
-    let candidates = cursor_candidate_paths();
-    let db_path = candidates
-        .iter()
-        .find(|candidate| std::fs::File::open(candidate).is_ok())
-        .cloned();
-
-    let Some(db_path) = db_path else {
-        let checked_locations = candidates
-            .iter()
-            .map(|path| path.to_string_lossy().to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        return Json(json!({
-            "found": false,
-            "error": format!(
-                "Cursor database not found. Checked locations:\n{}\n\nMake sure Cursor IDE is installed and opened at least once.",
-                checked_locations
-            )
-        }))
-        .into_response();
-    };
-
-    if std::env::consts::OS == "linux" && !cursor_is_installed() {
-        return Json(json!({
-            "found": false,
-            "error": "Cursor config files found but Cursor IDE does not appear to be installed. Skipping auto-import."
-        }))
-        .into_response();
-    }
-
-    if let Ok((Some(access_token), Some(machine_id))) = extract_cursor_tokens_from_db(&db_path) {
-        return Json(json!({
-            "found": true,
-            "accessToken": access_token,
-            "machineId": machine_id
-        }))
-        .into_response();
-    }
-
-    Json(json!({
-        "found": false,
-        "windowsManual": true,
-        "dbPath": db_path.to_string_lossy().to_string()
-    }))
-    .into_response()
-}
-
 fn build_claude_auth_url(redirect_uri: &str, state: &str, code_challenge: &str) -> String {
     build_query_url(
         &claude_authorize_url(),
@@ -1864,7 +1516,7 @@ async fn codex_start_proxy_compat(
     if provider != "codex" && provider != "xai" && provider != "zed" {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "Proxy only supported for codex/xai/trae/windsurf/zed" })),
+            Json(json!({ "error": "Proxy only supported for codex/xai/zed" })),
         )
             .into_response();
     }
@@ -1953,7 +1605,7 @@ async fn codex_poll_status_compat(
     if provider != "codex" && provider != "xai" && provider != "zed" {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "Poll only supported for codex/xai/trae/windsurf/zed" })),
+            Json(json!({ "error": "Poll only supported for codex/xai/zed" })),
         )
             .into_response();
     }
@@ -2033,7 +1685,7 @@ async fn codex_stop_proxy_compat(
     if provider != "codex" && provider != "xai" && provider != "zed" {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "Proxy only supported for codex/xai/trae/windsurf/zed" })),
+            Json(json!({ "error": "Proxy only supported for codex/xai/zed" })),
         )
             .into_response();
     }
@@ -4014,192 +3666,6 @@ async fn codex_import_token(
     }
 }
 
-/// POST /api/oauth/grok-cli/bulk-import
-/// Bulk import multiple Grok CLI (OAuth/Device) account JSON objects in one call.
-///
-/// Body accepts any of:
-///   - Array:    [{...}, {...}]
-///   - Single:   {...}
-///   - Wrapped:  { accounts: [{...}, ...] }
-///
-/// Each item accepts snake_case or camelCase:
-///   access_token / accessToken
-///   refresh_token / refreshToken
-///   id_token / idToken
-///   email
-///   expires_in / expiresIn / expires_at / expiresAt
-async fn grok_cli_bulk_import(
-    State(state): State<AppState>,
-    request: axum::extract::Request,
-) -> Response {
-    let body = match axum::body::to_bytes(request.into_body(), 512 * 1024).await {
-        Ok(bytes) => bytes,
-        Err(error) => return internal_error_response(error.to_string()),
-    };
-    let body: Value = match serde_json::from_slice(&body) {
-        Ok(value) => value,
-        Err(error) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": format!("Invalid JSON body: {error}") })),
-            )
-                .into_response();
-        }
-    };
-
-    let accounts: Option<Vec<Value>> = if let Some(arr) = body.as_array() {
-        Some(arr.clone())
-    } else if let Some(arr) = body.get("accounts").and_then(Value::as_array) {
-        Some(arr.clone())
-    } else if body.is_object() {
-        Some(vec![body.clone()])
-    } else {
-        None
-    };
-    let Some(accounts) = accounts else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "No accounts provided" })),
-        )
-            .into_response();
-    };
-    if accounts.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "No accounts provided" })),
-        )
-            .into_response();
-    }
-
-    let mut results: Vec<serde_json::Value> = Vec::with_capacity(accounts.len());
-    let mut success = 0usize;
-    let mut failed = 0usize;
-
-    for (idx, raw) in accounts.iter().enumerate() {
-        let outcome: Result<ProviderConnection, String> = (|| {
-            let raw = raw.as_object().ok_or("Item is not an object")?;
-
-            let access_token = raw
-                .get("access_token")
-                .or_else(|| raw.get("accessToken"))
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-                .ok_or("Missing access_token / accessToken")?
-                .to_string();
-            let refresh_token = raw
-                .get("refresh_token")
-                .or_else(|| raw.get("refreshToken"))
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            let id_token = raw
-                .get("id_token")
-                .or_else(|| raw.get("idToken"))
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            let mut email = raw.get("email").and_then(Value::as_str).map(str::to_string);
-
-            if email.is_none() {
-                email = id_token
-                    .as_deref()
-                    .and_then(|token| decode_xai_id_token_email(Some(token)))
-                    .or_else(|| extract_email_from_access_token(&access_token));
-            }
-
-            let expires_at = raw
-                .get("expires_at")
-                .or_else(|| raw.get("expiresAt"))
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .or_else(|| {
-                    raw.get("expires_in")
-                        .or_else(|| raw.get("expiresIn"))
-                        .and_then(Value::as_i64)
-                        .filter(|n| *n > 0)
-                        .map(|n| (chrono::Utc::now() + chrono::Duration::seconds(n)).to_rfc3339())
-                });
-
-            let mut psd: std::collections::BTreeMap<String, Value> =
-                std::collections::BTreeMap::from([(
-                    "authMethod".to_string(),
-                    Value::String("device_code".to_string()),
-                )]);
-            if let Some(id_token) = &id_token {
-                psd.insert("idToken".to_string(), Value::String(id_token.clone()));
-            }
-            if let Some(email) = &email {
-                psd.insert("email".to_string(), Value::String(email.clone()));
-            }
-            if let Some(caller_psd) = raw.get("providerSpecificData").and_then(Value::as_object) {
-                for (k, v) in caller_psd {
-                    psd.insert(k.clone(), v.clone());
-                }
-            }
-
-            Ok(ProviderConnection {
-                provider: "grok-cli".to_string(),
-                auth_type: "oauth".to_string(),
-                email: email.clone(),
-                display_name: raw
-                    .get("displayName")
-                    .or_else(|| raw.get("name"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                access_token: Some(access_token),
-                refresh_token,
-                id_token,
-                expires_at,
-                test_status: Some("active".to_string()),
-                provider_specific_data: psd,
-                ..Default::default()
-            })
-        })();
-
-        match outcome {
-            Err(err) => {
-                failed += 1;
-                results.push(json!({ "index": idx, "ok": false, "error": err }));
-            }
-            Ok(connection) => match create_imported_oauth_connection(&state, connection).await {
-                Ok(created) => {
-                    success += 1;
-                    results.push(
-                        json!({ "index": idx, "ok": true, "id": created.id, "email": created.email }),
-                    );
-                }
-                Err(err) => {
-                    failed += 1;
-                    results.push(json!({ "index": idx, "ok": false, "error": err.to_string() }));
-                }
-            },
-        }
-    }
-
-    Json(json!({
-        "total": accounts.len(),
-        "success": success,
-        "failed": failed,
-        "results": results
-    }))
-    .into_response()
-}
-
-/// Decode an xAI id token to an email (email | preferred_username | sub).
-fn decode_xai_id_token_email(id_token: Option<&str>) -> Option<String> {
-    let claims = decode_jwt_claims(id_token?)?;
-    claims
-        .get("email")
-        .or_else(|| claims.get("preferred_username"))
-        .or_else(|| claims.get("sub"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
-}
-
-/// Extract an email from an access-token JWT payload (best effort).
-fn extract_email_from_access_token(access_token: &str) -> Option<String> {
-    decode_xai_id_token_email(Some(access_token))
-}
-
 /// POST /api/oauth/xiaomi-mimo/api-key
 /// Import a Xiaomi MiMo API key manually (or from auto-import).
 /// The key is validated against the models endpoint, then stored.
@@ -4461,7 +3927,7 @@ async fn xiaomi_mimo_api_key_import(
 /// Candidate paths for the Xiaomi MiMo Desktop auth.json
 /// (MiMoCode / MiMo Desktop shared data dir, cross-platform XDG).
 fn xiaomi_mimo_auth_candidates() -> Vec<PathBuf> {
-    let home = cursor_home_dir();
+    let home = user_home_dir();
     let mut paths = vec![home
         .join(".local")
         .join("share")
@@ -4497,7 +3963,7 @@ fn xiaomi_mimo_auth_candidates() -> Vec<PathBuf> {
 /// means null) and reads the `passToken`/`userId`/`cUserId` cookies for
 /// `account.xiaomi.com`.
 fn read_mimo_desktop_pass_token() -> Option<(String, Option<String>, Option<String>)> {
-    let home = cursor_home_dir();
+    let home = user_home_dir();
     let cookie_src = match std::env::consts::OS {
         "windows" => home
             .join("AppData")
@@ -4768,19 +4234,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/oauth/codex/bulk-import", post(codex_bulk_import))
         .route("/api/oauth/codex/import-token", post(codex_import_token))
-        .route(
-            "/api/oauth/cursor/auto-import",
-            get(cursor_auto_import_route),
-        )
-        .route(
-            "/api/oauth/cursor/import",
-            get(cursor_import_instructions_route).post(cursor_import_auth),
-        )
         .route("/api/oauth/xai/manual-code", post(xai_manual_code))
-        .route(
-            "/api/oauth/grok-cli/bulk-import",
-            post(grok_cli_bulk_import),
-        )
         .route(
             "/api/oauth/xiaomi-mimo/api-key",
             post(xiaomi_mimo_api_key_import),
@@ -5193,30 +4647,6 @@ mod tests {
         assert_eq!(
             psd.get("chatgptPlanType"),
             Some(&serde_json::Value::String("plus".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_decode_xai_id_token_email_prefers_email() {
-        let token = jwt_with_payload(&serde_json::json!({ "email": "a@x.ai" }));
-        assert_eq!(
-            decode_xai_id_token_email(Some(&token)),
-            Some("a@x.ai".to_string())
-        );
-        assert_eq!(
-            extract_email_from_access_token(&token),
-            Some("a@x.ai".to_string())
-        );
-        assert_eq!(decode_xai_id_token_email(None), None);
-        assert_eq!(decode_xai_id_token_email(Some("not-a-jwt")), None);
-    }
-
-    #[test]
-    fn test_decode_xai_id_token_email_falls_back_to_sub() {
-        let token = jwt_with_payload(&serde_json::json!({ "sub": "user-1" }));
-        assert_eq!(
-            decode_xai_id_token_email(Some(&token)),
-            Some("user-1".to_string())
         );
     }
 

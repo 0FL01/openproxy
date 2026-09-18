@@ -18,7 +18,6 @@
     "codex": "cx",
     "cohere": "cohere",
     "commandcode": "commandcode",
-    "cursor": "cu",
     "deepgram": "deepgram",
     "deepseek": "deepseek",
     "featherless": "featherless",
@@ -29,7 +28,6 @@
     "glm-cn": "glm-cn",
     "glm": "glm",
     "grok-cli": "gcli",
-    "grok-web": "grok-web",
     "hyperbolic": "hyperbolic",
     "kilocode": "kc",
     "kimchi": "kimchi",
@@ -1030,84 +1028,6 @@
         {
           "id": "stepfun/Step-3.5-Flash",
           "name": "Step 3.5 Flash",
-          "kind": "llm"
-        }
-      ]
-    },
-    {
-      "id": "cursor",
-      "alias": "cu",
-      "format": "cursor",
-      "baseUrl": "https://api2.cursor.sh",
-      "models": [
-        {
-          "id": "default",
-          "name": "Auto (Server Picks)",
-          "kind": "llm"
-        },
-        {
-          "id": "claude-4.5-opus-high-thinking",
-          "name": "Claude 4.5 Opus High Thinking",
-          "kind": "llm"
-        },
-        {
-          "id": "claude-4.5-opus-high",
-          "name": "Claude 4.5 Opus High",
-          "kind": "llm"
-        },
-        {
-          "id": "claude-4.5-sonnet-thinking",
-          "name": "Claude 4.5 Sonnet Thinking",
-          "kind": "llm"
-        },
-        {
-          "id": "claude-4.5-sonnet",
-          "name": "Claude 4.5 Sonnet",
-          "kind": "llm"
-        },
-        {
-          "id": "claude-4.5-haiku",
-          "name": "Claude 4.5 Haiku",
-          "kind": "llm"
-        },
-        {
-          "id": "claude-4.5-opus",
-          "name": "Claude 4.5 Opus",
-          "kind": "llm"
-        },
-        {
-          "id": "gpt-5.2-codex",
-          "name": "GPT 5.2 Codex",
-          "kind": "llm"
-        },
-        {
-          "id": "claude-4.6-opus-max",
-          "name": "Claude 4.6 Opus Max",
-          "kind": "llm"
-        },
-        {
-          "id": "claude-4.6-sonnet-medium-thinking",
-          "name": "Claude 4.6 Sonnet Medium Thinking",
-          "kind": "llm"
-        },
-        {
-          "id": "kimi-k2.5",
-          "name": "Kimi K2.5",
-          "kind": "llm"
-        },
-        {
-          "id": "gemini-3-flash-preview",
-          "name": "Gemini 3 Flash Preview",
-          "kind": "llm"
-        },
-        {
-          "id": "gpt-5.2",
-          "name": "GPT 5.2",
-          "kind": "llm"
-        },
-        {
-          "id": "gpt-5.3-codex",
-          "name": "GPT 5.3 Codex",
           "kind": "llm"
         }
       ]
@@ -2327,75 +2247,6 @@
           "id": "zh-TW",
           "name": "Chinese (Traditional)",
           "kind": "tts"
-        }
-      ]
-    },
-    {
-      "id": "grok-web",
-      "alias": "grok-web",
-      "format": "grok-web",
-      "authType": "cookie",
-      "baseUrl": "https://grok.com/rest/app-chat/conversations/new",
-      "models": [
-        {
-          "id": "grok-3",
-          "name": "Grok 3",
-          "kind": "llm"
-        },
-        {
-          "id": "grok-3-mini",
-          "name": "Grok 3 Mini (Thinking)",
-          "kind": "llm"
-        },
-        {
-          "id": "grok-3-thinking",
-          "name": "Grok 3 Thinking",
-          "kind": "llm"
-        },
-        {
-          "id": "grok-4",
-          "name": "Grok 4",
-          "kind": "llm"
-        },
-        {
-          "id": "grok-4-mini",
-          "name": "Grok 4 Mini (Thinking)",
-          "kind": "llm"
-        },
-        {
-          "id": "grok-4-thinking",
-          "name": "Grok 4 Thinking",
-          "kind": "llm"
-        },
-        {
-          "id": "grok-4-heavy",
-          "name": "Grok 4 Heavy (SuperGrok)",
-          "kind": "llm"
-        },
-        {
-          "id": "grok-4.1-mini",
-          "name": "Grok 4.1 Mini (Thinking)",
-          "kind": "llm"
-        },
-        {
-          "id": "grok-4.1-fast",
-          "name": "Grok 4.1 Fast",
-          "kind": "llm"
-        },
-        {
-          "id": "grok-4.1-expert",
-          "name": "Grok 4.1 Expert",
-          "kind": "llm"
-        },
-        {
-          "id": "grok-4.1-thinking",
-          "name": "Grok 4.1 Thinking",
-          "kind": "llm"
-        },
-        {
-          "id": "grok-4.2",
-          "name": "Grok 4.2 (4.20 Beta)",
-          "kind": "llm"
         }
       ]
     },

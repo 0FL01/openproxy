@@ -249,35 +249,3 @@ async fn test_continue_settings_merges_models() {
         Some("http://localhost:4623")
     );
 }
-
-// ─── cursor_settings: returns no file (guide only) ───────────────────────
-//
-// Cursor stores tokens in a SQLite config.db, which is read by
-// cursor_import::read_cursor_tokens. There is no settings file to write.
-// The "guide only" means we provide instructions, not a file.
-
-#[test]
-fn test_cursor_settings_guide_only() {
-    // cursor_import provides functions to read from Cursor's SQLite DB,
-    // not to write settings files.
-    let tokens = crate::oauth::cursor_import::CursorTokens {
-        access_token: "ct_abc".to_string(),
-        refresh_token: None,
-        expires_at: None,
-    };
-    assert_eq!(tokens.access_token, "ct_abc");
-
-    // Converting to a standard TokenResponse works
-    let resp = crate::oauth::cursor_import::to_token_response(tokens);
-    assert_eq!(resp.access_token, "ct_abc");
-    assert_eq!(resp.token_type, Some("Bearer".to_string()));
-}
-
-#[test]
-fn test_cursor_settings_no_settings_file_written() {
-    // The cursor integration reads from an existing SQLite DB.
-    // There is no cursor_settings write function — only a reader.
-    // This test confirms the read function handles missing files gracefully.
-    let result = crate::oauth::cursor_import::read_cursor_tokens("/tmp/nonexistent_cursor_test.db");
-    assert!(result.is_err(), "should error on missing DB file");
-}

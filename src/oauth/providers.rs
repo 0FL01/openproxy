@@ -347,26 +347,6 @@ pub fn trae() -> OAuthProviderConfig {
     }
 }
 
-/// Cursor IDE — import-token flow (reads from local SQLite DB).
-/// OAuth endpoints are empty; authentication happens via the cursor_import module.
-pub fn cursor() -> OAuthProviderConfig {
-    OAuthProviderConfig {
-        id: "cursor",
-        client_id: "openproxy",
-        authorize_url: "https://api2.cursor.sh",
-        token_url: "",
-        scopes: &[],
-        uses_pkce: false,
-        extra_params: &[
-            ("api_endpoint", "https://api2.cursor.sh"),
-            ("agent_endpoint", "https://agent.api5.cursor.sh"),
-            ("client_version", "3.12.17"),
-            ("client_type", "ide"),
-        ],
-        refresh_lead_ms: 24 * 60 * 60 * 1000,
-    }
-}
-
 /// Antigravity — Google OAuth authorization-code flow (with client_secret).
 pub fn antigravity() -> OAuthProviderConfig {
     OAuthProviderConfig {
@@ -473,7 +453,6 @@ pub fn get_config(provider: &str) -> Option<OAuthProviderConfig> {
         "openai-native" => Some(openai_native()),
         "xai" => Some(xai()),
         "kimchi" => Some(kimchi()),
-        "cursor" => Some(cursor()),
         "antigravity" => Some(antigravity()),
         "codebuddy-cn" => Some(codebuddy_cn()),
         "codebuddy-intl" => Some(codebuddy_intl()),

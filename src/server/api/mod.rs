@@ -686,7 +686,6 @@ const USAGE_SUPPORTED_PROVIDERS: &[&str] = &[
     "kimi-coding",
     "deepseek",
     "ollama",
-    "grok-cli",
     "glm",
     "glm-cn",
     "minimax",
@@ -2223,7 +2222,7 @@ fn bad_request_response(message: &str) -> Response {
 /// Providers that authenticate with a browser session cookie (stored in the
 /// `api_key` field). Must match `WEB_COOKIE_PROVIDERS` in the dashboard.
 fn is_web_cookie_provider(provider: &str) -> bool {
-    matches!(provider, "grok-web")
+    matches!(provider, "none")
 }
 
 fn normalize_create_provider_proxy(

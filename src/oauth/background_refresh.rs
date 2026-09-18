@@ -35,7 +35,7 @@ fn provider_lead_ms(provider: &str) -> Option<u64> {
         "qwen" => tr::REFRESH_LEAD_QWEN_MS,
         "kimi-coding" | "kimi" => tr::REFRESH_LEAD_KIMI_CODING_MS,
         "antigravity" | "gemini" => tr::REFRESH_LEAD_ANTIGRAVITY_MS,
-        "xai" | "grok-cli" | "gcli" | "gb" => tr::REFRESH_LEAD_XAI_MS,
+        "xai" => tr::REFRESH_LEAD_XAI_MS,
         _ => return None,
     };
     Some(lead)

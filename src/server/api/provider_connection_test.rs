@@ -319,7 +319,7 @@ async fn test_oauth_connection(
         };
     }
 
-    if connection.provider == "cursor" || connection.provider == "codebuddy" {
+    if connection.provider == "codebuddy" {
         return ConnectionTestResult {
             valid: true,
             error: None,
@@ -688,7 +688,6 @@ async fn test_api_key_connection(
             )
             .await
         }
-        "grok-web" => test_grok_web_connection(state, connection, effective_proxy).await,
         "opencode-go" => {
             openai_chat_status_test(
                 state,
@@ -828,70 +827,6 @@ async fn test_gemini_api_key_connection(
             },
             refreshed: false,
         },
-        Err(error) => invalid(&error),
-    }
-}
-
-async fn test_grok_web_connection(
-    state: &AppState,
-    connection: &ProviderConnection,
-    effective_proxy: &EffectiveProxy,
-) -> ConnectionTestResult {
-    let mut token = connection.api_key.clone().unwrap_or_default();
-    if let Some(value) = token.strip_prefix("sso=") {
-        token = value.to_string();
-    }
-
-    let statsig_id =
-        STANDARD.encode("e:TypeError: Cannot read properties of null (reading 'children')");
-    let request = PreparedRequest {
-        method: Method::POST,
-        url: "https://grok.com/rest/app-chat/conversations/new".to_string(),
-        headers: vec![
-            ("Accept".to_string(), "*/*".to_string()),
-            ("Content-Type".to_string(), "application/json".to_string()),
-            ("Cookie".to_string(), format!("sso={token}")),
-            ("Origin".to_string(), "https://grok.com".to_string()),
-            ("Referer".to_string(), "https://grok.com/".to_string()),
-            (
-                "User-Agent".to_string(),
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36".to_string(),
-            ),
-            ("x-statsig-id".to_string(), statsig_id),
-            ("x-xai-request-id".to_string(), Uuid::new_v4().to_string()),
-            (
-                "traceparent".to_string(),
-                format!("00-{}-{}-00", random_hex(16), random_hex(8)),
-            ),
-        ],
-        body: Some(PreparedBody::Json(json!({
-            "temporary": true,
-            "modelName": "grok-4",
-            "message": "ping",
-            "fileAttachments": [],
-            "imageAttachments": [],
-            "disableSearch": false,
-            "enableImageGeneration": false,
-            "sendFinalMetadata": true
-        }))),
-    };
-
-    match execute_request(state, &connection.provider, effective_proxy, request).await {
-        Ok(response) => {
-            let valid = !matches!(
-                response.status(),
-                StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
-            );
-            ConnectionTestResult {
-                valid,
-                error: if valid {
-                    None
-                } else {
-                    Some("Invalid SSO cookie".to_string())
-                },
-                refreshed: false,
-            }
-        }
         Err(error) => invalid(&error),
     }
 }

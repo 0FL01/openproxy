@@ -456,8 +456,7 @@ pub struct LineFramer {
     inner: BoundedFramer,
 }
 
-/// Wire framing used by text streaming protocols. Binary Cursor and Kiro
-/// streams intentionally do not use this abstraction.
+/// Wire framing used by text streaming protocols.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextStreamMode {
     Sse,

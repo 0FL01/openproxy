@@ -247,31 +247,6 @@
     "hasFetch": false
   },
   {
-    "id": "cursor",
-    "alias": "cu",
-    "serviceKinds": [
-      "llm"
-    ],
-    "models": [
-      "claude-4.5-haiku",
-      "claude-4.5-opus",
-      "claude-4.5-opus-high",
-      "claude-4.5-opus-high-thinking",
-      "claude-4.5-sonnet",
-      "claude-4.5-sonnet-thinking",
-      "claude-4.6-opus-max",
-      "claude-4.6-sonnet-medium-thinking",
-      "default",
-      "gemini-3-flash-preview",
-      "gpt-5.2",
-      "gpt-5.2-codex",
-      "gpt-5.3-codex",
-      "kimi-k2.5"
-    ],
-    "hasSearch": false,
-    "hasFetch": false
-  },
-  {
     "id": "kilocode",
     "alias": "kc",
     "serviceKinds": [
@@ -1169,16 +1144,6 @@
     "models": [],
     "hasSearch": false,
     "hasFetch": true
-  },
-  {
-    "id": "grok-web",
-    "alias": "gw",
-    "serviceKinds": [
-      "llm"
-    ],
-    "models": [],
-    "hasSearch": false,
-    "hasFetch": false
   },
   {
     "id": "inference-net",
