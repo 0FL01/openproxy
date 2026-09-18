@@ -1109,7 +1109,7 @@ async fn handle_codex_proxy_connection(
                     .await
                 {
                     Ok(connection) => {
-                        match create_imported_oauth_connection(&state.db, connection).await {
+                        match create_imported_oauth_connection(&state, connection).await {
                             Ok(saved) => {
                                 proxy_state
                                     .set_session_done(
@@ -1249,7 +1249,7 @@ async fn handle_xai_proxy_connection(
                     .await
                 {
                     Ok(connection) => {
-                        match create_imported_oauth_connection(&state.db, connection).await {
+                        match create_imported_oauth_connection(&state, connection).await {
                             Ok(saved) => {
                                 proxy_state
                                     .set_session_done(
@@ -1416,7 +1416,7 @@ fn next_provider_priority(connections: &[ProviderConnection], provider: &str) ->
 }
 
 async fn create_imported_oauth_connection(
-    db: &crate::db::Db,
+    state: &AppState,
     mut connection: ProviderConnection,
 ) -> anyhow::Result<ProviderConnection> {
     let now = chrono::Utc::now().to_rfc3339();
@@ -1428,73 +1428,78 @@ async fn create_imported_oauth_connection(
         .map(str::to_string);
     let mut saved = None;
 
-    db.update(|db| {
-        if let Some(email) = email_for_upsert.as_deref() {
-            if let Some(existing) = db.provider_connections.iter_mut().find(|candidate| {
-                candidate.provider == provider
-                    && candidate.auth_type == "oauth"
-                    && candidate.email.as_deref() == Some(email)
-            }) {
-                existing.display_name = connection.display_name.clone();
-                existing.email = connection.email.clone();
-                existing.access_token = connection.access_token.clone();
-                existing.refresh_token = connection.refresh_token.clone();
-                existing.expires_at = connection.expires_at.clone();
-                existing.expires_in = connection.expires_in;
-                existing.test_status = connection.test_status.clone();
-                existing.last_error = connection.last_error.clone();
-                existing.last_error_at = connection.last_error_at.clone();
-                existing.token_type = connection.token_type.clone();
-                existing.scope = connection.scope.clone();
-                existing.id_token = connection.id_token.clone();
-                existing.project_id = connection.project_id.clone();
-                existing.provider_specific_data = connection.provider_specific_data.clone();
-                existing.updated_at = Some(now.clone());
-                saved = Some(existing.clone());
-                return;
+    state
+        .db
+        .update(|db| {
+            if let Some(email) = email_for_upsert.as_deref() {
+                if let Some(existing) = db.provider_connections.iter_mut().find(|candidate| {
+                    candidate.provider == provider
+                        && candidate.auth_type == "oauth"
+                        && candidate.email.as_deref() == Some(email)
+                }) {
+                    existing.display_name = connection.display_name.clone();
+                    existing.email = connection.email.clone();
+                    existing.access_token = connection.access_token.clone();
+                    existing.refresh_token = connection.refresh_token.clone();
+                    existing.expires_at = connection.expires_at.clone();
+                    existing.expires_in = connection.expires_in;
+                    existing.test_status = connection.test_status.clone();
+                    existing.last_error = connection.last_error.clone();
+                    existing.last_error_at = connection.last_error_at.clone();
+                    existing.token_type = connection.token_type.clone();
+                    existing.scope = connection.scope.clone();
+                    existing.id_token = connection.id_token.clone();
+                    existing.project_id = connection.project_id.clone();
+                    existing.provider_specific_data = connection.provider_specific_data.clone();
+                    existing.updated_at = Some(now.clone());
+                    saved = Some(existing.clone());
+                    return;
+                }
             }
-        }
 
-        if connection.name.is_none() {
-            connection.name = Some(
-                connection
-                    .email
-                    .as_deref()
-                    .filter(|email| !email.is_empty())
-                    .map(str::to_string)
-                    .unwrap_or_else(|| {
-                        format!(
-                            "Account {}",
-                            db.provider_connections
-                                .iter()
-                                .filter(|candidate| candidate.provider == provider)
-                                .count()
-                                + 1
-                        )
-                    }),
-            );
-        }
+            if connection.name.is_none() {
+                connection.name = Some(
+                    connection
+                        .email
+                        .as_deref()
+                        .filter(|email| !email.is_empty())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| {
+                            format!(
+                                "Account {}",
+                                db.provider_connections
+                                    .iter()
+                                    .filter(|candidate| candidate.provider == provider)
+                                    .count()
+                                    + 1
+                            )
+                        }),
+                );
+            }
 
-        if connection.priority.is_none() {
-            connection.priority = Some(next_provider_priority(&db.provider_connections, &provider));
-        }
-        if connection.id.is_empty() {
-            connection.id = Uuid::new_v4().to_string();
-        }
-        if connection.is_active.is_none() {
-            connection.is_active = Some(true);
-        }
-        if connection.created_at.is_none() {
-            connection.created_at = Some(now.clone());
-        }
-        connection.updated_at = Some(now.clone());
+            if connection.priority.is_none() {
+                connection.priority =
+                    Some(next_provider_priority(&db.provider_connections, &provider));
+            }
+            if connection.id.is_empty() {
+                connection.id = Uuid::new_v4().to_string();
+            }
+            if connection.is_active.is_none() {
+                connection.is_active = Some(true);
+            }
+            if connection.created_at.is_none() {
+                connection.created_at = Some(now.clone());
+            }
+            connection.updated_at = Some(now.clone());
 
-        db.provider_connections.push(connection.clone());
-        saved = Some(connection.clone());
-    })
-    .await?;
+            db.provider_connections.push(connection.clone());
+            saved = Some(connection.clone());
+        })
+        .await?;
 
-    saved.ok_or_else(|| anyhow::anyhow!("Failed to save provider connection"))
+    let saved = saved.ok_or_else(|| anyhow::anyhow!("Failed to save provider connection"))?;
+    super::quota_auto_ping::reconcile_quota_auto_ping(state);
+    Ok(saved)
 }
 
 fn decode_jwt_claims(access_token: &str) -> Option<Value> {
@@ -1828,7 +1833,7 @@ async fn gitlab_pat_auth(
         ..Default::default()
     };
 
-    match create_imported_oauth_connection(&state.db, connection).await {
+    match create_imported_oauth_connection(&state, connection).await {
         Ok(_) => Json(json!({ "success": true })).into_response(),
         Err(error) => internal_error_response(error.to_string()),
     }
@@ -1934,7 +1939,7 @@ async fn cursor_import_auth(
         ..Default::default()
     };
 
-    match create_imported_oauth_connection(&state.db, connection).await {
+    match create_imported_oauth_connection(&state, connection).await {
         Ok(connection) => Json(json!({
             "success": true,
             "connection": {
@@ -2419,7 +2424,7 @@ async fn kiro_import_auth(
         ..Default::default()
     };
 
-    match create_imported_oauth_connection(&state.db, connection).await {
+    match create_imported_oauth_connection(&state, connection).await {
         Ok(connection) => Json(json!({
             "success": true,
             "connection": {
@@ -2602,7 +2607,7 @@ async fn kiro_social_exchange(
         ..Default::default()
     };
 
-    match create_imported_oauth_connection(&state.db, connection).await {
+    match create_imported_oauth_connection(&state, connection).await {
         Ok(connection) => Json(json!({
             "success": true,
             "connection": {
@@ -2819,7 +2824,7 @@ async fn poll_kiro_device_code_compat(state: &AppState, body: Value) -> Response
             ..Default::default()
         };
 
-        let saved = match create_imported_oauth_connection(&state.db, connection).await {
+        let saved = match create_imported_oauth_connection(state, connection).await {
             Ok(value) => value,
             Err(error) => return internal_error_response(error.to_string()),
         };
@@ -3986,7 +3991,7 @@ async fn exchange_oauth_compat(
         _ => return internal_error_response(format!("Unknown provider: {provider}")),
     };
 
-    let saved = match create_imported_oauth_connection(&state.db, connection).await {
+    let saved = match create_imported_oauth_connection(&state, connection).await {
         Ok(value) => value,
         Err(error) => return internal_error_response(error.to_string()),
     };
@@ -4975,7 +4980,7 @@ async fn codex_bulk_import(
             .extra
             .insert("lastRefreshAt".to_string(), Value::String(last_refresh_at));
 
-        match create_imported_oauth_connection(&state.db, connection).await {
+        match create_imported_oauth_connection(&state, connection).await {
             Ok(conn) => {
                 success += 1;
                 results.push(json!({ "index": idx, "ok": true, "id": conn.id }));
@@ -5116,7 +5121,7 @@ async fn codex_import_token(
         ..Default::default()
     };
 
-    match create_imported_oauth_connection(&state.db, connection).await {
+    match create_imported_oauth_connection(&state, connection).await {
         Ok(connection) => {
             let workspace = connection
                 .provider_specific_data
@@ -5293,7 +5298,7 @@ async fn grok_cli_bulk_import(
                 failed += 1;
                 results.push(json!({ "index": idx, "ok": false, "error": err }));
             }
-            Ok(connection) => match create_imported_oauth_connection(&state.db, connection).await {
+            Ok(connection) => match create_imported_oauth_connection(&state, connection).await {
                 Ok(created) => {
                     success += 1;
                     results.push(
@@ -5574,7 +5579,7 @@ async fn xiaomi_mimo_api_key_import(
         ..Default::default()
     };
 
-    match create_imported_oauth_connection(&state.db, connection).await {
+    match create_imported_oauth_connection(&state, connection).await {
         Ok(connection) => Json(json!({
             "success": true,
             "validated": validated,
@@ -6023,7 +6028,7 @@ async fn kiro_import_cli_proxy(
         ..Default::default()
     };
 
-    match create_imported_oauth_connection(&state.db, connection).await {
+    match create_imported_oauth_connection(&state, connection).await {
         Ok(connection) => Json(json!({
             "success": true,
             "connection": {
@@ -6090,7 +6095,7 @@ async fn xai_manual_code(
     };
 
     match exchange_xai_compat(&code, &session.redirect_uri, &session.code_verifier).await {
-        Ok(connection) => match create_imported_oauth_connection(&state.db, connection).await {
+        Ok(connection) => match create_imported_oauth_connection(&state, connection).await {
             Ok(saved) => {
                 state.xai_proxy.clear_session(&state_param).await;
                 state.xai_proxy.stop().await;

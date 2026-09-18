@@ -206,6 +206,7 @@ async fn update_provider(
 
     match updated {
         Ok(snapshot) => {
+            super::quota_auto_ping::reconcile_quota_auto_ping(&state);
             let Some(connection) = snapshot
                 .provider_connections
                 .iter()
@@ -252,6 +253,7 @@ async fn delete_provider(
     match result {
         Ok(_) => {
             state.antigravity_onboarding.cancel_connection(&deleted_id);
+            super::quota_auto_ping::reconcile_quota_auto_ping(&state);
             Json(json!({ "message": "Connection deleted successfully" })).into_response()
         }
         Err(error) => internal_error(error),
@@ -689,6 +691,7 @@ async fn batch_delete_providers(
             for id in cancelled_ids {
                 state.antigravity_onboarding.cancel_connection(&id);
             }
+            super::quota_auto_ping::reconcile_quota_auto_ping(&state);
             Json(json!({ "deleted": count })).into_response()
         }
         Err(error) => internal_error(error),

@@ -1,7 +1,8 @@
 //! Quota auto-ping (9router `quotaAutoPing` parity).
 //!
 //! Keeps the settings contract (`claudeAutoPing` / `codexAutoPing` / `glmAutoPing` in settings
-//! extra) and runs a 60s tick (dashboard POST + background spawn from `main`).
+//! extra) and runs a 60s tick only while at least one configured connection is
+//! explicitly enabled (dashboard POST remains available independently).
 //!
 //! On each tick, for enabled OAuth Claude/Codex or API-key GLM connections:
 //! 1. Optionally refresh OAuth credentials when a refresh token is present
@@ -32,6 +33,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
@@ -46,7 +48,7 @@ use crate::oauth::token_refresh::{
 };
 use crate::server::api::usage::fetch_oauth_quota;
 use crate::server::state::AppState;
-use crate::types::{ProviderConnection, Settings};
+use crate::types::{AppDb, ProviderConnection, Settings};
 
 const TICK_INTERVAL: Duration = Duration::from_secs(60);
 const PING_LEAD_MS: i64 = 5_000;
@@ -73,6 +75,91 @@ const CODEX_PING_INSTRUCTIONS: &str = "Reply with OK.";
 const CODEX_PING_REASONING_EFFORT: &str = "low";
 
 static TICK_RUNNING: AtomicBool = AtomicBool::new(false);
+
+const WORKER_BOOT_DELAY: Duration = Duration::from_secs(5);
+
+/// Lifecycle for the single process-local quota auto-ping worker.
+///
+/// The worker has no idle supervisor: when no configured connection is
+/// explicitly enabled, `active` is false and there is no sleeping task.
+pub struct QuotaAutoPingLifecycle {
+    active: AtomicBool,
+    accepting: AtomicBool,
+    wake: tokio::sync::Notify,
+    idle: tokio::sync::Notify,
+}
+
+impl Default for QuotaAutoPingLifecycle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl QuotaAutoPingLifecycle {
+    pub fn new() -> Self {
+        Self {
+            active: AtomicBool::new(false),
+            accepting: AtomicBool::new(true),
+            wake: tokio::sync::Notify::new(),
+            idle: tokio::sync::Notify::new(),
+        }
+    }
+
+    /// Reconcile the worker with the current canonical configuration.
+    /// Returns true only when this call starts the one bounded worker.
+    pub fn reconcile(self: &Arc<Self>, state: AppState) -> bool {
+        if !self.accepting.load(Ordering::Acquire) {
+            return false;
+        }
+
+        if !quota_auto_ping_enabled(state.db.snapshot().as_ref()) {
+            self.wake.notify_waiters();
+            return false;
+        }
+
+        if self
+            .active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            self.wake.notify_waiters();
+            return false;
+        }
+
+        let lifecycle = Arc::clone(self);
+        tokio::spawn(async move {
+            run_worker(lifecycle, state).await;
+        });
+        true
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.active.load(Ordering::Acquire)
+    }
+
+    /// Stop admission and wake/drain the worker. A tick cancelled by shutdown
+    /// drops its HTTP future; any already-running DB commit keeps C15's
+    /// commit-wins semantics.
+    pub async fn shutdown(&self) {
+        self.accepting.store(false, Ordering::Release);
+        self.wake.notify_waiters();
+        loop {
+            let notified = self.idle.notified();
+            if !self.active.load(Ordering::Acquire) {
+                break;
+            }
+            notified.await;
+        }
+    }
+}
+
+struct TickRunningGuard;
+
+impl Drop for TickRunningGuard {
+    fn drop(&mut self) {
+        TICK_RUNNING.store(false, Ordering::SeqCst);
+    }
+}
 
 /// Process-local caches matching 9r `global.__quotaAutoPing`.
 struct AutoPingState {
@@ -156,19 +243,91 @@ async fn tick_handler(State(state): State<AppState>, headers: HeaderMap) -> Resp
     }
 
     let result = run_quota_auto_ping_tick(&state).await;
+    reconcile_quota_auto_ping(&state);
     Json(result).into_response()
 }
 
-/// Spawn a background interval that ticks auto-ping every 60s.
-/// Best-effort — safe to call once at process boot.
-pub fn spawn_quota_auto_ping(state: AppState) {
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(5)).await;
-        loop {
-            let _ = run_quota_auto_ping_tick(&state).await;
-            tokio::time::sleep(TICK_INTERVAL).await;
+/// True only when an active configured connection is explicitly enabled in
+/// its provider's persisted per-connection auto-ping map.
+pub fn quota_auto_ping_enabled(db: &AppDb) -> bool {
+    [
+        ("claude", CLAUDE_CFG),
+        ("codex", CODEX_CFG),
+        ("glm", GLM_CFG),
+    ]
+    .into_iter()
+    .any(|(provider, cfg)| {
+        let enabled = auto_ping_connections(&db.settings, cfg.settings_key);
+        !enabled.is_empty()
+            && db.provider_connections.iter().any(|connection| {
+                auto_ping_connection_matches(provider, connection)
+                    && enabled.get(&connection.id) == Some(&true)
+            })
+    })
+}
+
+/// Start the bounded worker at boot only when an explicit target exists.
+pub fn spawn_quota_auto_ping_if_enabled(state: AppState) -> bool {
+    let lifecycle = Arc::clone(&state.quota_auto_ping);
+    lifecycle.reconcile(state)
+}
+
+/// Wake/reconcile the worker after a settings or connection lifecycle change.
+pub fn reconcile_quota_auto_ping(state: &AppState) -> bool {
+    state.quota_auto_ping.reconcile(state.clone())
+}
+
+async fn run_worker(lifecycle: Arc<QuotaAutoPingLifecycle>, state: AppState) {
+    let mut delay = WORKER_BOOT_DELAY;
+
+    loop {
+        if !lifecycle.accepting.load(Ordering::Acquire)
+            || !quota_auto_ping_enabled(state.db.snapshot().as_ref())
+        {
+            break;
         }
-    });
+
+        tokio::select! {
+            _ = state.shutdown_signal.notified() => {
+                lifecycle.accepting.store(false, Ordering::Release);
+                break;
+            }
+            _ = lifecycle.wake.notified() => continue,
+            _ = tokio::time::sleep(delay) => {}
+        }
+
+        if !lifecycle.accepting.load(Ordering::Acquire)
+            || !quota_auto_ping_enabled(state.db.snapshot().as_ref())
+        {
+            break;
+        }
+
+        tokio::select! {
+            _ = state.shutdown_signal.notified() => {
+                lifecycle.accepting.store(false, Ordering::Release);
+                break;
+            }
+            _ = lifecycle.wake.notified() => {
+                // A settings/connection transition may remove the final
+                // target. Dropping this tick is intentional; its guard always
+                // releases the overlap flag and no temporal retry is started.
+            }
+            _ = run_quota_auto_ping_tick(&state) => {}
+        }
+        delay = TICK_INTERVAL;
+    }
+
+    lifecycle.active.store(false, Ordering::Release);
+    lifecycle.idle.notify_one();
+
+    // Close the enable-vs-exit race: an enable that observed the old active
+    // worker will have sent `wake`; after clearing the flag, re-admit exactly
+    // one worker if the canonical configuration still requires it.
+    if lifecycle.accepting.load(Ordering::Acquire)
+        && quota_auto_ping_enabled(state.db.snapshot().as_ref())
+    {
+        lifecycle.reconcile(state);
+    }
 }
 
 pub async fn run_quota_auto_ping_tick(state: &AppState) -> Value {
@@ -180,9 +339,8 @@ pub async fn run_quota_auto_ping_tick(state: &AppState) -> Value {
         });
     }
 
-    let result = run_tick_inner(state).await;
-    TICK_RUNNING.store(false, Ordering::SeqCst);
-    result
+    let _guard = TickRunningGuard;
+    run_tick_inner(state).await
 }
 
 async fn run_tick_inner(state: &AppState) -> Value {

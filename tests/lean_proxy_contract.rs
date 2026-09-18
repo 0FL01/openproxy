@@ -316,4 +316,28 @@ fn contract_freezes_preservation_and_removal_lists() {
         manifest["provider_health_diagnostics"]["security_controls_removed"],
         false
     );
+    assert_eq!(
+        manifest["quota_auto_ping_lifecycle"]["default_idle_worker_present"],
+        false
+    );
+    assert_eq!(
+        manifest["quota_auto_ping_lifecycle"]["worker_bound"],
+        "one_process_task_for_all_enabled_providers"
+    );
+    assert_eq!(
+        manifest["quota_auto_ping_lifecycle"]["last_disable_wakes_and_stops_worker"],
+        true
+    );
+    assert_eq!(
+        manifest["quota_auto_ping_lifecycle"]["saved_opt_in_preserved"],
+        true
+    );
+    assert_eq!(
+        manifest["quota_auto_ping_lifecycle"]["proactive_oauth_refresh_preserved"],
+        true
+    );
+    assert_eq!(
+        manifest["quota_auto_ping_lifecycle"]["pre_c25_paid_probes_default_on_claimed"],
+        false
+    );
 }

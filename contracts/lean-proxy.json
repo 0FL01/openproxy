@@ -317,6 +317,22 @@
     "orphan_circuit_breaker_present": false,
     "security_controls_removed": false
   },
+  "quota_auto_ping_lifecycle": {
+    "checkpoint": "C25",
+    "owner": "explicit_configured_connection_opt_in",
+    "default_idle_worker_present": false,
+    "enabled_target_predicate": "saved_provider_connection_map_and_active_matching_connection",
+    "worker_bound": "one_process_task_for_all_enabled_providers",
+    "per_connection_tasks": false,
+    "runtime_enable_starts_worker": true,
+    "last_disable_wakes_and_stops_worker": true,
+    "shutdown_drains": true,
+    "saved_opt_in_preserved": true,
+    "saved_ping_markers_preserved": true,
+    "automatic_llm_warmup_added": false,
+    "proactive_oauth_refresh_preserved": true,
+    "pre_c25_paid_probes_default_on_claimed": false
+  },
   "versions": {
     "opencode": "1.18.31",
     "custom_harness": "unknown"

@@ -1003,14 +1003,17 @@ async fn create_provider_api(
         .await;
 
     match result {
-        Ok(_) => (
-            StatusCode::CREATED,
-            Json(json!({
-                "success": true,
-                "connection": redact_provider_connection(&default_conn)
-            })),
-        )
-            .into_response(),
+        Ok(_) => {
+            quota_auto_ping::reconcile_quota_auto_ping(&state);
+            (
+                StatusCode::CREATED,
+                Json(json!({
+                    "success": true,
+                    "connection": redact_provider_connection(&default_conn)
+                })),
+            )
+                .into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "success": false, "error": e.to_string() })),
@@ -1911,6 +1914,7 @@ async fn update_settings_api(
 
     match result {
         Ok(snapshot) => {
+            quota_auto_ping::reconcile_quota_auto_ping(&state);
             let db_path = state.db.data_dir.join("openproxy.sqlite");
             let db_path_str = db_path.display().to_string();
             Json(safe_settings_payload_with_db_path(
@@ -2023,7 +2027,10 @@ async fn settings_database_import_api(
         })
         .await
     {
-        Ok(_) => Json(json!({ "success": true })).into_response(),
+        Ok(_) => {
+            quota_auto_ping::reconcile_quota_auto_ping(&state);
+            Json(json!({ "success": true })).into_response()
+        }
         Err(error) => (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": error.to_string() })),

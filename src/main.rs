@@ -325,8 +325,9 @@ async fn main() -> anyhow::Result<()> {
             }
         });
     }
-    // Quota auto-ping foundation: observe enabled Claude/Codex OAuth windows.
-    openproxy::server::api::quota_auto_ping::spawn_quota_auto_ping(state.clone());
+    // C25: no auto-ping task exists unless at least one configured connection
+    // is explicitly enabled in its persisted provider map.
+    openproxy::server::api::quota_auto_ping::spawn_quota_auto_ping_if_enabled(state.clone());
     // C24: provider probing is opt-in. Missing/false legacy settings create no
     // background task and application liveness never depends on an upstream.
     openproxy::core::health::spawn_health_daemon_if_enabled(state.clone());
@@ -413,6 +414,7 @@ async fn main() -> anyhow::Result<()> {
     }
     // C22: stop admitting onboarding work and cancel/drain the bounded
     // per-connection lifecycle before the runtime is dropped.
+    state.quota_auto_ping.shutdown().await;
     state.antigravity_onboarding.shutdown().await;
     Ok(())
 }

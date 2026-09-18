@@ -11,6 +11,7 @@ use crate::db::Db;
 use crate::oauth::antigravity_onboarding::AntigravityOnboardingCoordinator;
 use crate::oauth::pending::PendingFlowStore;
 use crate::server::api::oauth::{CodexProxyState, XaiProxyState, ZedProxyState};
+use crate::server::api::quota_auto_ping::QuotaAutoPingLifecycle;
 use crate::server::auth::login_limiter::LoginLimiter;
 use crate::server::codex_catalog::CodexModelCatalog;
 use crate::server::console_logs::{shared_console_log_buffer, ConsoleLogBuffer};
@@ -74,6 +75,7 @@ pub struct AppState {
     pub models_dev: Arc<ModelsDevCatalog>,
     pub codex_models: Arc<CodexModelCatalog>,
     pub antigravity_onboarding: Arc<AntigravityOnboardingCoordinator>,
+    pub quota_auto_ping: Arc<QuotaAutoPingLifecycle>,
 }
 
 impl AppState {
@@ -99,6 +101,7 @@ impl AppState {
             models_dev: Arc::new(ModelsDevCatalog::default()),
             codex_models: Arc::new(CodexModelCatalog::default()),
             antigravity_onboarding: Arc::new(AntigravityOnboardingCoordinator::new()),
+            quota_auto_ping: Arc::new(QuotaAutoPingLifecycle::new()),
         }
     }
 

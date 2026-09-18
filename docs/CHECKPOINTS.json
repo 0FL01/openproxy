@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C25",
+  "next_checkpoint": "C26",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c24_cargo_1.98.1",
+    "rust_verification": "passed_through_c25_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -1306,7 +1306,7 @@
     {
       "id": "C25",
       "title": "Сделать quota auto-ping действительно ленивым",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C24"
       ],
@@ -1319,7 +1319,38 @@
       "change": "Сохранить различие: текущие реальные auto-ping уже требуют явно enabled connections. Убрать пустой sleeper/worker при отсутствии enabled configuration; запускать ограниченную задачу только для явного opt-in и завершать при его снятии. Не добавлять автоматические LLM warmup запросы. OAuth proactive refresh не отключать автоматически — у него другая auth-роль.",
       "tests": "Пустая конфигурация, включение/отключение единственного connection, несколько providers, shutdown. Ни одного quota/model запроса без opt-in; явные настройки сохраняются после restart.",
       "acceptance": "Default idle не содержит ненужной polling задачи; нельзя записать в отчёт, что до изменения платные quota probes были включены для всех по умолчанию.",
-      "rollback": "Откат только scheduler lifecycle; не удалять сохранённый opt-in пользователя."
+      "rollback": "Откат только scheduler lifecycle; не удалять сохранённый opt-in пользователя.",
+      "result": {
+        "completed_at": "2026-09-18",
+        "files": [
+          "src/main.rs",
+          "src/server/state.rs",
+          "src/server/api/quota_auto_ping.rs",
+          "src/server/api/mod.rs",
+          "src/server/api/admin_items.rs",
+          "src/server/api/oauth.rs",
+          "tests/lean_proxy_auto_ping_c25.rs",
+          "tests/lean_proxy_contract.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json",
+          "docs/CHECKPOINTS.json",
+          "docs/goals/2026-09-17-lean-proxy-plan.md"
+        ],
+        "lifecycle": "QuotaAutoPingLifecycle is AppState-owned and active-only. Empty/default configuration allocates no task. The first saved true per-connection map entry matching an active eligible Claude, Codex, or GLM connection starts one shared worker; concurrent reconciliations cannot create another.",
+        "transitions": "Settings PATCH/database import, provider create/update/delete/batch-delete, configured OAuth create/upsert, the manual tick, and process startup reconcile the lifecycle. Removing the final target wakes the sleeping worker and clears its active state; runtime re-enable closes the exit race without a supervisor timer.",
+        "shutdown": "The worker observes application shutdown and lifecycle wakeups during both boot/interval sleep and a tick. Tick-running state is guarded by Drop so cancellation cannot leave the overlap gate stuck. Main drains the lifecycle before runtime exit.",
+        "preservation": "claudeAutoPing/codexAutoPing/glmAutoPing values and lastPinged*/codexAutoPingPending/glmAutoPingPending fields are unchanged and survive SQLite reload. No new warmup request exists. The independent proactive OAuth refresh task remains enabled.",
+        "accuracy": "Before C25 actual quota and model ping traffic already required a saved per-connection opt-in. C25 removes the unconditional idle sleeper; it does not claim paid probes were default-on.",
+        "verification": [
+          "cargo test --test lean_proxy_auto_ping_c25 --test settings_api --test lean_proxy_contract --test lean_proxy_health_c24 -- --nocapture: 15 passed",
+          "cargo test --lib quota_auto_ping --all-features -- --nocapture: 15 passed",
+          "cargo test --lib --all-features -- --test-threads=1: passed",
+          "focused strict clippy and cargo clippy --all-targets --all-features: passed with only the 3 pre-existing production style warnings",
+          "cargo fmt --all -- --check, JSON parse, git diff --check, and secret review: passed"
+        ],
+        "acceptance_evidence": "Empty settings create no worker and a manual dry tick reports zero targets. Runtime PATCH enable creates exactly one worker, a second spawn is rejected, and disabling the final connection stops it promptly. Three providers share one worker; shutdown drains it; settings and persisted ping markers reload unchanged.",
+        "rollback": "Revert the C25 scheduler-lifecycle commit. Persisted opt-in and marker bytes were not migrated or deleted, so the former unconditional scheduler can read them unchanged; proactive OAuth refresh remains separate."
+      }
     },
     {
       "id": "C26",

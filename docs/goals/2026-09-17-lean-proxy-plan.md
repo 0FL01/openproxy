@@ -93,17 +93,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R4 / C25.
-- Smallest next action: Make quota auto-ping create a bounded worker only while at least one configured connection is explicitly enabled, stop it when the last opt-in is removed, and preserve proactive OAuth refresh as a separate responsibility.
-- Expected evidence: Empty configuration produces no quota/model requests and no sleeping auto-ping worker; enable/disable/restart/shutdown transitions retain settings and bound task count across Claude, Codex, and GLM.
-- Stop or replan if: A saved opt-in cannot be observed without polling; preserve the setting and use the smallest bounded configuration-driven wakeup rather than deleting user intent or adding per-connection timers.
+- Closes: R5 / C26.
+- Smallest next action: Profile the remaining handler-to-executor request-body clones after policy removal and transfer owned JSON across one proven single-consumer boundary while retaining only the immutable representation required for bounded account fallback.
+- Expected evidence: Native and translated requests, account fallback, large tools, and Unicode preserve semantic payloads while one measured deep clone/allocation source is removed or honestly recorded as a local simplification.
+- Stop or replan if: A provider attempt must mutate a request body that another eligible account may still need; preserve one request-scoped immutable source rather than introducing unsafe aliasing or cross-request cache state.
 
 ## Current State
 
-- Resolved: R1 / C00, R2 / C01-C02, R3 / C03-C14, plus C15-C24 within R4. Proxy-owned semantic/header/history replay, heuristic context policy, client-identity passthrough gating, all three executor temporal retry schedulers, successful-response legacy housekeeping, token-keyed completed refresh/quota results, generation-path remote catalog waits, both process-wide Antigravity project maps, request-scoped onboarding workers, default provider health probes, and the write-only circuit breaker are gone. C13 provides the single bounded request-scoped generation/account/auth planner; C16-C18 provide one active-only connection/generation refresh service used by every configured caller; C19-C20 publish immutable OpenCode and Codex model metadata outside generation; C21-C22 make project metadata and onboarding configured-connection lifecycle concerns; C23 makes Claude quota an uncached explicit control-plane read; C24 keeps liveness local and health diagnostics explicit/opt-in.
-- Last relevant evidence: Missing/false health settings issue zero provider requests, literal true remains opt-in, dead upstreams do not affect liveness, manual diagnostics persist a current timestamp, stale legacy values remain inert, and the orphan breaker had no security or routing reader.
+- Resolved: R1 / C00, R2 / C01-C02, R3 / C03-C14, and R4 / C15-C25. Proxy-owned semantic/header/history replay, heuristic context policy, client-identity passthrough gating, all three executor temporal retry schedulers, successful-response legacy housekeeping, token-keyed completed refresh/quota results, generation-path remote catalog waits, both process-wide Antigravity project maps, request-scoped onboarding workers, default provider health probes, and the write-only circuit breaker are gone. C13 provides the single bounded request-scoped generation/account/auth planner; C16-C18 provide one active-only connection/generation refresh service used by every configured caller; C19-C20 publish immutable OpenCode and Codex model metadata outside generation; C21-C22 make project metadata and onboarding configured-connection lifecycle concerns; C23 makes Claude quota an uncached explicit control-plane read; C24 keeps liveness local and health diagnostics explicit/opt-in; C25 creates no quota auto-ping task without a saved matching connection opt-in and preserves proactive OAuth refresh separately.
+- Last relevant evidence: Empty auto-ping settings produce zero targets and no task, runtime enable creates one shared worker across providers, final disable and shutdown release it, and saved opt-in plus pending/last-ping markers reload unchanged.
 - Blocker: None; the prompt explicitly allows independent safe work when external harness/version evidence is unavailable.
-- Next: C25 make quota auto-ping truly lazy while preserving saved per-connection opt-in and proactive OAuth refresh.
+- Next: C26 transfer request JSON ownership from handler to executor at one profiled boundary without weakening bounded account fallback semantics.
 
 ## Material Decisions
 
@@ -140,6 +140,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-09-18: C22 passed. Deleted Antigravity onboarding polling/spawn from generation and replaced setup polling with one active-only connection/generation lifecycle using pooled proxy-aware transport, bounded attempts, readiness diagnostics, explicit test retry, delete cancellation, and shutdown drain. One hundred chats start zero onboarding workers; C23 is next.
 - 2026-09-18: C23 passed. Deleted Claude quota's access-token-keyed five-minute result/error cache, stale-on-error replay, and ineffective OnceCell map without replacement. Explicit success/error/cancellation and twenty-four concurrent callers retain no historical or in-flight state; dashboard polling remains sixty-second and hidden-page-aware. C24 is next.
 - 2026-09-18: C24 passed. Default/missing health settings no longer start provider probes, literal true remains explicit opt-in, `/health` is local liveness with honest unknown/stale timestamps, manual connection tests publish diagnostics, legacy fields remain routing-inert, and the write-only circuit breaker was deleted without touching security controls. C25 is next.
+- 2026-09-18: C25 passed. Quota auto-ping now has an AppState-owned active-only lifecycle: empty configuration creates no sleeper, runtime enable starts one shared Claude/Codex/GLM worker, final disable wakes it, shutdown drains it, and restart preserves opt-in plus ping markers. Actual pings were already opt-in before this change; proactive OAuth refresh remains independent. R4 is verified and C26 is next.
 
 ## Completion
 
