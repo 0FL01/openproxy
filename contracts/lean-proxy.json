@@ -693,5 +693,20 @@
     "limit_drop_recorded_as_saving": false,
     "wal_synchronous_mmap_temp_store_changed": false,
     "no_db_cache_atop_sqlite": true
+  },
+  "optional_demo_chat": {
+    "checkpoint": "C38",
+    "status": "removed_from_lean_product",
+    "removed": [
+      "web/src/components/BasicChatPageClient.tsx",
+      "web/src/pages/dashboard/basic-chat/index.astro",
+      "DashboardLayout basic-chat special casing"
+    ],
+    "was_nav_linked": false,
+    "browser_basic_chat_localstorage_deleted": false,
+    "backend_dashboard_chat_route_kept_for_cli": true,
+    "providers_available_models_kept": true,
+    "model_select_modal_kept": true,
+    "opencode_discovery_kept": true
   }
 }

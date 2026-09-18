@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C38",
+  "next_checkpoint": "C39",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c37_cargo_1.98.1",
+    "rust_verification": "passed_through_c38_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -1970,7 +1970,7 @@
     {
       "id": "C38",
       "title": "Убрать optional BasicChat из лёгкого продукта",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C00",
         "C02"
@@ -1983,7 +1983,26 @@
       "change": "Предпочесть удаление/вынос optional demo chat вместо разработки IndexedDB, новой истории и хранения вложений. Сначала проверить consumers и объявить изменение optional surface. Сохранить provider admin, Available Models, общий picker и OpenCode config. Не удалять автоматически браузерную историю/данные пользователя.",
       "tests": "UI build/check, providers/custom models persistence, picker/discovery, отсутствие dangling routes/imports. Сравнить browser RAM отдельно; server RSS измерить, не выводить из размера JS bundle.",
       "acceptance": "Лёгкий прокси не развивает второй chat/harness UI; обязательные product surfaces целы. Если removal сейчас breaking для защищённого контракта, оформить отдельный пакет/депрекацию, а не затевать frontend rewrite.",
-      "rollback": "Откат optional surface или отдельный пакет; пользовательские данные не удалены."
+      "rollback": "Откат optional surface или отдельный пакет; пользовательские данные не удалены.",
+      "result": {
+        "completed": "2026-09-18",
+        "files": [
+          "web/src/components/BasicChatPageClient.tsx (deleted)",
+          "web/src/pages/dashboard/basic-chat/index.astro (deleted)",
+          "web/src/shared/components/layouts/DashboardLayout.tsx",
+          "tests/lean_proxy_basic_chat_c38.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json"
+        ],
+        "behavior": "Optional second chat/harness UI with its own sessions/history/attachments is removed from the lean product; the route was already nav-orphaned. Providers/Available Models, ModelSelectModal, OpenCode discovery, and the CLI-serving backend dashboard-chat route stay intact; browser basic-chat.* storage is preserved, not wiped.",
+        "tests": [
+          "cargo test --test lean_proxy_basic_chat_c38: 2 passed",
+          "pnpm build: 87 pages, complete with no basic-chat output",
+          "node --test tests/opencode_models.test.mjs tests/opencode_models_cli.test.mjs: 4 passed, 1 skipped (pre-existing)"
+        ],
+        "measurements": "not measured as server optimization; frontend-only removal, server RSS unaffected and not derived from JS bundle",
+        "rollback": "Revert the C38 commit; no user data or settings were migrated or deleted."
+      }
     },
     {
       "id": "C39",

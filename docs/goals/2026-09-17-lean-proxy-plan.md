@@ -93,10 +93,10 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R6 / C38.
-- Smallest next action: Remove the optional BasicChat demo surface without touching providers, Available Models, picker, or OpenCode config.
-- Expected evidence: UI build/check green, no dangling routes/imports, provider/model persistence and discovery intact.
-- Stop or replan if: Removal breaks a protected product-surface contract; ship deprecation/packaging instead of a frontend rewrite.
+- Closes: R6 / C39.
+- Smallest next action: Inventory standalone web-fetch/search execution helpers and remove or relocate them off the proxy core boundary.
+- Expected evidence: endpoint/schema tests green, native tool forwarding and /responses/compact intact, removed routes have declared deprecation.
+- Stop or replan if: Unproven duplication alone is used to break a public API; keep transport APIs intact.
 
 ## Current State
 
