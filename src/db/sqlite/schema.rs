@@ -195,7 +195,10 @@ pub const TABLES_SQL: &[&str] = &[
 ///   without them.
 /// - `temp_store=MEMORY` keeps temp tables in RAM.
 /// - `mmap_size=30000000` enables memory-mapped I/O for faster reads (30 MB).
-/// - `cache_size=-64000` sets the page cache to 64 MB (negative = kibibytes).
+/// - `cache_size` is applied separately by [`sqlite_cache_size_kib`] (C37):
+///   one startup setting, default 64 MiB, rollback via a single env value.
+///   Lowering the limit never frees already-resident bytes and must not be
+///   reported as saved RAM.
 pub const PRAGMAS: &[&str] = &[
     "PRAGMA journal_mode = WAL",
     "PRAGMA synchronous = NORMAL",
@@ -203,8 +206,34 @@ pub const PRAGMAS: &[&str] = &[
     "PRAGMA foreign_keys = ON",
     "PRAGMA temp_store = MEMORY",
     "PRAGMA mmap_size = 30000000",
-    "PRAGMA cache_size = -64000",
 ];
+
+/// Default SQLite page-cache size in KiB (negative `cache_size` units).
+pub const DEFAULT_SQLITE_CACHE_KIB: u32 = 64_000;
+
+/// Resolve the page-cache size from `OPENPROXY_SQLITE_CACHE_SIZE_KIB`.
+/// Non-positive or unparsable values keep the default so a typo can neither
+/// disable the cache nor change durability settings.
+pub fn parse_sqlite_cache_kib(raw: Option<&str>) -> u32 {
+    raw.and_then(|value| value.trim().parse::<i64>().ok())
+        .filter(|value| *value > 0)
+        .map(|value| value.min(i64::from(u32::MAX)) as u32)
+        .unwrap_or(DEFAULT_SQLITE_CACHE_KIB)
+}
+
+/// Effective page-cache size for application connections.
+pub fn sqlite_cache_size_kib() -> u32 {
+    parse_sqlite_cache_kib(
+        std::env::var("OPENPROXY_SQLITE_CACHE_SIZE_KIB")
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// `PRAGMA cache_size = -<kib>` statement for the resolved setting.
+pub fn sqlite_cache_size_pragma() -> String {
+    format!("PRAGMA cache_size = -{}", sqlite_cache_size_kib())
+}
 
 #[cfg(test)]
 mod tests {
@@ -237,6 +266,20 @@ mod tests {
     fn pragmas_are_well_formed() {
         for p in PRAGMAS {
             assert!(p.to_ascii_uppercase().starts_with("PRAGMA "));
+        }
+    }
+
+    #[test]
+    fn cache_size_parser_keeps_safe_default() {
+        assert_eq!(parse_sqlite_cache_kib(None), DEFAULT_SQLITE_CACHE_KIB);
+        assert_eq!(parse_sqlite_cache_kib(Some("8192")), 8192);
+        assert_eq!(parse_sqlite_cache_kib(Some(" 64000 ")), 64_000);
+        for bad in ["0", "-8192", "-64000", "unlimited", "", "  "] {
+            assert_eq!(
+                parse_sqlite_cache_kib(Some(bad)),
+                DEFAULT_SQLITE_CACHE_KIB,
+                "must not disable the cache: {bad:?}"
+            );
         }
     }
 }

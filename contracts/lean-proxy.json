@@ -676,5 +676,22 @@
     "total_duration_timeout_on_streams": false,
     "request_body_limit_bytes": 33554432,
     "overload_counted_as_memory_optimization": false
+  },
+  "sqlite_page_cache": {
+    "checkpoint": "C37",
+    "setting": "OPENPROXY_SQLITE_CACHE_SIZE_KIB",
+    "default_kib": 64000,
+    "compared_kib": 8192,
+    "applied_on": "application_connection_init_not_shell",
+    "artifact": "bench/lean/sqlite-cache-c37.json",
+    "representative_db": {
+      "seed_rows": 20000,
+      "seed_bytes": 7069696
+    },
+    "warm_gain_8192": 0.0424,
+    "verdict": "keep -64000; 4.2% within noise, below 10% adoption threshold",
+    "limit_drop_recorded_as_saving": false,
+    "wal_synchronous_mmap_temp_store_changed": false,
+    "no_db_cache_atop_sqlite": true
   }
 }

@@ -89,6 +89,10 @@ impl SqliteDb {
             // Ignore result — PRAGMA returns data, not row count.
             let _ = conn.execute_batch(pragma);
         }
+        // C37: single startup page-cache setting on the application
+        // connection (never via an external sqlite shell). WAL, synchronous,
+        // mmap, and temp_store stay exactly as declared above.
+        let _ = conn.execute_batch(&schema::sqlite_cache_size_pragma());
         // DDL in one transaction so partial failures roll back.
         let tx = conn.transaction()?;
         for stmt in schema::TABLES_SQL {

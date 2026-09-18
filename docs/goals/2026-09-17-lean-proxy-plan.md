@@ -93,10 +93,10 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R6 / C37.
-- Smallest next action: Measure SQLite page-cache -64000 vs -8192 on a representative DB and adopt only on real win.
-- Expected evidence: page-cache hit/miss, RSS, log latency, lock time and disk I/O at equal load/logging mode; no data/schema migration.
-- Stop or replan if: A 54.5 MiB limit drop is recorded as saved bytes or WAL reliability weakens; keep one startup setting.
+- Closes: R6 / C38.
+- Smallest next action: Remove the optional BasicChat demo surface without touching providers, Available Models, picker, or OpenCode config.
+- Expected evidence: UI build/check green, no dangling routes/imports, provider/model persistence and discovery intact.
+- Stop or replan if: Removal breaks a protected product-surface contract; ship deprecation/packaging instead of a frontend rewrite.
 
 ## Current State
 

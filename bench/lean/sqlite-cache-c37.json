@@ -1,0 +1,217 @@
+{
+  "big_group_cache_used": [
+    266120,
+    266120,
+    266120
+  ],
+  "checkpoint": "C37",
+  "generated_at": "2026-09-18T06:58:47.218051094+00:00",
+  "limitations": [
+    "Single 4096-byte pages; OS page cache cannot be dropped without privileges, so 'cold' means a freshly copied file, not a flushed cache.",
+    "RSS is process-wide and allocator-retained; per-config RSS attribution is not claimed. Cache pressure is compared via SQLITE_DBSTATUS used/hit/miss and /proc/self/io deltas.",
+    "mmap_size, temp_store, WAL, and synchronous were not varied in this experiment."
+  ],
+  "medians_ms": {
+    "big_64000_cold": 399.61263099999996,
+    "big_64000_warm": 401.946387,
+    "small_8192_cold": 421.23794899999996,
+    "small_8192_warm": 384.905829
+  },
+  "order": [
+    8192,
+    64000,
+    64000,
+    8192,
+    8192,
+    64000
+  ],
+  "page_size": 4096,
+  "repetitions": 3,
+  "runs": [
+    {
+      "cache_hit_delta": 46801,
+      "cache_kib": 8192,
+      "cache_miss_delta": 36,
+      "cache_used_after": 266120,
+      "cache_used_before": 18056,
+      "io_read_bytes_delta": 0,
+      "io_write_bytes_delta": 0,
+      "read_ms": 362.283939,
+      "rows_after": 20200,
+      "temperature": "cold",
+      "total_ms": 388.93736299999995,
+      "write_ms": 26.653423999999998
+    },
+    {
+      "cache_hit_delta": 46801,
+      "cache_kib": 8192,
+      "cache_miss_delta": 36,
+      "cache_used_after": 266120,
+      "cache_used_before": 18056,
+      "io_read_bytes_delta": 0,
+      "io_write_bytes_delta": 0,
+      "read_ms": 352.15946199999996,
+      "rows_after": 20200,
+      "temperature": "warm",
+      "total_ms": 378.964255,
+      "write_ms": 26.804793
+    },
+    {
+      "cache_hit_delta": 46801,
+      "cache_kib": 64000,
+      "cache_miss_delta": 36,
+      "cache_used_after": 266120,
+      "cache_used_before": 18056,
+      "io_read_bytes_delta": 0,
+      "io_write_bytes_delta": 0,
+      "read_ms": 384.76574899999997,
+      "rows_after": 20200,
+      "temperature": "cold",
+      "total_ms": 416.132867,
+      "write_ms": 31.367117999999998
+    },
+    {
+      "cache_hit_delta": 46801,
+      "cache_kib": 64000,
+      "cache_miss_delta": 36,
+      "cache_used_after": 266120,
+      "cache_used_before": 18056,
+      "io_read_bytes_delta": 0,
+      "io_write_bytes_delta": 0,
+      "read_ms": 371.268777,
+      "rows_after": 20200,
+      "temperature": "warm",
+      "total_ms": 399.35427,
+      "write_ms": 28.085493
+    },
+    {
+      "cache_hit_delta": 46801,
+      "cache_kib": 64000,
+      "cache_miss_delta": 36,
+      "cache_used_after": 266120,
+      "cache_used_before": 18056,
+      "io_read_bytes_delta": 0,
+      "io_write_bytes_delta": 0,
+      "read_ms": 363.636286,
+      "rows_after": 20200,
+      "temperature": "cold",
+      "total_ms": 390.927342,
+      "write_ms": 27.291056
+    },
+    {
+      "cache_hit_delta": 46801,
+      "cache_kib": 64000,
+      "cache_miss_delta": 36,
+      "cache_used_after": 266120,
+      "cache_used_before": 18056,
+      "io_read_bytes_delta": 0,
+      "io_write_bytes_delta": 0,
+      "read_ms": 396.9307,
+      "rows_after": 20200,
+      "temperature": "warm",
+      "total_ms": 421.741237,
+      "write_ms": 24.810537
+    },
+    {
+      "cache_hit_delta": 46801,
+      "cache_kib": 8192,
+      "cache_miss_delta": 36,
+      "cache_used_after": 266120,
+      "cache_used_before": 18056,
+      "io_read_bytes_delta": 0,
+      "io_write_bytes_delta": 0,
+      "read_ms": 393.737087,
+      "rows_after": 20200,
+      "temperature": "cold",
+      "total_ms": 421.23794899999996,
+      "write_ms": 27.500862
+    },
+    {
+      "cache_hit_delta": 46801,
+      "cache_kib": 8192,
+      "cache_miss_delta": 36,
+      "cache_used_after": 266120,
+      "cache_used_before": 18056,
+      "io_read_bytes_delta": 0,
+      "io_write_bytes_delta": 0,
+      "read_ms": 407.307796,
+      "rows_after": 20200,
+      "temperature": "warm",
+      "total_ms": 443.546255,
+      "write_ms": 36.238459
+    },
+    {
+      "cache_hit_delta": 46801,
+      "cache_kib": 8192,
+      "cache_miss_delta": 36,
+      "cache_used_after": 266120,
+      "cache_used_before": 18056,
+      "io_read_bytes_delta": 0,
+      "io_write_bytes_delta": 0,
+      "read_ms": 404.10513199999997,
+      "rows_after": 20200,
+      "temperature": "cold",
+      "total_ms": 436.312845,
+      "write_ms": 32.207713
+    },
+    {
+      "cache_hit_delta": 46801,
+      "cache_kib": 8192,
+      "cache_miss_delta": 36,
+      "cache_used_after": 266120,
+      "cache_used_before": 18056,
+      "io_read_bytes_delta": 0,
+      "io_write_bytes_delta": 0,
+      "read_ms": 358.063579,
+      "rows_after": 20200,
+      "temperature": "warm",
+      "total_ms": 384.905829,
+      "write_ms": 26.84225
+    },
+    {
+      "cache_hit_delta": 46801,
+      "cache_kib": 64000,
+      "cache_miss_delta": 36,
+      "cache_used_after": 266120,
+      "cache_used_before": 18056,
+      "io_read_bytes_delta": 0,
+      "io_write_bytes_delta": 0,
+      "read_ms": 372.420263,
+      "rows_after": 20200,
+      "temperature": "cold",
+      "total_ms": 399.61263099999996,
+      "write_ms": 27.192368000000002
+    },
+    {
+      "cache_hit_delta": 46801,
+      "cache_kib": 64000,
+      "cache_miss_delta": 36,
+      "cache_used_after": 266120,
+      "cache_used_before": 18056,
+      "io_read_bytes_delta": 0,
+      "io_write_bytes_delta": 0,
+      "read_ms": 373.519239,
+      "rows_after": 20200,
+      "temperature": "warm",
+      "total_ms": 401.946387,
+      "write_ms": 28.427148
+    }
+  ],
+  "seed_bytes": 7069696,
+  "seed_rows": 20000,
+  "small_group_cache_used": [
+    266120,
+    266120,
+    266120
+  ],
+  "small_warm_cache_used_after_median": {
+    "note": "per-connection SQLITE_DBSTATUS_CACHE_USED bytes after workload"
+  },
+  "verdict": "keep -64000",
+  "warm_gain_8192": 0.04239510181242165,
+  "warm_write_ratio_8192": -0.0442663762391495,
+  "workload": {
+    "lists": 40,
+    "writes": 200
+  }
+}
