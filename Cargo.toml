@@ -64,7 +64,6 @@ sha2_rsa_compat = { package = "sha2", version = "0.10" }
 # URL / query
 url = "2"
 urlencoding = "2"
-serde_urlencoded = "0.7"
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }
@@ -123,6 +122,9 @@ wiremock = "0.6"
 assert_cmd = "2"
 predicates = "3"
 insta = { version = "1", features = ["json", "yaml"] }
+# Test-only query parsing (tests/project_setup.rs); never linked into the
+# production binary.
+serde_urlencoded = "0.7"
 
 [[bin]]
 name = "openproxy"
