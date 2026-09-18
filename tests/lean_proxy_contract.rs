@@ -340,4 +340,20 @@ fn contract_freezes_preservation_and_removal_lists() {
         manifest["quota_auto_ping_lifecycle"]["pre_c25_paid_probes_default_on_claimed"],
         false
     );
+    assert_eq!(
+        manifest["request_body_ownership"]["handler_to_single_consumer"],
+        "owned_value_move"
+    );
+    assert_eq!(
+        manifest["request_body_ownership"]["handler_boundary_deep_clone"],
+        false
+    );
+    assert_eq!(
+        manifest["request_body_ownership"]["request_scoped_fallback_source_preserved"],
+        true
+    );
+    assert_eq!(
+        manifest["request_body_ownership"]["prepared_bytes_owner"],
+        "C27"
+    );
 }

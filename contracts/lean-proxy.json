@@ -333,6 +333,24 @@
     "proactive_oauth_refresh_preserved": true,
     "pre_c25_paid_probes_default_on_claimed": false
   },
+  "request_body_ownership": {
+    "checkpoint": "C26",
+    "handler_to_single_consumer": "owned_value_move",
+    "handler_boundary_deep_clone": false,
+    "request_scoped_fallback_source_preserved": true,
+    "per_attempt_body_clone_preserved": true,
+    "unsafe_aliasing": false,
+    "cross_request_cache": false,
+    "prepared_bytes_owner": "C27",
+    "response_transformed_body_lifetime_owner": "C28",
+    "allocation_measurement": {
+      "workload": "C02_release_equal_work_warm_concurrency_32",
+      "baseline_allocated_bytes_per_request": 288453,
+      "c26_allocated_bytes_per_request": 269265,
+      "delta_bytes_per_request": -19188,
+      "delta_percent": -6.6520369002922495
+    }
+  },
   "versions": {
     "opencode": "1.18.31",
     "custom_harness": "unknown"

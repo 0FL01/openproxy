@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C26",
+  "next_checkpoint": "C27",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c25_cargo_1.98.1",
+    "rust_verification": "passed_through_c26_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -1355,7 +1355,7 @@
     {
       "id": "C26",
       "title": "Передавать владение JSON из handler в executor",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C09",
         "C13"
@@ -1368,7 +1368,42 @@
       "change": "Снять профиль оставшихся clone после удаления лишних policies. Передавать owned Value в следующий единственный потребитель; сохранять immutable shared representation только там, где оно необходимо для account fallback. Не переписывать одновременно все translator modules и не хранить original плюс transformed после исчезновения потребности.",
       "tests": "Native route, один translated route, fallback с изменяемыми provider fields, large tools/Unicode. Payload semantic golden tests и живые allocations на равной concurrency.",
       "acceptance": "Удалён конкретный подтверждённый deep clone без потери необходимого retry representation; изменение локально и имеет измеренный allocation эффект либо честно отмечено как simplification.",
-      "rollback": "Откат одной ownership boundary; не компенсировать заимствования unsafe-кодом или глобальным cache."
+      "rollback": "Откат одной ownership boundary; не компенсировать заимствования unsafe-кодом или глобальным cache.",
+      "result": {
+        "files": [
+          "src/server/api/chat.rs",
+          "tests/lean_proxy_ownership_c26.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json",
+          "tests/lean_proxy_contract.rs",
+          "docs/CHECKPOINTS.json",
+          "docs/goals/2026-09-17-lean-proxy-plan.md"
+        ],
+        "ownership_boundary": "chat_completions_impl now moves the parsed owned JSON Value into execute_single_model after all request-planning borrows finish. execute_single_model mutates that owned value directly instead of deep-cloning the full request.",
+        "fallback_preservation": "forward_with_provider_fallback still owns one immutable request-scoped prepared Value and clones it per eligible account/provider attempt. C13's attempt budget, terminal 400/422 handling, sole auth recovery, Kiro endpoint accounting, raw final errors, and no-retry-after-commitment behavior are unchanged.",
+        "scope_boundary": "Executor request structs remain owned Value APIs. Prepared byte serialization remains C27-owned and response transformed_body lifetime remains C28-owned; no translator-wide rewrite, unsafe aliasing, Arc<Value>, or cross-request cache was introduced.",
+        "allocation_measurement": {
+          "command": "LEAN_BENCH_OUTPUT=/tmp/opencode/c26-benchmark.json scripts/bench-lean",
+          "method": "same release/default-feature C02 deterministic loopback matrix and counting allocator",
+          "warm_c32_baseline_allocated_bytes_per_request": 288453,
+          "warm_c32_c26_allocated_bytes_per_request": 269265,
+          "delta_bytes_per_request": -19188,
+          "delta_percent": -6.6520369002922495,
+          "all_matrix_cells_reduced": true,
+          "artifact_committed": false,
+          "artifact_note": "The temporary comparison artifact was kept outside the repository; bench/lean/baseline.json remains the frozen C02 baseline until C42 final measurement."
+        },
+        "verification": [
+          "cargo test --test lean_proxy_ownership_c26 --test lean_proxy_context_c08 --test lean_proxy_passthrough_c09 --test lean_proxy_budget_c13 --test chat_completions -- --nocapture: 21 passed",
+          "LEAN_BENCH_OUTPUT=/tmp/opencode/c26-benchmark.json scripts/bench-lean: release latency/allocation matrix and 2 artifact validators passed",
+          "cargo test --test lean_proxy_contract --test lean_proxy_ownership_c26 -- --nocapture: passed",
+          "cargo test --lib --all-features -- --test-threads=1: passed",
+          "focused strict clippy and cargo clippy --all-targets --all-features: passed with only the 3 pre-existing production style warnings",
+          "cargo fmt --all -- --check, JSON parse, git diff --check, and secret review: passed"
+        ],
+        "acceptance_evidence": "Existing semantic golden integrations cover a >2 MiB Unicode/tools/data-URL/base64 native request, an incompatible OpenAI-to-Claude translation with tools/reasoning, exact multi-account fallback/auth attempt bounds, and committed-stream cancellation. The dedicated C26 source guard proves the handler boundary clone is gone while per-attempt fallback clones remain.",
+        "rollback": "Revert the C26 ownership-boundary commit. No persisted data, public executor/request shape, schema, credential, route, model-discovery, or wire-format migration occurred."
+      }
     },
     {
       "id": "C27",

@@ -429,7 +429,7 @@ async fn chat_completions_impl(
     apply_stream_plan(&mut plan, &body, accept_header.as_deref(), client_tool);
     let response = match execute_single_model(
         &state,
-        &body,
+        body,
         model_str,
         presented_api_key.as_deref(),
         request_log_context.as_ref(),
@@ -527,7 +527,7 @@ fn apply_stream_plan(
 
 async fn execute_single_model(
     state: &AppState,
-    request_body: &Value,
+    request_body: Value,
     model_str: &str,
     api_key: Option<&str>,
     log_context: Option<&RequestLogContext>,
@@ -558,7 +558,10 @@ async fn execute_single_model(
         plan.apply_opencode_metadata(metadata);
     }
 
-    let mut body = request_body.clone();
+    // C26: this is the single-consumer boundary after request planning. Keep
+    // one immutable request-scoped source only inside the account-fallback
+    // planner, where each eligible attempt still needs an independent body.
+    let mut body = request_body;
     if let Some(fields) = body.as_object_mut() {
         fields.insert("model".into(), Value::String(plan.model.clone()));
     } else {
