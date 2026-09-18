@@ -50,6 +50,86 @@ pub fn request_log_dropped() -> u64 {
     log_service().dropped.load(Ordering::Acquire)
 }
 
+/// Last epoch-millis a log-write-failure warning was emitted.
+/// Throttles degraded-mode warns: under sustained ENOSPC an unthrottled
+/// per-failure warn would spam the same full disk.
+static LOG_WRITE_WARN_AT_MS: AtomicU64 = AtomicU64::new(0);
+const LOG_WRITE_WARN_INTERVAL_MS: u64 = 60_000;
+
+/// Count one lost log write (any pipeline path: lean overflow already
+/// counts at the call site; durable insert, background write, and finish
+/// failures call this). Serving continues unlogged (fail-open).
+pub fn count_log_write_failed() {
+    log_service().dropped.fetch_add(1, Ordering::AcqRel);
+}
+
+/// Throttled degraded-mode warning. Call after `count_log_write_failed`.
+pub fn warn_log_write_failed(site: &'static str) {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    let last = LOG_WRITE_WARN_AT_MS.load(Ordering::Acquire);
+    if now_ms.saturating_sub(last) < LOG_WRITE_WARN_INTERVAL_MS {
+        return;
+    }
+    if LOG_WRITE_WARN_AT_MS
+        .compare_exchange(last, now_ms, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    tracing::warn!(
+        target: "openproxy::logs",
+        site,
+        dropped = request_log_dropped(),
+        "request log writes are failing; serving requests unlogged"
+    );
+}
+
+/// Count one lost log write and emit a throttled warning.
+pub fn note_log_write_failed(site: &'static str) {
+    count_log_write_failed();
+    warn_log_write_failed(site);
+}
+
+/// WAL file size in bytes (0 when absent). On-read gauge for the
+/// auth-gated observability stats endpoint; no background polling.
+pub fn sqlite_wal_bytes(data_dir: &std::path::Path) -> u64 {
+    std::fs::metadata(data_dir.join("openproxy.sqlite-wal"))
+        .map(|metadata| metadata.len())
+        .unwrap_or(0)
+}
+
+/// Free bytes available to unprivileged writers on `data_dir`'s filesystem
+/// (`None` when the query itself fails). Read-only `statvfs`, no new crates.
+pub fn data_dir_avail_bytes(data_dir: &std::path::Path) -> Option<u64> {
+    let path = std::ffi::CString::new(data_dir.as_os_str().as_encoded_bytes()).ok()?;
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `statvfs` only reads the path; `stat` is a valid zeroed struct.
+    if unsafe { libc::statvfs(path.as_ptr(), &mut stat) } != 0 {
+        return None;
+    }
+    Some(stat.f_bavail as u64 * stat.f_frsize as u64)
+}
+
+/// One-line boot preflight for the data directory: an `ERROR` when free
+/// space drops below 1 GiB. Non-fatal courtesy check — a disk can still
+/// fill at runtime (see the stats gauges); never refuses to boot.
+pub fn log_disk_preflight(data_dir: &std::path::Path) {
+    const MIN_AVAIL_BYTES: u64 = 1024 * 1024 * 1024;
+    match data_dir_avail_bytes(data_dir) {
+        Some(avail) if avail < MIN_AVAIL_BYTES => {
+            tracing::error!(
+                target: "openproxy::logs",
+                avail_bytes = avail,
+                "data directory disk space critically low"
+            );
+        }
+        _ => {}
+    }
+}
+
 /// Currently queued (not yet written) lean log bytes.
 pub fn request_log_queued_bytes() -> usize {
     log_service().queued_bytes.load(Ordering::Acquire)
@@ -234,6 +314,7 @@ fn write_op_sync(op: LogOp) {
     };
     if let Err(error) = result {
         tracing::warn!(target: "openproxy::logs", %error, "background request log write failed");
+        note_log_write_failed("background-write");
     }
 }
 
@@ -245,12 +326,7 @@ fn try_enqueue_lean(db: Arc<Db>, kind: LogOpKind) -> bool {
     let bytes = op_bytes(&kind);
     if bytes > LEAN_LOG_MAX_EVENT_BYTES {
         log_service().dropped.fetch_add(1, Ordering::AcqRel);
-        tracing::warn!(
-            target: "openproxy::logs",
-            bytes,
-            max = LEAN_LOG_MAX_EVENT_BYTES,
-            "dropping oversized request log event"
-        );
+        warn_log_write_failed("oversized-event");
         return false;
     }
     let service = log_service();
@@ -260,10 +336,7 @@ fn try_enqueue_lean(db: Arc<Db>, kind: LogOpKind) -> bool {
         let queued = service.queued_bytes.load(Ordering::Acquire);
         if queued.saturating_add(bytes) > LEAN_LOG_QUEUE_BYTES {
             service.dropped.fetch_add(1, Ordering::AcqRel);
-            tracing::warn!(
-                target: "openproxy::logs",
-                "dropping request log event: byte queue full"
-            );
+            warn_log_write_failed("queue-bytes-full");
             return false;
         }
         if service
@@ -279,10 +352,7 @@ fn try_enqueue_lean(db: Arc<Db>, kind: LogOpKind) -> bool {
         Err(_) => {
             service.queued_bytes.fetch_sub(bytes, Ordering::AcqRel);
             service.dropped.fetch_add(1, Ordering::AcqRel);
-            tracing::warn!(
-                target: "openproxy::logs",
-                "dropping request log event: event queue full"
-            );
+            warn_log_write_failed("queue-events-full");
             false
         }
     }
@@ -418,10 +488,12 @@ impl RequestLogContext {
                     }),
                     Ok(Err(error)) => {
                         tracing::warn!(target: "openproxy::logs", %error, "failed to start request log");
+                        note_log_write_failed("durable-insert");
                         None
                     }
                     Err(error) => {
                         tracing::warn!(target: "openproxy::logs", %error, "request log task failed");
+                        note_log_write_failed("durable-insert-task");
                         None
                     }
                 }
@@ -547,12 +619,15 @@ async fn persist_finish(db: Arc<Db>, id: String, status: &'static str, data: Val
         Ok(Ok(true)) => {}
         Ok(Ok(false)) => {
             tracing::warn!(target: "openproxy::logs", "request log disappeared before finish");
+            note_log_write_failed("finish-missing");
         }
         Ok(Err(error)) => {
             tracing::warn!(target: "openproxy::logs", %error, "failed to finish request log");
+            note_log_write_failed("finish-write");
         }
         Err(error) => {
             tracing::warn!(target: "openproxy::logs", %error, "request log finish task failed");
+            note_log_write_failed("finish-task");
         }
     }
 }
@@ -805,5 +880,14 @@ mod tests {
         });
         let value = serde_json::to_value(without_kind).unwrap();
         assert!(value.get("errorKind").is_none());
+    }
+
+    #[test]
+    fn log_write_failure_counter_increments() {
+        // Process-global counter: assert a lower bound, never exact equality.
+        let before = request_log_dropped();
+        note_log_write_failed("test");
+        note_log_write_failed("test");
+        assert!(request_log_dropped() >= before + 2);
     }
 }

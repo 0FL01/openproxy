@@ -284,6 +284,9 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let db = Db::load().await?;
+    // E-logging preflight: one ERROR line when the data-dir filesystem is
+    // nearly full. Non-fatal; a disk can still fill at runtime.
+    openproxy::server::application_logs::log_disk_preflight(&db.data_dir);
     seed_default_api_key_if_missing(&db).await?;
     let request_log_db = db.sqlite.clone();
     match tokio::task::spawn_blocking(move || {

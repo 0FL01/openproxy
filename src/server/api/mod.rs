@@ -294,6 +294,7 @@ async fn health(State(state): State<AppState>) -> Response {
         "status": base.status,
         "component": base.component,
         "providers": summary,
+        "requestLogDropped": crate::server::application_logs::request_log_dropped(),
     }))
     .into_response()
 }

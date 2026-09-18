@@ -118,6 +118,10 @@ async fn get_stats(State(state): State<AppState>, headers: HeaderMap) -> Respons
     let payload: Value = json!({
         "logBufferLines": logs.len(),
         "levels": level_counts,
+        "requestLogDropped": crate::server::application_logs::request_log_dropped(),
+        "requestLogQueuedBytes": crate::server::application_logs::request_log_queued_bytes(),
+        "sqliteWalBytes": crate::server::application_logs::sqlite_wal_bytes(&state.db.data_dir),
+        "dataDirAvailBytes": crate::server::application_logs::data_dir_avail_bytes(&state.db.data_dir),
     });
     Json(payload).into_response()
 }
