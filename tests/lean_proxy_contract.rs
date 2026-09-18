@@ -292,4 +292,28 @@ fn contract_freezes_preservation_and_removal_lists() {
         manifest["claude_quota_retrieval"]["dashboard_poll_interval_seconds"],
         60
     );
+    assert_eq!(
+        manifest["provider_health_diagnostics"]["default_periodic_provider_probes"],
+        false
+    );
+    assert_eq!(
+        manifest["provider_health_diagnostics"]["application_liveness_depends_on_upstream"],
+        false
+    );
+    assert_eq!(
+        manifest["provider_health_diagnostics"]["periodic_probe_opt_in"],
+        "settings.extra.healthCheckEnabled_is_literal_true"
+    );
+    assert_eq!(
+        manifest["provider_health_diagnostics"]["diagnostics_affect_routing"],
+        false
+    );
+    assert_eq!(
+        manifest["provider_health_diagnostics"]["orphan_circuit_breaker_present"],
+        false
+    );
+    assert_eq!(
+        manifest["provider_health_diagnostics"]["security_controls_removed"],
+        false
+    );
 }

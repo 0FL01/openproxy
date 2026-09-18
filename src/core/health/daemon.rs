@@ -1,4 +1,4 @@
-//! Background health-check daemon.
+//! Explicitly enabled provider health-check daemon.
 //!
 //! Ticks every [`HEALTH_TICK_INTERVAL`] (3 min — free-tier providers flap far
 //! more often than paid ones), probes every active API-key connection, and
@@ -16,10 +16,9 @@ use tracing::{debug, warn};
 
 use super::probe::probe_connection;
 use super::{HealthRecord, DEGRADED_UNTIL_KEY, HEALTH_CHECKED_AT_KEY, HEALTH_STATUS_KEY};
-use crate::core::circuit_breaker::CircuitBreakerRegistry;
 use crate::core::proxy::resolve_proxy_target;
 use crate::server::state::AppState;
-use crate::types::ProviderConnection;
+use crate::types::{ProviderConnection, Settings};
 
 /// Probe interval. 3 min keeps a 10 min `503` degrade window observable while
 /// costing at most one cheap GET per connection per interval.
@@ -32,23 +31,43 @@ const BOOT_DELAY: Duration = Duration::from_secs(10);
 const MAX_PROBES_PER_TICK: usize = 48;
 /// Only re-persist a degrade window when it moved by at least this much.
 const PERSIST_DRIFT_SECS: i64 = 60;
-/// Settings flag (in `settings.extra`) to disable the daemon.
-const SETTINGS_ENABLED_KEY: &str = "healthCheckEnabled";
-/// Circuit-breaker endpoint label for health-driven transitions.
-const BREAKER_ENDPOINT: &str = "/chat/completions";
+/// Preserved settings flag (in `settings.extra`). Only literal `true` opts in.
+pub const SETTINGS_ENABLED_KEY: &str = "healthCheckEnabled";
 
 static TICK_RUNNING: AtomicBool = AtomicBool::new(false);
 
-/// Spawn the health daemon. Best-effort; safe to call once at process boot
-/// alongside `spawn_quota_auto_ping`.
-pub fn spawn_health_daemon(state: AppState) {
+/// Whether legacy settings explicitly opt in to periodic diagnostics.
+pub fn health_checks_enabled(settings: &Settings) -> bool {
+    settings
+        .extra
+        .get(SETTINGS_ENABLED_KEY)
+        .and_then(Value::as_bool)
+        == Some(true)
+}
+
+/// Spawn the health daemon only for explicit opt-in. Returns whether a task was
+/// created so startup and tests can prove the default has no polling worker.
+pub fn spawn_health_daemon_if_enabled(state: AppState) -> bool {
+    if !health_checks_enabled(&state.db.snapshot().settings) {
+        return false;
+    }
     tokio::spawn(async move {
-        tokio::time::sleep(BOOT_DELAY).await;
+        tokio::select! {
+            _ = state.shutdown_signal.notified() => return,
+            _ = tokio::time::sleep(BOOT_DELAY) => {}
+        }
         loop {
             let _ = run_health_tick(&state).await;
-            tokio::time::sleep(HEALTH_TICK_INTERVAL).await;
+            if !health_checks_enabled(&state.db.snapshot().settings) {
+                break;
+            }
+            tokio::select! {
+                _ = state.shutdown_signal.notified() => break,
+                _ = tokio::time::sleep(HEALTH_TICK_INTERVAL) => {}
+            }
         }
     });
+    true
 }
 
 /// Run one health tick. Returns a JSON summary (same shape convention as
@@ -64,14 +83,8 @@ pub async fn run_health_tick(state: &AppState) -> Value {
 
 async fn tick_inner(state: &AppState) -> Value {
     let snapshot = state.db.snapshot();
-    if snapshot
-        .settings
-        .extra
-        .get(SETTINGS_ENABLED_KEY)
-        .and_then(Value::as_bool)
-        == Some(false)
-    {
-        return json!({ "ok": true, "skipped": true, "reason": "healthCheckEnabled=false" });
+    if !health_checks_enabled(&snapshot.settings) {
+        return json!({ "ok": true, "skipped": true, "reason": "healthCheckEnabled is not true" });
     }
 
     let candidates: Vec<ProviderConnection> = snapshot
@@ -114,8 +127,6 @@ async fn tick_inner(state: &AppState) -> Value {
             outcome.http_status,
             outcome.error.clone(),
         );
-        apply_to_breaker(&state.circuit_breaker, conn, &record);
-
         if record.degraded_until.is_some() {
             degraded += 1;
         }
@@ -150,24 +161,6 @@ async fn tick_inner(state: &AppState) -> Value {
         "degraded": degraded,
         "results": results,
     })
-}
-
-/// Feed the health verdict into the circuit breaker so its Open window matches
-/// the degrade window for the status (2 min on 429, 10 min on 503, 5 min on
-/// 500/502/504). Keyed `"{provider}:{connection_id}"` for per-account
-/// granularity; the endpoint label documents which dispatch path it guards.
-fn apply_to_breaker(
-    breaker: &CircuitBreakerRegistry,
-    conn: &ProviderConnection,
-    record: &HealthRecord,
-) {
-    let key = breaker_key(&conn.provider, &conn.id);
-    breaker.record_status(&key, record.http_status);
-}
-
-/// Circuit-breaker key used for health-driven transitions.
-pub fn breaker_key(provider: &str, connection_id: &str) -> String {
-    CircuitBreakerRegistry::key(&format!("{provider}:{connection_id}"), BREAKER_ENDPOINT)
 }
 
 /// Persist status transitions onto the connection's `extra` map so diagnostics

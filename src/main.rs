@@ -327,9 +327,9 @@ async fn main() -> anyhow::Result<()> {
     }
     // Quota auto-ping foundation: observe enabled Claude/Codex OAuth windows.
     openproxy::server::api::quota_auto_ping::spawn_quota_auto_ping(state.clone());
-    // Provider health daemon: probe API-key providers every 3 min and degrade
-    // them per observed status (429 → 2 min, 503 → 10 min, 5xx → 5 min).
-    openproxy::core::health::spawn_health_daemon(state.clone());
+    // C24: provider probing is opt-in. Missing/false legacy settings create no
+    // background task and application liveness never depends on an upstream.
+    openproxy::core::health::spawn_health_daemon_if_enabled(state.clone());
 
     // Background proactive OAuth token refresh (9router
     // backgroundTokenRefresh.js): tick every 5 min, refresh tokens expiring

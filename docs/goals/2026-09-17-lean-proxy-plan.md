@@ -93,17 +93,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R4 / C24.
-- Smallest next action: Remove default provider health probing and orphan breaker state from the lightweight lifecycle while preserving explicit manual diagnostics, honest unknown/stale status, and application liveness independent of upstream availability.
-- Expected evidence: Idle default configuration performs no provider health HTTP; `/health` remains healthy with dead upstreams; explicit diagnostics keep timestamps; legacy degraded fields remain inert for routing.
-- Stop or replan if: A security control depends on the health registry; preserve that narrow control and remove only diagnostic/routing-orphan state rather than weakening protection.
+- Closes: R4 / C25.
+- Smallest next action: Make quota auto-ping create a bounded worker only while at least one configured connection is explicitly enabled, stop it when the last opt-in is removed, and preserve proactive OAuth refresh as a separate responsibility.
+- Expected evidence: Empty configuration produces no quota/model requests and no sleeping auto-ping worker; enable/disable/restart/shutdown transitions retain settings and bound task count across Claude, Codex, and GLM.
+- Stop or replan if: A saved opt-in cannot be observed without polling; preserve the setting and use the smallest bounded configuration-driven wakeup rather than deleting user intent or adding per-connection timers.
 
 ## Current State
 
-- Resolved: R1 / C00, R2 / C01-C02, R3 / C03-C14, plus C15-C23 within R4. Proxy-owned semantic/header/history replay, heuristic context policy, client-identity passthrough gating, all three executor temporal retry schedulers, successful-response legacy housekeeping, token-keyed completed refresh/quota results, generation-path remote catalog waits, both process-wide Antigravity project maps, and request-scoped onboarding workers are gone. C13 provides the single bounded request-scoped generation/account/auth planner; C16-C18 provide one active-only connection/generation refresh service used by every configured caller; C19-C20 publish immutable OpenCode and Codex model metadata outside generation; C21-C22 make project metadata and onboarding configured-connection lifecycle concerns; C23 makes Claude quota an uncached explicit control-plane read.
-- Last relevant evidence: Current Claude quota success/error/cancellation/concurrency tests retain no completed result, full-token key, stale payload, or unfinished entry. Dashboard polling remains one minute and hidden-page-aware; auto-ping remains explicit per-connection opt-in.
+- Resolved: R1 / C00, R2 / C01-C02, R3 / C03-C14, plus C15-C24 within R4. Proxy-owned semantic/header/history replay, heuristic context policy, client-identity passthrough gating, all three executor temporal retry schedulers, successful-response legacy housekeeping, token-keyed completed refresh/quota results, generation-path remote catalog waits, both process-wide Antigravity project maps, request-scoped onboarding workers, default provider health probes, and the write-only circuit breaker are gone. C13 provides the single bounded request-scoped generation/account/auth planner; C16-C18 provide one active-only connection/generation refresh service used by every configured caller; C19-C20 publish immutable OpenCode and Codex model metadata outside generation; C21-C22 make project metadata and onboarding configured-connection lifecycle concerns; C23 makes Claude quota an uncached explicit control-plane read; C24 keeps liveness local and health diagnostics explicit/opt-in.
+- Last relevant evidence: Missing/false health settings issue zero provider requests, literal true remains opt-in, dead upstreams do not affect liveness, manual diagnostics persist a current timestamp, stale legacy values remain inert, and the orphan breaker had no security or routing reader.
 - Blocker: None; the prompt explicitly allows independent safe work when external harness/version evidence is unavailable.
-- Next: C24 remove default health probes and orphan breaker state while preserving explicit diagnostics and liveness.
+- Next: C25 make quota auto-ping truly lazy while preserving saved per-connection opt-in and proactive OAuth refresh.
 
 ## Material Decisions
 
@@ -139,6 +139,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-09-18: C21 passed. Deleted the active connection-id TTL project cache and the proven-dead token-keyed duplicate, consolidated canonical/legacy project parsing, and made Antigravity generation read only the selected connection snapshot with no loadCodeAssist or project lock. Concurrent first uses stay local, delete/recreate cannot restore old metadata, and setup discovery failure is explicit while credentials remain durable. C22 is next.
 - 2026-09-18: C22 passed. Deleted Antigravity onboarding polling/spawn from generation and replaced setup polling with one active-only connection/generation lifecycle using pooled proxy-aware transport, bounded attempts, readiness diagnostics, explicit test retry, delete cancellation, and shutdown drain. One hundred chats start zero onboarding workers; C23 is next.
 - 2026-09-18: C23 passed. Deleted Claude quota's access-token-keyed five-minute result/error cache, stale-on-error replay, and ineffective OnceCell map without replacement. Explicit success/error/cancellation and twenty-four concurrent callers retain no historical or in-flight state; dashboard polling remains sixty-second and hidden-page-aware. C24 is next.
+- 2026-09-18: C24 passed. Default/missing health settings no longer start provider probes, literal true remains explicit opt-in, `/health` is local liveness with honest unknown/stale timestamps, manual connection tests publish diagnostics, legacy fields remain routing-inert, and the write-only circuit breaker was deleted without touching security controls. C25 is next.
 
 ## Completion
 

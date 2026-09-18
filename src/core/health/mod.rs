@@ -1,10 +1,9 @@
-//! Provider health tracking with status-aware degrade windows.
+//! Explicit provider diagnostics with status-aware historical windows.
 //!
-//! A background daemon ([`daemon::spawn_health_daemon`]) probes every active
-//! API-key provider connection on a fixed interval and feeds the observed HTTP
-//! status into a process-global [`registry::HealthRegistry`]. The registry maps
-//! the status onto a *degrade window* used for health diagnostics. The persisted
-//! `degradedUntil` value is informational and does not suppress routing.
+//! Periodic probing is disabled by default. A daemon exists only when the
+//! preserved legacy `healthCheckEnabled` setting is explicitly `true`; manual
+//! connection tests also publish a timestamped diagnostic. The persisted
+//! `degradedUntil` value is informational and never suppresses routing.
 //!
 //! # Degrade timing (OmniRoute `credentialHealth` parity)
 //!
@@ -35,7 +34,7 @@ pub mod registry;
 #[cfg(test)]
 mod tests;
 
-pub use daemon::{run_health_tick, spawn_health_daemon};
+pub use daemon::{health_checks_enabled, run_health_tick, spawn_health_daemon_if_enabled};
 pub use probe::{probe_connection, ProbeOutcome};
 pub use registry::{HealthRegistry, HealthSummary, ProviderHealthSummary};
 
@@ -115,6 +114,19 @@ impl HealthStatus {
         }
     }
 
+    /// Parse a persisted diagnostic value without inventing a healthy state
+    /// for unknown or future values.
+    pub fn from_name(value: &str) -> Self {
+        match value {
+            "healthy" => Self::Healthy,
+            "auth_failed" => Self::AuthFailed,
+            "rate_limited" => Self::RateLimited,
+            "unavailable" => Self::Unavailable,
+            "server_error" => Self::ServerError,
+            _ => Self::Unknown,
+        }
+    }
+
     /// Whether this status counts as a failure for consecutive-failure
     /// tracking (auth failures do count — the account is unusable).
     pub fn is_failure(self) -> bool {
@@ -149,18 +161,8 @@ static GLOBAL_HEALTH_REGISTRY: Lazy<Arc<HealthRegistry>> =
 
 /// Process-global health registry.
 ///
-/// `AppState::health` holds a clone of this `Arc` so HTTP handlers, the daemon,
-/// request dispatch and account fallback both observe the same records
-/// without threading state through pure helpers.
+/// `AppState::health` holds a clone of this `Arc` so HTTP diagnostics and the
+/// opt-in daemon observe the same records without affecting request routing.
 pub fn health_registry() -> Arc<HealthRegistry> {
     GLOBAL_HEALTH_REGISTRY.clone()
-}
-
-/// Whether every known connection of the provider serving `model` is currently
-/// degraded. `model` may be `"<alias>/<model-id>"` or a bare provider id.
-///
-/// Returns `false` when the provider has no health records yet (unknown =
-/// allowed), so a fresh process never blocks traffic.
-pub fn is_model_degraded(model: &str) -> bool {
-    GLOBAL_HEALTH_REGISTRY.is_model_degraded(model)
 }

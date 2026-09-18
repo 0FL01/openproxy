@@ -302,6 +302,21 @@
     "quota_auto_ping_requires_connection_opt_in": true,
     "hot_path_chat_ram_reduction_claimed": false
   },
+  "provider_health_diagnostics": {
+    "checkpoint": "C24",
+    "application_liveness_depends_on_upstream": false,
+    "default_periodic_provider_probes": false,
+    "periodic_probe_opt_in": "settings.extra.healthCheckEnabled_is_literal_true",
+    "explicit_connection_test_preserved": true,
+    "explicit_test_timestamp_persisted": true,
+    "missing_diagnostic_status": "unknown",
+    "expired_or_missing_timestamp_is_stale": true,
+    "diagnostics_affect_routing": false,
+    "legacy_health_fields_preserved": true,
+    "legacy_health_check_enabled_preserved": true,
+    "orphan_circuit_breaker_present": false,
+    "security_controls_removed": false
+  },
   "versions": {
     "opencode": "1.18.31",
     "custom_harness": "unknown"

@@ -262,14 +262,17 @@ async fn v1_root() -> Response {
     .into_response()
 }
 
-/// Liveness probe plus per-provider health summary.
+/// Application liveness plus non-authoritative provider diagnostics.
 ///
 /// The `status` / `component` keys are unchanged for backwards compatibility;
-/// `providers` is additive and reports the health daemon's latest verdicts
-/// (counts per status and which providers are inside a degrade window).
+/// `providers` is additive. Missing or old provider observations are explicitly
+/// reported as unknown/stale and never affect application liveness or routing.
 async fn health(State(state): State<AppState>) -> Response {
     let base = HealthResponse::new("api");
-    let summary = state.health.summary();
+    let snapshot = state.db.snapshot();
+    let summary = state
+        .health
+        .summary_for_connections(&snapshot.provider_connections);
     Json(json!({
         "status": base.status,
         "component": base.component,
@@ -279,7 +282,10 @@ async fn health(State(state): State<AppState>) -> Response {
 }
 
 async fn api_health(State(state): State<AppState>) -> Response {
-    let summary = state.health.summary();
+    let snapshot = state.db.snapshot();
+    let summary = state
+        .health
+        .summary_for_connections(&snapshot.provider_connections);
     Json(json!({ "ok": true, "providers": summary })).into_response()
 }
 

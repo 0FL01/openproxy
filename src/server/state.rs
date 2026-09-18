@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::{Notify, RwLock};
 
-use crate::core::circuit_breaker::CircuitBreakerRegistry;
 use crate::core::executor::ClientPool;
 use crate::core::health::{health_registry, HealthRegistry};
 use crate::core::model::models_dev::ModelsDevCatalog;
@@ -68,13 +67,8 @@ pub struct AppState {
     /// Await `.notified()` to block until shutdown is requested.
     pub shutdown_signal: Arc<Notify>,
 
-    /// Circuit breaker registry for provider endpoint resilience.
-    /// Tracked per provider+endpoint to fast-fail when upstreams are down.
-    pub circuit_breaker: Arc<CircuitBreakerRegistry>,
-
-    /// Provider health records written by the health daemon. Shares the
-    /// process-global registry (`core::health::health_registry`) so request
-    /// dispatch and account fallback observe the same degrade windows.
+    /// Provider diagnostic records written only by explicitly enabled probes
+    /// or the manual connection-test action. Routing never consults them.
     pub health: Arc<HealthRegistry>,
 
     pub models_dev: Arc<ModelsDevCatalog>,
@@ -101,7 +95,6 @@ impl AppState {
             dashboard_client: None,
             web_dir: None,
             shutdown_signal: Arc::new(Notify::new()),
-            circuit_breaker: Arc::new(CircuitBreakerRegistry::default()),
             health: health_registry(),
             models_dev: Arc::new(ModelsDevCatalog::default()),
             codex_models: Arc::new(CodexModelCatalog::default()),

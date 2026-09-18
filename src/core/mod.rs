@@ -12,6 +12,5 @@ pub mod usage;
 pub mod utils;
 
 pub mod chat;
-pub mod circuit_breaker;
 pub mod health;
 pub mod tls;

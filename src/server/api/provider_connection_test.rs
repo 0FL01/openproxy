@@ -181,12 +181,24 @@ async fn persist_test_result(
     result: ConnectionTestResult,
 ) -> Response {
     let error = result.error.clone();
+    let persisted_error = error.clone();
+    let valid = result.valid;
     let refreshed = result.refreshed;
+    let now = Utc::now().to_rfc3339();
+    let provider = state
+        .db
+        .snapshot()
+        .provider_connections
+        .iter()
+        .find(|connection| connection.id == connection_id)
+        .map(|connection| connection.provider.clone());
 
     let connection_id = connection_id.to_string();
-    let _ = state
+    let diagnostic_connection_id = connection_id.clone();
+    let health_status = if valid { "healthy" } else { "unknown" };
+    let update_result = state
         .db
-        .update(|db| {
+        .update(move |db| {
             let Some(connection) = db
                 .provider_connections
                 .iter_mut()
@@ -195,20 +207,37 @@ async fn persist_test_result(
                 return;
             };
 
-            connection.test_status =
-                Some(if result.valid { "active" } else { "error" }.to_string());
-            connection.last_error = if result.valid { None } else { error.clone() };
-            connection.last_error_at = if result.valid {
-                None
-            } else {
-                Some(Utc::now().to_rfc3339())
-            };
-            connection.updated_at = Some(Utc::now().to_rfc3339());
+            connection.test_status = Some(if valid { "active" } else { "error" }.to_string());
+            connection.last_error = if valid { None } else { persisted_error.clone() };
+            connection.last_error_at = if valid { None } else { Some(now.clone()) };
+            connection.last_tested = Some(now.clone());
+            connection.extra.insert(
+                crate::core::health::HEALTH_STATUS_KEY.into(),
+                json!(health_status),
+            );
+            connection.extra.insert(
+                crate::core::health::HEALTH_CHECKED_AT_KEY.into(),
+                json!(now.clone()),
+            );
+            if valid {
+                connection
+                    .extra
+                    .remove(crate::core::health::DEGRADED_UNTIL_KEY);
+            }
+            connection.updated_at = Some(now.clone());
         })
         .await;
 
+    if update_result.is_ok() {
+        if let Some(provider) = provider.as_deref() {
+            state
+                .health
+                .record_manual(&diagnostic_connection_id, provider, valid, error.clone());
+        }
+    }
+
     Json(ProviderTestResponse {
-        valid: result.valid,
+        valid,
         error,
         refreshed,
     })
