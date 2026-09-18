@@ -255,7 +255,7 @@ pub fn strip_unsupported_modalities(
     }
 
     match source_format {
-        Format::OpenAi | Format::Ollama | Format::Kiro | Format::Cursor | Format::CommandCode => {
+        Format::OpenAi | Format::Ollama | Format::Cursor | Format::CommandCode => {
             strip_openai(body, caps);
         }
         Format::Claude => {
@@ -341,11 +341,6 @@ pub fn capabilities_for_format(source_format: Format) -> ModalityCapabilities {
             vision: true,
             audio_input: true,
             pdf: true,
-        },
-        Format::Kiro => ModalityCapabilities {
-            vision: true,
-            audio_input: false,
-            pdf: false,
         },
         _ => ModalityCapabilities {
             // OpenAI, Codex, Ollama, Cursor, CommandCode — conservative

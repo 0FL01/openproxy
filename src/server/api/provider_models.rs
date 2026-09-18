@@ -45,10 +45,6 @@ const GEMINI_API_MODELS_URL: &str = "https://generativelanguage.googleapis.com/v
 const GEMINI_API_MODELS_PAGE_SIZE: &str = "1000";
 const GEMINI_API_MODELS_MAX_PAGES: usize = 10;
 
-const KIRO_AUTH_SERVICE: &str = "https://prod.us-east-1.auth.desktop.kiro.dev";
-const KIRO_MODELS_URL: &str = "https://codewhisperer.us-east-1.amazonaws.com";
-const KIRO_MODELS_TARGET: &str = "AmazonCodeWhispererService.ListAvailableModels";
-
 const OPENROUTER_REFERER: &str = "https://endpoint-proxy.local";
 const OPENROUTER_TITLE: &str = "Endpoint Proxy";
 
@@ -301,8 +297,7 @@ pub(super) fn supports_models_discovery(provider: &str) -> bool {
         || is_anthropic_compatible_provider(provider)
         || matches!(
             provider,
-            "kiro"
-                | "claude"
+            "claude"
                 | "anthropic"
                 | "gemini"
                 | "qwen"
@@ -396,7 +391,6 @@ async fn fetch_provider_models_response(
     }
 
     match connection.provider.as_str() {
-        "kiro" => fetch_kiro_models_with_fallback(state, connection).await,
         "claude" | "anthropic" => {
             let token = primary_token(connection)
                 .ok_or_else(|| RouteError::unauthorized("No valid token found"))?;
@@ -1122,57 +1116,6 @@ async fn fetch_github_models(
     Ok(response_with_models(connection, models, None))
 }
 
-async fn fetch_kiro_models_with_fallback(
-    state: &AppState,
-    connection: &ProviderConnection,
-) -> Result<ProviderModelsResponse, RouteError> {
-    let profile_arn = provider_specific_string(connection, "profileArn");
-    let access_token = connection.access_token.clone();
-    let refresh_token = connection.refresh_token.clone();
-
-    let mut warning = None;
-
-    if let (Some(access_token), Some(profile_arn)) = (access_token, profile_arn) {
-        match fetch_kiro_models(&access_token, &profile_arn).await {
-            Ok(models) => return Ok(response_with_models(connection, models, None)),
-            Err(error) if error.contains("AccessDeniedException") && refresh_token.is_some() => {
-                if let Some(refresh_token) = refresh_token.as_deref() {
-                    let _ = refresh_token;
-                    let observed_generation = connection_credential_generation(connection);
-                    if let Ok(refreshed) = CONNECTION_REFRESH_COORDINATOR
-                        .refresh_connection(
-                            state.db.clone(),
-                            "kiro",
-                            &connection.id,
-                            observed_generation,
-                        )
-                        .await
-                    {
-                        if let Ok(models) = fetch_kiro_models(
-                            refreshed
-                                .connection
-                                .access_token
-                                .as_deref()
-                                .unwrap_or_default(),
-                            &profile_arn,
-                        )
-                        .await
-                        {
-                            return Ok(response_with_models(connection, models, None));
-                        }
-                    }
-                }
-                warning = Some(format!("Failed to fetch Kiro models: {error}"));
-            }
-            Err(error) => {
-                warning = Some(format!("Failed to fetch Kiro models: {error}"));
-            }
-        }
-    }
-
-    Ok(response_with_models(connection, Vec::new(), warning))
-}
-
 /// Ollama Cloud catalog. Prefers the OpenAI-shaped `/v1/models` listing (same
 /// host and version prefix the chat endpoint uses) and falls back to the native
 /// `/api/tags` shape, which needs `parse_ollama_native_models`.
@@ -1226,70 +1169,6 @@ async fn fetch_ollama_cloud_models(
         parse_ollama_native_models(&payload),
         None,
     ))
-}
-
-async fn fetch_kiro_models(
-    access_token: &str,
-    profile_arn: &str,
-) -> Result<Vec<ProviderModel>, String> {
-    let client = http_client().map_err(|error| error.message)?;
-    let request = client
-        .post(KIRO_MODELS_URL)
-        .header(CONTENT_TYPE, "application/x-amz-json-1.0")
-        .header("x-amz-target", KIRO_MODELS_TARGET)
-        .header(AUTHORIZATION, format!("Bearer {access_token}"))
-        .header(ACCEPT, "application/json")
-        .json(&json!({
-            "origin": "AI_EDITOR",
-            "profileArn": profile_arn,
-        }));
-
-    let payload = fetch_json(request)
-        .await
-        .map_err(fetch_json_error_message)?;
-    let models: Vec<ProviderModel> = payload
-        .get("models")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|item| {
-            let id = item.get("modelId").and_then(Value::as_str)?.trim();
-            if id.is_empty() {
-                return None;
-            }
-
-            let mut extra = BTreeMap::new();
-            if let Some(description) = item.get("description") {
-                extra.insert("description".to_string(), description.clone());
-            }
-            if let Some(rate_multiplier) = item.get("rateMultiplier") {
-                extra.insert("rateMultiplier".to_string(), rate_multiplier.clone());
-            }
-            if let Some(rate_unit) = item.get("rateUnit") {
-                extra.insert("rateUnit".to_string(), rate_unit.clone());
-            }
-            if let Some(max_input_tokens) = item
-                .get("tokenLimits")
-                .and_then(Value::as_object)
-                .and_then(|limits| limits.get("maxInputTokens"))
-            {
-                extra.insert("maxInputTokens".to_string(), max_input_tokens.clone());
-            }
-
-            Some(ProviderModel {
-                id: id.to_string(),
-                name: item
-                    .get("modelName")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|name| !name.is_empty())
-                    .unwrap_or(id)
-                    .to_string(),
-                extra,
-            })
-        })
-        .collect();
-    Ok(expand_kiro_model_variants(models))
 }
 
 fn parse_openai_style_models(payload: &Value) -> Vec<ProviderModel> {
@@ -1376,39 +1255,6 @@ fn codex_provider_model(model: &crate::server::codex_catalog::CodexModelMetadata
         name: model.name.clone(),
         extra,
     }
-}
-
-fn expand_kiro_model_variants(models: Vec<ProviderModel>) -> Vec<ProviderModel> {
-    let mut expanded = Vec::with_capacity(models.len() * 4);
-    for model in models {
-        let base_id = model.id.clone();
-        let base_name = model.name.clone();
-        let base_extra = model.extra.clone();
-        let is_auto = base_id == "auto" || base_id.contains("auto");
-
-        expanded.push(model);
-
-        let make_variant = |suffix: &str, variant: &str| -> ProviderModel {
-            let mut extra = base_extra.clone();
-            extra.insert(
-                "originalModelId".to_string(),
-                Value::String(base_id.clone()),
-            );
-            extra.insert("variant".to_string(), Value::String(variant.to_string()));
-            ProviderModel {
-                id: format!("{base_id}{suffix}"),
-                name: base_name.clone(),
-                extra,
-            }
-        };
-
-        expanded.push(make_variant("-thinking", "thinking"));
-        if !is_auto {
-            expanded.push(make_variant("-agentic", "agentic"));
-            expanded.push(make_variant("-thinking-agentic", "thinking-agentic"));
-        }
-    }
-    expanded
 }
 
 fn provider_model_from_value(value: &Value) -> Option<ProviderModel> {
@@ -1923,79 +1769,6 @@ mod tests {
             resolve_qwen_models_url(&connection),
             "https://tenant.qwen.ai/base/models"
         );
-    }
-
-    #[test]
-    fn test_expand_kiro_model_variants() {
-        let original = ProviderModel {
-            id: "amazon-nova-pro-v1.0".to_string(),
-            name: "Amazon Nova Pro v1.0".to_string(),
-            extra: BTreeMap::from([(
-                "rateMultiplier".to_string(),
-                Value::String("1.0".to_string()),
-            )]),
-        };
-
-        let expanded = expand_kiro_model_variants(vec![original]);
-        assert_eq!(expanded.len(), 4);
-
-        let ids: Vec<&str> = expanded.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            vec![
-                "amazon-nova-pro-v1.0",
-                "amazon-nova-pro-v1.0-thinking",
-                "amazon-nova-pro-v1.0-agentic",
-                "amazon-nova-pro-v1.0-thinking-agentic",
-            ]
-        );
-
-        assert_eq!(expanded[0].name, "Amazon Nova Pro v1.0");
-        assert_eq!(expanded[0].extra.get("rateMultiplier").unwrap(), "1.0");
-        assert!(expanded[0].extra.get("originalModelId").is_none());
-
-        for (idx, variant) in ["thinking", "agentic", "thinking-agentic"]
-            .iter()
-            .enumerate()
-        {
-            let model = &expanded[idx + 1];
-            assert_eq!(model.name, "Amazon Nova Pro v1.0");
-            assert_eq!(
-                model.extra.get("originalModelId"),
-                Some(&Value::String("amazon-nova-pro-v1.0".to_string()))
-            );
-            assert_eq!(
-                model.extra.get("variant"),
-                Some(&Value::String((*variant).to_string()))
-            );
-            assert_eq!(
-                model.extra.get("rateMultiplier"),
-                Some(&Value::String("1.0".to_string()))
-            );
-        }
-    }
-
-    #[test]
-    fn test_expand_kiro_model_variants_skips_agentic_for_auto() {
-        // Bare "auto" id: only base + -thinking (no -agentic or -thinking-agentic).
-        let auto_model = ProviderModel {
-            id: "auto".to_string(),
-            name: "Auto".to_string(),
-            extra: BTreeMap::new(),
-        };
-        let expanded = expand_kiro_model_variants(vec![auto_model]);
-        let ids: Vec<&str> = expanded.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(ids, vec!["auto", "auto-thinking"]);
-
-        // "default-auto" (id containing "auto") gets the same treatment.
-        let default_auto = ProviderModel {
-            id: "default-auto".to_string(),
-            name: "Default Auto".to_string(),
-            extra: BTreeMap::new(),
-        };
-        let expanded = expand_kiro_model_variants(vec![default_auto]);
-        let ids: Vec<&str> = expanded.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(ids, vec!["default-auto", "default-auto-thinking"]);
     }
 
     #[test]

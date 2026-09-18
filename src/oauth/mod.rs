@@ -2,7 +2,7 @@
 //!
 //! Supports:
 //! - PKCE Authorization Code Flow (claude, codex, gitlab)
-//! - Device Code Flow (github, kiro, kimi-coding, kilocode, codebuddy)
+//! - Device Code Flow (github, kimi-coding, kilocode, codebuddy)
 //! - Import Token (cursor)
 
 use base64::Engine;
@@ -82,15 +82,6 @@ pub struct DeviceCodeResponse {
     pub interval: u64,
     #[serde(default)]
     pub expires_in: Option<i64>,
-}
-
-/// Result of Kiro AWS SSO OIDC device flow initiation.
-/// Contains the device code response plus the dynamically registered client credentials.
-#[derive(Debug, Clone)]
-pub struct KiroDeviceFlow {
-    pub device_code: DeviceCodeResponse,
-    pub client_id: String,
-    pub client_secret: String,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -282,95 +273,6 @@ pub mod device_code {
         })
     }
 
-    /// Kiro AWS SSO OIDC flow: combined client registration + device code start.
-    /// Step 1: Register client with Kiro's OIDC endpoint.
-    /// Step 2: Start device authorization using the registered client credentials.
-    pub async fn kiro_start_device_flow() -> Result<super::KiroDeviceFlow, OAuthError> {
-        let (client_id, client_secret) = kiro_register_client().await?;
-
-        let kiro_config = super::providers::kiro();
-        let device_resp = start_device_flow(&kiro_config, &client_id).await?;
-
-        Ok(super::KiroDeviceFlow {
-            device_code: device_resp,
-            client_id,
-            client_secret,
-        })
-    }
-
-    /// Kiro AWS SSO OIDC flow - register client first, then standard device code flow.
-    ///
-    /// The registration includes an `expires_at` set to
-    /// `KIRO_CLIENT_REGISTRATION_TTL_SECS` (3600s / 1 hour) from now.
-    /// After this TTL elapses the client credentials are invalid and a new
-    /// registration is required.
-    ///
-    /// Each call creates a **fresh** client registration.  Callers MUST
-    /// re-register (i.e. call this function again) when a token‑endpoint
-    /// response indicates `invalid_client` or `expired_client`.
-    ///
-    /// The device‑code polling path (`poll_for_token`) does **not**
-    /// automatically re‑register — the caller is responsible for catching
-    /// client‑expired errors and re‑invoking this function before retrying
-    /// the poll.
-    const KIRO_CLIENT_REGISTRATION_TTL_SECS: u64 = 3600;
-
-    pub async fn kiro_register_client() -> Result<(String, String), OAuthError> {
-        let client = reqwest::Client::new();
-        let client_id = format!("openproxy-{}", uuid::Uuid::new_v4());
-        let now_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let expires_at = now_secs + KIRO_CLIENT_REGISTRATION_TTL_SECS;
-
-        let registration = serde_json::json!({
-            "client_id": client_id,
-            "client_name": "OpenProxy Device Client",
-            "client_type": "public",
-            "grant_types": ["urn:ietf:params:oauth:grant-type:device_code"],
-            "redirect_uris": ["http://localhost:4623/oauth/callback"],
-            "token_endpoint_auth_method": "none",
-            "expires_at": expires_at
-        });
-
-        let response = client
-            .post("https://kiro.ai/auth/oidc/register")
-            .json(&registration)
-            .send()
-            .await
-            .map_err(|e| OAuthError {
-                error: "request_failed".to_string(),
-                error_description: Some(e.to_string()),
-            })?;
-
-        if !response.status().is_success() {
-            let error: OAuthError = response.json().await.unwrap_or(OAuthError {
-                error: "client_registration_failed".to_string(),
-                error_description: None,
-            });
-            return Err(error);
-        }
-
-        let resp_body: serde_json::Value = response.json().await.map_err(|e| OAuthError {
-            error: "parse_error".to_string(),
-            error_description: Some(e.to_string()),
-        })?;
-
-        let registered_client_id = resp_body
-            .get("client_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or(&client_id)
-            .to_string();
-        let client_secret = resp_body
-            .get("client_secret")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_default();
-
-        Ok((registered_client_id, client_secret))
-    }
-
     pub async fn kilocode_start_device_flow(
         provider_config: &OAuthProviderConfig,
     ) -> Result<DeviceCodeResponse, OAuthError> {
@@ -385,7 +287,6 @@ pub mod device_code {
     }
 }
 
-pub mod kiro;
 pub mod token_refresh;
 
 pub fn needs_refresh(expires_at: &Option<String>) -> bool {

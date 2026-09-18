@@ -1,5 +1,5 @@
 //! Targeted loop for the 9 providers requested in ultrawork.
-//! Covers: nvidia, openrouter, kilo code, kiro, ollama cloud, gemini, llm7.io,
+//! Covers: nvidia, openrouter, kilo code, ollama cloud, gemini, llm7.io,
 //! ollama (local) and openai as control.
 //! Verifies: URL building, header building (Bearer/x-api-key/x-goog-api-key), and that OmniRoute parity base URLs match.
 //! No live network calls; uses wiremock-style unit checks via DefaultExecutor + ClientPool.
@@ -172,22 +172,6 @@ fn gemini_stream_url_contains_alt_sse() {
         url.contains("streamGenerateContent?alt=sse"),
         "gemini stream url missing alt=sse: {url}"
     );
-}
-
-#[test]
-fn kiro_executor_exists_and_not_default() {
-    // kiro has a dedicated executor (AWS SSO flow), not DefaultExecutor
-    // This test just ensures the module compiles and the provider is known via dedicated path
-    // We verify DefaultExecutor does NOT have a static entry for 'kiro' — it should fail
-    let pool = Arc::new(ClientPool::new());
-    let result = DefaultExecutor::new("kiro", pool, None);
-    assert!(
-        result.is_err(),
-        "kiro should not be in DefaultExecutor PROVIDER_CONFIGS (has dedicated executor)"
-    );
-    if let Err(e) = result {
-        assert!(format!("{e:?}").contains("UnsupportedProvider"));
-    }
 }
 
 // Mirrors OmniRoute nvidia validation model contract: meta/llama-3.1-8b-instruct

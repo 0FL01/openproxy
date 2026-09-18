@@ -9,8 +9,8 @@ use crate::core::usage::quota_fetcher::{
     codex_account_id, consume_codex_rate_limit_reset_credit, fetch_antigravity_quota,
     fetch_claude_quota, fetch_codebuddy_quota, fetch_codex_quota, fetch_deepseek_usage,
     fetch_github_quota, fetch_glm_quota, fetch_grok_cli_quota, fetch_kimi_oauth_usage,
-    fetch_kimi_usage, fetch_kiro_quota, fetch_minimax_quota, fetch_ollama_quota,
-    fetch_opencode_go_quota, fetch_vercel_ai_gateway_quota, get_codex_rate_limit_reset_credits,
+    fetch_kimi_usage, fetch_minimax_quota, fetch_ollama_quota, fetch_opencode_go_quota,
+    fetch_vercel_ai_gateway_quota, get_codex_rate_limit_reset_credits,
 };
 use crate::oauth::token_refresh::{
     connection_credential_generation, CONNECTION_REFRESH_COORDINATOR,
@@ -34,7 +34,6 @@ fn is_usage_apikey_provider(provider: &str) -> bool {
             | "kimi"
             | "deepseek"
             | "opencode-go"
-            | "kiro"
             | "ollama"
             | "vercel-ai-gateway"
             | "codebuddy-cn"
@@ -63,7 +62,6 @@ pub async fn fetch_oauth_quota(connection: &ProviderConnection) -> Value {
             let account_id = codex_account_id(psd);
             fetch_codex_quota(token, account_id.as_deref()).await
         }
-        "kiro" => fetch_kiro_quota(token, provider, psd).await,
         "antigravity" => fetch_antigravity_quota(token, provider).await,
         "grok-cli" => fetch_grok_cli_quota(token).await,
         "ollama" => fetch_ollama_quota(token).await,
@@ -124,9 +122,7 @@ async fn get_connection_usage(
     };
 
     let is_oauth = connection.auth_type == "oauth";
-    // 9router route.js:135-136: Kiro's headless api-key flow persists
-    // authType "api_key" (underscore) while generic apikey providers persist
-    // "apikey" — accept both spellings.
+    // Generic apikey providers persist "apikey" — accept both spellings.
     let is_apikey_eligible = (connection.auth_type == "apikey"
         || connection.auth_type == "api_key")
         && is_usage_apikey_provider(&connection.provider);
@@ -151,14 +147,12 @@ async fn get_connection_usage(
             .filter(|s| !s.is_empty())
         {
             let provider = connection.provider.clone();
-            let psd = connection.provider_specific_data.clone();
             let result = match provider.as_str() {
                 "glm" | "glm-cn" => fetch_glm_quota(api_key, &provider).await,
                 "minimax" => fetch_minimax_quota(api_key, &provider).await,
                 "kimi" => fetch_kimi_usage(api_key).await,
                 "deepseek" => fetch_deepseek_usage(api_key).await,
                 "opencode-go" => fetch_opencode_go_quota(api_key).await,
-                "kiro" => fetch_kiro_quota(api_key, &provider, &psd).await,
                 "vercel-ai-gateway" => fetch_vercel_ai_gateway_quota(api_key).await,
                 "codebuddy-cn" | "codebuddy-intl" => {
                     fetch_codebuddy_quota(api_key, &provider).await
@@ -702,7 +696,6 @@ mod tests {
             "kimi",
             "deepseek",
             "opencode-go",
-            "kiro",
             "ollama",
             "vercel-ai-gateway",
             "codebuddy-cn",

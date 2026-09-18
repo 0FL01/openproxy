@@ -1,7 +1,7 @@
 //! Non-streaming response transforms for cross-format providers.
 //!
 //! These transforms convert complete (non-streaming) response JSON bodies from
-//! provider-specific formats (Claude Messages API, Gemini, Ollama, Kiro, etc.)
+//! provider-specific formats (Claude Messages API, Gemini, Ollama, etc.)
 //! to the OpenAI chat.completion format (or vice versa).
 //!
 //! Unlike the streaming transforms in sibling modules, these operate on the
@@ -398,33 +398,6 @@ pub fn ollama_to_openai_non_streaming(response: &mut Value) -> bool {
     true
 }
 
-/// Kiro -> OpenAI chat.completion (non-streaming).
-///
-/// Kiro's non-streaming response may already be in OpenAI-compatible format.
-/// If the response has a `choices` array, we add the `object` field if missing.
-pub fn kiro_to_openai_non_streaming(response: &mut Value) -> bool {
-    if response.get("object").and_then(|v| v.as_str()) == Some("chat.completion") {
-        return false;
-    }
-
-    // If it has choices but no object, fix it.
-    if response
-        .get("choices")
-        .and_then(|v| v.as_array())
-        .is_some_and(|a| !a.is_empty())
-    {
-        if let Some(obj) = response.as_object_mut() {
-            obj.insert(
-                "object".to_string(),
-                Value::String("chat.completion".to_string()),
-            );
-        }
-        return true;
-    }
-
-    false
-}
-
 /// CommandCode -> OpenAI chat.completion (non-streaming).
 ///
 /// CommandCode's non-streaming response may already be in OpenAI-compatible format.
@@ -805,30 +778,6 @@ mod tests {
     fn test_ollama_to_openai_skips_already_openai() {
         let mut resp = json!({"object": "chat.completion", "choices": []});
         let result = ollama_to_openai_non_streaming(&mut resp);
-        assert!(!result);
-    }
-
-    // ── Kiro -> OpenAI ────────────────────────────────────────────────
-
-    #[test]
-    fn test_kiro_to_openai_already_openai() {
-        let mut resp = json!({"object": "chat.completion", "choices": [{"index": 0}]});
-        let result = kiro_to_openai_non_streaming(&mut resp);
-        assert!(!result);
-    }
-
-    #[test]
-    fn test_kiro_to_openai_adds_object() {
-        let mut resp = json!({"choices": [{"index": 0, "message": {"content": "hello"}}]});
-        let result = kiro_to_openai_non_streaming(&mut resp);
-        assert!(result);
-        assert_eq!(resp["object"], "chat.completion");
-    }
-
-    #[test]
-    fn test_kiro_to_openai_skips_unrecognized() {
-        let mut resp = json!({"some_field": "value"});
-        let result = kiro_to_openai_non_streaming(&mut resp);
         assert!(!result);
     }
 

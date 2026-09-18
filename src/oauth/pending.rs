@@ -21,13 +21,6 @@ pub enum PendingError {
     Expired,
 }
 
-/// Credentials for Kiro AWS SSO OIDC flow
-#[derive(Debug, Clone)]
-pub struct KiroCredentials {
-    pub client_id: String,
-    pub client_secret: String,
-}
-
 #[derive(Debug, Clone)]
 pub struct PendingOAuthFlow {
     pub state: String,
@@ -39,8 +32,6 @@ pub struct PendingOAuthFlow {
     pub user_code: Option<String>,
     pub created_at: i64,
     pub expires_at: i64,
-    /// Kiro OIDC client credentials, set when using Kiro's special device code flow
-    pub kiro_credentials: Option<KiroCredentials>,
 }
 
 impl PendingOAuthFlow {
@@ -143,7 +134,6 @@ mod tests {
             user_code: None,
             created_at: now,
             expires_at: now + expires_in_secs,
-            kiro_credentials: None,
         }
     }
 

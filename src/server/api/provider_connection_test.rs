@@ -33,7 +33,6 @@ const CODEX_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const ANTIGRAVITY_CLIENT_ID: &str =
     "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
 const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
-const KIRO_SOCIAL_REFRESH_URL: &str = "https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken";
 const QWEN_CLIENT_ID: &str = "f0304373b74a44d2b584a3fb70ca9e56";
 const QWEN_TOKEN_URL: &str = "https://chat.qwen.ai/api/v1/oauth2/token";
 const CLINE_REFRESH_URL: &str = "https://api.cline.bot/api/v1/auth/refresh";
@@ -1183,7 +1182,6 @@ async fn refresh_oauth_token(
             )
             .await
         }
-        "kiro" => refresh_kiro_credentials(connection, refresh_token, effective_proxy).await,
         "qwen" => {
             refresh_form_token(
                 QWEN_TOKEN_URL,
@@ -1218,22 +1216,6 @@ async fn refresh_google_token(
         effective_proxy,
     )
     .await
-}
-
-async fn refresh_kiro_credentials(
-    connection: &ProviderConnection,
-    _refresh_token: &str,
-    _effective_proxy: &EffectiveProxy,
-) -> Result<RefreshResult, String> {
-    // Shared path covers external_idp (Microsoft form-POST), AWS OIDC, and
-    // Cognito social/imported. Proxy routing for this path is residual.
-    let result =
-        crate::oauth::token_refresh::refresh_provider_connection_credentials(connection).await?;
-    Ok(RefreshResult {
-        access_token: result.access_token,
-        refresh_token: result.refresh_token,
-        expires_in: result.expires_in,
-    })
 }
 
 async fn refresh_cline_token(
@@ -1706,15 +1688,12 @@ fn is_token_expired(connection: &ProviderConnection) -> bool {
 fn is_refreshable_provider(provider: &str) -> bool {
     matches!(
         provider,
-        "claude" | "codex" | "antigravity" | "qwen" | "kiro" | "cline"
+        "claude" | "codex" | "antigravity" | "qwen" | "cline"
     )
 }
 
 fn is_check_expiry_provider(provider: &str) -> bool {
-    matches!(
-        provider,
-        "claude" | "qwen" | "kiro" | "kimi-coding" | "kimi"
-    )
+    matches!(provider, "claude" | "qwen" | "kimi-coding" | "kimi")
 }
 
 fn cline_headers(token: &str, extra_headers: Vec<(String, String)>) -> Vec<(String, String)> {

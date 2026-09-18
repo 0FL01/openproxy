@@ -2,14 +2,13 @@
 
 use crate::oauth::OAuthProviderConfig;
 
-/// The 9 providers known to `providers::get_config`: PKCE + device-code.
+/// The 8 providers known to `providers::get_config`: PKCE + device-code.
 pub const ALL_PROVIDERS: &[&str] = &[
     "claude",
     "codex",
     "gitlab",
     "xai",
     "github",
-    "kiro",
     "kimi-coding",
     "kilocode",
     "codebuddy",
@@ -23,7 +22,6 @@ pub fn expected_scopes(provider: &str) -> &'static str {
         "gitlab" => "api read_user",
         "xai" => "openid profile email openai:write:grok-cli:access",
         "github" => "read:user repo",
-        "kiro" => "openid profile",
         "kimi-coding" => "kimi:read",
         "kilocode" => "read",
         "codebuddy" => "read",
@@ -39,7 +37,6 @@ pub fn expected_auth_url_prefix(provider: &str) -> &'static str {
         "gitlab" => "https://gitlab.com/oauth/authorize",
         "xai" => "https://auth.x.ai/oauth2/authorize",
         "github" => "https://github.com/login/device/code",
-        "kiro" => "https://kiro.ai/oauth/device/code",
         "kimi-coding" => "https://api.moonshot.cn/kimi-device/oauth/device/code",
         "kilocode" => "https://api.kilo.ai/oauth/device/code",
         "codebuddy" => "https://copilot.tencent.com/oauth/device/code",

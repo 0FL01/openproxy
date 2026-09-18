@@ -158,9 +158,6 @@ fn source_guards_keep_c31_separate_from_c32_c33_and_sparse_vectors() {
         "src/core/translator/response/claude_to_openai.rs",
         "src/core/translator/response/commandcode_to_openai.rs",
         "src/core/translator/response/gemini_to_openai.rs",
-        "src/core/translator/response/kiro_events.rs",
-        "src/core/translator/response/kiro_to_claude.rs",
-        "src/core/translator/response/kiro_to_openai.rs",
         "src/core/translator/response/openai_responses.rs",
         "src/core/translator/response/openai_to_antigravity.rs",
         "src/core/translator/response/openai_to_claude.rs",
@@ -175,11 +172,6 @@ fn source_guards_keep_c31_separate_from_c32_c33_and_sparse_vectors() {
     let limits = std::fs::read_to_string(root.join("src/core/translator/limits.rs")).unwrap();
     assert!(limits.contains("checked_add(fragment.len())"));
     assert!(limits.contains("try_reserve(fragment.len())"));
-
-    let kiro =
-        std::fs::read_to_string(root.join("src/core/translator/response/kiro_events.rs")).unwrap();
-    assert!(kiro.contains("pub tools: Vec<KiroToolBuf>"));
-    assert!(!kiro.contains("pub tools: HashMap"));
 
     let cursor = std::fs::read_to_string(root.join("src/core/executor/cursor.rs")).unwrap();
     assert!(cursor.contains("Vec<CursorToolCallAccum>"));
@@ -364,6 +356,6 @@ fn registry_choice_and_wire_index_boundaries_and_failed_finish_are_explicit() {
         ..Default::default()
     };
     assert!(registry
-        .finish_stream(Format::Kiro, Format::OpenAi, &mut state)
+        .finish_stream(Format::OpenAi, Format::OpenAi, &mut state)
         .is_empty());
 }

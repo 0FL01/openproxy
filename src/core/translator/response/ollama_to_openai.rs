@@ -212,7 +212,7 @@ pub fn ollama_to_openai_streaming(chunk: &[u8], state: &mut ResponseTransformSta
             }
             let argument_bytes = match arguments.as_str() {
                 Some(arguments) => arguments.len(),
-                None => match super::kiro_events::serialized_len(arguments) {
+                None => match super::serialized_len(arguments) {
                     Ok(bytes) => bytes,
                     Err(_) => {
                         return state.fail(StreamLimitError {

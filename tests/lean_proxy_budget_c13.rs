@@ -280,7 +280,6 @@ fn source_has_one_recovery_owner_and_no_hidden_generation_multiplier() {
     let chat = include_str!("../src/server/api/chat.rs");
     let default = include_str!("../src/core/executor/default.rs");
     let mimo = include_str!("../src/core/executor/mimo_free.rs");
-    let kiro = include_str!("../src/core/executor/kiro.rs");
 
     assert!(!chat.contains("dispatch_oauth_refresh("));
     assert!(chat.contains("CONNECTION_REFRESH_COORDINATOR"));
@@ -300,8 +299,6 @@ fn source_has_one_recovery_owner_and_no_hidden_generation_multiplier() {
     }
     assert!(!mimo.contains("retry_response"));
     assert!(mimo.contains("this executor never repeats"));
-    assert!(kiro.contains("execute_request_with_budget"));
-    assert!(kiro.contains("GenerationAttemptBudget::try_acquire"));
     for forbidden in [
         "filter_available_accounts(",
         "is_account_unavailable(",

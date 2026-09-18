@@ -360,10 +360,6 @@ mod tests {
             Format::Cursor
         );
         assert_eq!(
-            registry::get_target_format_for_provider("kiro"),
-            Format::Kiro
-        );
-        assert_eq!(
             registry::get_target_format_for_provider("codex"),
             Format::OpenAiResponses
         );

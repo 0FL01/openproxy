@@ -1,23 +1,5 @@
 [
   {
-    "id": "kiro",
-    "alias": "kr",
-    "serviceKinds": [
-      "llm"
-    ],
-    "models": [
-      "MiniMax-M2.5",
-      "claude-haiku-4.5",
-      "claude-opus-4.5",
-      "claude-sonnet-4.5",
-      "deepseek-3.2",
-      "glm-5",
-      "qwen3-coder-next"
-    ],
-    "hasSearch": false,
-    "hasFetch": false
-  },
-  {
     "id": "qwen",
     "alias": "qw",
     "serviceKinds": [

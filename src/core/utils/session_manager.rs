@@ -3,8 +3,6 @@
 //! Client-supplied conversation identifiers always win. Provider fallbacks are
 //! deterministic and namespaced by adapter plus configured connection, so they
 //! remain stable without retaining process-global client or account state.
-//! Kiro requests without a client conversation id remain intentionally
-//! ephemeral.
 
 use serde_json::Value;
 use std::collections::HashMap;
@@ -104,7 +102,7 @@ fn header_value(headers: Option<&HashMap<String, String>>, key: &str) -> Option<
 fn extract_client_session_id(
     headers: Option<&HashMap<String, String>>,
     body: Option<&Value>,
-    scope: &str,
+    _scope: &str,
 ) -> Option<String> {
     if let Some(body) = body {
         if let Some(user_id) = body
@@ -124,11 +122,8 @@ fn extract_client_session_id(
         }
     }
 
-    // For Kiro we intentionally ignore x-client-request-id (one-shot per request).
-    if scope != "kiro" {
-        if let Some(v) = header_value(headers, "x-client-request-id") {
-            return Some(v);
-        }
+    if let Some(v) = header_value(headers, "x-client-request-id") {
+        return Some(v);
     }
 
     let body = body?;
@@ -136,22 +131,17 @@ fn extract_client_session_id(
         .or_else(|| normalize_session_id(body.get("session_id").and_then(|v| v.as_str())))
         .or_else(|| normalize_session_id(body.get("conversation_id").and_then(|v| v.as_str())))
         .or_else(|| {
-            if scope == "kiro" {
-                None
-            } else {
-                normalize_session_id(
-                    body.get("metadata")
-                        .and_then(|m| m.get("user_id"))
-                        .and_then(|v| v.as_str()),
-                )
-            }
+            normalize_session_id(
+                body.get("metadata")
+                    .and_then(|m| m.get("user_id"))
+                    .and_then(|v| v.as_str()),
+            )
         })
 }
 
 /// Resolve a conversation-stable session id (9router `resolveSessionIdentity`).
 ///
-/// Priority: client session header/body → (non-kiro) deterministic connection id →
-/// for Kiro with no client id, mint an ephemeral one-shot id.
+/// Priority: client session header/body → deterministic connection id.
 pub fn resolve_session_identity(
     headers: Option<&HashMap<String, String>>,
     body: Option<&Value>,
@@ -164,13 +154,6 @@ pub fn resolve_session_identity(
             ephemeral: false,
         };
     }
-    // 9router: for kiro, skip assistant-text hashing and mint ephemeral when no client id.
-    if scope == "kiro" {
-        return SessionIdentity {
-            session_id: generate_binary_style_id(),
-            ephemeral: true,
-        };
-    }
     SessionIdentity {
         session_id: derive_scoped_session_id(scope, connection_id.unwrap_or("")),
         ephemeral: false,
@@ -179,7 +162,7 @@ pub fn resolve_session_identity(
 
 /// Resolve a stable, adapter/account/session-namespaced continuation UUID.
 ///
-/// Kiro accepts an opaque UUID and requires it to remain stable across turns.
+/// The scope accepts an opaque UUID and requires it to remain stable across turns.
 /// UUIDv5 supplies that protocol property without retaining client history or a
 /// process-global continuation map. Ephemeral sessions always get a fresh UUID.
 pub fn resolve_continuation_id(
@@ -274,14 +257,14 @@ mod tests {
         );
         assert_ne!(opencode.session_id, antigravity.session_id);
 
-        let first = resolve_continuation_id("client", Some("account-a"), "kiro", false);
+        let first = resolve_continuation_id("client", Some("account-a"), "test-scope", false);
         assert_eq!(
             first,
-            resolve_continuation_id("client", Some("account-a"), "kiro", false)
+            resolve_continuation_id("client", Some("account-a"), "test-scope", false)
         );
         assert_ne!(
             first,
-            resolve_continuation_id("client", Some("account-b"), "kiro", false)
+            resolve_continuation_id("client", Some("account-b"), "test-scope", false)
         );
         assert_ne!(
             first,
@@ -291,28 +274,24 @@ mod tests {
 
     #[test]
     fn one_hundred_thousand_client_sessions_retain_nothing() {
-        let first = resolve_continuation_id("session-0", Some("account"), "kiro", false);
+        let first = resolve_continuation_id("session-0", Some("account"), "test-scope", false);
         for index in 0..100_000 {
             let session = format!("session-{index}");
-            let id = resolve_continuation_id(&session, Some("account"), "kiro", false);
+            let id = resolve_continuation_id(&session, Some("account"), "test-scope", false);
             assert_eq!(Uuid::parse_str(&id).unwrap().get_version_num(), 5);
         }
         assert_eq!(
             first,
-            resolve_continuation_id("session-0", Some("account"), "kiro", false)
+            resolve_continuation_id("session-0", Some("account"), "test-scope", false)
         );
     }
 
     #[test]
-    fn kiro_without_client_identity_is_ephemeral() {
-        let first = resolve_session_identity(None, None, Some("account"), "kiro");
-        let second = resolve_session_identity(None, None, Some("account"), "kiro");
-        assert!(first.ephemeral);
-        assert!(second.ephemeral);
-        assert_ne!(first.session_id, second.session_id);
-        assert_ne!(
-            resolve_continuation_id(&first.session_id, Some("account"), "kiro", true),
-            resolve_continuation_id(&first.session_id, Some("account"), "kiro", true)
-        );
+    fn without_client_identity_is_stable() {
+        let first = resolve_session_identity(None, None, Some("account"), "test-scope");
+        let second = resolve_session_identity(None, None, Some("account"), "test-scope");
+        assert!(!first.ephemeral);
+        assert!(!second.ephemeral);
+        assert_eq!(first.session_id, second.session_id);
     }
 }

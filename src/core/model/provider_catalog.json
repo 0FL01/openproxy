@@ -14,7 +14,6 @@
   "alicode": "alicode",
   "alicode-intl": "alicode-intl",
   "github": "gh",
-  "kiro": "kr",
   "cursor": "cu",
   "kimi-coding": "kmc",
   "kilocode": "kc",
@@ -4407,17 +4406,6 @@
   }
  ],
  "providers": [
-  {
-   "id": "kiro",
-   "alias": "kr",
-   "serviceKinds": [
-    "llm"
-   ],
-   "ttsModels": [],
-   "embeddingModels": [],
-   "hasSearch": false,
-   "hasFetch": false
-  },
   {
    "id": "qwen",
    "alias": "qw",

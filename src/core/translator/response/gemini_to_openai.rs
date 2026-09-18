@@ -338,7 +338,7 @@ pub fn gemini_to_openai_streaming(
                     return state.fail(error);
                 }
                 let arguments = function_call.get("args").unwrap_or(&Value::Null);
-                let argument_bytes = match super::kiro_events::serialized_len(arguments) {
+                let argument_bytes = match super::serialized_len(arguments) {
                     Ok(bytes) => bytes,
                     Err(_) => {
                         return state.fail(StreamLimitError {

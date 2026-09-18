@@ -77,16 +77,6 @@ pub struct CursorStreamingState {
     pub in_message: bool,
 }
 
-/// Kiro EventStream state
-#[derive(Debug, Clone, Default)]
-pub struct KiroStreamingState {
-    pub base: StreamingBase,
-    /// Event stream buffer
-    pub event_buffer: Vec<u8>,
-    /// Current event type
-    pub current_event_type: Option<String>,
-}
-
 /// CommandCode NDJSON streaming state
 #[derive(Debug, Clone, Default)]
 pub struct CommandCodeStreamingState {
@@ -1570,14 +1560,6 @@ mod tests {
         assert!(output.contains("[thinking]"));
         assert!(output.contains("[/thinking]"));
         assert!(output.contains("step by step"));
-    }
-
-    #[test]
-    fn test_kiro_event_buffer_state() {
-        let state = KiroStreamingState::default();
-        assert!(state.event_buffer.is_empty());
-        assert!(state.current_event_type.is_none());
-        assert!(state.base.line_buffer.is_empty());
     }
 
     #[test]

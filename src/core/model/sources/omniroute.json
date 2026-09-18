@@ -81,7 +81,6 @@
     "kimi-coding": "kmc",
     "kimi-coding-apikey": "kmca",
     "kimi-web": "kimi-web",
-    "kiro": "kr",
     "lambda-ai": "lambda",
     "leonardo": "leo",
     "liquid": "liquid",
@@ -4704,87 +4703,6 @@
         {
           "id": "kimi-128k",
           "name": "Kimi 128K (Long Context)",
-          "kind": "llm"
-        }
-      ]
-    },
-    {
-      "id": "kiro",
-      "alias": "kr",
-      "format": "kiro",
-      "authType": "oauth",
-      "baseUrl": "https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse",
-      "models": [
-        {
-          "id": "auto-kiro",
-          "name": "Auto (Kiro picks best model)",
-          "kind": "llm"
-        },
-        {
-          "id": "claude-fable-5",
-          "name": "Claude Fable 5",
-          "kind": "llm",
-          "contextLength": 1000000,
-          "maxOutputTokens": 128000
-        },
-        {
-          "id": "claude-opus-4.8",
-          "name": "Claude Opus 4.8",
-          "kind": "llm",
-          "contextLength": 1000000,
-          "maxOutputTokens": 128000
-        },
-        {
-          "id": "claude-opus-4.7",
-          "name": "Claude Opus 4.7",
-          "kind": "llm",
-          "contextLength": 1000000,
-          "maxOutputTokens": 128000
-        },
-        {
-          "id": "claude-opus-4.6",
-          "name": "Claude Opus 4.6",
-          "kind": "llm",
-          "contextLength": 1000000,
-          "maxOutputTokens": 128000
-        },
-        {
-          "id": "claude-sonnet-4.6",
-          "name": "Claude Sonnet 4.6",
-          "kind": "llm",
-          "contextLength": 200000,
-          "maxOutputTokens": 64000
-        },
-        {
-          "id": "claude-haiku-4.5",
-          "name": "Claude Haiku 4.5",
-          "kind": "llm",
-          "contextLength": 200000,
-          "maxOutputTokens": 64000
-        },
-        {
-          "id": "deepseek-3.2",
-          "name": "DeepSeek V3.2",
-          "kind": "llm"
-        },
-        {
-          "id": "minimax-m2.5",
-          "name": "MiniMax M2.5",
-          "kind": "llm"
-        },
-        {
-          "id": "minimax-m2.1",
-          "name": "MiniMax M2.1",
-          "kind": "llm"
-        },
-        {
-          "id": "glm-5",
-          "name": "GLM-5",
-          "kind": "llm"
-        },
-        {
-          "id": "qwen3-coder-next",
-          "name": "Qwen3 Coder Next",
           "kind": "llm"
         }
       ]

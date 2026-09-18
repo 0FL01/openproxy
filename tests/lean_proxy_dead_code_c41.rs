@@ -97,15 +97,11 @@ fn every_direct_dependency_is_referenced() {
 
 #[test]
 fn deleted_replay_modules_stay_deleted() {
-    for removed in [
-        "src/core/utils/kiro_session_replay.rs",
-        "src/core/utils/claude_header_cache.rs",
-    ] {
-        assert!(
-            !root().join(removed).exists(),
-            "deleted replay module must not return: {removed}"
-        );
-    }
+    let removed = "src/core/utils/claude_header_cache.rs";
+    assert!(
+        !root().join(removed).exists(),
+        "deleted replay module must not return: {removed}"
+    );
     // No dangling references to the deleted replay symbols anywhere.
     let mut stack = vec![root().join("src"), root().join("tests")];
     while let Some(path) = stack.pop() {
@@ -126,12 +122,7 @@ fn deleted_replay_modules_stay_deleted() {
                 continue;
             }
             let content = std::fs::read_to_string(&path).expect("read source");
-            for symbol in [
-                "kiro_session_replay",
-                "claude_header_cache",
-                "KiroSessionReplay",
-                "ClaudeHeaderCache",
-            ] {
+            for symbol in ["claude_header_cache", "ClaudeHeaderCache"] {
                 assert!(
                     !content.contains(symbol),
                     "dangling reference to deleted {symbol} in {}",

@@ -17,7 +17,7 @@ pub enum ProviderOAuthCmd {
     /// Begin the OAuth flow for a provider. Returns the URL the user must
     /// open in a browser, plus state metadata.
     Start {
-        /// Provider slug (e.g. `claude`, `codex`, `kiro`).
+        /// Provider slug (e.g. `claude`, `codex`).
         provider: String,
         /// Optional redirect URI override.
         #[arg(long)]
@@ -39,13 +39,6 @@ pub enum ProviderOAuthCmd {
         provider: String,
         #[arg(long)]
         refresh_token: Option<String>,
-    },
-    /// Import the Kiro SSO cache. With `--auto` discovers cache files
-    /// locally; otherwise expects an explicit payload on stdin.
-    ImportKiro {
-        /// Auto-discover Kiro cache files instead of reading stdin.
-        #[arg(long)]
-        auto: bool,
     },
     /// Submit a GitLab personal access token (read from stdin by default).
     GitlabPat {
@@ -78,7 +71,6 @@ pub async fn run(
             provider,
             refresh_token,
         } => run_refresh(&rt, ctx, &provider, refresh_token).await,
-        ProviderOAuthCmd::ImportKiro { auto } => run_import_kiro(&rt, ctx, auto).await,
         ProviderOAuthCmd::GitlabPat { token } => run_gitlab_pat(&rt, ctx, &token).await,
     }
 }
@@ -174,42 +166,6 @@ async fn run_refresh(
             Ok(0)
         }
         Err(e) => rt_error_to_exit(ctx, e),
-    }
-}
-
-async fn run_import_kiro(rt: &Runtime, ctx: OutputCtx, auto: bool) -> anyhow::Result<i32> {
-    if auto {
-        match rt.get_json("/api/oauth/kiro/auto-import").await {
-            Ok(payload) => {
-                if ctx.is_robot() {
-                    emit_robot("openproxy.v1.oauth.import_kiro", payload)?;
-                } else {
-                    humanln(
-                        ctx,
-                        format!(
-                            "Discovered {} cache files",
-                            payload.get("count").and_then(Value::as_u64).unwrap_or(0)
-                        ),
-                    );
-                }
-                Ok(0)
-            }
-            Err(e) => rt_error_to_exit(ctx, e),
-        }
-    } else {
-        let raw = read_input("-")?;
-        let body: Value = serde_json::from_str(raw.trim())?;
-        match rt.post_json("/api/oauth/kiro/import", &body).await {
-            Ok(payload) => {
-                if ctx.is_robot() {
-                    emit_robot("openproxy.v1.oauth.import_kiro", payload)?;
-                } else {
-                    humanln(ctx, "Imported Kiro identity.");
-                }
-                Ok(0)
-            }
-            Err(e) => rt_error_to_exit(ctx, e),
-        }
     }
 }
 

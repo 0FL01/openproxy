@@ -478,11 +478,6 @@ async fn get_formats() -> Json<Vec<FormatInfo>> {
             name: "Cursor".into(),
             description: "Cursor format".into(),
         },
-        FormatInfo {
-            id: "kiro".into(),
-            name: "Kiro".into(),
-            description: "Kiro/AWS Bedrock format".into(),
-        },
     ])
 }
 

@@ -423,6 +423,11 @@ async fn chat_completions_impl(
     let snapshot = state.db.snapshot();
     let resolved = get_model_info(model_str, &snapshot);
 
+    // Kiro backend retired: fail loudly instead of silently misrouting.
+    if resolved.provider.as_deref() == Some("kiro") {
+        return json_error_response(StatusCode::GONE, "provider kiro retired");
+    }
+
     // Convert headers once for client-tool detection and provider dispatch.
     let headers_map: std::collections::HashMap<String, String> = headers
         .iter()
@@ -855,11 +860,7 @@ async fn forward_with_provider_fallback(
         codex_supporters.as_ref(),
     )
     .max(1);
-    let endpoint_attempts_per_account = if provider == "kiro" {
-        crate::core::executor::MAX_KIRO_ENDPOINT_ATTEMPTS
-    } else {
-        1
-    };
+    let endpoint_attempts_per_account = 1;
     // Every eligible account gets a bounded set of protocol endpoint surfaces.
     // One additional generation attempt is reserved for the sole request-scoped
     // 401/403 credential recovery. There is no cross-request state or sleep.
@@ -1030,44 +1031,17 @@ async fn forward_with_provider_fallback(
             CodexExecutionRequest, CodexExecutor, CommandCodeExecutionRequest, CommandCodeExecutor,
             CursorExecutionRequest, CursorExecutor, DefaultExecutor, DevinCliExecutor,
             DevinExecutionRequest, GithubExecutionRequest, GithubExecutor, GrokWebExecutionRequest,
-            GrokWebExecutor, KimchiExecutor, KiroExecutionRequest, KiroExecutor,
-            KiroExecutorResponse, OpenCodeExecutionRequest, OpenCodeExecutor, OpenCodeTier,
-            ProviderExecutionRequest, ProviderExecutor, QwenExecutionRequest, QwenExecutor,
-            TraeExecutionRequest, TraeExecutor, VertexExecutionRequest, VertexExecutor,
-            WindsurfExecutionRequest, WindsurfExecutor,
+            GrokWebExecutor, KimchiExecutor, OpenCodeExecutionRequest, OpenCodeExecutor,
+            OpenCodeTier, ProviderExecutionRequest, ProviderExecutionResponse, ProviderExecutor,
+            QwenExecutionRequest, QwenExecutor, TraeExecutionRequest, TraeExecutor,
+            VertexExecutionRequest, VertexExecutor, WindsurfExecutionRequest, WindsurfExecutor,
         };
 
         let is_codex_model = provider == "codex";
         let is_cursor_model =
             model.starts_with("cursor/") || provider == "cu" || provider == "cursor";
-        let executor_result: Result<KiroExecutorResponse, ProviderAttemptError> = async {
-            if provider == "kiro" {
-                let executor = KiroExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("Kiro executor creation failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                executor
-                    .execute_request_with_budget(
-                        KiroExecutionRequest {
-                            model: model.to_string(),
-                            body: request_body.clone(),
-                            stream,
-                            credentials: connection.clone(),
-                            proxy,
-                        },
-                        attempt_budget.clone(),
-                    )
-                    .await
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("Kiro execution failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })
-            } else if provider == "vertex" || provider == "vertex-partner" || provider == "vxp" {
+        let executor_result: Result<ProviderExecutionResponse, ProviderAttemptError> = async {
+            if provider == "vertex" || provider == "vertex-partner" || provider == "vxp" {
                 let executor = VertexExecutor::new(state.client_pool.clone(), provider_node)
                     .map_err(|e| ProviderAttemptError {
                         status: 500,
@@ -1090,7 +1064,7 @@ async fn forward_with_provider_fallback(
                         retry_after: None,
                         upstream_body: None,
                     })?;
-                Ok(KiroExecutorResponse {
+                Ok(ProviderExecutionResponse {
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
@@ -1128,7 +1102,7 @@ async fn forward_with_provider_fallback(
                             upstream_body: None,
                         }
                     })?;
-                Ok(KiroExecutorResponse {
+                Ok(ProviderExecutionResponse {
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
@@ -1157,7 +1131,7 @@ async fn forward_with_provider_fallback(
                         retry_after: None,
                         upstream_body: None,
                     })?;
-                Ok(KiroExecutorResponse {
+                Ok(ProviderExecutionResponse {
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
@@ -1186,7 +1160,7 @@ async fn forward_with_provider_fallback(
                         retry_after: None,
                         upstream_body: None,
                     })?;
-                Ok(KiroExecutorResponse {
+                Ok(ProviderExecutionResponse {
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
@@ -1215,7 +1189,7 @@ async fn forward_with_provider_fallback(
                         retry_after: None,
                         upstream_body: None,
                     })?;
-                Ok(KiroExecutorResponse {
+                Ok(ProviderExecutionResponse {
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
@@ -1244,7 +1218,7 @@ async fn forward_with_provider_fallback(
                         retry_after: None,
                         upstream_body: None,
                     })?;
-                Ok(KiroExecutorResponse {
+                Ok(ProviderExecutionResponse {
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
@@ -1281,7 +1255,7 @@ async fn forward_with_provider_fallback(
                         retry_after: None,
                         upstream_body: None,
                     })?;
-                Ok(KiroExecutorResponse {
+                Ok(ProviderExecutionResponse {
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
@@ -1310,7 +1284,7 @@ async fn forward_with_provider_fallback(
                         retry_after: None,
                         upstream_body: None,
                     })?;
-                Ok(KiroExecutorResponse {
+                Ok(ProviderExecutionResponse {
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
@@ -1339,7 +1313,7 @@ async fn forward_with_provider_fallback(
                         retry_after: None,
                         upstream_body: None,
                     })?;
-                Ok(KiroExecutorResponse {
+                Ok(ProviderExecutionResponse {
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
@@ -1362,7 +1336,7 @@ async fn forward_with_provider_fallback(
                         retry_after: None,
                         upstream_body: None,
                     })?;
-                Ok(KiroExecutorResponse {
+                Ok(ProviderExecutionResponse {
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
@@ -1385,7 +1359,7 @@ async fn forward_with_provider_fallback(
                         retry_after: None,
                         upstream_body: None,
                     })?;
-                Ok(KiroExecutorResponse {
+                Ok(ProviderExecutionResponse {
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
@@ -1410,7 +1384,7 @@ async fn forward_with_provider_fallback(
                         retry_after: None,
                         upstream_body: None,
                     })?;
-                Ok(KiroExecutorResponse {
+                Ok(ProviderExecutionResponse {
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
@@ -1433,7 +1407,7 @@ async fn forward_with_provider_fallback(
                         retry_after: None,
                         upstream_body: None,
                     })?;
-                Ok(KiroExecutorResponse {
+                Ok(ProviderExecutionResponse {
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
@@ -1464,7 +1438,7 @@ async fn forward_with_provider_fallback(
                         retry_after: None,
                         upstream_body: None,
                     })?;
-                Ok(KiroExecutorResponse {
+                Ok(ProviderExecutionResponse {
                     response: result.response,
                     url: result.url.clone(),
                     headers: HeaderMap::new(),
@@ -1490,7 +1464,7 @@ async fn forward_with_provider_fallback(
                         retry_after: None,
                         upstream_body: None,
                     })?;
-                Ok(KiroExecutorResponse {
+                Ok(ProviderExecutionResponse {
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
@@ -1518,7 +1492,7 @@ async fn forward_with_provider_fallback(
                         retry_after: None,
                         upstream_body: None,
                     })?;
-                Ok(KiroExecutorResponse {
+                Ok(ProviderExecutionResponse {
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
@@ -1546,7 +1520,7 @@ async fn forward_with_provider_fallback(
                         retry_after: None,
                         upstream_body: None,
                     })?;
-                Ok(KiroExecutorResponse {
+                Ok(ProviderExecutionResponse {
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
@@ -1570,7 +1544,7 @@ async fn forward_with_provider_fallback(
                         retry_after: None,
                         upstream_body: None,
                     })?;
-                Ok(KiroExecutorResponse {
+                Ok(ProviderExecutionResponse {
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
@@ -1594,7 +1568,7 @@ async fn forward_with_provider_fallback(
                         retry_after: None,
                         upstream_body: None,
                     })?;
-                Ok(KiroExecutorResponse {
+                Ok(ProviderExecutionResponse {
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
@@ -1628,7 +1602,7 @@ async fn forward_with_provider_fallback(
                         retry_after: None,
                         upstream_body: None,
                     })?;
-                Ok(KiroExecutorResponse {
+                Ok(ProviderExecutionResponse {
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
@@ -1675,7 +1649,7 @@ async fn forward_with_provider_fallback(
                     )
                     .await
                     .map_err(|err| err.into_provider_attempt_error())?;
-                Ok(KiroExecutorResponse {
+                Ok(ProviderExecutionResponse {
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
@@ -2990,7 +2964,6 @@ fn dashboard_transformer_for_format(
         | Format::OpenAiResponses
         | Format::OpenAiResponse
         | Format::Codex
-        | Format::Kiro
         | Format::Cursor => transformer_for_provider("openai"),
     }
 }

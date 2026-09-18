@@ -544,8 +544,6 @@ const XAI_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
 
 const CLINE_REFRESH_URL: &str = "https://api.cline.bot/api/v1/auth/refresh";
 
-const KIRO_AUTH_SERVICE: &str = "https://prod.us-east-1.auth.desktop.kiro.dev";
-
 const GITHUB_OAUTH_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 const GITHUB_COPILOT_TOKEN_URL: &str = "https://api.github.com/copilot_internal/v2/token";
 
@@ -757,118 +755,6 @@ pub async fn refresh_copilot_token(access_token: &str) -> Result<RefreshResult, 
         access_token: token.to_string(),
         refresh_token: None,
         expires_in: None,
-    })
-}
-
-/// Refresh a Kiro access token.
-///
-/// Branches on `authMethod` / credentials in `provider_specific_data`:
-/// - **external_idp**: form-urlencoded POST to Microsoft Entra `tokenEndpoint`
-///   (`grant_type=refresh_token&client_id&refresh_token&scope`).
-/// - **AWS OIDC** (`clientId` + `clientSecret`): JSON POST to
-///   `https://oidc.{region}.amazonaws.com/token`.
-/// - **else** (social / imported): JSON POST to Kiro Cognito `/refreshToken`.
-pub async fn refresh_kiro_token(
-    refresh_token: &str,
-    provider_specific_data: &std::collections::BTreeMap<String, Value>,
-) -> Result<RefreshResult, String> {
-    // Enterprise Microsoft Entra (CLIProxyAPI) — must be checked before the
-    // clientId+clientSecret OIDC branch, because external_idp also carries
-    // clientId (without clientSecret) in PSD.
-    if crate::oauth::kiro::is_external_idp_auth(provider_specific_data) {
-        let poll =
-            crate::oauth::kiro::refresh_external_idp_token(refresh_token, provider_specific_data)
-                .await
-                .map_err(|e| e.to_string())?;
-
-        let access_token = poll
-            .access_token
-            .as_deref()
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-            .ok_or_else(|| "Kiro external_idp refresh response missing access token".to_string())?;
-
-        return Ok(RefreshResult {
-            access_token: access_token.to_string(),
-            refresh_token: poll.refresh_token,
-            expires_in: poll.expires_in,
-        });
-    }
-
-    let client = reqwest::Client::new();
-    let (url, body) = if let (Some(client_id), Some(client_secret)) = (
-        provider_specific_data
-            .get("clientId")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|v| !v.is_empty()),
-        provider_specific_data
-            .get("clientSecret")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|v| !v.is_empty()),
-    ) {
-        let region = provider_specific_data
-            .get("region")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .unwrap_or("us-east-1");
-        (
-            format!("https://oidc.{region}.amazonaws.com/token"),
-            serde_json::json!({
-                "clientId": client_id,
-                "clientSecret": client_secret,
-                "refreshToken": refresh_token,
-                "grantType": "refresh_token",
-            }),
-        )
-    } else {
-        (
-            format!("{KIRO_AUTH_SERVICE}/refreshToken"),
-            serde_json::json!({ "refreshToken": refresh_token }),
-        )
-    };
-
-    let resp = client
-        .post(&url)
-        .header(CONTENT_TYPE, "application/json")
-        .header(ACCEPT, "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("Kiro refresh request failed: {e}"))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status().as_u16();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Kiro refresh returned HTTP {status}: {text}"));
-    }
-
-    let payload: Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("Kiro refresh parse failed: {e}"))?;
-
-    let access_token = payload
-        .get("accessToken")
-        .or_else(|| payload.get("access_token"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-        .ok_or_else(|| "Kiro refresh response missing access token".to_string())?;
-
-    Ok(RefreshResult {
-        access_token: access_token.to_string(),
-        refresh_token: payload
-            .get("refreshToken")
-            .or_else(|| payload.get("refresh_token"))
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        expires_in: payload
-            .get("expiresIn")
-            .or_else(|| payload.get("expires_in"))
-            .and_then(Value::as_i64),
     })
 }
 
@@ -1295,9 +1181,6 @@ pub async fn dispatch_oauth_refresh(
         "codebuddy" => refresh_with_retry(|| refresh_codebuddy_token(refresh_token)).await,
         "codebuddy-cn" => refresh_with_retry(|| refresh_codebuddy_cn_token(refresh_token)).await,
         "openai" => refresh_with_retry(|| refresh_openai_token(refresh_token)).await,
-        "kiro" => {
-            refresh_with_retry(|| refresh_kiro_token(refresh_token, provider_specific_data)).await
-        }
         "github" => refresh_with_retry(|| refresh_github_token(refresh_token)).await,
         "grok-cli" | "gcli" | "gb" => refresh_with_retry(|| refresh_xai_token(refresh_token)).await,
         "trae" | "marscode" => refresh_with_retry(|| refresh_trae_token(refresh_token)).await,

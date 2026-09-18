@@ -267,7 +267,6 @@ fn control_and_background_refresh_census_has_no_direct_bypass() {
     for source in sources {
         assert!(!source.contains("dispatch_oauth_refresh("));
         assert!(!source.contains("refresh_codex_token("));
-        assert!(!source.contains("refresh_kiro_token("));
     }
 
     assert!(sources

@@ -141,24 +141,6 @@ pub fn github() -> OAuthProviderConfig {
     }
 }
 
-/// Kiro — basic AWS SSO OIDC config only (5 auth methods go in P1.3).
-pub fn kiro() -> OAuthProviderConfig {
-    OAuthProviderConfig {
-        id: "kiro",
-        client_id: "",
-        authorize_url: "https://oidc.us-east-1.amazonaws.com",
-        token_url: "",
-        scopes: &[
-            "codewhisperer:completions",
-            "codewhisperer:analysis",
-            "codewhisperer:conversations",
-        ],
-        uses_pkce: false,
-        extra_params: &[("client_name", "kiro-oauth-client")],
-        refresh_lead_ms: 0,
-    }
-}
-
 /// Qwen — device-code flow (authorize_url is the device-code endpoint).
 pub fn qwen() -> OAuthProviderConfig {
     OAuthProviderConfig {
@@ -479,7 +461,6 @@ pub fn get_config(provider: &str) -> Option<OAuthProviderConfig> {
         "claude" => Some(claude()),
         "codex" => Some(codex()),
         "github" => Some(github()),
-        "kiro" => Some(kiro()),
         "qwen" => Some(qwen()),
         "kimi" => Some(kimi()),
         "kimi-coding" => Some(kimi_coding()),

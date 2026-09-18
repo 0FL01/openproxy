@@ -14,7 +14,6 @@ mod github;
 mod grok_cli;
 mod grok_web;
 mod kimchi;
-mod kiro;
 mod mimo_free;
 mod ollama;
 mod opencode;
@@ -80,11 +79,6 @@ pub use grok_web::{
     GrokWebExecutionRequest, GrokWebExecutor, GrokWebExecutorError, GrokWebExecutorResponse,
 };
 pub use kimchi::KimchiExecutor;
-pub use kiro::{
-    consumed_eventstream_bytes, AwsCredentials, EventStreamDecoder, KiroEvent,
-    KiroExecutionRequest, KiroExecutor, KiroExecutorError, KiroExecutorResponse,
-    MAX_KIRO_ENDPOINT_ATTEMPTS,
-};
 pub use mimo_free::{MimoFreeExecutionRequest, MimoFreeExecutor, MimoFreeExecutorResponse};
 pub use ollama::{
     OllamaExecutionRequest, OllamaExecutor, OllamaExecutorError, OllamaExecutorResponse,

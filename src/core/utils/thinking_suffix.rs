@@ -104,7 +104,7 @@ pub enum ThinkingNative {
     DeepSeek,
     Kimi,
     MiniMax,
-    /// No wire rewrite (Kiro handles thinking via system prefix / model suffix).
+    /// No wire rewrite.
     Noop,
 }
 
@@ -127,7 +127,6 @@ pub fn resolve_thinking_native(
         "deepseek" | "ds" => return ThinkingNative::DeepSeek,
         "kimi" | "kimi-coding" | "moonshot" => return ThinkingNative::Kimi,
         "minimax" => return ThinkingNative::MiniMax,
-        "kiro" => return ThinkingNative::Noop,
         _ => {}
     }
 
@@ -149,7 +148,6 @@ pub fn resolve_thinking_native(
                 ThinkingNative::GeminiBudget
             }
         }
-        Format::Kiro => ThinkingNative::Noop,
         // Cursor / Ollama / CommandCode: leave body alone (executors normalize).
         Format::Cursor | Format::Ollama | Format::CommandCode => ThinkingNative::Noop,
     }
@@ -806,10 +804,6 @@ mod tests {
         assert_eq!(
             resolve_thinking_native(Format::OpenAi, "glm", "glm-4.6"),
             ThinkingNative::Zai
-        );
-        assert_eq!(
-            resolve_thinking_native(Format::Kiro, "kiro", "amazon-nova"),
-            ThinkingNative::Noop
         );
     }
 }

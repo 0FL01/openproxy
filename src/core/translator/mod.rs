@@ -5,7 +5,6 @@ pub enum TranslationFormat {
     Gemini,
 }
 
-pub mod concerns;
 pub mod helpers;
 pub mod limits;
 pub mod registry;

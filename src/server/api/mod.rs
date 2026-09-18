@@ -679,7 +679,6 @@ const LIST_PROVIDERS_MAX_PAGE_SIZE: usize = 500;
 const USAGE_SUPPORTED_PROVIDERS: &[&str] = &[
     "claude",
     "antigravity",
-    "kiro",
     "github",
     "github-copilot",
     "codex",

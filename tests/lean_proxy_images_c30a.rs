@@ -488,17 +488,13 @@ async fn malformed_inline_required_attachment_returns_502_before_generation() {
         .update(|state| {
             state.api_keys = vec![test_api_key()];
             state.provider_nodes = vec![node(
-                "kiro",
-                "kiro",
-                "kr",
-                generation.url("/generate"),
+                "ollama",
+                "ollama",
+                "ol30",
+                generation.url("/v1"),
                 "chat",
             )];
-            let mut account = connection("kiro-c30a", "kiro", "claude-sonnet-4.5");
-            account.auth_type = "oauth".into();
-            account.api_key = None;
-            account.access_token = Some("fixture-token".into());
-            state.provider_connections = vec![account];
+            state.provider_connections = vec![connection("oa-c30a", "ollama", "model-a")];
         })
         .await
         .unwrap();
@@ -508,7 +504,7 @@ async fn malformed_inline_required_attachment_returns_502_before_generation() {
         &app,
         "/v1/chat/completions",
         json!({
-            "model": "kr/claude-sonnet-4.5",
+                "model": "ollama/model-a",
             "messages": [{"role": "user", "content": [{
                 "type": "image_url", "image_url": {"detail": "high"}
             }]}],

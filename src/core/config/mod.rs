@@ -2,12 +2,10 @@
 //! `open-sse/config/`. Each submodule mirrors one upstream JS file.
 //!
 //! Most entries are static lookup tables exposed as `once_cell::sync::Lazy`
-//! values so they are computed once on first use. Behavioural helpers
-//! (e.g. `kiro_constants::resolve_kiro_model`) are plain Rust functions.
+//! values so they are computed once on first use.
 
 pub mod app_constants;
 pub mod default_thinking_signature;
 pub mod error_config;
-pub mod kiro_constants;
 pub mod ollama_models;
 pub mod runtime_config;

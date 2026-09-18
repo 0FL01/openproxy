@@ -39,7 +39,6 @@ pub enum Format {
     Vertex,
     Codex,
     Antigravity,
-    Kiro,
     Cursor,
     Ollama,
     CommandCode,
@@ -47,7 +46,7 @@ pub enum Format {
 
 impl Format {
     /// Incremental text framing used on this format's streaming wire. Cursor
-    /// and Kiro retain their protocol-specific binary framers.
+    /// retains its protocol-specific binary framer.
     pub fn text_stream_mode(
         self,
         content_type: Option<&str>,
@@ -55,7 +54,7 @@ impl Format {
         use crate::core::stream_framing::TextStreamMode;
 
         match self {
-            Self::Kiro | Self::Cursor => None,
+            Self::Cursor => None,
             Self::Ollama => Some(TextStreamMode::Lines),
             Self::CommandCode => {
                 if content_type.is_some_and(|value| value.contains("text/event-stream")) {
@@ -86,7 +85,6 @@ impl Format {
             "vertex" => Some(Self::Vertex),
             "codex" => Some(Self::Codex),
             "antigravity" => Some(Self::Antigravity),
-            "kiro" => Some(Self::Kiro),
             "cursor" => Some(Self::Cursor),
             "ollama" => Some(Self::Ollama),
             "commandcode" | "command-code" => Some(Self::CommandCode),
@@ -104,7 +102,6 @@ impl Format {
             Self::Vertex => "vertex",
             Self::Codex => "codex",
             Self::Antigravity => "antigravity",
-            Self::Kiro => "kiro",
             Self::Cursor => "cursor",
             Self::Ollama => "ollama",
             Self::CommandCode => "commandcode",
@@ -124,12 +121,7 @@ impl Format {
     pub fn needs_image_prefetch(&self) -> bool {
         matches!(
             self,
-            Self::Gemini
-                | Self::Vertex
-                | Self::Ollama
-                | Self::CommandCode
-                | Self::Antigravity
-                | Self::Kiro
+            Self::Gemini | Self::Vertex | Self::Ollama | Self::CommandCode | Self::Antigravity
         )
     }
 }
@@ -162,8 +154,6 @@ pub struct ResponseTransformState {
     pub cursor: CursorResponseState,
     /// Ollama streaming state
     pub ollama: OllamaResponseState,
-    /// Kiro streaming state
-    pub kiro: KiroResponseState,
     /// CommandCode streaming state
     pub commandcode: CommandCodeResponseState,
     /// Generic scratch map for Value-based response transforms
@@ -413,18 +403,6 @@ pub struct OllamaResponseState {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct KiroResponseState {
-    pub event_buffer: Vec<u8>,
-    pub current_event_type: Option<String>,
-    /// A terminal EventStream decode/shape error was already emitted.
-    pub stream_failed: bool,
-    /// Generic state used by kiro_to_openai_response.
-    pub state: std::collections::HashMap<String, Value>,
-    /// Streaming assembler for the binary EventStream path.
-    pub assembler: Option<super::response::kiro_events::KiroSseAssembler>,
-}
-
-#[derive(Debug, Clone, Default)]
 pub struct CommandCodeResponseState {
     pub response_id: Option<String>,
     pub created: Option<i64>,
@@ -575,7 +553,6 @@ pub fn get_target_format_for_provider(provider: &str) -> Format {
         "vertex" | "vertex-partner" => Format::Vertex,
         "codex" | "grok-cli" | "gcli" | "gb" | "perplexity-agent" => Format::OpenAiResponses,
         "cursor" | "cu" => Format::Cursor,
-        "kiro" => Format::Kiro,
         "ollama" | "ollama-cloud" => Format::Ollama,
         "antigravity" => Format::Antigravity,
         "commandcode" | "command-code" => Format::CommandCode,
@@ -673,7 +650,7 @@ impl TranslationRegistry {
         strip_list: Option<&[&str]>,
     ) -> bool {
         if source != target {
-            // Direct route: exact source→target pair (lossless for claude→kiro etc.)
+            // Direct route: exact source→target pair
             if let Some(transform) = self.request_transforms.get(&(source, target)) {
                 tracing::debug!(
                     target: "openproxy::translator",
@@ -749,7 +726,7 @@ impl TranslationRegistry {
     /// Parameter naming matches chat.rs / JS: `source` = provider (upstream)
     /// format, `target` = client format.
     ///
-    /// 1. Direct route if `source:target` registered (e.g. kiro→claude)
+    /// 1. Direct route if `source:target` registered
     /// 2. Else provider→OpenAI into intermediates, then each intermediate → client
     pub fn translate_response(
         &self,
@@ -916,10 +893,8 @@ impl TranslationRegistry {
     }
 
     /// Flush end-of-stream state for a response transform. Called once when
-    /// the upstream stream ends (clean EOF or error). Kiro: emits the terminal
-    /// chunk (finish_reason) + `data: [DONE]` when the upstream closed without
-    /// an explicit messageStopEvent (9router transformEventStreamToSSE
-    /// `finish()` — a missing terminal is a protocol failure otherwise).
+    /// the upstream stream ends (clean EOF or error). Flushes any pending
+    /// text-framer payloads.
     pub fn finish_stream(
         &self,
         source: Format,
@@ -964,58 +939,8 @@ impl TranslationRegistry {
             }
         }
         if let Some(transform) = self.response_transforms.get(&(source, target)) {
-            // Only the kiro binary EventStream transform has buffered state
-            // that needs flushing; route through it directly.
+            // No response transform buffers state that needs flushing.
             let _ = transform;
-        }
-        if source == Format::Kiro || target == Format::Kiro {
-            if state.kiro.stream_failed {
-                return Vec::new();
-            }
-            if let Some(assembler) = state.kiro.assembler.as_mut() {
-                let chunks = match assembler.finish() {
-                    Ok(chunks) => chunks,
-                    Err(message) => {
-                        state.kiro.stream_failed = true;
-                        return vec![
-                            format!(
-                                "data: {}\n\n",
-                                serde_json::json!({
-                                    "error": {
-                                        "message": message,
-                                        "type": "upstream_error",
-                                        "code": "kiro_event_parse_error"
-                                    }
-                                })
-                            ),
-                            "data: [DONE]\n\n".to_string(),
-                        ];
-                    }
-                };
-                let mut out = output;
-                for c in chunks {
-                    out.push(format!(
-                        "data: {}\n\n",
-                        serde_json::to_string(&c).unwrap_or_default()
-                    ));
-                }
-                // A stream that ended without a terminal chunk is a protocol
-                // failure (9router finish() → kiro_missing_terminal).
-                if !assembler.terminal_emitted {
-                    out.push(format!(
-                        "data: {}\n\n",
-                        serde_json::json!({
-                            "error": {
-                                "message": "Kiro EventStream ended without a terminal stop",
-                                "type": "upstream_error",
-                                "code": "kiro_missing_terminal"
-                            }
-                        })
-                    ));
-                }
-                out.push("data: [DONE]\n\n".to_string());
-                return out;
-            }
         }
         output
     }
@@ -1368,7 +1293,6 @@ static REGISTRY: OnceLock<TranslationRegistry> = OnceLock::new();
 /// Initializes with all registered transforms on first call.
 pub fn global_registry() -> &'static TranslationRegistry {
     use crate::core::translator::request::antigravity_to_openai::antigravity_to_openai_request;
-    use crate::core::translator::request::claude_to_kiro::claude_to_kiro_request;
     use crate::core::translator::request::claude_to_openai::claude_to_openai_request;
     use crate::core::translator::request::gemini_to_openai::gemini_to_openai_request;
     use crate::core::translator::request::openai_responses::{
@@ -1379,15 +1303,12 @@ pub fn global_registry() -> &'static TranslationRegistry {
     use crate::core::translator::request::openai_to_cursor::openai_to_cursor_request;
     use crate::core::translator::request::openai_to_gemini::openai_to_antigravity_request;
     use crate::core::translator::request::openai_to_gemini::openai_to_gemini_request;
-    use crate::core::translator::request::openai_to_kiro::openai_to_kiro_request;
     use crate::core::translator::request::openai_to_ollama::openai_to_ollama_request;
     use crate::core::translator::request::openai_to_vertex::openai_to_vertex_request;
     use crate::core::translator::response::claude_to_openai::claude_to_openai_streaming;
     use crate::core::translator::response::commandcode_to_openai::commandcode_to_openai_response;
     use crate::core::translator::response::cursor_to_openai::cursor_to_openai_streaming;
     use crate::core::translator::response::gemini_to_openai::gemini_to_openai_streaming;
-    use crate::core::translator::response::kiro_to_claude::kiro_to_claude_streaming;
-    use crate::core::translator::response::kiro_to_openai::kiro_to_openai_streaming;
     use crate::core::translator::response::ollama_to_openai::ollama_to_openai_streaming;
     use crate::core::translator::response::openai_responses::{
         chat_to_responses_streaming, responses_to_chat_streaming,
@@ -1405,17 +1326,6 @@ pub fn global_registry() -> &'static TranslationRegistry {
             Format::Claude,
             openai_to_claude_request as RequestTransformFn,
         );
-        reg.register_request(
-            Format::Claude,
-            Format::Kiro,
-            claude_to_kiro_request as RequestTransformFn,
-        );
-        reg.register_response(
-            Format::Kiro,
-            Format::Claude,
-            kiro_to_claude_streaming as ResponseTransformFn,
-        );
-
         reg.register_request(
             Format::Claude,
             Format::OpenAi,
@@ -1440,11 +1350,6 @@ pub fn global_registry() -> &'static TranslationRegistry {
             Format::OpenAi,
             Format::Vertex,
             openai_to_vertex_request as RequestTransformFn,
-        );
-        reg.register_request(
-            Format::OpenAi,
-            Format::Kiro,
-            openai_to_kiro_request as RequestTransformFn,
         );
         reg.register_request(
             Format::OpenAi,
@@ -1510,11 +1415,6 @@ pub fn global_registry() -> &'static TranslationRegistry {
             Format::Cursor,
             Format::OpenAi,
             cursor_to_openai_streaming as ResponseTransformFn,
-        );
-        reg.register_response(
-            Format::Kiro,
-            Format::OpenAi,
-            kiro_to_openai_streaming as ResponseTransformFn,
         );
         reg.register_response(
             Format::OpenAiResponses,
@@ -1609,10 +1509,8 @@ mod parity_tests {
     }
 
     #[test]
-    fn registry_has_direct_claude_kiro_and_antigravity() {
+    fn registry_has_direct_antigravity() {
         let reg = global_registry();
-        assert!(reg.has_request_transform(Format::Claude, Format::Kiro));
-        assert!(reg.has_response_transform(Format::Kiro, Format::Claude));
         assert!(reg.has_request_transform(Format::OpenAi, Format::Antigravity));
         assert!(reg.has_response_transform(Format::OpenAi, Format::Claude));
     }
@@ -1727,7 +1625,7 @@ mod parity_tests {
             passthrough.get("_customToolNames").is_some(),
             "passthrough must not strip _customToolNames from caller input"
         );
-        // Translated path (Claude→Kiro has a direct request transform):
+        // Translated path (Claude→OpenAi has a direct request transform):
         // _customToolNames is stripped from the translated output (9router
         // chatCore.js:198-199 deletes it from translatedBody, not the input).
         let mut translated = json!({
@@ -1738,7 +1636,7 @@ mod parity_tests {
         });
         reg.translate_request_with_strip(
             Format::Claude,
-            Format::Kiro,
+            Format::OpenAi,
             "claude-sonnet-4-5",
             &mut translated,
             false,

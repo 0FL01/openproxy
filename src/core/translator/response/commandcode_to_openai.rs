@@ -445,7 +445,7 @@ pub fn commandcode_to_openai_response(
             };
             let input_bytes = match input.as_str() {
                 Some(input) => input.len(),
-                None => match super::kiro_events::serialized_len(input) {
+                None => match super::serialized_len(input) {
                     Ok(bytes) => bytes,
                     Err(_) => {
                         return state.fail(StreamLimitError {

@@ -8,7 +8,6 @@ fn expected_auth_url_prefix(provider: &str) -> &'static str {
         "gitlab" => "https://gitlab.com/oauth/authorize",
         "xai" => "https://auth.x.ai/oauth2/authorize",
         "github" => "https://github.com/login/device/code",
-        "kiro" => "https://oidc.us-east-1.amazonaws.com",
         "kimi" | "kimi-coding" => "https://auth.kimi.com/api/oauth/device_authorization",
         "kilocode" => "https://api.kilo.ai/api/device-auth/codes",
         "codebuddy" => "https://copilot.tencent.com/v2/plugin/auth/state",
@@ -23,11 +22,6 @@ fn expected_scopes(provider: &str) -> &'static [&'static str] {
         "codex" => &["openid", "profile", "email", "offline_access"],
         "gitlab" => &["api", "read_user"],
         "github" => &["read:user"],
-        "kiro" => &[
-            "codewhisperer:completions",
-            "codewhisperer:analysis",
-            "codewhisperer:conversations",
-        ],
         _ => &[],
     }
 }
@@ -51,14 +45,6 @@ fn test_scopes_match_provider_data() {
         ("codex", &["openid", "profile", "email", "offline_access"]),
         ("gitlab", &["api", "read_user"]),
         ("github", &["read:user"]),
-        (
-            "kiro",
-            &[
-                "codewhisperer:completions",
-                "codewhisperer:analysis",
-                "codewhisperer:conversations",
-            ],
-        ),
     ];
     for (id, scopes) in tests {
         let cfg = providers::get_config(id).unwrap();
@@ -114,7 +100,6 @@ const ALL_PROVIDERS: &[&str] = &[
     "codex",
     "gitlab",
     "github",
-    "kiro",
     "kimi-coding",
     "kilocode",
     "codebuddy",
@@ -197,14 +182,6 @@ fn test_github_device_config() {
     assert_eq!(cfg.authorize_url, expected_auth_url_prefix("github"));
     // Device code providers post to auth_url, not build auth URLs.
     assert_eq!(cfg.token_url, "https://github.com/login/oauth/access_token");
-}
-
-#[test]
-fn test_kiro_device_config() {
-    let cfg = providers::kiro();
-    assert_scopes_match(&cfg, expected_scopes("kiro"));
-    assert!(!cfg.uses_pkce);
-    assert_eq!(cfg.authorize_url, expected_auth_url_prefix("kiro"));
 }
 
 #[test]
