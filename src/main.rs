@@ -506,31 +506,38 @@ fn spawn_auto_backup(db: Arc<Db>) {
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
         let mgr = BackupManager::new(&db.data_dir);
         loop {
-            // Export the in-memory snapshot as JSON bytes for the backup.
-            let (json_bytes, _filename) = match db.export_db() {
-                Ok(m) => m,
-                Err(err) => {
-                    tracing::warn!(
-                        target: "openproxy::db::backups",
-                        error = %err,
-                        "auto backup: export failed"
-                    );
-                    tokio::time::sleep(std::time::Duration::from_secs(60 * 60)).await;
-                    continue;
+            // C40: the exported JSON buffer lives only for the backup write
+            // below and is dropped before the hourly sleep, so no large
+            // export buffer stays resident in this idle task. Timing is
+            // unchanged: every attempt (export failure, write
+            // success/throttle, write error) is followed by the same
+            // one-hour sleep before the next export.
+            {
+                // Export the in-memory snapshot as JSON bytes for the backup.
+                match db.export_db() {
+                    Ok((json_bytes, _filename)) => {
+                        match mgr.create_from_json(BackupReason::Auto, &json_bytes).await {
+                            Ok(Some(info)) => tracing::debug!(
+                                target: "openproxy::db::backups",
+                                id = %info.id,
+                                "auto backup created"
+                            ),
+                            Ok(None) => {}
+                            Err(err) => tracing::warn!(
+                                target: "openproxy::db::backups",
+                                error = %err,
+                                "auto backup failed"
+                            ),
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            target: "openproxy::db::backups",
+                            error = %err,
+                            "auto backup: export failed"
+                        );
+                    }
                 }
-            };
-            match mgr.create_from_json(BackupReason::Auto, &json_bytes).await {
-                Ok(Some(info)) => tracing::debug!(
-                    target: "openproxy::db::backups",
-                    id = %info.id,
-                    "auto backup created"
-                ),
-                Ok(None) => {}
-                Err(err) => tracing::warn!(
-                    target: "openproxy::db::backups",
-                    error = %err,
-                    "auto backup failed"
-                ),
             }
             tokio::time::sleep(std::time::Duration::from_secs(60 * 60)).await;
         }

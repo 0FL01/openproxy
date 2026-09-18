@@ -738,5 +738,13 @@
     "responses_compact_removed": false,
     "native_paths_depend_on_web_fetch": false,
     "relocation_target_exists": false
+  },
+  "auto_backup_buffer": {
+    "checkpoint": "C40",
+    "scope": "export JSON bytes live only for the create_from_json write, dropped before the hourly sleep",
+    "hourly_sleeps_per_iteration": 1,
+    "failure_path_sleep_preserved": true,
+    "format_retention_throttle_changed": false,
+    "fixed_idle_retention_bytes_claimed": false
   }
 }

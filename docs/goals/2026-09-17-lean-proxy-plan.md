@@ -93,17 +93,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R6 / C40.
-- Smallest next action: Scope the backup export buffer lifetime to the backup write in `src/main.rs`, dropping it before the hourly sleep.
-- Expected evidence: backup success/write-error/cancellation tests green; lifetime profile shows no retained export buffer across the sleep.
-- Stop or replan if: Backup format, retention, or file count changes; keep behavior identical.
+- Closes: R6 / C41.
+- Smallest next action: Remove only confirmed-dead modules/dependencies left by earlier checkpoints, one group per commit, keeping all supported build features green.
+- Expected evidence: full feature-matrix builds, clippy/tests and web build green; lockfile changes only from justified removals.
+- Stop or replan if: A needed adapter, pool, security, or crypto path would go dark; restore it instead.
 
 ## Current State
 
 - Resolved: R1 / C00, R2 / C01-C02, R3 / C03-C14, R4 / C15-C25, and C26-C34 inside R5. Proxy-owned semantic/header/history replay, heuristic context policy, client-identity passthrough gating, all three executor temporal retry schedulers, successful-response legacy housekeeping, token-keyed completed refresh/quota results, generation-path remote catalog waits, both process-wide Antigravity project maps, request-scoped onboarding workers, default provider health probes, and the write-only circuit breaker are gone. C13 provides the single bounded request-scoped generation/account/auth planner; C16-C18 provide one active-only connection/generation refresh service used by every configured caller; C19-C20 publish immutable OpenCode and Codex model metadata outside generation; C21-C22 make project metadata and onboarding configured-connection lifecycle concerns; C23 makes Claude quota an uncached explicit control-plane read; C24 keeps liveness local and health diagnostics explicit/opt-in; C25 creates no quota auto-ping task without a saved matching connection opt-in and preserves proactive OAuth refresh separately. C26 moves parsed request JSON across the handler's sole-consumer boundary, C27 uses one bounded DefaultExecutor serialization for byte-identical account attempts, C28 removes transformed request JSON from executor response ownership, C29 bounds successful/protocol and diagnostic upstream body collection independently without collecting native chat SSE, C30A bounds only required image expansion with request-scoped decoded/encoded/final budgets and explicit pre-generation failure, C30B binds validated image addresses to the actual socket while preserving hostname/TLS verification and per-redirect validation, C31 bounds wire indices plus retained tool/text/reasoning state, C32 gives live text streams one bounded incremental framing contract without changing native bytes, C33 feeds completed frames incrementally into the forced accumulator without retaining raw SSE history, and C34 keeps Chat-to-Responses accumulation byte-equivalent with point mutation/push_str and frees completed buffers SSE history.
 - Last relevant evidence: C33 proves golden-equivalent Chat/Responses conversion from incremental frames at every byte split, long chunked streams, bare-JSON single-representation fallback, explicit 502 on truncation/oversized frames without partial success, and cancellation that drops the held upstream body. C31/C29/C32/C33 exact tests remain green; C34 proves 2000 text / 1000 tool / 500 reasoning deltas concatenate and free after done with parallel ordering preserved.
 - Blocker: None; the prompt explicitly allows independent safe work when external harness/version evidence is unavailable.
-- Next: C40 scope the backup export buffer to the backup write, dropping it before the hourly sleep.
+- Next: C41 remove only confirmed-dead modules/dependencies, one group per commit.
 
 ## Material Decisions
 

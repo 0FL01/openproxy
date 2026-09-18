@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C40",
+  "next_checkpoint": "C41",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c39_cargo_1.98.1",
+    "rust_verification": "passed_through_c40_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -2042,7 +2042,7 @@
     {
       "id": "C40",
       "title": "Завершить lifetime backup buffer до sleep",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C15"
       ],
@@ -2054,7 +2054,24 @@
       "change": "Ограничить область экспортированных JSON bytes самой записью backup или явно drop до часового ожидания. Не менять формат/retention/backups и не отключать их ради красивого графика.",
       "tests": "Успех backup, ошибка export, ошибка записи, cancellation; профиль/тест lifetime подтверждает отсутствие ненужного retained buffer во время sleep.",
       "acceptance": "Нет живого большого export buffer в idle периоде backup-задачи. В отчёте не выдуман фиксированный размер освобождённой памяти.",
-      "rollback": "Откат простой scope правки, данные backup не меняются."
+      "rollback": "Откат простой scope правки, данные backup не меняются.",
+      "result": {
+        "completed": "2026-09-18",
+        "files": [
+          "src/main.rs",
+          "tests/lean_proxy_backup_c40.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json"
+        ],
+        "behavior": "Export JSON buffer scoped to the backup write block and dropped before the single hourly sleep; export-failure path keeps the same one-hour sleep with no early continue. Format/retention/throttle/file-count unchanged.",
+        "tests": [
+          "cargo test --test lean_proxy_backup_c40: 4 passed",
+          "cargo test -p openproxy --lib db::backups: 6 passed",
+          "cargo test --test db_backups_api: 5 passed"
+        ],
+        "measurements": "not measured as bytes saved; lifetime-only change, no fixed retention claim",
+        "rollback": "Revert the C40 commit; backup data and schedule unchanged."
+      }
     },
     {
       "id": "C41",
