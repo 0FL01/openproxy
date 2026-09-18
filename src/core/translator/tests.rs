@@ -775,7 +775,7 @@ fn gemini_to_openai_response_stream() {
     let mut state: HashMap<String, Value> = HashMap::new();
     let mut outputs: Vec<Value> = Vec::new();
     for chunk in &chunks {
-        outputs.extend(gemini_to_openai_response(chunk, &mut state));
+        outputs.extend(gemini_to_openai_response(chunk, &mut state).unwrap());
     }
 
     assert!(!outputs.is_empty(), "expected at least one output chunk");

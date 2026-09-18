@@ -2014,19 +2014,44 @@ async fn proxy_sse_to_json_response(
         Err(error) => return collected_body_failure_response(error, attempt_log).await,
     };
 
-    let json_body = crate::core::chat::stream_to_json::sse_stream_to_json(&body_bytes, Some(model))
-        .unwrap_or_else(|| {
-            // Fallback: try parse as JSON already, else wrap error
-            serde_json::from_slice(&body_bytes).unwrap_or_else(|_| {
-                json!({
-                    "error": {
-                        "message": "Failed to convert forced SSE stream to JSON",
-                        "type": "server_error",
-                        "code": "sse_to_json_failed"
-                    }
+    let json_body =
+        match crate::core::chat::stream_to_json::sse_stream_to_json(&body_bytes, Some(model)) {
+            Ok(Some(value)) => value,
+            Ok(None) => {
+                // Fallback: try parse as JSON already, else wrap error
+                serde_json::from_slice(&body_bytes).unwrap_or_else(|_| {
+                    json!({
+                        "error": {
+                            "message": "Failed to convert forced SSE stream to JSON",
+                            "type": "server_error",
+                            "code": "sse_to_json_failed"
+                        }
+                    })
                 })
-            })
-        });
+            }
+            Err(error) => {
+                if let Some(attempt_log) = attempt_log {
+                    attempt_log
+                        .finish("error", Some(StatusCode::BAD_GATEWAY.as_u16()), None)
+                        .await;
+                }
+                return with_cors_response(
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        [(header::CONTENT_TYPE, "application/json")],
+                        json!({
+                            "error": {
+                                "message": error.message,
+                                "type": "upstream_error",
+                                "code": error.code
+                            }
+                        })
+                        .to_string(),
+                    )
+                        .into_response(),
+                );
+            }
+        };
 
     let out = Bytes::from(serde_json::to_vec(&json_body).unwrap_or_default());
 
@@ -2104,12 +2129,36 @@ async fn proxy_response(
         } else {
             use crate::core::translator::registry::ResponseTransformState;
             let mut state = ResponseTransformState::default();
-            let chunks = registry::global_registry().translate_response(
+            let chunks = match registry::global_registry().translate_response(
                 plan.target_format,
                 plan.source_format,
                 unenveloped_body.as_ref(),
                 &mut state,
-            );
+            ) {
+                Ok(chunks) => chunks,
+                Err(error) => {
+                    if let Some(attempt_log) = attempt_log {
+                        attempt_log
+                            .finish("error", Some(StatusCode::BAD_GATEWAY.as_u16()), None)
+                            .await;
+                    }
+                    return with_cors_response(
+                        (
+                            StatusCode::BAD_GATEWAY,
+                            [(header::CONTENT_TYPE, "application/json")],
+                            json!({
+                                "error": {
+                                    "message": error.message,
+                                    "type": "upstream_error",
+                                    "code": error.code
+                                }
+                            })
+                            .to_string(),
+                        )
+                            .into_response(),
+                    );
+                }
+            };
             if !chunks.is_empty() {
                 let mut result = String::new();
                 for chunk in &chunks {
@@ -2382,6 +2431,23 @@ async fn proxy_response_with_pending_tracking(
                                             &chunk,
                                             t_state,
                                         );
+                                    let chunks = match chunks {
+                                        Ok(chunks) => chunks,
+                                        Err(error) => {
+                                            let usage = usage_capture.usage.clone();
+                                            if let Some(log) = attempt_log.take() {
+                                                log.finish("error", Some(502), usage.as_ref()).await;
+                                            }
+                                            yield Ok::<Bytes, std::io::Error>(Bytes::from(
+                                                write_streaming_error_with_code(
+                                                    &error.message,
+                                                    "upstream_error",
+                                                    Some(error.code),
+                                                ),
+                                            ));
+                                            return;
+                                        }
+                                    };
                                     for line in chunks {
                                         if let Some(frame) = sse_frame_for_dashboard(&line) {
                                             yield Ok::<Bytes, std::io::Error>(frame);
@@ -2520,6 +2586,23 @@ async fn proxy_response_with_pending_tracking(
                                                 &data,
                                                 t_state,
                                             );
+                                        let chunks = match chunks {
+                                            Ok(chunks) => chunks,
+                                            Err(error) => {
+                                                let usage = usage_capture.usage.clone();
+                                                if let Some(log) = attempt_log.take() {
+                                                    log.finish("error", Some(502), usage.as_ref()).await;
+                                                }
+                                                yield Ok::<Bytes, std::io::Error>(Bytes::from(
+                                                    write_streaming_error_with_code(
+                                                        &error.message,
+                                                        "upstream_error",
+                                                        Some(error.code),
+                                                    ),
+                                                ));
+                                                return;
+                                            }
+                                        };
                                         for line in chunks {
                                             if let Some(frame) = sse_frame_for_dashboard(&line) {
                                                 yield Ok::<Bytes, std::io::Error>(frame);
@@ -3260,12 +3343,20 @@ fn cors_preflight_response(methods: &str) -> Response {
 /// the message, so writing one before closing the stream lets them show
 /// a useful error instead of a generic "connection closed" message.
 fn write_streaming_error(error_msg: &str, error_type: &str) -> String {
+    write_streaming_error_with_code(error_msg, error_type, None)
+}
+
+fn write_streaming_error_with_code(
+    error_msg: &str,
+    error_type: &str,
+    code: Option<&str>,
+) -> String {
     let friendly = crate::core::utils::error::friendly_error_message(502, error_msg);
     let msg = serde_json::json!({
         "error": {
             "message": friendly,
             "type": error_type,
-            "code": null
+            "code": code
         }
     });
     format!(

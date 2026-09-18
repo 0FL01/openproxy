@@ -20,8 +20,7 @@ use serde_json::{json, Value};
 ///   (message_id, model, toolCalls, etc.)
 /// - `line_buffer`: buffering for partial JSON lines
 /// - `current_block_index`: current content block index
-/// - `text_accumulator`: accumulated text content
-/// - `thinking_buffer`: accumulated thinking content
+/// - `text_block_open`: whether a text content block is open
 /// - `in_thinking`: whether currently in a thinking block
 /// - `message_id`: the message ID from the first event
 /// - `model`: the model name
@@ -78,15 +77,14 @@ pub fn kiro_to_claude_streaming(
         let block_idx = anthropic.current_block_index.unwrap_or(0);
 
         // Start a text block if not already started
-        if anthropic.text_accumulator.is_empty() {
+        if !anthropic.text_block_open {
             emit(json!({
                 "type": "content_block_start",
                 "index": block_idx,
                 "content_block": {"type": "text", "text": ""}
             }));
+            anthropic.text_block_open = true;
         }
-
-        anthropic.text_accumulator.push_str(content);
 
         emit(json!({
             "type": "content_block_delta",
@@ -124,8 +122,6 @@ pub fn kiro_to_claude_streaming(
         }
 
         let block_idx = anthropic.current_block_index.unwrap_or(0);
-        anthropic.thinking_buffer.push_str(content);
-
         emit(json!({
             "type": "content_block_delta",
             "index": block_idx,
@@ -150,24 +146,47 @@ pub fn kiro_to_claude_streaming(
             .to_string();
         let tool_input = event.get("input").cloned().unwrap_or(Value::Null);
 
+        let current = anthropic.current_block_index.unwrap_or(0);
+        let Some(tool_block_idx) = current.checked_add(1) else {
+            return state.fail(
+                crate::core::translator::limits::StreamLimitError::arithmetic(
+                    "content block index",
+                ),
+            );
+        };
+        let Ok(tool_wire_index) = u64::try_from(tool_block_idx) else {
+            return state.fail(
+                crate::core::translator::limits::StreamLimitError::arithmetic(
+                    "content block index",
+                ),
+            );
+        };
+        if let Err(error) = state.accumulation.track_tool(10, 0, tool_wire_index) {
+            return state.fail(error);
+        }
+
         ensure_message_start(inner, &val, &mut emit);
 
         // Close any open block (text or thinking)
         let block_idx = anthropic.current_block_index.unwrap_or(0);
-        if !anthropic.text_accumulator.is_empty() || anthropic.in_thinking {
+        if anthropic.text_block_open || anthropic.in_thinking {
             emit(json!({"type": "content_block_stop", "index": block_idx}));
-            anthropic.text_accumulator.clear();
+            anthropic.text_block_open = false;
             anthropic.in_thinking = false;
-            anthropic.thinking_buffer.clear();
         }
 
         // Create a new block index for the tool_use
-        let next_idx = inner
-            .get("nextToolBlockIndex")
-            .and_then(|v| v.as_u64())
-            .unwrap_or_default();
-        let tool_block_idx = anthropic.current_block_index.unwrap_or(0) + 1;
-        inner.insert("nextToolBlockIndex".into(), Value::from(tool_block_idx + 1));
+        let Some(next_tool_block_idx) = tool_block_idx.checked_add(1) else {
+            return state.fail(
+                crate::core::translator::limits::StreamLimitError::arithmetic(
+                    "content block index",
+                ),
+            );
+        };
+        inner.insert(
+            "nextToolBlockIndex".into(),
+            Value::from(next_tool_block_idx),
+        );
         inner.insert("toolBlockIndex".into(), Value::from(tool_block_idx));
 
         // Stash tool info
@@ -232,10 +251,9 @@ pub fn kiro_to_claude_streaming(
     {
         // Close any open content block
         let block_idx = anthropic.current_block_index.unwrap_or(0);
-        if !anthropic.text_accumulator.is_empty() || anthropic.in_thinking {
+        if anthropic.text_block_open || anthropic.in_thinking {
             emit(json!({"type": "content_block_stop", "index": block_idx}));
-            anthropic.text_accumulator.clear();
-            anthropic.thinking_buffer.clear();
+            anthropic.text_block_open = false;
             anthropic.in_thinking = false;
         }
 
@@ -246,7 +264,13 @@ pub fn kiro_to_claude_streaming(
         }
 
         // Continue to next block index for the next message
-        let next_idx = block_idx + 1;
+        let Some(next_idx) = block_idx.checked_add(1) else {
+            return state.fail(
+                crate::core::translator::limits::StreamLimitError::arithmetic(
+                    "content block index",
+                ),
+            );
+        };
         inner.insert("nextToolBlockIndex".into(), Value::from(next_idx));
 
         let usage = inner

@@ -13,8 +13,14 @@
 //!   - metricsEvent / meteringEvent → usage (prompt/completion tokens, kiro credits)
 
 use std::collections::HashMap;
+use std::io::{self, Write};
 
 use serde_json::{json, Map, Value};
+
+use crate::core::translator::limits::{
+    StreamLimitError, MAX_STREAM_ACCUMULATED_BYTES, MAX_STREAM_TOOL_ARGUMENT_BYTES,
+    MAX_STREAM_TOOL_CALLS,
+};
 
 /// Normalized stop reasons (9router normalizeStopReason).
 fn normalize_stop_reason(value: &str) -> Option<String> {
@@ -92,7 +98,8 @@ pub struct KiroSseAssembler {
     pub created: i64,
     pub model: String,
     pub tool_index: u64,
-    pub tools: HashMap<String, KiroToolBuf>,
+    /// Buffered in first-arrival order; bounded to MAX_STREAM_TOOL_CALLS.
+    pub tools: Vec<KiroToolBuf>,
     pub stop_reason: Option<String>,
     pub saw_tool_use: bool,
     pub in_thinking: bool,
@@ -108,6 +115,7 @@ pub struct KiroSseAssembler {
     pub dropped_tools: u64,
     /// First validation error message, if any (for logging).
     pub tool_validation_error: Option<String>,
+    retained_tool_bytes: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +123,7 @@ pub struct KiroToolBuf {
     pub id: String,
     pub name: String,
     pub input_parts: Vec<Value>,
+    input_bytes: usize,
 }
 
 impl KiroSseAssembler {
@@ -161,13 +170,13 @@ impl KiroSseAssembler {
     /// individually before emission. Invalid tool calls are dropped and
     /// counted in `dropped_tools`, while valid ones in the same turn are
     /// emitted normally.
-    fn flush_tools(&mut self) -> Vec<Value> {
+    fn flush_tools(&mut self) -> Result<Vec<Value>, String> {
         if self.tools.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         let mut chunks = Vec::new();
         let mut tool_calls = Vec::new();
-        for tool in self.tools.values() {
+        for tool in &self.tools {
             // Per-tool validation (9router v0.5.55).
             let input = if tool.input_parts.len() == 1 {
                 tool.input_parts[0].clone()
@@ -178,7 +187,9 @@ impl KiroSseAssembler {
             let parsed = match &input {
                 Value::Object(_) => input.clone(),
                 Value::Null => {
-                    self.dropped_tools += 1;
+                    self.dropped_tools = self.dropped_tools.checked_add(1).ok_or_else(|| {
+                        StreamLimitError::arithmetic("dropped tool count").to_string()
+                    })?;
                     if self.tool_validation_error.is_none() {
                         self.tool_validation_error =
                             Some("Kiro tool call input is null".to_string());
@@ -192,7 +203,9 @@ impl KiroSseAssembler {
                     continue;
                 }
                 Value::Array(_) => {
-                    self.dropped_tools += 1;
+                    self.dropped_tools = self.dropped_tools.checked_add(1).ok_or_else(|| {
+                        StreamLimitError::arithmetic("dropped tool count").to_string()
+                    })?;
                     if self.tool_validation_error.is_none() {
                         self.tool_validation_error =
                             Some("Kiro tool call input is an array, not object".to_string());
@@ -217,7 +230,10 @@ impl KiroSseAssembler {
                         .unwrap_or(false);
                     let has_args = obj.contains_key("arguments");
                     if !has_name || !has_args {
-                        self.dropped_tools += 1;
+                        self.dropped_tools =
+                            self.dropped_tools.checked_add(1).ok_or_else(|| {
+                                StreamLimitError::arithmetic("dropped tool count").to_string()
+                            })?;
                         if self.tool_validation_error.is_none() {
                             self.tool_validation_error = Some(
                                 "Invalid Kiro tool_call payload: missing nested name or arguments"
@@ -235,7 +251,10 @@ impl KiroSseAssembler {
                 }
             }
             let index = self.tool_index;
-            self.tool_index += 1;
+            self.tool_index = self
+                .tool_index
+                .checked_add(1)
+                .ok_or_else(|| StreamLimitError::arithmetic("tool index").to_string())?;
             // First delta: declaration with empty arguments.
             let mut delta1 = Map::new();
             delta1.insert(
@@ -249,7 +268,8 @@ impl KiroSseAssembler {
             );
             tool_calls.push(delta1);
             // Second delta: the input.
-            let input_str = serde_json::to_string(&parsed).unwrap_or_else(|_| "{}".to_string());
+            let input_str = serde_json::to_string(&parsed)
+                .map_err(|error| format!("Unable to serialize Kiro tool input: {error}"))?;
             let mut delta2 = Map::new();
             delta2.insert(
                 "tool_calls".to_string(),
@@ -258,10 +278,11 @@ impl KiroSseAssembler {
             tool_calls.push(delta2);
         }
         self.tools.clear();
+        self.retained_tool_bytes = 0;
         for delta in tool_calls {
             chunks.push(self.envelope(delta, None));
         }
-        chunks
+        Ok(chunks)
     }
 
     /// Process one decoded Kiro event, returning the OpenAI SSE chunks to emit.
@@ -372,26 +393,87 @@ impl KiroSseAssembler {
                     let id = value
                         .get("toolUseId")
                         .and_then(Value::as_str)
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| {
-                            format!("call_{}_{}", self.created, self.tools.len() + 1)
-                        });
-                    let input = value.get("input").cloned().unwrap_or(Value::Null);
-                    if let Some(tool) = self.tools.get_mut(&id) {
+                        .filter(|id| !id.is_empty())
+                        .ok_or("Kiro toolUseEvent is missing a tool id")?;
+                    let input = value.get("input").unwrap_or(&Value::Null);
+                    let input_bytes = serialized_len(input)
+                        .map_err(|error| format!("Unable to size Kiro tool input: {error}"))?;
+                    if input_bytes > MAX_STREAM_TOOL_ARGUMENT_BYTES {
+                        return Err(StreamLimitError::bytes(
+                            "tool arguments",
+                            MAX_STREAM_TOOL_ARGUMENT_BYTES,
+                        )
+                        .to_string());
+                    }
+                    let existing_position = self.tools.iter().position(|tool| tool.id == id);
+                    let is_new = existing_position.is_none();
+                    if is_new && self.tools.len() >= MAX_STREAM_TOOL_CALLS {
+                        return Err(StreamLimitError::too_many(
+                            "tool calls",
+                            MAX_STREAM_TOOL_CALLS,
+                        )
+                        .to_string());
+                    }
+                    let metadata_bytes = if is_new {
+                        id.len().checked_add(name.len()).ok_or_else(|| {
+                            StreamLimitError::arithmetic("tool metadata").to_string()
+                        })?
+                    } else {
+                        0
+                    };
+                    let next_tool_bytes = self
+                        .tools
+                        .iter()
+                        .find(|tool| tool.id == id)
+                        .map_or(0, |tool| tool.input_bytes)
+                        .checked_add(input_bytes)
+                        .ok_or_else(|| {
+                            StreamLimitError::arithmetic("tool arguments").to_string()
+                        })?;
+                    if next_tool_bytes > MAX_STREAM_TOOL_ARGUMENT_BYTES {
+                        return Err(StreamLimitError::bytes(
+                            "tool arguments",
+                            MAX_STREAM_TOOL_ARGUMENT_BYTES,
+                        )
+                        .to_string());
+                    }
+                    let added_bytes = input_bytes
+                        .checked_add(metadata_bytes)
+                        .ok_or_else(|| StreamLimitError::arithmetic("tool state").to_string())?;
+                    let next_retained = self
+                        .retained_tool_bytes
+                        .checked_add(added_bytes)
+                        .ok_or_else(|| StreamLimitError::arithmetic("tool state").to_string())?;
+                    if next_retained > MAX_STREAM_ACCUMULATED_BYTES {
+                        return Err(StreamLimitError::bytes(
+                            "retained state",
+                            MAX_STREAM_ACCUMULATED_BYTES,
+                        )
+                        .to_string());
+                    }
+                    let id = id.to_string();
+                    if let Some(position) = existing_position {
+                        let tool = &mut self.tools[position];
                         if tool.name != name {
                             return Err("Kiro tool name changed between fragments".to_string());
                         }
-                        tool.input_parts.push(input);
+                        tool.input_parts.try_reserve(1).map_err(|_| {
+                            StreamLimitError::capacity("tool arguments").to_string()
+                        })?;
+                        tool.input_parts.push(input.clone());
+                        tool.input_bytes = next_tool_bytes;
                     } else {
-                        self.tools.insert(
-                            id.clone(),
-                            KiroToolBuf {
-                                id,
-                                name: name.to_string(),
-                                input_parts: vec![input],
-                            },
-                        );
+                        self.tools
+                            .try_reserve(1)
+                            .map_err(|_| StreamLimitError::capacity("tool calls").to_string())?;
+                        self.tools.push(KiroToolBuf {
+                            id,
+                            name: name.to_string(),
+                            input_parts: vec![input.clone()],
+                            input_bytes: next_tool_bytes,
+                        });
                     }
+                    self.retained_tool_bytes = next_retained;
                 }
             }
             "messageStopEvent" => {
@@ -418,7 +500,7 @@ impl KiroSseAssembler {
                     && !self.saw_tool_use
                     && !self.emitted_any;
                 if !self.terminal_emitted && !tool_use_defer {
-                    chunks.extend(self.flush_tools());
+                    chunks.extend(self.flush_tools()?);
                     chunks.push(self.terminal_chunk());
                 }
             }
@@ -441,7 +523,7 @@ impl KiroSseAssembler {
                         Some("end_turn" | "tool_use" | "max_tokens")
                     ) && !self.terminal_emitted
                     {
-                        chunks.extend(self.flush_tools());
+                        chunks.extend(self.flush_tools()?);
                         chunks.push(self.terminal_chunk());
                     }
                 }
@@ -496,7 +578,10 @@ impl KiroSseAssembler {
                         let mut usage = self.usage.clone().unwrap_or_else(|| json!({}));
                         usage["prompt_tokens"] = json!(prompt);
                         usage["completion_tokens"] = json!(completion);
-                        usage["total_tokens"] = json!(prompt + completion);
+                        usage["total_tokens"] =
+                            json!(prompt.checked_add(completion).ok_or_else(|| {
+                                StreamLimitError::arithmetic("total token").to_string()
+                            })?);
                         let cache_read = metrics
                             .get("cacheReadInputTokens")
                             .or_else(|| metrics.get("cache_read_input_tokens"))
@@ -557,9 +642,9 @@ impl KiroSseAssembler {
     /// Per-tool validation summary (9router v0.5.55): if `tool_use` stop was
     /// received but no tool calls were seen AND no content was emitted, the
     /// turn is empty and should be treated as an error.
-    pub fn finish(&mut self) -> Vec<Value> {
+    pub fn finish(&mut self) -> Result<Vec<Value>, String> {
         if self.terminal_emitted {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         // tool_use stop with no content and no tool calls is a protocol error.
@@ -567,7 +652,7 @@ impl KiroSseAssembler {
             && !self.saw_tool_use
             && !self.emitted_any;
 
-        let mut chunks = self.flush_tools();
+        let mut chunks = self.flush_tools()?;
         if tool_use_empty {
             // Emit an error frame instead of a terminal chunk.
             self.terminal_emitted = true;
@@ -581,8 +666,31 @@ impl KiroSseAssembler {
         } else {
             chunks.push(self.terminal_chunk());
         }
-        chunks
+        Ok(chunks)
     }
+}
+
+#[derive(Default)]
+struct CountingWriter(usize);
+
+impl Write for CountingWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0 = self
+            .0
+            .checked_add(bytes.len())
+            .ok_or_else(|| io::Error::other("serialized length overflow"))?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+pub(super) fn serialized_len(value: &Value) -> Result<usize, serde_json::Error> {
+    let mut writer = CountingWriter::default();
+    serde_json::to_writer(&mut writer, value)?;
+    Ok(writer.0)
 }
 
 /// Transform a JSON envelope that already carries `_eventType` (the legacy
@@ -618,7 +726,7 @@ pub fn event_json_to_chunk(event: &Value, state: &mut HashMap<String, Value>) ->
         delta.insert("content".to_string(), Value::String(content.to_string()));
         state.insert(
             "chunkIndex".to_string(),
-            Value::Number((chunk_idx + 1).into()),
+            Value::Number(chunk_idx.checked_add(1)?.into()),
         );
         return Some(json!({
             "id": response_id,
@@ -657,7 +765,7 @@ pub fn event_json_to_chunk(event: &Value, state: &mut HashMap<String, Value>) ->
         );
         state.insert(
             "chunkIndex".to_string(),
-            Value::Number((chunk_idx + 1).into()),
+            Value::Number(chunk_idx.checked_add(1)?.into()),
         );
         return Some(json!({
             "id": response_id,
@@ -704,7 +812,7 @@ mod tests {
         // Buffering emits no chunks yet.
         assert!(chunks.is_empty());
         // Flush the tool calls.
-        let flushed = asm.flush_tools();
+        let flushed = asm.flush_tools().unwrap();
         assert_eq!(flushed.len(), 2);
 
         let first = &flushed[0]["choices"][0]["delta"]["tool_calls"][0];
@@ -714,6 +822,54 @@ mod tests {
 
         let second = &flushed[1]["choices"][0]["delta"]["tool_calls"][0];
         assert_eq!(second["function"]["arguments"], "{\"x\":1}");
+    }
+
+    #[test]
+    fn tool_flush_preserves_first_arrival_order() {
+        let mut asm = KiroSseAssembler::new("test-model");
+        for (id, name) in [("tool_z", "last_alpha"), ("tool_a", "first_alpha")] {
+            asm.process_event(&event(
+                "toolUseEvent",
+                json!({"toolUseId": id, "name": name, "input": {"id": id}}),
+            ))
+            .unwrap();
+        }
+        let chunks = asm.flush_tools().unwrap();
+        assert_eq!(
+            chunks[0]["choices"][0]["delta"]["tool_calls"][0]["id"],
+            "tool_z"
+        );
+        assert_eq!(
+            chunks[2]["choices"][0]["delta"]["tool_calls"][0]["id"],
+            "tool_a"
+        );
+    }
+
+    #[test]
+    fn tool_arguments_accept_exact_serialized_limit_and_reject_plus_one() {
+        let mut asm = KiroSseAssembler::new("test-model");
+        asm.process_event(&event(
+            "toolUseEvent",
+            json!({
+                "toolUseId": "exact",
+                "name": "run",
+                "input": "x".repeat(MAX_STREAM_TOOL_ARGUMENT_BYTES - 2)
+            }),
+        ))
+        .unwrap();
+
+        let mut asm = KiroSseAssembler::new("test-model");
+        let error = asm
+            .process_event(&event(
+                "toolUseEvent",
+                json!({
+                    "toolUseId": "large",
+                    "name": "run",
+                    "input": "x".repeat(MAX_STREAM_TOOL_ARGUMENT_BYTES - 1)
+                }),
+            ))
+            .unwrap_err();
+        assert!(error.contains("tool arguments"));
     }
 
     #[test]
@@ -798,13 +954,13 @@ mod tests {
             json!({ "content": "hello" }),
         ))
         .unwrap();
-        let terminal = asm.finish();
+        let terminal = asm.finish().unwrap();
         assert_eq!(terminal.len(), 1);
         assert_eq!(terminal[0]["choices"][0]["finish_reason"], "stop");
         assert!(asm.terminal_emitted);
 
         // A second finish is a no-op (terminal already emitted).
-        assert!(asm.finish().is_empty());
+        assert!(asm.finish().unwrap().is_empty());
     }
 
     #[test]
@@ -818,7 +974,7 @@ mod tests {
         ))
         .unwrap();
         assert!(asm.terminal_emitted);
-        assert!(asm.finish().is_empty());
+        assert!(asm.finish().unwrap().is_empty());
     }
 
     // --- Truncation tolerance tests (9router v0.5.55 KIRO_TRUNCATION_STOP_REASONS) ---
@@ -925,17 +1081,14 @@ mod tests {
     fn flush_tools_drops_null_input_tool() {
         // A tool call with null input should be dropped, not emitted.
         let mut asm = KiroSseAssembler::new("test-model");
-        let mut tools = HashMap::new();
-        tools.insert(
-            "tool1".to_string(),
-            KiroToolBuf {
-                id: "call_1".to_string(),
-                name: "get_weather".to_string(),
-                input_parts: vec![Value::Null],
-            },
-        );
+        let tools = vec![KiroToolBuf {
+            id: "call_1".to_string(),
+            name: "get_weather".to_string(),
+            input_parts: vec![Value::Null],
+            input_bytes: 0,
+        }];
         asm.tools = tools;
-        let chunks = asm.flush_tools();
+        let chunks = asm.flush_tools().unwrap();
         assert!(
             chunks.is_empty(),
             "null-input tool should be dropped, got: {:?}",
@@ -949,17 +1102,14 @@ mod tests {
     fn flush_tools_drops_array_input_tool() {
         // A tool call with array input should be dropped.
         let mut asm = KiroSseAssembler::new("test-model");
-        let mut tools = HashMap::new();
-        tools.insert(
-            "tool1".to_string(),
-            KiroToolBuf {
-                id: "call_1".to_string(),
-                name: "get_weather".to_string(),
-                input_parts: vec![json!([1, 2, 3])],
-            },
-        );
+        let tools = vec![KiroToolBuf {
+            id: "call_1".to_string(),
+            name: "get_weather".to_string(),
+            input_parts: vec![json!([1, 2, 3])],
+            input_bytes: 0,
+        }];
         asm.tools = tools;
-        let chunks = asm.flush_tools();
+        let chunks = asm.flush_tools().unwrap();
         assert!(chunks.is_empty(), "array-input tool should be dropped");
         assert_eq!(asm.dropped_tools, 1);
     }
@@ -968,17 +1118,14 @@ mod tests {
     fn flush_tools_drops_invalid_tool_call_wrapper() {
         // A tool_call wrapper missing nested name should be dropped.
         let mut asm = KiroSseAssembler::new("test-model");
-        let mut tools = HashMap::new();
-        tools.insert(
-            "tool1".to_string(),
-            KiroToolBuf {
-                id: "call_1".to_string(),
-                name: "tool_call".to_string(),
-                input_parts: vec![json!({"arguments": {}})],
-            },
-        );
+        let tools = vec![KiroToolBuf {
+            id: "call_1".to_string(),
+            name: "tool_call".to_string(),
+            input_parts: vec![json!({"arguments": {}})],
+            input_bytes: 0,
+        }];
         asm.tools = tools;
-        let chunks = asm.flush_tools();
+        let chunks = asm.flush_tools().unwrap();
         assert!(
             chunks.is_empty(),
             "tool_call missing name should be dropped"
@@ -990,17 +1137,14 @@ mod tests {
     fn flush_tools_keeps_valid_tool_call_wrapper() {
         // A valid tool_call wrapper with name and arguments should be emitted.
         let mut asm = KiroSseAssembler::new("test-model");
-        let mut tools = HashMap::new();
-        tools.insert(
-            "tool1".to_string(),
-            KiroToolBuf {
-                id: "call_1".to_string(),
-                name: "tool_call".to_string(),
-                input_parts: vec![json!({"name": "get_weather", "arguments": {"city": "NYC"}})],
-            },
-        );
+        let tools = vec![KiroToolBuf {
+            id: "call_1".to_string(),
+            name: "tool_call".to_string(),
+            input_parts: vec![json!({"name": "get_weather", "arguments": {"city": "NYC"}})],
+            input_bytes: 0,
+        }];
         asm.tools = tools;
-        let chunks = asm.flush_tools();
+        let chunks = asm.flush_tools().unwrap();
         assert_eq!(chunks.len(), 2, "valid tool_call should emit 2 deltas");
         assert_eq!(asm.dropped_tools, 0);
     }
@@ -1008,26 +1152,23 @@ mod tests {
     #[test]
     fn flush_tools_mix_valid_and_invalid() {
         // Mix of valid and invalid: only valid emitted, bad ones counted.
-        let mut tools = HashMap::new();
-        tools.insert(
-            "bad".to_string(),
+        let tools = vec![
             KiroToolBuf {
                 id: "call_bad".to_string(),
                 name: "get_weather".to_string(),
                 input_parts: vec![Value::Null],
+                input_bytes: 0,
             },
-        );
-        tools.insert(
-            "good".to_string(),
             KiroToolBuf {
                 id: "call_good".to_string(),
                 name: "get_time".to_string(),
                 input_parts: vec![json!({"timezone": "UTC"})],
+                input_bytes: 0,
             },
-        );
+        ];
         let mut asm = KiroSseAssembler::new("test-model");
         asm.tools = tools;
-        let chunks = asm.flush_tools();
+        let chunks = asm.flush_tools().unwrap();
         assert_eq!(chunks.len(), 2, "only valid tool should emit 2 deltas");
         assert_eq!(asm.dropped_tools, 1);
     }
@@ -1043,7 +1184,7 @@ mod tests {
         .unwrap();
         // messageStopEvent sets stop_reason but doesn't emit if no tools.
         // finish() should emit an error.
-        let chunks = asm.finish();
+        let chunks = asm.finish().unwrap();
         assert!(!chunks.is_empty(), "should emit error frame");
         let last = chunks.last().unwrap();
         assert!(
@@ -1075,6 +1216,6 @@ mod tests {
             "tool_use with content should still emit tool_calls terminal"
         );
         // finish() should be a no-op since terminal was already emitted.
-        assert!(asm.finish().is_empty());
+        assert!(asm.finish().unwrap().is_empty());
     }
 }

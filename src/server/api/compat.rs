@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::body::Body;
@@ -291,32 +291,62 @@ fn stream_to_responses_api(response: Response, sanitize_injected_search: bool) -
             };
             buffer.extend_from_slice(&chunk);
             while let Some(frame) = take_sse_frame(&mut buffer) {
-                for output in convert_responses_sse_frame(
+                let outputs = match convert_responses_sse_frame(
                     &frame,
                     &mut conv_state,
                     &mut claude_xform,
                     &mut native_responses_stream,
                     sanitize_injected_search,
                 ) {
+                    Ok(outputs) => outputs,
+                    Err(error) => {
+                        yield Ok::<Bytes, std::io::Error>(Bytes::from(format_sse_event(
+                            "error",
+                            &json!({"type": "error", "error": {"message": error.message, "code": error.code}}),
+                        )));
+                        return;
+                    }
+                };
+                for output in outputs {
                     yield Ok::<Bytes, std::io::Error>(output);
                 }
             }
         }
 
         if !buffer.is_empty() {
-            for output in convert_responses_sse_frame(
+            let outputs = match convert_responses_sse_frame(
                 &buffer,
                 &mut conv_state,
                 &mut claude_xform,
                 &mut native_responses_stream,
                 sanitize_injected_search,
             ) {
+                Ok(outputs) => outputs,
+                Err(error) => {
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from(format_sse_event(
+                        "error",
+                        &json!({"type": "error", "error": {"message": error.message, "code": error.code}}),
+                    )));
+                    return;
+                }
+            };
+            for output in outputs {
                 yield Ok::<Bytes, std::io::Error>(output);
             }
         }
 
         if !native_responses_stream {
-            for event_bytes in conv_state.flush_frames() {
+            let flushed = match conv_state.flush_frames() {
+                Ok(flushed) => flushed,
+                Err(error) => {
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from(format_sse_event(
+                        "error",
+                        &json!({"type": "error", "error": {"message": error.message, "code": error.code}}),
+                    )));
+                    return;
+                }
+            };
+            for event_bytes in flushed {
                 yield Ok::<Bytes, std::io::Error>(Bytes::from(event_bytes));
             }
             yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n"));
@@ -372,11 +402,11 @@ fn convert_responses_sse_frame(
     claude_xform: &mut AnthropicToOpenAiTransformer,
     native_responses_stream: &mut bool,
     sanitize_injected_search: bool,
-) -> Vec<Bytes> {
+) -> Result<Vec<Bytes>, crate::core::translator::limits::StreamLimitError> {
     let frame = String::from_utf8_lossy(frame);
     let frame = frame.trim();
     if frame.is_empty() || frame.starts_with(':') {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let Some(json_str) = frame
         .lines()
@@ -384,13 +414,13 @@ fn convert_responses_sse_frame(
         .and_then(|line| line.split_once(':').map(|(_, value)| value.trim()))
         .or_else(|| frame.starts_with('{').then_some(frame))
     else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     if json_str == "[DONE]" {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let Ok(mut value) = serde_json::from_str::<Value>(json_str) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let event_type = value
         .get("type")
@@ -401,22 +431,22 @@ fn convert_responses_sse_frame(
     if event_type.starts_with("response.") {
         *native_responses_stream = true;
         if sanitize_injected_search && should_drop_injected_web_search_event(&value) {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         if sanitize_injected_search && event_type == "response.completed" {
             remove_injected_web_search_items(&mut value);
-            return vec![Bytes::from(format_sse_event(&event_type, &value))];
+            return Ok(vec![Bytes::from(format_sse_event(&event_type, &value))]);
         }
-        return vec![Bytes::from(format!("{frame}\n\n"))];
+        return Ok(vec![Bytes::from(format!("{frame}\n\n"))]);
     }
 
     if value.get("object").and_then(Value::as_str) == Some("chat.completion") {
         *native_responses_stream = true;
         let response = chat_completion_to_responses_json(&value);
-        return vec![Bytes::from(format_sse_event(
+        return Ok(vec![Bytes::from(format_sse_event(
             "response.completed",
             &json!({"type": "response.completed", "response": response}),
-        ))];
+        ))]);
     }
 
     let is_claude_event = matches!(
@@ -431,23 +461,29 @@ fn convert_responses_sse_frame(
     );
     if is_claude_event {
         if event_type == "ping" {
-            return Vec::new();
+            return Ok(Vec::new());
         }
-        return claude_xform
+        let mut output = Vec::new();
+        for chunk in claude_xform
             .transform_chunk(&Bytes::from(format!("data: {json_str}\n\n")))
             .into_iter()
             .filter_map(|line| line.strip_prefix("data: ").map(str::to_string))
             .filter(|data| data != "[DONE]")
             .filter_map(|data| serde_json::from_str::<Value>(&data).ok())
-            .flat_map(|chunk| openai_chunk_to_responses(conv_state, &chunk))
-            .map(Bytes::from)
-            .collect();
+        {
+            output.extend(
+                openai_chunk_to_responses(conv_state, &chunk)?
+                    .into_iter()
+                    .map(Bytes::from),
+            );
+        }
+        return Ok(output);
     }
 
-    openai_chunk_to_responses(conv_state, &value)
+    Ok(openai_chunk_to_responses(conv_state, &value)?
         .into_iter()
         .map(Bytes::from)
-        .collect()
+        .collect())
 }
 
 fn should_drop_injected_web_search_event(value: &Value) -> bool {
@@ -646,12 +682,12 @@ struct ResponsesSseState {
     model: String,
     seq: u64,
     // Per-choice-index tracking
-    msg_item_added: HashMap<usize, bool>,
-    msg_content_added: HashMap<usize, bool>,
-    msg_text_buf: HashMap<usize, String>,
-    msg_item_done: HashMap<usize, bool>,
-    added_item_id_map: HashMap<usize, String>,
-    added_content_part_id_map: HashMap<usize, String>,
+    msg_item_added: BTreeMap<usize, bool>,
+    msg_content_added: BTreeMap<usize, bool>,
+    msg_text_buf: BTreeMap<usize, String>,
+    msg_item_done: BTreeMap<usize, bool>,
+    added_item_id_map: BTreeMap<usize, String>,
+    added_content_part_id_map: BTreeMap<usize, String>,
     // Reasoning tracking
     reasoning_id: Option<String>,
     reasoning_buf: Option<String>,
@@ -660,6 +696,8 @@ struct ResponsesSseState {
     reasoning_content_added: bool,
     // Global state
     completed_sent: bool,
+    choice_indices: BTreeSet<usize>,
+    retained_bytes: usize,
 }
 
 impl ResponsesSseState {
@@ -670,30 +708,63 @@ impl ResponsesSseState {
             created: 0,
             model: String::new(),
             seq: 0,
-            msg_item_added: HashMap::new(),
-            msg_content_added: HashMap::new(),
-            msg_text_buf: HashMap::new(),
-            msg_item_done: HashMap::new(),
-            added_item_id_map: HashMap::new(),
-            added_content_part_id_map: HashMap::new(),
+            msg_item_added: BTreeMap::new(),
+            msg_content_added: BTreeMap::new(),
+            msg_text_buf: BTreeMap::new(),
+            msg_item_done: BTreeMap::new(),
+            added_item_id_map: BTreeMap::new(),
+            added_content_part_id_map: BTreeMap::new(),
             reasoning_id: None,
             reasoning_buf: None,
             reasoning_done: false,
             reasoning_item_added: false,
             reasoning_content_added: false,
             completed_sent: false,
+            choice_indices: BTreeSet::new(),
+            retained_bytes: 0,
         }
     }
+
+    fn choice_index(
+        &mut self,
+        choice: &Value,
+    ) -> Result<usize, crate::core::translator::limits::StreamLimitError> {
+        use crate::core::translator::limits::{wire_index, StreamLimitError, MAX_STREAM_CHOICES};
+
+        let index = wire_index(choice.get("index"), "choices[].index")?;
+        let index = usize::try_from(index)
+            .map_err(|_| StreamLimitError::arithmetic("choice index conversion"))?;
+        if !self.choice_indices.contains(&index) && self.choice_indices.len() >= MAX_STREAM_CHOICES
+        {
+            return Err(StreamLimitError::too_many(
+                "response choices",
+                MAX_STREAM_CHOICES,
+            ));
+        }
+        self.choice_indices.insert(index);
+        Ok(index)
+    }
+}
+
+fn advance_response_seq(
+    seq: &mut u64,
+) -> Result<(), crate::core::translator::limits::StreamLimitError> {
+    *seq = seq.checked_add(1).ok_or_else(|| {
+        crate::core::translator::limits::StreamLimitError::arithmetic("response sequence")
+    })?;
+    Ok(())
 }
 
 /// Flush any incomplete event state and emit `response.completed` if it
 /// hasn't been sent yet.  Returns SSE event frames that should be yielded
 /// to the client.  Matching 9router's `responsesTransformer.js` `flush()`.
 impl ResponsesSseState {
-    fn flush_frames(&mut self) -> Vec<Vec<u8>> {
+    fn flush_frames(
+        &mut self,
+    ) -> Result<Vec<Vec<u8>>, crate::core::translator::limits::StreamLimitError> {
         let mut frames: Vec<Vec<u8>> = Vec::new();
         if self.completed_sent {
-            return frames; // already flushed
+            return Ok(frames); // already flushed
         }
 
         // Close any still-open message items (no finish_reason arrived)
@@ -720,7 +791,7 @@ impl ResponsesSseState {
                 .map(|s| s.as_str())
                 .unwrap_or("");
 
-            self.seq += 1;
+            advance_response_seq(&mut self.seq)?;
             frames.push(format_sse_event(
                 "response.output_text.done",
                 &json!({
@@ -730,7 +801,7 @@ impl ResponsesSseState {
                 }),
             ));
 
-            self.seq += 1;
+            advance_response_seq(&mut self.seq)?;
             frames.push(format_sse_event(
                 "response.content_part.done",
                 &json!({
@@ -745,7 +816,7 @@ impl ResponsesSseState {
                 }),
             ));
 
-            self.seq += 1;
+            advance_response_seq(&mut self.seq)?;
             frames.push(format_sse_event(
                 "response.output_item.done",
                 &json!({
@@ -773,7 +844,7 @@ impl ResponsesSseState {
             let reasoning_text = self.reasoning_buf.as_deref().unwrap_or("");
             self.reasoning_done = true;
 
-            self.seq += 1;
+            advance_response_seq(&mut self.seq)?;
             frames.push(format_sse_event(
                 "response.reasoning_summary_text.done",
                 &json!({
@@ -782,7 +853,7 @@ impl ResponsesSseState {
                 }),
             ));
 
-            self.seq += 1;
+            advance_response_seq(&mut self.seq)?;
             frames.push(format_sse_event(
                 "response.content_part.done",
                 &json!({
@@ -854,7 +925,7 @@ impl ResponsesSseState {
         }
 
         self.completed_sent = true;
-        self.seq += 1;
+        advance_response_seq(&mut self.seq)?;
         frames.push(format_sse_event(
             "response.completed",
             &json!({
@@ -863,7 +934,7 @@ impl ResponsesSseState {
             }),
         ));
 
-        frames
+        Ok(frames)
     }
 }
 
@@ -897,7 +968,10 @@ fn format_sse_event(event: &str, data: &Value) -> Vec<u8> {
 
 /// Convert a single chat.completion.chunk JSON to zero or more Responses API
 /// SSE event frames (as raw bytes).
-fn openai_chunk_to_responses(state: &mut ResponsesSseState, chunk: &Value) -> Vec<Vec<u8>> {
+fn openai_chunk_to_responses(
+    state: &mut ResponsesSseState,
+    chunk: &Value,
+) -> Result<Vec<Vec<u8>>, crate::core::translator::limits::StreamLimitError> {
     let mut frames: Vec<Vec<u8>> = Vec::new();
 
     // ── Initialisation ────────────────────────────────────────────────
@@ -924,7 +998,7 @@ fn openai_chunk_to_responses(state: &mut ResponsesSseState, chunk: &Value) -> Ve
             .unwrap_or("")
             .to_string();
 
-        state.seq += 1;
+        advance_response_seq(&mut state.seq)?;
         frames.push(format_sse_event(
             "response.created",
             &json!({
@@ -933,7 +1007,7 @@ fn openai_chunk_to_responses(state: &mut ResponsesSseState, chunk: &Value) -> Ve
             }),
         ));
 
-        state.seq += 1;
+        advance_response_seq(&mut state.seq)?;
         frames.push(format_sse_event(
             "response.in_progress",
             &json!({
@@ -945,11 +1019,11 @@ fn openai_chunk_to_responses(state: &mut ResponsesSseState, chunk: &Value) -> Ve
 
     // ── Process choices ──────────────────────────────────────────────
     let Some(choices) = chunk.get("choices").and_then(|v| v.as_array()) else {
-        return frames;
+        return Ok(frames);
     };
 
     for choice in choices {
-        let index = choice.get("index").and_then(|v| v.as_i64()).unwrap_or(0) as usize;
+        let index = state.choice_index(choice)?;
         let delta = choice
             .get("delta")
             .and_then(|v| v.as_object())
@@ -968,7 +1042,7 @@ fn openai_chunk_to_responses(state: &mut ResponsesSseState, chunk: &Value) -> Ve
                 state.reasoning_item_added = true;
                 let rid = generate_response_id();
                 state.reasoning_id = Some(rid.clone());
-                state.seq += 1;
+                advance_response_seq(&mut state.seq)?;
                 frames.push(format_sse_event(
                     "response.output_item.added",
                     &json!({
@@ -986,7 +1060,7 @@ fn openai_chunk_to_responses(state: &mut ResponsesSseState, chunk: &Value) -> Ve
 
             if !state.reasoning_content_added {
                 state.reasoning_content_added = true;
-                state.seq += 1;
+                advance_response_seq(&mut state.seq)?;
                 frames.push(format_sse_event(
                     "response.reasoning_summary_part.added",
                     &json!({
@@ -1000,11 +1074,14 @@ fn openai_chunk_to_responses(state: &mut ResponsesSseState, chunk: &Value) -> Ve
                 ));
             }
 
-            state.seq += 1;
-            state
-                .reasoning_buf
-                .get_or_insert_with(String::new)
-                .push_str(reasoning);
+            advance_response_seq(&mut state.seq)?;
+            crate::core::translator::limits::checked_append(
+                state.reasoning_buf.get_or_insert_with(String::new),
+                reasoning,
+                crate::core::translator::limits::MAX_STREAM_ACCUMULATED_BYTES,
+                &mut state.retained_bytes,
+                "reasoning",
+            )?;
             frames.push(format_sse_event(
                 "response.reasoning_summary_text.delta",
                 &json!({
@@ -1020,7 +1097,7 @@ fn openai_chunk_to_responses(state: &mut ResponsesSseState, chunk: &Value) -> Ve
                 state.msg_item_added.insert(index, true);
                 let item_id = generate_response_id();
                 state.added_item_id_map.insert(index, item_id.clone());
-                state.seq += 1;
+                advance_response_seq(&mut state.seq)?;
                 frames.push(format_sse_event(
                     "response.output_item.added",
                     &json!({
@@ -1043,7 +1120,7 @@ fn openai_chunk_to_responses(state: &mut ResponsesSseState, chunk: &Value) -> Ve
                 state
                     .added_content_part_id_map
                     .insert(index, part_id.clone());
-                state.seq += 1;
+                advance_response_seq(&mut state.seq)?;
                 frames.push(format_sse_event(
                     "response.content_part.added",
                     &json!({
@@ -1060,12 +1137,18 @@ fn openai_chunk_to_responses(state: &mut ResponsesSseState, chunk: &Value) -> Ve
             }
 
             let buf = state.msg_text_buf.entry(index).or_default();
-            buf.push_str(content);
+            crate::core::translator::limits::checked_append(
+                buf,
+                content,
+                crate::core::translator::limits::MAX_STREAM_ACCUMULATED_BYTES,
+                &mut state.retained_bytes,
+                "response text",
+            )?;
             // Only emit delta events for non-empty content to avoid
             // flooding the client with empty frames (many providers
             // send empty content chunks during streaming).
             if !content.is_empty() {
-                state.seq += 1;
+                advance_response_seq(&mut state.seq)?;
                 frames.push(format_sse_event(
                     "response.output_text.delta",
                     &json!({
@@ -1082,7 +1165,7 @@ fn openai_chunk_to_responses(state: &mut ResponsesSseState, chunk: &Value) -> Ve
             if !state.reasoning_done && state.reasoning_item_added {
                 let reasoning_text = state.reasoning_buf.as_deref().unwrap_or("");
                 state.reasoning_done = true;
-                state.seq += 1;
+                advance_response_seq(&mut state.seq)?;
                 frames.push(format_sse_event(
                     "response.reasoning_summary_text.done",
                     &json!({
@@ -1091,7 +1174,7 @@ fn openai_chunk_to_responses(state: &mut ResponsesSseState, chunk: &Value) -> Ve
                         "text": reasoning_text,
                     }),
                 ));
-                state.seq += 1;
+                advance_response_seq(&mut state.seq)?;
                 frames.push(format_sse_event(
                     "response.content_part.done",
                     &json!({
@@ -1127,7 +1210,7 @@ fn openai_chunk_to_responses(state: &mut ResponsesSseState, chunk: &Value) -> Ve
                     .map(|s| s.as_str())
                     .unwrap_or("");
 
-                state.seq += 1;
+                advance_response_seq(&mut state.seq)?;
                 frames.push(format_sse_event(
                     "response.output_text.done",
                     &json!({
@@ -1137,7 +1220,7 @@ fn openai_chunk_to_responses(state: &mut ResponsesSseState, chunk: &Value) -> Ve
                     }),
                 ));
 
-                state.seq += 1;
+                advance_response_seq(&mut state.seq)?;
                 frames.push(format_sse_event(
                     "response.content_part.done",
                     &json!({
@@ -1152,7 +1235,7 @@ fn openai_chunk_to_responses(state: &mut ResponsesSseState, chunk: &Value) -> Ve
                     }),
                 ));
 
-                state.seq += 1;
+                advance_response_seq(&mut state.seq)?;
                 frames.push(format_sse_event(
                     "response.output_item.done",
                     &json!({
@@ -1278,7 +1361,7 @@ fn openai_chunk_to_responses(state: &mut ResponsesSseState, chunk: &Value) -> Ve
             }
         }
 
-        state.seq += 1;
+        advance_response_seq(&mut state.seq)?;
         frames.push(format_sse_event(
             "response.completed",
             &json!({
@@ -1288,7 +1371,7 @@ fn openai_chunk_to_responses(state: &mut ResponsesSseState, chunk: &Value) -> Ve
         ));
     }
 
-    frames
+    Ok(frames)
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -1351,7 +1434,16 @@ async fn convert_to_messages_api(response: Response) -> Response {
                         }
 
                         if let Ok(chunk_value) = serde_json::from_str::<Value>(json_str) {
-                            let events = openai_chunk_to_messages(&mut conv_state, &chunk_value);
+                            let events = match openai_chunk_to_messages(&mut conv_state, &chunk_value) {
+                                Ok(events) => events,
+                                Err(error) => {
+                                    yield Ok::<Bytes, std::io::Error>(Bytes::from(format_messages_sse_event(
+                                        "error",
+                                        &json!({"type": "error", "error": {"message": error.message, "code": error.code}}),
+                                    )));
+                                    return;
+                                }
+                            };
                             for event_bytes in events {
                                 yield Ok::<Bytes, std::io::Error>(Bytes::from(event_bytes));
                             }
@@ -1364,6 +1456,13 @@ async fn convert_to_messages_api(response: Response) -> Response {
 
         // Send message_stop if not already sent
         if !conv_state.stop_sent {
+            if let Err(error) = conv_state.validate_tool_identity() {
+                yield Ok::<Bytes, std::io::Error>(Bytes::from(format_messages_sse_event(
+                    "error",
+                    &json!({"type": "error", "error": {"message": error.message, "code": error.code}}),
+                )));
+                return;
+            }
             conv_state.stop_sent = true;
             yield Ok::<Bytes, std::io::Error>(Bytes::from("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"));
         }
@@ -1534,28 +1633,26 @@ struct MessagesSseState {
 
     // Thinking block state
     thinking_started: bool,
-    thinking_buf: String,
     thinking_stopped: bool,
 
     // Text block state
     text_started: bool,
-    text_buf: String,
     text_stopped: bool,
 
     // Block index counter
-    block_idx: usize,
+    block_idx: u64,
 
     // Whether final events were sent
     stop_sent: bool,
 
-    // Tool call streaming state
-    // Each tool call is tracked by its index in the delta's tool_calls array.
-    // Vectors are grown on demand when a new index appears.
-    toolcall_active: Vec<bool>,  // per-index: content_block_start emitted?
-    toolcall_ids: Vec<String>,   // per-index: tool call id
-    toolcall_names: Vec<String>, // per-index: tool call name
-    toolcall_args: Vec<String>,  // per-index: accumulated arguments JSON
-    toolcall_start_indices: Vec<usize>, // per-index: block_idx at content_block_start
+    // Wire tool index -> emitted Anthropic block index. A map preserves sparse
+    // ordering without allocating through an attacker-controlled index.
+    toolcalls: BTreeMap<u64, u64>,
+    seen_tool_indices: BTreeSet<u64>,
+    pending_tool_args: BTreeMap<u64, String>,
+    tool_argument_bytes: BTreeMap<u64, usize>,
+    choice_indices: BTreeSet<u64>,
+    retained_bytes: usize,
 }
 
 impl MessagesSseState {
@@ -1565,35 +1662,39 @@ impl MessagesSseState {
             msg_id: String::new(),
             model: String::new(),
             thinking_started: false,
-            thinking_buf: String::new(),
             thinking_stopped: false,
             text_started: false,
-            text_buf: String::new(),
             text_stopped: false,
             block_idx: 0,
             stop_sent: false,
-            toolcall_active: Vec::new(),
-            toolcall_ids: Vec::new(),
-            toolcall_names: Vec::new(),
-            toolcall_args: Vec::new(),
-            toolcall_start_indices: Vec::new(),
-        }
-    }
-
-    /// Ensure tool call vectors are large enough for the given index.
-    fn ensure_toolcall_idx(&mut self, idx: usize) {
-        while self.toolcall_active.len() <= idx {
-            self.toolcall_active.push(false);
-            self.toolcall_ids.push(String::new());
-            self.toolcall_names.push(String::new());
-            self.toolcall_args.push(String::new());
-            self.toolcall_start_indices.push(0);
+            toolcalls: BTreeMap::new(),
+            seen_tool_indices: BTreeSet::new(),
+            pending_tool_args: BTreeMap::new(),
+            tool_argument_bytes: BTreeMap::new(),
+            choice_indices: BTreeSet::new(),
+            retained_bytes: 0,
         }
     }
 
     /// True if any tool call is currently active (started but not finished).
     fn has_active_toolcalls(&self) -> bool {
-        self.toolcall_active.iter().any(|&a| a)
+        !self.toolcalls.is_empty()
+    }
+
+    fn validate_tool_identity(
+        &self,
+    ) -> Result<(), crate::core::translator::limits::StreamLimitError> {
+        for index in &self.seen_tool_indices {
+            if !self.toolcalls.contains_key(index) {
+                return Err(crate::core::translator::limits::StreamLimitError {
+                    code: "upstream_stream_invalid_tool_call",
+                    message: format!(
+                        "OpenAI tool call index {index} finished without a non-empty id and function name"
+                    ),
+                });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1604,7 +1705,10 @@ fn format_messages_sse_event(event: &str, data: &Value) -> Vec<u8> {
 }
 
 /// Convert a single chat.completion.chunk to Anthropic Messages API SSE events.
-fn openai_chunk_to_messages(state: &mut MessagesSseState, chunk: &Value) -> Vec<Vec<u8>> {
+fn openai_chunk_to_messages(
+    state: &mut MessagesSseState,
+    chunk: &Value,
+) -> Result<Vec<Vec<u8>>, crate::core::translator::limits::StreamLimitError> {
     let mut frames: Vec<Vec<u8>> = Vec::new();
 
     // ── Initialize on first chunk ──────────────────────────────────────────
@@ -1647,10 +1751,21 @@ fn openai_chunk_to_messages(state: &mut MessagesSseState, chunk: &Value) -> Vec<
     }
 
     let Some(choices) = chunk.get("choices").and_then(|v| v.as_array()) else {
-        return frames;
+        return Ok(frames);
     };
 
     for choice in choices {
+        let choice_index =
+            crate::core::translator::limits::wire_index(choice.get("index"), "choices[].index")?;
+        if !state.choice_indices.contains(&choice_index)
+            && state.choice_indices.len() >= crate::core::translator::limits::MAX_STREAM_CHOICES
+        {
+            return Err(crate::core::translator::limits::StreamLimitError::too_many(
+                "response choices",
+                crate::core::translator::limits::MAX_STREAM_CHOICES,
+            ));
+        }
+        state.choice_indices.insert(choice_index);
         let delta = choice
             .get("delta")
             .and_then(|v| v.as_object())
@@ -1668,7 +1783,11 @@ fn openai_chunk_to_messages(state: &mut MessagesSseState, chunk: &Value) -> Vec<
             if !state.thinking_started {
                 state.thinking_started = true;
                 let idx = state.block_idx;
-                state.block_idx += 1;
+                state.block_idx = state.block_idx.checked_add(1).ok_or_else(|| {
+                    crate::core::translator::limits::StreamLimitError::arithmetic(
+                        "content block index",
+                    )
+                })?;
                 frames.push(format_messages_sse_event(
                     "content_block_start",
                     &json!({
@@ -1683,7 +1802,6 @@ fn openai_chunk_to_messages(state: &mut MessagesSseState, chunk: &Value) -> Vec<
                 ));
             }
 
-            state.thinking_buf.push_str(reasoning);
             let thinking_idx = if state.thinking_started && !state.text_started {
                 0
             } else {
@@ -1723,7 +1841,11 @@ fn openai_chunk_to_messages(state: &mut MessagesSseState, chunk: &Value) -> Vec<
                 if !state.text_started {
                     state.text_started = true;
                     let idx = state.block_idx;
-                    state.block_idx += 1;
+                    state.block_idx = state.block_idx.checked_add(1).ok_or_else(|| {
+                        crate::core::translator::limits::StreamLimitError::arithmetic(
+                            "content block index",
+                        )
+                    })?;
                     frames.push(format_messages_sse_event(
                         "content_block_start",
                         &json!({
@@ -1737,7 +1859,6 @@ fn openai_chunk_to_messages(state: &mut MessagesSseState, chunk: &Value) -> Vec<
                     ));
                 }
 
-                state.text_buf.push_str(content);
                 if !content.is_empty() {
                     let text_idx = if state.thinking_started { 1 } else { 0 };
                     frames.push(format_messages_sse_event(
@@ -1769,29 +1890,46 @@ fn openai_chunk_to_messages(state: &mut MessagesSseState, chunk: &Value) -> Vec<
             }
 
             for tc in tool_calls {
-                let tcidx = tc.get("index").and_then(|v| v.as_i64()).unwrap_or(0) as usize;
-                state.ensure_toolcall_idx(tcidx);
+                let tcidx = crate::core::translator::limits::wire_index(
+                    tc.get("index"),
+                    "tool_calls[].index",
+                )?;
+                if !state.seen_tool_indices.contains(&tcidx)
+                    && state.seen_tool_indices.len()
+                        >= crate::core::translator::limits::MAX_STREAM_TOOL_CALLS
+                {
+                    return Err(crate::core::translator::limits::StreamLimitError::too_many(
+                        "tool calls",
+                        crate::core::translator::limits::MAX_STREAM_TOOL_CALLS,
+                    ));
+                }
+                state.seen_tool_indices.insert(tcidx);
 
                 // First chunk: has id + function.name → emit content_block_start
-                if let Some(id) = tc
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                {
-                    if !state.toolcall_active[tcidx] {
-                        let name = tc
-                            .get("function")
-                            .and_then(|f| f.get("name"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-
-                        state.toolcall_active[tcidx] = true;
-                        state.toolcall_ids[tcidx] = id.to_string();
-                        state.toolcall_names[tcidx] = name.to_string();
-
+                let id = tc.get("id").and_then(Value::as_str);
+                let name = tc.pointer("/function/name").and_then(Value::as_str);
+                if id.is_some() || name.is_some() {
+                    let id = id.filter(|id| !id.is_empty()).ok_or_else(|| {
+                        crate::core::translator::limits::StreamLimitError {
+                            code: "upstream_stream_invalid_tool_call",
+                            message: "OpenAI tool call declaration is missing an id".to_string(),
+                        }
+                    })?;
+                    let name = name.filter(|name| !name.is_empty()).ok_or_else(|| {
+                        crate::core::translator::limits::StreamLimitError {
+                            code: "upstream_stream_invalid_tool_call",
+                            message: "OpenAI tool call declaration is missing a function name"
+                                .to_string(),
+                        }
+                    })?;
+                    if !state.toolcalls.contains_key(&tcidx) {
                         let idx = state.block_idx;
-                        state.block_idx += 1;
-                        state.toolcall_start_indices[tcidx] = idx;
+                        state.block_idx = state.block_idx.checked_add(1).ok_or_else(|| {
+                            crate::core::translator::limits::StreamLimitError::arithmetic(
+                                "content block index",
+                            )
+                        })?;
+                        state.toolcalls.insert(tcidx, idx);
 
                         frames.push(format_messages_sse_event(
                             "content_block_start",
@@ -1805,6 +1943,29 @@ fn openai_chunk_to_messages(state: &mut MessagesSseState, chunk: &Value) -> Vec<
                                 },
                             }),
                         ));
+                        if let Some(pending) = state.pending_tool_args.remove(&tcidx) {
+                            state.retained_bytes = state
+                                .retained_bytes
+                                .checked_sub(pending.len())
+                                .ok_or_else(|| {
+                                    crate::core::translator::limits::StreamLimitError::arithmetic(
+                                        "retained state",
+                                    )
+                                })?;
+                            if !pending.is_empty() {
+                                frames.push(format_messages_sse_event(
+                                    "content_block_delta",
+                                    &json!({
+                                        "type": "content_block_delta",
+                                        "index": idx,
+                                        "delta": {
+                                            "type": "input_json_delta",
+                                            "partial_json": pending,
+                                        },
+                                    }),
+                                ));
+                            }
+                        }
                     }
                 }
 
@@ -1814,9 +1975,24 @@ fn openai_chunk_to_messages(state: &mut MessagesSseState, chunk: &Value) -> Vec<
                     .and_then(|f| f.get("arguments"))
                     .and_then(|v| v.as_str())
                 {
-                    if !args.is_empty() && state.toolcall_active[tcidx] {
-                        state.toolcall_args[tcidx].push_str(args);
-                        let tcidx_start = state.toolcall_start_indices[tcidx];
+                    if !args.is_empty() {
+                        let current = state.tool_argument_bytes.get(&tcidx).copied().unwrap_or(0);
+                        let next = current.checked_add(args.len()).ok_or_else(|| {
+                            crate::core::translator::limits::StreamLimitError::arithmetic(
+                                "tool arguments",
+                            )
+                        })?;
+                        if next > crate::core::translator::limits::MAX_STREAM_TOOL_ARGUMENT_BYTES {
+                            return Err(crate::core::translator::limits::StreamLimitError::bytes(
+                                "tool arguments",
+                                crate::core::translator::limits::MAX_STREAM_TOOL_ARGUMENT_BYTES,
+                            ));
+                        }
+                        state.tool_argument_bytes.insert(tcidx, next);
+                    }
+                    if let Some(&tcidx_start) =
+                        state.toolcalls.get(&tcidx).filter(|_| !args.is_empty())
+                    {
                         frames.push(format_messages_sse_event(
                             "content_block_delta",
                             &json!({
@@ -1828,6 +2004,15 @@ fn openai_chunk_to_messages(state: &mut MessagesSseState, chunk: &Value) -> Vec<
                                 },
                             }),
                         ));
+                    } else if !args.is_empty() {
+                        let pending = state.pending_tool_args.entry(tcidx).or_default();
+                        crate::core::translator::limits::checked_append(
+                            pending,
+                            args,
+                            crate::core::translator::limits::MAX_STREAM_TOOL_ARGUMENT_BYTES,
+                            &mut state.retained_bytes,
+                            "tool arguments",
+                        )?;
                     }
                 }
             }
@@ -1835,17 +2020,15 @@ fn openai_chunk_to_messages(state: &mut MessagesSseState, chunk: &Value) -> Vec<
 
         // ── Finish reason → close blocks + message_delta + message_stop ──────
         if finish_reason.is_some() && !state.stop_sent {
+            state.validate_tool_identity()?;
             // Close tool call blocks
-            for tcidx in 0..state.toolcall_active.len() {
-                if state.toolcall_active[tcidx] {
-                    state.toolcall_active[tcidx] = false;
-                    let tcidx_start = state.toolcall_start_indices[tcidx];
-                    frames.push(format_messages_sse_event(
-                        "content_block_stop",
-                        &json!({"type": "content_block_stop", "index": tcidx_start}),
-                    ));
-                }
+            for &tcidx_start in state.toolcalls.values() {
+                frames.push(format_messages_sse_event(
+                    "content_block_stop",
+                    &json!({"type": "content_block_stop", "index": tcidx_start}),
+                ));
             }
+            state.toolcalls.clear();
 
             // Close text block if open
             if state.text_started && !state.text_stopped {
@@ -1900,7 +2083,7 @@ fn openai_chunk_to_messages(state: &mut MessagesSseState, chunk: &Value) -> Vec<
         }
     }
 
-    frames
+    Ok(frames)
 }
 
 // ---------------------------------------------------------------------------
@@ -2245,7 +2428,7 @@ mod tests {
         });
 
         let frames = openai_chunk_to_responses(&mut state, &chunk);
-        let all_frames = frames.concat();
+        let all_frames = frames.unwrap().concat();
         let sse = String::from_utf8_lossy(&all_frames);
 
         assert!(
@@ -2303,7 +2486,7 @@ mod tests {
 
         let _ = openai_chunk_to_responses(&mut state, &chunk1);
         let frames = openai_chunk_to_responses(&mut state, &chunk2);
-        let all_frames = frames.concat();
+        let all_frames = frames.unwrap().concat();
         let sse = String::from_utf8_lossy(&all_frames);
 
         assert!(
@@ -2347,7 +2530,7 @@ mod tests {
         });
 
         let frames = openai_chunk_to_responses(&mut state, &chunk);
-        let all_frames = frames.concat();
+        let all_frames = frames.unwrap().concat();
         let sse = String::from_utf8_lossy(&all_frames);
 
         assert!(
@@ -2657,5 +2840,52 @@ mod tests {
         );
         assert_eq!(resp["output"][1]["content"][0]["type"], "output_text");
         assert_eq!(resp["output"][1]["content"][0]["text"], "Final answer");
+    }
+
+    #[test]
+    fn messages_preserves_arguments_before_identity_and_rejects_missing_identity() {
+        let args_first = json!({"choices":[{"index":0,"delta":{"tool_calls":[{
+            "index":7,"function":{"arguments":"{\"city\":\""}
+        }]}}]});
+        let identity = json!({"choices":[{"index":0,"delta":{"tool_calls":[{
+            "index":7,"id":"call_7","function":{"name":"weather","arguments":"雪\"}"}
+        }]}}]});
+        let finish = json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]});
+
+        let mut state = MessagesSseState::new();
+        openai_chunk_to_messages(&mut state, &args_first).unwrap();
+        let frames = openai_chunk_to_messages(&mut state, &identity).unwrap();
+        let output = String::from_utf8(frames.concat()).unwrap();
+        let first = output.find("{\\\"city\\\":\\\"").unwrap();
+        let second = output.find("雪\\\"}").unwrap();
+        assert!(first < second);
+        openai_chunk_to_messages(&mut state, &finish).unwrap();
+
+        let mut state = MessagesSseState::new();
+        openai_chunk_to_messages(&mut state, &args_first).unwrap();
+        let error = openai_chunk_to_messages(&mut state, &finish).unwrap_err();
+        assert_eq!(error.code, "upstream_stream_invalid_tool_call");
+    }
+
+    #[test]
+    fn responses_completion_output_is_numeric_and_sequence_overflow_is_error() {
+        let mut state = ResponsesSseState::new();
+        for index in [7usize, 2usize] {
+            state.msg_item_done.insert(index, true);
+            state.msg_text_buf.insert(index, format!("text_{index}"));
+            state
+                .added_item_id_map
+                .insert(index, format!("item_{index}"));
+            state
+                .added_content_part_id_map
+                .insert(index, format!("part_{index}"));
+        }
+        let output = String::from_utf8(state.flush_frames().unwrap().concat()).unwrap();
+        assert!(output.find("item_2").unwrap() < output.find("item_7").unwrap());
+
+        let mut state = ResponsesSseState::new();
+        state.seq = u64::MAX;
+        let error = state.flush_frames().unwrap_err();
+        assert_eq!(error.code, "upstream_stream_arithmetic_overflow");
     }
 }

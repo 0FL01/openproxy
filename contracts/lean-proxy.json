@@ -486,6 +486,48 @@
     "per_hop_clients_cached_cross_request": false,
     "risk_test_claims_live_exploit_proof": false
   },
+  "streaming_response_accumulators": {
+    "checkpoint": "C31",
+    "maximum_wire_index": 4095,
+    "maximum_choices": 128,
+    "maximum_tool_calls": 128,
+    "maximum_arguments_bytes_per_tool": 1048576,
+    "maximum_retained_state_bytes": 16777216,
+    "wire_index_conversion": "validated_non_negative_u64_before_allocation",
+    "missing_or_unsupported_index_coerced_to_zero": false,
+    "sparse_index_sized_vector_allocation": false,
+    "ordering_representation": "bounded_ordered_map",
+    "bounded_first_arrival_order_paths": [
+      "kiro_binary_tools",
+      "cursor_full_response_tools"
+    ],
+    "compat_responses_output_order": "numeric_choice_index",
+    "checked_add_before_growth": true,
+    "dynamic_map_append_preceded_by_checked_byte_budget": true,
+    "owned_string_accumulators_use_fallible_reserve": true,
+    "missing_tool_identity_fabricated": false,
+    "unknown_tool_argument_target_fabricated": false,
+    "arguments_before_identity": "bounded_then_preserved_until_identity",
+    "missing_identity_at_finish_is_error": true,
+    "forced_responses_parse_and_final_assembly_share_budget": true,
+    "cursor_full_response_accumulators_bounded": true,
+    "registry_paths_with_explicit_tool_accounting": [
+      "ollama_to_openai",
+      "gemini_to_openai",
+      "kiro_to_openai_legacy",
+      "commandcode_to_openai"
+    ],
+    "forced_sse_to_json_limit_failure_status": 502,
+    "forced_sse_to_json_limit_failure_can_enter_json_fallback": false,
+    "committed_stream_limit_failure": "terminal_structured_error_then_stop",
+    "finish_emits_after_recorded_failure": false,
+    "native_same_format_stream_collected": false,
+    "raw_sse_history_removal_owner": "C33",
+    "incremental_sse_framer_owner": "C32",
+    "valid_out_of_order_repeated_index_unicode_and_argument_bytes_preserved": true,
+    "c13_attempt_budget_changed": false,
+    "post_commit_generation_retry_changed": false
+  },
   "versions": {
     "opencode": "1.18.31",
     "custom_harness": "unknown"

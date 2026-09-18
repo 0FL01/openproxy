@@ -176,7 +176,18 @@ async fn convert_openai_sse_to_ollama(response: Response, model: &str) -> Respon
                 break;
             };
 
-            for event in state.transform(&chunk, &model) {
+            let events = match state.transform(&chunk, &model) {
+                Ok(events) => events,
+                Err(error) => {
+                    yield Ok::<_, Infallible>(ndjson_line(json!({
+                        "error": error.message,
+                        "error_code": error.code,
+                        "done": true
+                    })));
+                    return;
+                }
+            };
+            for event in events {
                 yield Ok::<_, Infallible>(event);
             }
         }
@@ -204,7 +215,8 @@ async fn convert_openai_sse_to_ollama(response: Response, model: &str) -> Respon
 #[derive(Default)]
 struct OllamaSseTransformState {
     buffer: String,
-    pending_tool_calls: BTreeMap<usize, PendingToolCall>,
+    pending_tool_calls: BTreeMap<u64, PendingToolCall>,
+    retained_tool_bytes: usize,
     emitted_done: bool,
 }
 
@@ -215,40 +227,48 @@ struct PendingToolCall {
 }
 
 impl OllamaSseTransformState {
-    fn transform(&mut self, chunk: &[u8], model: &str) -> Vec<Bytes> {
+    fn transform(
+        &mut self,
+        chunk: &[u8],
+        model: &str,
+    ) -> Result<Vec<Bytes>, crate::core::translator::limits::StreamLimitError> {
         self.buffer.push_str(&String::from_utf8_lossy(chunk));
         let mut output = Vec::new();
 
         while let Some(pos) = self.buffer.find('\n') {
             let line = self.buffer[..pos].trim_end_matches('\r').to_string();
             self.buffer.drain(..=pos);
-            output.extend(self.transform_line(&line, model));
+            output.extend(self.transform_line(&line, model)?);
         }
 
-        output
+        Ok(output)
     }
 
-    fn transform_line(&mut self, line: &str, model: &str) -> Vec<Bytes> {
+    fn transform_line(
+        &mut self,
+        line: &str,
+        model: &str,
+    ) -> Result<Vec<Bytes>, crate::core::translator::limits::StreamLimitError> {
         let Some(data) = line.strip_prefix("data:") else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         let data = data.trim();
         if data.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         if data == "[DONE]" {
-            return self.finish(model).into_iter().collect();
+            return Ok(self.finish(model).into_iter().collect());
         }
 
         let Ok(parsed) = serde_json::from_str::<Value>(data) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         let Some(choice) = parsed
             .get("choices")
             .and_then(Value::as_array)
             .and_then(|choices| choices.first())
         else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
 
         let delta = choice.get("delta").cloned().unwrap_or_else(|| json!({}));
@@ -257,7 +277,7 @@ impl OllamaSseTransformState {
         let mut output = Vec::new();
 
         if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
-            self.absorb_tool_calls(tool_calls);
+            self.absorb_tool_calls(tool_calls)?;
         }
 
         let content = delta
@@ -289,7 +309,7 @@ impl OllamaSseTransformState {
 
         if let Some(reason) = finish_reason {
             if self.emitted_done {
-                return output;
+                return Ok(output);
             }
 
             let message = if self.pending_tool_calls.is_empty() {
@@ -301,7 +321,7 @@ impl OllamaSseTransformState {
                 json!({
                     "role": "assistant",
                     "content": "",
-                    "tool_calls": self.pending_tool_calls_to_value(),
+                    "tool_calls": self.pending_tool_calls_to_value()?,
                 })
             };
 
@@ -330,11 +350,12 @@ impl OllamaSseTransformState {
                 );
             }
             self.pending_tool_calls.clear();
+            self.retained_tool_bytes = 0;
             self.emitted_done = true;
             output.push(ndjson_line(done_chunk));
         }
 
-        output
+        Ok(output)
     }
 
     fn finish(&mut self, model: &str) -> Option<Bytes> {
@@ -343,6 +364,7 @@ impl OllamaSseTransformState {
         }
 
         self.pending_tool_calls.clear();
+        self.retained_tool_bytes = 0;
         self.emitted_done = true;
         Some(ndjson_line(json!({
             "model": model,
@@ -354,12 +376,24 @@ impl OllamaSseTransformState {
         })))
     }
 
-    fn absorb_tool_calls(&mut self, tool_calls: &[Value]) {
+    fn absorb_tool_calls(
+        &mut self,
+        tool_calls: &[Value],
+    ) -> Result<(), crate::core::translator::limits::StreamLimitError> {
         for tool_call in tool_calls {
-            let index = tool_call
-                .get("index")
-                .and_then(Value::as_u64)
-                .unwrap_or(self.pending_tool_calls.len() as u64) as usize;
+            let index = crate::core::translator::limits::wire_index(
+                tool_call.get("index"),
+                "tool_calls[].index",
+            )?;
+            if !self.pending_tool_calls.contains_key(&index)
+                && self.pending_tool_calls.len()
+                    >= crate::core::translator::limits::MAX_STREAM_TOOL_CALLS
+            {
+                return Err(crate::core::translator::limits::StreamLimitError::too_many(
+                    "tool calls",
+                    crate::core::translator::limits::MAX_STREAM_TOOL_CALLS,
+                ));
+            }
             let pending = self.pending_tool_calls.entry(index).or_default();
 
             if let Some(name) = tool_call
@@ -367,30 +401,57 @@ impl OllamaSseTransformState {
                 .and_then(|function| function.get("name"))
                 .and_then(Value::as_str)
             {
-                pending.name.push_str(name);
+                crate::core::translator::limits::checked_append(
+                    &mut pending.name,
+                    name,
+                    crate::core::translator::limits::MAX_STREAM_TOOL_ARGUMENT_BYTES,
+                    &mut self.retained_tool_bytes,
+                    "tool name",
+                )?;
             }
             if let Some(arguments) = tool_call
                 .get("function")
                 .and_then(|function| function.get("arguments"))
                 .and_then(Value::as_str)
             {
-                pending.arguments.push_str(arguments);
+                crate::core::translator::limits::checked_append(
+                    &mut pending.arguments,
+                    arguments,
+                    crate::core::translator::limits::MAX_STREAM_TOOL_ARGUMENT_BYTES,
+                    &mut self.retained_tool_bytes,
+                    "tool arguments",
+                )?;
             }
         }
+        Ok(())
     }
 
-    fn pending_tool_calls_to_value(&self) -> Vec<Value> {
+    fn pending_tool_calls_to_value(
+        &self,
+    ) -> Result<Vec<Value>, crate::core::translator::limits::StreamLimitError> {
         self.pending_tool_calls
             .values()
             .map(|pending| {
-                let arguments = serde_json::from_str::<Value>(&pending.arguments)
-                    .unwrap_or_else(|_| Value::Object(Map::new()));
-                json!({
+                if pending.name.is_empty() {
+                    return Err(crate::core::translator::limits::StreamLimitError {
+                        code: "upstream_stream_invalid_tool_call",
+                        message: "Ollama compatibility tool call ended without a name".to_string(),
+                    });
+                }
+                let arguments =
+                    serde_json::from_str::<Value>(&pending.arguments).map_err(|_| {
+                        crate::core::translator::limits::StreamLimitError {
+                            code: "upstream_stream_invalid_tool_call",
+                            message: "Ollama compatibility tool arguments are incomplete"
+                                .to_string(),
+                        }
+                    })?;
+                Ok(json!({
                     "function": {
                         "name": pending.name,
                         "arguments": arguments,
                     }
-                })
+                }))
             })
             .collect()
     }
@@ -532,7 +593,7 @@ data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":
 data: [DONE]
 "#,
             "llama3.2",
-        );
+        ).unwrap();
 
         assert_eq!(output.len(), 2);
         let first = String::from_utf8(output[0].to_vec()).unwrap();
@@ -552,7 +613,7 @@ data: [DONE]
 data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"rch","arguments":":\"rust\"}"}}]},"finish_reason":"tool_calls"}]}
 "#,
             "llama3.2",
-        );
+        ).unwrap();
 
         assert_eq!(output.len(), 1);
         let done = String::from_utf8(output[0].to_vec()).unwrap();

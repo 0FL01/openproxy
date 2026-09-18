@@ -59,7 +59,9 @@ pub fn openai_to_antigravity_response(
 
     if let Some(tool_calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
         for tc in tool_calls {
-            let idx = tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
+            let Some(idx) = tc.get("index").and_then(|v| v.as_u64()) else {
+                continue;
+            };
             let accum_key = idx.to_string();
             if state["_toolCallAccum"].get(&accum_key).is_none() {
                 state["_toolCallAccum"][&accum_key] =
@@ -213,7 +215,40 @@ pub fn openai_to_antigravity_streaming(
         Ok(v) => v,
         Err(_) => return vec![],
     };
+    if let Err(error) =
+        crate::core::translator::registry::track_openai_accumulation(state, &val, 3, false)
+    {
+        return state.fail(error);
+    }
     let results = openai_to_antigravity_response(&val, &mut state.generic);
+    if val
+        .pointer("/choices/0/finish_reason")
+        .and_then(Value::as_str)
+        .is_some()
+    {
+        let invalid = state
+            .generic
+            .get("_toolCallAccum")
+            .and_then(Value::as_object)
+            .and_then(|tools| {
+                tools.values().find_map(|tool| {
+                    let name = tool.get("name").and_then(Value::as_str).unwrap_or("");
+                    if name.is_empty() {
+                        return Some("Antigravity tool call ended without a name");
+                    }
+                    let arguments = tool.get("arguments").and_then(Value::as_str).unwrap_or("");
+                    serde_json::from_str::<Value>(arguments)
+                        .is_err()
+                        .then_some("Antigravity tool arguments are incomplete")
+                })
+            });
+        if let Some(message) = invalid {
+            return state.fail(crate::core::translator::limits::StreamLimitError {
+                code: "upstream_stream_invalid_tool_call",
+                message: message.to_string(),
+            });
+        }
+    }
     results
         .into_iter()
         .map(|v| {

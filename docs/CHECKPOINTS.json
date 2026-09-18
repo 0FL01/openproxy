@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C31",
+  "next_checkpoint": "C32",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c30b_cargo_1.98.1",
+    "rust_verification": "passed_through_c31_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -1664,7 +1664,7 @@
     {
       "id": "C31",
       "title": "Ограничить tool index и размер накапливаемого tool state",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C29"
       ],
@@ -1676,7 +1676,60 @@
       "change": "Проверять конвертацию индекса/checked arithmetic до allocation; ограничить количество tool calls и байты arguments/state. Не выделять vector до произвольного upstream index. Выбрать ограниченную representation, сохраняющую ordering protocol. Не подменять неподдерживаемый индекс нулём молча.",
       "tests": "Индекс u64::MAX, огромный разреженный index при маленьком frame, many tools, длинные arguments, out-of-order allowed deltas, повторный index. Ошибка явная, нет runaway allocation.",
       "acceptance": "Размер tool state имеет предел независимо от небольшого wire event. Валидная последовательность tool calls собирается без изменения аргументов.",
-      "rollback": "Настройки пределов можно вернуть; семантический data corruption не считается допустимой экономией."
+      "rollback": "Настройки пределов можно вернуть; семантический data corruption не считается допустимой экономией.",
+      "result": {
+        "completed": "2026-09-18",
+        "files": [
+          "src/core/chat/stream_to_json.rs",
+          "src/core/executor/cursor.rs",
+          "src/core/translator/limits.rs",
+          "src/core/translator/mod.rs",
+          "src/core/translator/registry.rs",
+          "src/core/translator/response/claude_to_openai.rs",
+          "src/core/translator/response/commandcode_to_openai.rs",
+          "src/core/translator/response/gemini_to_openai.rs",
+          "src/core/translator/response/kiro_events.rs",
+          "src/core/translator/response/kiro_to_claude.rs",
+          "src/core/translator/response/kiro_to_openai.rs",
+          "src/core/translator/response/openai_responses.rs",
+          "src/core/translator/response/openai_to_antigravity.rs",
+          "src/core/translator/response/openai_to_claude.rs",
+          "src/core/translator/response/openai_to_gemini.rs",
+          "src/core/translator/response/ollama_to_openai.rs",
+          "src/core/translator/tests.rs",
+          "src/server/api/chat.rs",
+          "src/server/api/compat.rs",
+          "src/server/api/v1_api_chat.rs",
+          "tests/lean_proxy_harness.rs",
+          "tests/lean_proxy_stream_state_c31.rs",
+          "tests/lean_proxy_contract.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json",
+          "docs/CHECKPOINTS.json",
+          "docs/goals/2026-09-17-lean-proxy-plan.md"
+        ],
+        "bounds": "All active response accumulators share fixed limits: wire index <= 4095, 128 choices, 128 tool calls, 1 MiB accumulated arguments per tool, and 16 MiB total retained text/reasoning/tool state. Checked conversion/addition and fallible reserve precede accumulator growth; limits cannot be disabled.",
+        "representation": "Forced SSE-to-JSON output items and tool calls, Messages compatibility tool state, and compat Responses choice state use bounded BTreeMap representations. Kiro binary and Cursor full-response tools use bounded first-arrival vectors with linear lookup over at most 128 entries. A billion-scale sparse index and u64::MAX fail before index-driven allocation; no sparse Vec resize/while-push remains on these paths.",
+        "failure_contract": "Missing, negative, non-integer, or unsupported upstream indices are explicit errors and never become index zero. Missing tool identity and Responses argument deltas for unknown items do not create synthetic calls. Arguments preceding identity are bounded and preserved; missing identity at finish fails explicitly. Forced Responses parse and final assembly share one 16 MiB budget. Forced SSE-to-JSON returns a structured 502 before commitment without entering the plain-JSON fallback; translated streaming paths emit a terminal structured error and stop; finish emits nothing after recorded failure.",
+        "preservation": "Numeric tool ordering, bounded first-arrival Kiro/Cursor ordering, out-of-order distinct indices, repeated-index and args-before-identity concatenation, Unicode bytes, exact-limit arguments, existing valid translator goldens, C13 attempt ownership, C29 body collection, and native same-format streaming remain unchanged. No generation retry or post-commit fallback was added.",
+        "scope_boundaries": "C31 retains the existing raw SSE collection/framing architecture. C32 still owns the shared incremental framer, C33 owns removal of full raw SSE history from forced conversion, and C34 owns broader clone/quadratic optimization.",
+        "verification": [
+          "cargo test --test lean_proxy_stream_state_c31 -- --nocapture: 5 passed",
+          "cargo test --lib core::chat::stream_to_json --all-features -- --nocapture: 25 passed",
+          "cargo test --lib core::translator::response --all-features -- --nocapture: 149 passed",
+          "cargo test --lib core::executor::cursor::tests --all-features -- --nocapture: 39 passed",
+          "cargo test --lib server::api::compat::tests --all-features -- --nocapture: 18 passed",
+          "cargo test --lib server::api::v1_api_chat::tests --all-features -- --nocapture: 3 passed",
+          "cargo test --test lean_proxy_stream_state_c31 --test lean_proxy_bounded_c29 --test lean_proxy_budget_c13 --test lean_proxy_transformed_c28 --test lean_proxy_contract -- --nocapture: 24 passed",
+          "cargo test --lib --all-features -- --test-threads=1: 1209 passed",
+          "cargo clippy --test lean_proxy_stream_state_c31 --all-features -- -D warnings -A clippy::let-and-return -A clippy::needless-return: passed",
+          "cargo clippy --all-targets --all-features: passed with exactly 3 pre-existing production style warnings",
+          "cargo fmt --all -- --check, JSON parse, and git diff --check: passed"
+        ],
+        "acceptance_evidence": "Deterministic tests cover u64::MAX, 4095/4096, a sparse billion index, negative indices, 128/129 choices and tool calls, exact and +1 arguments, shared parse/final and total text-state overflow, Ollama/Gemini/Kiro/Responses/CommandCode/Cursor paths, Kiro/Cursor arrival order, numeric compat output, args-before-identity, missing identity, failure finish suppression, Unicode, valid goldens, explicit pre-commit caller failure, source guards, and downstream cancellation dropping a held upstream body.",
+        "migration": "No persisted data, credential, public route, provider mapping, model metadata, dependency, or openproxy.v1 field changed. Contract manifest additions are additive metadata only.",
+        "rollback": "Revert C31 runtime/tests/contract changes together or adjust the declared fixed limits in a new explicit checkpoint. Never restore index coercion, sparse index-sized allocation, fake tool calls, or fallback masking of a resource-limit error."
+      }
     },
     {
       "id": "C32",

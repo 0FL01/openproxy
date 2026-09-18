@@ -1,15 +1,20 @@
 use serde_json::Value;
 use std::collections::HashMap;
 
-pub fn gemini_to_openai_response(chunk: &Value, state: &mut HashMap<String, Value>) -> Vec<Value> {
+use crate::core::translator::limits::StreamLimitError;
+
+pub fn gemini_to_openai_response(
+    chunk: &Value,
+    state: &mut HashMap<String, Value>,
+) -> Result<Vec<Value>, StreamLimitError> {
     let mut results = Vec::new();
 
     let response = chunk.get("response").unwrap_or(chunk);
     let Some(candidates) = response.get("candidates").and_then(|v| v.as_array()) else {
-        return results;
+        return Ok(results);
     };
     let Some(candidate) = candidates.first() else {
-        return results;
+        return Ok(results);
     };
 
     if !state.contains_key("messageId") {
@@ -53,7 +58,7 @@ pub fn gemini_to_openai_response(chunk: &Value, state: &mut HashMap<String, Valu
     let mut func_idx = state
         .get("functionIndex")
         .and_then(|v| v.as_u64())
-        .unwrap_or(0) as usize;
+        .unwrap_or(0);
 
     if let Some(content) = candidate.get("content") {
         if let Some(parts) = content.get("parts").and_then(|v| v.as_array()) {
@@ -92,8 +97,14 @@ pub fn gemini_to_openai_response(chunk: &Value, state: &mut HashMap<String, Valu
                     }
 
                     if let Some(func_call) = part.get("functionCall") {
-                        let raw_name = func_call.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                        let raw_name = function_name(func_call)?;
                         let fc_args = func_call.get("args").cloned().unwrap_or(Value::Null);
+                        let serialized_args =
+                            serde_json::to_string(&fc_args).map_err(|_| StreamLimitError {
+                                code: "upstream_stream_invalid_tool_call",
+                                message: "Gemini function arguments could not be serialized"
+                                    .to_string(),
+                            })?;
                         let tool_call_id = format!(
                             "{}-{}-{}",
                             raw_name,
@@ -106,10 +117,12 @@ pub fn gemini_to_openai_response(chunk: &Value, state: &mut HashMap<String, Valu
                             "type": "function",
                             "function": {
                                 "name": raw_name,
-                                "arguments": serde_json::to_string(&fc_args).unwrap_or_else(|_| "{}".to_string())
+                                "arguments": serialized_args
                             }
                         });
-                        func_idx += 1;
+                        func_idx = func_idx
+                            .checked_add(1)
+                            .ok_or_else(|| StreamLimitError::arithmetic("tool index"))?;
                         results.push(serde_json::json!({
                             "id": format!("chatcmpl-{}", msg_id),
                             "object": "chat.completion.chunk",
@@ -142,8 +155,14 @@ pub fn gemini_to_openai_response(chunk: &Value, state: &mut HashMap<String, Valu
                 }
 
                 if let Some(func_call) = part.get("functionCall") {
-                    let raw_name = func_call.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    let raw_name = function_name(func_call)?;
                     let fc_args = func_call.get("args").cloned().unwrap_or(Value::Null);
+                    let serialized_args =
+                        serde_json::to_string(&fc_args).map_err(|_| StreamLimitError {
+                            code: "upstream_stream_invalid_tool_call",
+                            message: "Gemini function arguments could not be serialized"
+                                .to_string(),
+                        })?;
                     let tool_call_id = format!(
                         "{}-{}-{}",
                         raw_name,
@@ -156,10 +175,12 @@ pub fn gemini_to_openai_response(chunk: &Value, state: &mut HashMap<String, Valu
                         "type": "function",
                         "function": {
                             "name": raw_name,
-                            "arguments": serde_json::to_string(&fc_args).unwrap_or_else(|_| "{}".to_string())
+                            "arguments": serialized_args
                         }
                     });
-                    func_idx += 1;
+                    func_idx = func_idx
+                        .checked_add(1)
+                        .ok_or_else(|| StreamLimitError::arithmetic("tool index"))?;
                     results.push(serde_json::json!({
                         "id": format!("chatcmpl-{}", msg_id),
                         "object": "chat.completion.chunk",
@@ -183,7 +204,7 @@ pub fn gemini_to_openai_response(chunk: &Value, state: &mut HashMap<String, Valu
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
     {
-        return results;
+        return Ok(results);
     }
 
     if let Some(finish_reason) = candidate.get("finishReason").and_then(|v| v.as_str()) {
@@ -232,7 +253,9 @@ pub fn gemini_to_openai_response(chunk: &Value, state: &mut HashMap<String, Valu
                         .saturating_sub(prompt_tokens)
                         .saturating_sub(thoughts_tokens);
                 }
-                let completion_tokens = candidates_tokens + thoughts_tokens;
+                let completion_tokens = candidates_tokens
+                    .checked_add(thoughts_tokens)
+                    .ok_or_else(|| StreamLimitError::arithmetic("completion token"))?;
 
                 let mut usage = serde_json::json!({
                     "prompt_tokens": prompt_tokens,
@@ -260,7 +283,18 @@ pub fn gemini_to_openai_response(chunk: &Value, state: &mut HashMap<String, Valu
         results.push(final_chunk);
     }
 
-    results
+    Ok(results)
+}
+
+fn function_name(function_call: &Value) -> Result<&str, StreamLimitError> {
+    function_call
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| StreamLimitError {
+            code: "upstream_stream_invalid_tool_call",
+            message: "Gemini function call is missing a name".to_string(),
+        })
 }
 
 /// Registry-compatible wrapper: parses raw bytes, calls the typed
@@ -275,8 +309,76 @@ pub fn gemini_to_openai_streaming(
         Ok(v) => v,
         Err(_) => return vec![],
     };
+    let mut next_index = state
+        .gemini
+        .gemini_state
+        .get("functionIndex")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if let Err(error) = state.accumulation.track_choice(7, 0) {
+        return state.fail(error);
+    }
+    let response = val.get("response").unwrap_or(&val);
+    if let Some(parts) = response
+        .pointer("/candidates/0/content/parts")
+        .and_then(Value::as_array)
+    {
+        for part in parts {
+            if let Some(text) = part.get("text").and_then(Value::as_str) {
+                if let Err(error) = state.accumulation.track_retained(text.len(), "Gemini text") {
+                    return state.fail(error);
+                }
+            }
+            if let Some(function_call) = part.get("functionCall") {
+                let name = match function_name(function_call) {
+                    Ok(name) => name,
+                    Err(error) => return state.fail(error),
+                };
+                if let Err(error) = state.accumulation.track_tool(7, 0, next_index) {
+                    return state.fail(error);
+                }
+                let arguments = function_call.get("args").unwrap_or(&Value::Null);
+                let argument_bytes = match super::kiro_events::serialized_len(arguments) {
+                    Ok(bytes) => bytes,
+                    Err(_) => {
+                        return state.fail(StreamLimitError {
+                            code: "upstream_stream_invalid_tool_call",
+                            message: "Gemini function arguments could not be serialized"
+                                .to_string(),
+                        })
+                    }
+                };
+                if let Err(error) =
+                    state
+                        .accumulation
+                        .track_tool_arguments(7, 0, next_index, argument_bytes)
+                {
+                    return state.fail(error);
+                }
+                if let Err(error) = state
+                    .accumulation
+                    .track_retained(name.len(), "tool metadata")
+                {
+                    return state.fail(error);
+                }
+                next_index = match next_index.checked_add(1) {
+                    Some(index) => index,
+                    None => {
+                        return state.fail(
+                            crate::core::translator::limits::StreamLimitError::arithmetic(
+                                "tool index",
+                            ),
+                        )
+                    }
+                };
+            }
+        }
+    }
     let inner = &mut state.gemini.gemini_state;
-    let results = gemini_to_openai_response(&val, inner);
+    let results = match gemini_to_openai_response(&val, inner) {
+        Ok(results) => results,
+        Err(error) => return state.fail(error),
+    };
     results
         .into_iter()
         .map(|v| {
@@ -286,4 +388,53 @@ pub fn gemini_to_openai_streaming(
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::translator::limits::{
+        MAX_STREAM_ACCUMULATED_BYTES, MAX_STREAM_TOOL_ARGUMENT_BYTES,
+    };
+    use crate::core::translator::registry::ResponseTransformState;
+    use serde_json::json;
+
+    fn function_chunk(arguments: String) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "response": {
+                "responseId": "gemini-c31",
+                "modelVersion": "gemini-test",
+                "candidates": [{"content": {"parts": [{
+                    "functionCall": {"name": "run", "args": arguments}
+                }]}}]
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn registry_path_accounts_serialized_arguments_before_output() {
+        let mut state = ResponseTransformState::default();
+        let exact = "x".repeat(MAX_STREAM_TOOL_ARGUMENT_BYTES - 2);
+        assert!(!gemini_to_openai_streaming(&function_chunk(exact), &mut state).is_empty());
+        assert!(state.failure.is_none());
+
+        let mut state = ResponseTransformState::default();
+        let oversized = "x".repeat(MAX_STREAM_TOOL_ARGUMENT_BYTES - 1);
+        assert!(gemini_to_openai_streaming(&function_chunk(oversized), &mut state).is_empty());
+        assert_eq!(state.failure.unwrap().code, "upstream_stream_state_limit");
+    }
+
+    #[test]
+    fn registry_path_accounts_text_before_output() {
+        let chunk = serde_json::to_vec(&json!({
+            "response": {"candidates": [{"content": {"parts": [{
+                "text": "x".repeat(MAX_STREAM_ACCUMULATED_BYTES + 1)
+            }]}}]}
+        }))
+        .unwrap();
+        let mut state = ResponseTransformState::default();
+        assert!(gemini_to_openai_streaming(&chunk, &mut state).is_empty());
+        assert_eq!(state.failure.unwrap().code, "upstream_stream_state_limit");
+    }
 }

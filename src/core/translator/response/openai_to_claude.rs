@@ -7,6 +7,10 @@
 
 use serde_json::{json, Map, Value};
 
+use crate::core::translator::limits::{
+    wire_index, StreamLimitError, MAX_STREAM_TOOL_ARGUMENT_BYTES,
+};
+
 /// Tool-name prefix the request side uses when masking proxy-injected
 /// tools to keep them distinct from caller tool names. Stripped on the
 /// way back so the response surfaces the caller's original name.
@@ -126,8 +130,16 @@ pub fn openai_to_claude_streaming(
         Ok(v) => v,
         Err(_) => return vec![],
     };
+    if let Err(error) =
+        crate::core::translator::registry::track_openai_accumulation(state, &val, 1, false)
+    {
+        return state.fail(error);
+    }
     let inner = &mut state.anthropic.claude_state;
-    let results = openai_to_claude_response(&val, inner);
+    let results = match openai_to_claude_response(&val, inner) {
+        Ok(results) => results,
+        Err(error) => return state.fail(error),
+    };
     results
         .into_iter()
         .map(|v| {
@@ -194,9 +206,12 @@ fn extract_sse_or_json_payload(line: &str) -> &str {
 
 /// Convert one OpenAI chat-completion chunk into zero or more Claude SSE
 /// events. `state` is the per-stream scratch space.
-pub fn openai_to_claude_response(chunk: &Value, state: &mut Map<String, Value>) -> Vec<Value> {
+pub fn openai_to_claude_response(
+    chunk: &Value,
+    state: &mut Map<String, Value>,
+) -> Result<Vec<Value>, StreamLimitError> {
     let Some(choice) = chunk.pointer("/choices/0") else {
-        return vec![];
+        return Ok(vec![]);
     };
 
     let mut results: Vec<Value> = Vec::new();
@@ -306,7 +321,7 @@ pub fn openai_to_claude_response(chunk: &Value, state: &mut Map<String, Value>) 
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         if !already {
-            let block_idx = next_block_index(state);
+            let block_idx = next_block_index(state)?;
             state.insert("thinkingBlockIndex".into(), Value::from(block_idx));
             state.insert("thinkingBlockStarted".into(), Value::Bool(true));
             results.push(json!({
@@ -340,7 +355,7 @@ pub fn openai_to_claude_response(chunk: &Value, state: &mut Map<String, Value>) 
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             if !already {
-                let block_idx = next_block_index(state);
+                let block_idx = next_block_index(state)?;
                 state.insert("textBlockIndex".into(), Value::from(block_idx));
                 state.insert("textBlockStarted".into(), Value::Bool(true));
                 state.insert("textBlockClosed".into(), Value::Bool(false));
@@ -369,18 +384,36 @@ pub fn openai_to_claude_response(chunk: &Value, state: &mut Map<String, Value>) 
         .and_then(|v| v.as_array())
     {
         for tc in tool_calls {
-            let idx = tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
+            let idx = wire_index(tc.get("index"), "tool_calls[].index")?;
+            state
+                .entry("seenToolIndices".to_string())
+                .or_insert_with(|| Value::Object(Map::new()));
+            if let Some(seen) = state
+                .get_mut("seenToolIndices")
+                .and_then(Value::as_object_mut)
+            {
+                seen.insert(idx.to_string(), Value::Bool(true));
+            }
 
             // First chunk for this tool: emit content_block_start.
-            if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
+            if let Some(id) = tc
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+            {
                 stop_thinking_block(state, &mut results);
                 stop_text_block(state, &mut results);
 
-                let block_idx = next_block_index(state);
+                let block_idx = next_block_index(state)?;
                 let raw_name = tc
                     .pointer("/function/name")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                    .filter(|name| !name.is_empty())
+                    .ok_or_else(|| StreamLimitError {
+                        code: "upstream_stream_invalid_tool_call",
+                        message: "OpenAI tool call declaration is missing a function name"
+                            .to_string(),
+                    })?;
                 let mut tool_name = raw_name.to_string();
                 if let Some(rest) = tool_name.strip_prefix(CLAUDE_OAUTH_TOOL_PREFIX) {
                     tool_name = rest.to_string();
@@ -411,19 +444,30 @@ pub fn openai_to_claude_response(chunk: &Value, state: &mut Map<String, Value>) 
             // we can sanitize the full args at finish time.
             if let Some(args) = tc.pointer("/function/arguments").and_then(|v| v.as_str()) {
                 if !args.is_empty() {
-                    let tool_info = state
-                        .get("toolCalls")
-                        .and_then(|v| v.as_object())
-                        .and_then(|m| m.get(&idx.to_string()));
-                    if tool_info.is_some() {
-                        let key = format!("argBuf_{idx}");
-                        let buffered = state
-                            .get(&key)
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        state.insert(key, Value::String(format!("{buffered}{args}")));
+                    let key = format!("argBuf_{idx}");
+                    let buffered = state
+                        .entry(key)
+                        .or_insert_with(|| Value::String(String::new()));
+                    let Value::String(buffered) = buffered else {
+                        return Err(StreamLimitError {
+                            code: "upstream_stream_invalid_tool_call",
+                            message: "OpenAI tool argument state is invalid".to_string(),
+                        });
+                    };
+                    let next_len = buffered
+                        .len()
+                        .checked_add(args.len())
+                        .ok_or_else(|| StreamLimitError::arithmetic("tool arguments"))?;
+                    if next_len > MAX_STREAM_TOOL_ARGUMENT_BYTES {
+                        return Err(StreamLimitError::bytes(
+                            "tool arguments",
+                            MAX_STREAM_TOOL_ARGUMENT_BYTES,
+                        ));
                     }
+                    buffered
+                        .try_reserve(args.len())
+                        .map_err(|_| StreamLimitError::capacity("tool arguments"))?;
+                    buffered.push_str(args);
                 }
             }
         }
@@ -449,6 +493,19 @@ pub fn openai_to_claude_response(chunk: &Value, state: &mut Map<String, Value>) 
                     .collect()
             })
             .unwrap_or_default();
+        if let Some(seen) = state.get("seenToolIndices").and_then(Value::as_object) {
+            let tools = state.get("toolCalls").and_then(Value::as_object);
+            for idx in seen.keys() {
+                if !tools.is_some_and(|tools| tools.contains_key(idx)) {
+                    return Err(StreamLimitError {
+                        code: "upstream_stream_invalid_tool_call",
+                        message: format!(
+                            "OpenAI tool call index {idx} finished without a non-empty id and function name"
+                        ),
+                    });
+                }
+            }
+        }
         for (idx, name, block_idx) in tool_entries {
             let key = format!("argBuf_{idx}");
             if let Some(buffered) = state.get(&key).and_then(|v| v.as_str()) {
@@ -482,16 +539,22 @@ pub fn openai_to_claude_response(chunk: &Value, state: &mut Map<String, Value>) 
         results.push(json!({"type": "message_stop"}));
     }
 
-    results
+    Ok(results)
 }
 
-fn next_block_index(state: &mut Map<String, Value>) -> u64 {
+fn next_block_index(state: &mut Map<String, Value>) -> Result<u64, StreamLimitError> {
     let next = state
         .get("nextBlockIndex")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    state.insert("nextBlockIndex".into(), Value::from(next + 1));
-    next
+    state.insert(
+        "nextBlockIndex".into(),
+        Value::from(
+            next.checked_add(1)
+                .ok_or_else(|| StreamLimitError::arithmetic("content block index"))?,
+        ),
+    );
+    Ok(next)
 }
 
 fn stop_text_block(state: &mut Map<String, Value>, results: &mut Vec<Value>) {
@@ -548,7 +611,7 @@ mod tests {
         let mut state = Map::new();
         let mut out = Vec::new();
         for ev in events {
-            out.extend(openai_to_claude_response(ev, &mut state));
+            out.extend(openai_to_claude_response(ev, &mut state).unwrap());
         }
         out
     }
@@ -704,6 +767,31 @@ mod tests {
             .find(|v| v["type"] == "message_delta")
             .expect("message_delta");
         assert_eq!(final_delta["delta"]["stop_reason"], "tool_use");
+    }
+
+    #[test]
+    fn arguments_before_identity_are_preserved_and_missing_identity_fails() {
+        let events = [
+            json!({"choices": [{"index": 0, "delta": {"tool_calls": [{
+                "index": 7, "function": {"arguments": "{\"city\":\""}
+            }]}}]}),
+            json!({"choices": [{"index": 0, "delta": {"tool_calls": [{
+                "index": 7, "id": "call_7", "function": {"name": "weather", "arguments": "雪\"}"}
+            }]}}]}),
+            json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}),
+        ];
+        let out = run(&events);
+        let arguments = out
+            .iter()
+            .find(|event| event["delta"]["type"] == "input_json_delta")
+            .and_then(|event| event["delta"]["partial_json"].as_str())
+            .unwrap();
+        assert_eq!(arguments, "{\"city\":\"雪\"}");
+
+        let mut state = Map::new();
+        openai_to_claude_response(&events[0], &mut state).unwrap();
+        let error = openai_to_claude_response(&events[2], &mut state).unwrap_err();
+        assert_eq!(error.code, "upstream_stream_invalid_tool_call");
     }
 
     #[test]

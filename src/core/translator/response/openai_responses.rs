@@ -4,9 +4,25 @@ use serde_json::Value;
 
 /// Increment the running `seq` counter in the SSE state map and return the new value.
 fn next_seq(state: &mut serde_json::Map<String, Value>) -> u64 {
-    let s = state.get("seq").and_then(|v| v.as_u64()).unwrap_or(0) + 1;
+    let current = state.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
+    let Some(s) = current.checked_add(1) else {
+        state.insert(
+            "_streamArithmeticFailure".to_string(),
+            Value::String("response sequence".to_string()),
+        );
+        return current;
+    };
     state.insert("seq".to_string(), Value::Number(s.into()));
     s
+}
+
+fn take_arithmetic_failure(
+    state: &mut serde_json::Map<String, Value>,
+) -> Option<crate::core::translator::limits::StreamLimitError> {
+    state
+        .remove("_streamArithmeticFailure")
+        .and_then(|value| value.as_str().map(str::to_string))
+        .map(|kind| crate::core::translator::limits::StreamLimitError::arithmetic(&kind))
 }
 
 /// Look up a Responses item key (item.id / data.item_id) in the
@@ -51,6 +67,114 @@ fn resp_tool_args_emitted(state: &serde_json::Map<String, Value>, idx: u64) -> b
         .get("respToolArgsEmitted")
         .and_then(Value::as_array)
         .is_some_and(|list| list.iter().any(|v| v.as_u64() == Some(idx)))
+}
+
+fn track_responses_accumulation(
+    state: &mut crate::core::translator::registry::ResponseTransformState,
+    event: &Value,
+) -> Result<(), crate::core::translator::limits::StreamLimitError> {
+    use crate::core::translator::limits::StreamLimitError;
+
+    let event_type = event
+        .get("type")
+        .or_else(|| event.get("event"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let data = event.get("data").unwrap_or(event);
+    match event_type {
+        "response.output_item.added" => {
+            let item = data.get("item").unwrap_or(&Value::Null);
+            if !matches!(
+                item.get("type").and_then(Value::as_str),
+                Some("function_call" | "custom_tool_call")
+            ) {
+                return Ok(());
+            }
+            let call_id = item
+                .get("call_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| StreamLimitError {
+                    code: "upstream_stream_invalid_tool_call",
+                    message: "Responses tool call is missing call_id".to_string(),
+                })?;
+            if !item
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| !name.is_empty())
+            {
+                return Err(StreamLimitError {
+                    code: "upstream_stream_invalid_tool_call",
+                    message: "Responses tool call is missing a name".to_string(),
+                });
+            }
+            let key = item
+                .get("id")
+                .and_then(Value::as_str)
+                .or_else(|| data.get("item_id").and_then(Value::as_str))
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| StreamLimitError {
+                    code: "upstream_stream_invalid_tool_call",
+                    message: "Responses tool call is missing item id".to_string(),
+                })?;
+            let index = resp_tool_index(&state.responses.state, Some(key)).unwrap_or_else(|| {
+                state
+                    .responses
+                    .state
+                    .get("toolCallIndex")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+            });
+            state.accumulation.track_tool(6, 0, index)?;
+            state
+                .accumulation
+                .track_retained(call_id.len(), "tool metadata")?;
+            state
+                .accumulation
+                .track_retained(key.len(), "tool metadata")?;
+            if let Some(name) = item.get("name").and_then(Value::as_str) {
+                state
+                    .accumulation
+                    .track_retained(name.len(), "tool metadata")?;
+            }
+        }
+        "response.function_call_arguments.delta" | "response.custom_tool_call_input.delta" => {
+            let key = data
+                .get("item_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| StreamLimitError {
+                    code: "upstream_stream_invalid_tool_call",
+                    message: "Responses tool arguments are missing item_id".to_string(),
+                })?;
+            if resp_tool_index(&state.responses.state, Some(key)).is_none() {
+                return Err(StreamLimitError {
+                    code: "upstream_stream_invalid_tool_call",
+                    message: format!("Responses tool arguments reference unknown item {key}"),
+                });
+            }
+        }
+        "response.output_item.done" => {
+            let item = data.get("item").unwrap_or(&Value::Null);
+            if matches!(
+                item.get("type").and_then(Value::as_str),
+                Some("function_call" | "custom_tool_call")
+            ) {
+                let key = item
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .or_else(|| data.get("item_id").and_then(Value::as_str));
+                if resp_tool_index(&state.responses.state, key).is_none() {
+                    return Err(StreamLimitError {
+                        code: "upstream_stream_invalid_tool_call",
+                        message: "Responses tool completion references an unknown item".to_string(),
+                    });
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Emit an SSE event into `events`, stamping `data.sequence_number` with the
@@ -257,7 +381,9 @@ fn close_message(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let idx_num: u64 = idx_key.parse().unwrap_or(0);
+    let Ok(idx_num) = idx_key.parse::<u64>() else {
+        return;
+    };
     emit(
         events,
         state,
@@ -505,7 +631,9 @@ fn emit_tool_calls_block(
         .unwrap_or(serde_json::json!({}));
 
     for tc in tool_calls.iter() {
-        let tc_idx = tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
+        let Some(tc_idx) = tc.get("index").and_then(|v| v.as_u64()) else {
+            continue;
+        };
         let tc_idx_str = tc_idx.to_string();
         let new_call_id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let func_name = tc
@@ -750,7 +878,9 @@ pub fn chat_to_responses_response(
     }
 
     let choice = &chunk["choices"][0];
-    let idx = choice.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
+    let Some(idx) = choice.get("index").and_then(|v| v.as_u64()) else {
+        return events;
+    };
     let idx_str = idx.to_string();
     let delta = choice
         .get("delta")
@@ -1079,11 +1209,13 @@ pub fn responses_to_chat_response(
                 .and_then(|v| v.as_str());
             if item_type == Some("function_call") || item_type == Some("custom_tool_call") {
                 let item = &data["item"];
-                let call_id = item
+                let Some(call_id) = item
                     .get("call_id")
                     .and_then(|v| v.as_str())
                     .map(str::to_string)
-                    .unwrap_or_else(|| format!("call_{}", chrono::Utc::now().timestamp_millis()));
+                else {
+                    return vec![];
+                };
                 state.insert(
                     "currentToolCallId".to_string(),
                     Value::String(call_id.clone()),
@@ -1116,7 +1248,14 @@ pub fn responses_to_chat_response(
                             .get("toolCallIndex")
                             .and_then(|v| v.as_u64())
                             .unwrap_or(0);
-                        state.insert("toolCallIndex".to_string(), Value::Number((idx + 1).into()));
+                        let Some(next) = idx.checked_add(1) else {
+                            state.insert(
+                                "_streamArithmeticFailure".to_string(),
+                                Value::String("tool index".to_string()),
+                            );
+                            return vec![];
+                        };
+                        state.insert("toolCallIndex".to_string(), Value::Number(next.into()));
                         if let Some(key) = item_id {
                             set_resp_tool_index(state, key, idx);
                         }
@@ -1157,13 +1296,9 @@ pub fn responses_to_chat_response(
             // JS parity (openai-responses.js:505-519): route by item_id so
             // interleaved parallel fragments stay on their own call.
             let item_id = data.get("item_id").and_then(|v| v.as_str());
-            let tool_idx = resp_tool_index(state, item_id).unwrap_or_else(|| {
-                state
-                    .get("toolCallIndex")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(1)
-                    .saturating_sub(1)
-            });
+            let Some(tool_idx) = resp_tool_index(state, item_id) else {
+                return vec![];
+            };
             mark_resp_tool_args(state, tool_idx);
             vec![serde_json::json!({
                 "id": chat_id,
@@ -1196,13 +1331,9 @@ pub fn responses_to_chat_response(
                     .and_then(|i| i.get("id"))
                     .and_then(|v| v.as_str())
                     .or_else(|| data.get("item_id").and_then(|v| v.as_str()));
-                let tool_idx = resp_tool_index(state, key).unwrap_or_else(|| {
-                    state
-                        .get("toolCallIndex")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(1)
-                        .saturating_sub(1)
-                });
+                let Some(tool_idx) = resp_tool_index(state, key) else {
+                    return vec![];
+                };
                 let full_args = data
                     .get("item")
                     .and_then(|i| i.get("arguments"))
@@ -1370,11 +1501,17 @@ pub fn chat_to_responses_streaming(
 
     if buffer_was_empty {
         if let Ok(value) = serde_json::from_slice::<Value>(chunk) {
+            if let Err(error) =
+                crate::core::translator::registry::track_openai_accumulation(state, &value, 4, true)
+            {
+                return state.fail(error);
+            }
             state.responses.buffer.clear();
-            return format_responses_events(chat_to_responses_response(
-                &value,
-                &mut state.responses.state,
-            ));
+            let events = chat_to_responses_response(&value, &mut state.responses.state);
+            if let Some(error) = take_arithmetic_failure(&mut state.responses.state) {
+                return state.fail(error);
+            }
+            return format_responses_events(events);
         }
     }
 
@@ -1390,10 +1527,16 @@ pub fn chat_to_responses_streaming(
             if payload == "[DONE]" {
                 results.push("data: [DONE]\n\n".to_string());
             } else if let Ok(value) = serde_json::from_str::<Value>(payload) {
-                results.extend(format_responses_events(chat_to_responses_response(
-                    &value,
-                    &mut state.responses.state,
-                )));
+                if let Err(error) = crate::core::translator::registry::track_openai_accumulation(
+                    state, &value, 4, true,
+                ) {
+                    return state.fail(error);
+                }
+                let events = chat_to_responses_response(&value, &mut state.responses.state);
+                if let Some(error) = take_arithmetic_failure(&mut state.responses.state) {
+                    return state.fail(error);
+                }
+                results.extend(format_responses_events(events));
             }
         }
     }
@@ -1438,10 +1581,17 @@ pub fn responses_to_chat_streaming(
         // Only treat as bare JSON if the buffer is its natural size (nothing left over
         // from a previous partial frame) — otherwise fall through to SSE extraction.
         if state.responses.buffer.len() <= chunk.len() {
+            if let Err(error) = track_responses_accumulation(state, &val) {
+                return state.fail(error);
+            }
             let inner = &mut state.responses.state;
             let results = responses_to_chat_response(&val, inner);
+            let arithmetic_failure = take_arithmetic_failure(inner);
             // Clear buffer — we consumed everything via the JSON path
             state.responses.buffer.clear();
+            if let Some(error) = arithmetic_failure {
+                return state.fail(error);
+            }
             return results
                 .into_iter()
                 .map(|v| {
@@ -1469,8 +1619,16 @@ pub fn responses_to_chat_streaming(
                     continue;
                 }
                 if let Ok(val) = serde_json::from_str::<Value>(data_content) {
+                    if let Err(error) = track_responses_accumulation(state, &val) {
+                        return state.fail(error);
+                    }
                     let inner = &mut state.responses.state;
-                    for v in responses_to_chat_response(&val, inner) {
+                    let values = responses_to_chat_response(&val, inner);
+                    let arithmetic_failure = take_arithmetic_failure(inner);
+                    if let Some(error) = arithmetic_failure {
+                        return state.fail(error);
+                    }
+                    for v in values {
                         results.push(format!(
                             "data: {}\n\n",
                             serde_json::to_string(&v).unwrap_or_default()
@@ -1525,6 +1683,7 @@ mod tests {
         // to chat_to_responses_response, which converts to Responses API format).
         let chunk1 = json!({
             "choices": [{
+                "index": 0,
                 "delta": {
                     "content": "Hello",
                     "tool_calls": []
@@ -1566,6 +1725,7 @@ mod tests {
 
         let start = json!({
             "choices": [{
+                "index": 0,
                 "delta": {
                     "tool_calls": [{
                         "index": 0,
@@ -1583,6 +1743,7 @@ mod tests {
         let fragment = |arguments: &str| {
             json!({
                 "choices": [{
+                    "index": 0,
                     "delta": {
                         "tool_calls": [{
                             "index": 0,
@@ -1595,6 +1756,7 @@ mod tests {
         };
         let finish = json!({
             "choices": [{
+                "index": 0,
                 "delta": {},
                 "finish_reason": "tool_calls"
             }]

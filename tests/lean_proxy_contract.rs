@@ -451,6 +451,56 @@ fn contract_freezes_preservation_and_removal_lists() {
         false
     );
     assert_eq!(
+        manifest["streaming_response_accumulators"]["maximum_wire_index"],
+        4095
+    );
+    assert_eq!(
+        manifest["streaming_response_accumulators"]["maximum_tool_calls"],
+        128
+    );
+    assert_eq!(
+        manifest["streaming_response_accumulators"]["maximum_arguments_bytes_per_tool"],
+        1024 * 1024
+    );
+    assert_eq!(
+        manifest["streaming_response_accumulators"]["maximum_retained_state_bytes"],
+        16 * 1024 * 1024
+    );
+    assert_eq!(
+        manifest["streaming_response_accumulators"]["missing_or_unsupported_index_coerced_to_zero"],
+        false
+    );
+    assert_eq!(
+        manifest["streaming_response_accumulators"]["sparse_index_sized_vector_allocation"],
+        false
+    );
+    assert_eq!(
+        manifest["streaming_response_accumulators"]
+            ["forced_sse_to_json_limit_failure_can_enter_json_fallback"],
+        false
+    );
+    assert_eq!(
+        manifest["streaming_response_accumulators"]["native_same_format_stream_collected"],
+        false
+    );
+    assert_eq!(
+        manifest["streaming_response_accumulators"]
+            ["forced_responses_parse_and_final_assembly_share_budget"],
+        true
+    );
+    assert_eq!(
+        manifest["streaming_response_accumulators"]["missing_identity_at_finish_is_error"],
+        true
+    );
+    assert_eq!(
+        manifest["streaming_response_accumulators"]["finish_emits_after_recorded_failure"],
+        false
+    );
+    assert_eq!(
+        manifest["streaming_response_accumulators"]["compat_responses_output_order"],
+        "numeric_choice_index"
+    );
+    assert_eq!(
         manifest["generation_retry_policy"]["client_invalid_terminal_statuses"],
         serde_json::json!([400, 413, 422])
     );

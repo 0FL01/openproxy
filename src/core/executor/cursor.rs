@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::Read;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,6 +16,10 @@ use bytes::Bytes;
 use http_body_util::Full;
 
 use crate::core::proxy::ProxyTarget;
+use crate::core::translator::limits::{
+    checked_append, checked_retain, StreamLimitError, MAX_STREAM_ACCUMULATED_BYTES,
+    MAX_STREAM_TOOL_ARGUMENT_BYTES, MAX_STREAM_TOOL_CALLS,
+};
 use crate::core::utils::cursor_checksum;
 use crate::types::{ProviderConnection, ProviderNode};
 
@@ -683,6 +687,7 @@ async fn consume_agent_stream(
     let mut pending = Vec::new();
     let mut finished = false;
     let mut content = String::new();
+    let mut retained_bytes = 0usize;
     let mut chunks: Vec<String> = Vec::new();
     // Request-context handshake payloads the consumer must write back on the
     // request half-stream. Written immediately (per-frame), keeping the stream
@@ -709,8 +714,9 @@ async fn consume_agent_stream(
                 for event in events {
                     match event {
                         AgentEvent::Text(delta) => {
-                            content.push_str(&delta);
                             if stream {
+                                checked_retain(&mut retained_bytes, delta.len(), "Cursor content")
+                                    .map_err(cursor_limit)?;
                                 let sse = format_chat_chunk_sse(
                                     response_id,
                                     created,
@@ -719,6 +725,15 @@ async fn consume_agent_stream(
                                     None,
                                 );
                                 chunks.push(sse);
+                            } else {
+                                checked_append(
+                                    &mut content,
+                                    &delta,
+                                    MAX_STREAM_ACCUMULATED_BYTES,
+                                    &mut retained_bytes,
+                                    "Cursor content",
+                                )
+                                .map_err(cursor_limit)?;
                             }
                         }
                         AgentEvent::RequestContext => {
@@ -2220,6 +2235,130 @@ pub struct DecodedFrame {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct CursorToolCallAccum {
+    id: String,
+    name: String,
+    arguments: String,
+    is_last: bool,
+}
+
+fn cursor_limit(error: StreamLimitError) -> CursorExecutorError {
+    CursorExecutorError::StreamError(error.to_string())
+}
+
+fn accumulate_cursor_tool_call(
+    tools: &mut Vec<CursorToolCallAccum>,
+    tool_call: &Value,
+    retained_bytes: &mut usize,
+) -> Result<usize, CursorExecutorError> {
+    let id = tool_call
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| {
+            CursorExecutorError::StreamError("Cursor tool call is missing an id".to_string())
+        })?;
+    let name = tool_call
+        .pointer("/function/name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            CursorExecutorError::StreamError(
+                "Cursor tool call is missing a function name".to_string(),
+            )
+        })?;
+    let arguments = tool_call
+        .pointer("/function/arguments")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            CursorExecutorError::StreamError(
+                "Cursor tool call is missing function arguments".to_string(),
+            )
+        })?;
+    let is_last = tool_call
+        .get("is_last")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    if let Some(position) = tools.iter().position(|tool| tool.id == id) {
+        let tool = &mut tools[position];
+        if tool.name != name {
+            return Err(CursorExecutorError::StreamError(
+                "Cursor tool name changed between fragments".to_string(),
+            ));
+        }
+        checked_append(
+            &mut tool.arguments,
+            arguments,
+            MAX_STREAM_TOOL_ARGUMENT_BYTES,
+            retained_bytes,
+            "tool arguments",
+        )
+        .map_err(cursor_limit)?;
+        tool.is_last |= is_last;
+        return Ok(position);
+    }
+
+    if tools.len() >= MAX_STREAM_TOOL_CALLS {
+        return Err(cursor_limit(StreamLimitError::too_many(
+            "tool calls",
+            MAX_STREAM_TOOL_CALLS,
+        )));
+    }
+    if arguments.len() > MAX_STREAM_TOOL_ARGUMENT_BYTES {
+        return Err(cursor_limit(StreamLimitError::bytes(
+            "tool arguments",
+            MAX_STREAM_TOOL_ARGUMENT_BYTES,
+        )));
+    }
+    let added = id
+        .len()
+        .checked_add(name.len())
+        .and_then(|bytes| bytes.checked_add(arguments.len()))
+        .ok_or_else(|| cursor_limit(StreamLimitError::arithmetic("tool state")))?;
+    checked_retain(retained_bytes, added, "tool state").map_err(cursor_limit)?;
+    tools
+        .try_reserve(1)
+        .map_err(|_| cursor_limit(StreamLimitError::capacity("tool calls")))?;
+    let mut stored_id = String::new();
+    stored_id
+        .try_reserve(id.len())
+        .map_err(|_| cursor_limit(StreamLimitError::capacity("tool id")))?;
+    stored_id.push_str(id);
+    let mut stored_name = String::new();
+    stored_name
+        .try_reserve(name.len())
+        .map_err(|_| cursor_limit(StreamLimitError::capacity("tool name")))?;
+    stored_name.push_str(name);
+    let mut stored_arguments = String::new();
+    stored_arguments
+        .try_reserve(arguments.len())
+        .map_err(|_| cursor_limit(StreamLimitError::capacity("tool arguments")))?;
+    stored_arguments.push_str(arguments);
+    tools.push(CursorToolCallAccum {
+        id: stored_id,
+        name: stored_name,
+        arguments: stored_arguments,
+        is_last,
+    });
+    Ok(tools.len() - 1)
+}
+
+fn cursor_tool_json(
+    tool: &CursorToolCallAccum,
+    index: usize,
+) -> Result<Value, CursorExecutorError> {
+    let index = u64::try_from(index)
+        .map_err(|_| cursor_limit(StreamLimitError::arithmetic("tool index conversion")))?;
+    Ok(json!({
+        "index": index,
+        "id": tool.id,
+        "type": "function",
+        "function": { "name": tool.name, "arguments": tool.arguments }
+    }))
+}
+
 /// Extract text, thinking and tool call from a response payload.
 /// Returns (text, thinking, tool_call) — at most one of these is Some per frame.
 fn extract_from_response(payload: &[u8]) -> Result<Option<DecodedFrame>, CursorExecutorError> {
@@ -2333,14 +2472,37 @@ fn extract_from_response(payload: &[u8]) -> Result<Option<DecodedFrame>, CursorE
             }
 
             if tool_call_json.contains_key("id") && tool_call_json.contains_key("name") {
+                let id = tool_call_json
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| {
+                        CursorExecutorError::StreamError(
+                            "Cursor tool call is missing an id".to_string(),
+                        )
+                    })?;
+                let name = tool_call_json
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .filter(|name| !name.is_empty())
+                    .ok_or_else(|| {
+                        CursorExecutorError::StreamError(
+                            "Cursor tool call is missing a function name".to_string(),
+                        )
+                    })?;
+                let arguments = tool_call_json
+                    .get("arguments")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
                 let function = serde_json::json!({
-                    "name": tool_call_json.get("name").unwrap_or(&serde_json::Value::String("".to_string())),
-                    "arguments": tool_call_json.get("arguments").unwrap_or(&serde_json::Value::String("{}".to_string())),
+                    "name": name,
+                    "arguments": arguments,
                 });
                 let tool_call = serde_json::json!({
-                    "id": tool_call_json.get("id").unwrap_or(&serde_json::Value::String("".to_string())),
+                    "id": id,
                     "type": "function",
                     "function": function,
+                    "is_last": tool_call_json.get("is_last").and_then(Value::as_bool).unwrap_or(false),
                 });
                 return Ok(Some(DecodedFrame {
                     text: None,
@@ -2606,7 +2768,8 @@ pub fn transform_protobuf_to_sse(
     let mut first_chunk = true;
     let mut total_content = String::new();
     let mut total_thinking = String::new();
-    let mut tool_call_map: HashMap<String, Value> = HashMap::new();
+    let mut tool_calls_accum = Vec::new();
+    let mut retained_bytes = 0usize;
     let mut has_content = false;
 
     while offset < buffer.len() {
@@ -2649,85 +2812,29 @@ pub fn transform_protobuf_to_sse(
 
         // Handle tool call
         if let Some(tc) = frame.tool_call {
-            let tc_id = tc["id"].as_str().unwrap_or("").to_string();
-            let tc_args = tc["function"]["arguments"]
-                .as_str()
-                .unwrap_or("{}")
-                .to_string();
-            let _tc_name = tc["function"]["name"].as_str().unwrap_or("").to_string();
-
-            // Check is_last in our accumulated map or from the frame
-            let is_last_value = tc.get("is_last").and_then(|v| v.as_bool()).unwrap_or(false);
-
-            if let Some(existing) = tool_call_map.get_mut(&tc_id) {
-                // Accumulate arguments
-                let existing_args = existing["function"]["arguments"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string();
-                existing["function"]["arguments"] = json!(existing_args + &tc_args);
-                if is_last_value {
-                    existing["is_last"] = json!(true);
-
-                    // Emit tool call chunk
-                    let delta = json!({
-                        "role": "assistant",
-                        "content": null,
-                    });
-                    let sse = format_chat_chunk_sse(&response_id, created, model, delta, None);
-                    chunks.push(sse);
-
-                    // Emit tool call delta
-                    let tool_delta = json!({
-                        "role": "assistant",
-                        "content": null,
-                        "tool_calls": [{
-                            "index": 0,
-                            "id": existing["id"],
-                            "type": "function",
-                            "function": {
-                                "name": existing["function"]["name"],
-                                "arguments": existing["function"]["arguments"],
-                            }
-                        }]
-                    });
-                    let tool_sse =
-                        format_chat_chunk_sse(&response_id, created, model, tool_delta, None);
-                    chunks.push(tool_sse);
-                }
-            } else {
-                let mut new_tc = tc.clone();
-                if is_last_value {
-                    new_tc["is_last"] = json!(true);
-                }
-                tool_call_map.insert(tc_id, new_tc);
-
-                if is_last_value {
-                    // Emit tool call chunk immediately
-                    let delta = json!({
-                        "role": "assistant",
-                        "content": null,
-                    });
-                    let sse = format_chat_chunk_sse(&response_id, created, model, delta, None);
-                    chunks.push(sse);
-
-                    let tool_delta = json!({
-                        "role": "assistant",
-                        "content": null,
-                        "tool_calls": [{
-                            "index": 0,
-                            "id": tc.get("id"),
-                            "type": "function",
-                            "function": {
-                                "name": tc.get("function").and_then(|f| f.get("name")),
-                                "arguments": tc.get("function").and_then(|f| f.get("arguments")),
-                            }
-                        }]
-                    });
-                    let tool_sse =
-                        format_chat_chunk_sse(&response_id, created, model, tool_delta, None);
-                    chunks.push(tool_sse);
-                }
+            let position =
+                accumulate_cursor_tool_call(&mut tool_calls_accum, &tc, &mut retained_bytes)?;
+            if tool_calls_accum[position].is_last {
+                let delta = json!({"role": "assistant", "content": null});
+                chunks.push(format_chat_chunk_sse(
+                    &response_id,
+                    created,
+                    model,
+                    delta,
+                    None,
+                ));
+                let tool_delta = json!({
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [cursor_tool_json(&tool_calls_accum[position], position)?]
+                });
+                chunks.push(format_chat_chunk_sse(
+                    &response_id,
+                    created,
+                    model,
+                    tool_delta,
+                    None,
+                ));
             }
 
             has_content = true;
@@ -2736,7 +2843,14 @@ pub fn transform_protobuf_to_sse(
         // Handle text
         if let Some(text) = frame.text {
             if !text.is_empty() {
-                total_content.push_str(&text);
+                checked_append(
+                    &mut total_content,
+                    &text,
+                    MAX_STREAM_ACCUMULATED_BYTES,
+                    &mut retained_bytes,
+                    "Cursor content",
+                )
+                .map_err(cursor_limit)?;
                 has_content = true;
 
                 let delta = if first_chunk {
@@ -2753,13 +2867,27 @@ pub fn transform_protobuf_to_sse(
         // Handle thinking
         if let Some(thinking) = frame.thinking {
             if !thinking.is_empty() {
-                total_thinking.push_str(&thinking);
+                checked_append(
+                    &mut total_thinking,
+                    &thinking,
+                    MAX_STREAM_ACCUMULATED_BYTES,
+                    &mut retained_bytes,
+                    "Cursor thinking",
+                )
+                .map_err(cursor_limit)?;
 
                 // For composer models, extract visible content from thinking
                 if is_composer_model(model) {
                     if let Some(visible) = visible_composer_content_from_thinking(&thinking) {
                         if !visible.is_empty() {
-                            total_content.push_str(&visible);
+                            checked_append(
+                                &mut total_content,
+                                &visible,
+                                MAX_STREAM_ACCUMULATED_BYTES,
+                                &mut retained_bytes,
+                                "Cursor content",
+                            )
+                            .map_err(cursor_limit)?;
                             has_content = true;
                             let delta = if first_chunk {
                                 first_chunk = false;
@@ -2779,16 +2907,11 @@ pub fn transform_protobuf_to_sse(
 
     // Finalize remaining tool calls (those without isLast)
     let mut tool_calls: Vec<Value> = Vec::new();
-    for tc in tool_call_map.values() {
-        let finalized_tc = serde_json::json!({
-            "id": tc.get("id"),
-            "type": "function",
-            "function": {
-                "name": tc.get("function").and_then(|f| f.get("name")),
-                "arguments": tc.get("function").and_then(|f| f.get("arguments")),
-            }
-        });
-        tool_calls.push(finalized_tc);
+    tool_calls
+        .try_reserve(tool_calls_accum.len())
+        .map_err(|_| cursor_limit(StreamLimitError::capacity("tool calls")))?;
+    for (index, tool) in tool_calls_accum.iter().enumerate() {
+        tool_calls.push(cursor_tool_json(tool, index)?);
     }
 
     // If we only got tool calls, emit them
@@ -2861,8 +2984,8 @@ pub fn transform_protobuf_to_json(
     let mut offset = 0;
     let mut total_content = String::new();
     let mut total_thinking = String::new();
-    let mut tool_call_map: HashMap<String, Value> = HashMap::new();
-    let mut finalized_ids: HashSet<String> = HashSet::new();
+    let mut tool_calls_accum = Vec::new();
+    let mut retained_bytes = 0usize;
     let mut has_content = false;
 
     while offset < buffer.len() {
@@ -2899,30 +3022,7 @@ pub fn transform_protobuf_to_json(
 
         // Handle tool call
         if let Some(tc) = frame.tool_call {
-            let tc_id = tc["id"].as_str().unwrap_or("").to_string();
-            let tc_args = tc["function"]["arguments"]
-                .as_str()
-                .unwrap_or("{}")
-                .to_string();
-            let is_last = tc.get("is_last").and_then(|v| v.as_bool()).unwrap_or(false);
-
-            if let Some(existing) = tool_call_map.get_mut(&tc_id) {
-                // Accumulate arguments
-                let existing_args = existing["function"]["arguments"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string();
-                existing["function"]["arguments"] = json!(existing_args + &tc_args);
-                if is_last {
-                    finalized_ids.insert(tc_id);
-                }
-            } else {
-                let mut new_tc = tc.clone();
-                if is_last {
-                    finalized_ids.insert(tc_id.clone());
-                }
-                tool_call_map.insert(tc_id, new_tc);
-            }
+            accumulate_cursor_tool_call(&mut tool_calls_accum, &tc, &mut retained_bytes)?;
 
             has_content = true;
         }
@@ -2930,7 +3030,14 @@ pub fn transform_protobuf_to_json(
         // Handle text
         if let Some(text) = frame.text {
             if !text.is_empty() {
-                total_content.push_str(&text);
+                checked_append(
+                    &mut total_content,
+                    &text,
+                    MAX_STREAM_ACCUMULATED_BYTES,
+                    &mut retained_bytes,
+                    "Cursor content",
+                )
+                .map_err(cursor_limit)?;
                 has_content = true;
             }
         }
@@ -2938,13 +3045,27 @@ pub fn transform_protobuf_to_json(
         // Handle thinking
         if let Some(thinking) = frame.thinking {
             if !thinking.is_empty() {
-                total_thinking.push_str(&thinking);
+                checked_append(
+                    &mut total_thinking,
+                    &thinking,
+                    MAX_STREAM_ACCUMULATED_BYTES,
+                    &mut retained_bytes,
+                    "Cursor thinking",
+                )
+                .map_err(cursor_limit)?;
 
                 // For composer models, extract visible content from thinking
                 if is_composer_model(model) {
                     if let Some(visible) = visible_composer_content_from_thinking(&thinking) {
                         if !visible.is_empty() {
-                            total_content.push_str(&visible);
+                            checked_append(
+                                &mut total_content,
+                                &visible,
+                                MAX_STREAM_ACCUMULATED_BYTES,
+                                &mut retained_bytes,
+                                "Cursor content",
+                            )
+                            .map_err(cursor_limit)?;
                             has_content = true;
                         }
                     }
@@ -2955,16 +3076,11 @@ pub fn transform_protobuf_to_json(
 
     // Build tool_calls array
     let mut tool_calls: Vec<Value> = Vec::new();
-    for tc in tool_call_map.values() {
-        let finalized_tc = serde_json::json!({
-            "id": tc.get("id"),
-            "type": "function",
-            "function": {
-                "name": tc.get("function").and_then(|f| f.get("name")),
-                "arguments": tc.get("function").and_then(|f| f.get("arguments")),
-            }
-        });
-        tool_calls.push(finalized_tc);
+    tool_calls
+        .try_reserve(tool_calls_accum.len())
+        .map_err(|_| cursor_limit(StreamLimitError::capacity("tool calls")))?;
+    for (index, tool) in tool_calls_accum.iter().enumerate() {
+        tool_calls.push(cursor_tool_json(tool, index)?);
     }
 
     // Build the response
@@ -3006,9 +3122,6 @@ pub fn parse_cursor_sse_events(data: &[u8]) -> Result<Vec<SseEvent>, CursorExecu
 
     let mut events = Vec::new();
     let mut offset = 0;
-
-    let mut tool_call_accumulators: HashMap<String, Value> = HashMap::new();
-    let mut finalized_ids: HashSet<String> = HashSet::new();
 
     while offset < data.len() {
         // Try to parse a Connect-RPC frame
@@ -3305,6 +3418,67 @@ mod tests {
     fn test_parse_cursor_sse_events_empty() {
         let events = parse_cursor_sse_events(b"").unwrap();
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn cursor_tool_accumulator_is_bounded_and_arrival_ordered() {
+        let mut tools = Vec::new();
+        let mut retained = 0usize;
+        for (index, id) in (0..MAX_STREAM_TOOL_CALLS)
+            .zip(std::iter::once("z_first").chain((1..).map(|_| "a_later")))
+        {
+            let id = if index == 0 {
+                id.to_string()
+            } else {
+                format!("{id}_{index}")
+            };
+            let tool = json!({
+                "id": id,
+                "function": {"name": "run", "arguments": "{}"},
+                "is_last": true
+            });
+            accumulate_cursor_tool_call(&mut tools, &tool, &mut retained).unwrap();
+        }
+        assert_eq!(tools[0].id, "z_first");
+        assert_eq!(tools[1].id, "a_later_1");
+        let extra = json!({
+            "id": "extra",
+            "function": {"name": "run", "arguments": "{}"}
+        });
+        assert!(accumulate_cursor_tool_call(&mut tools, &extra, &mut retained).is_err());
+    }
+
+    #[test]
+    fn cursor_tool_arguments_and_total_state_are_bounded() {
+        let mut tools = Vec::new();
+        let mut retained = 0usize;
+        let exact = json!({
+            "id": "exact",
+            "function": {
+                "name": "run",
+                "arguments": "x".repeat(MAX_STREAM_TOOL_ARGUMENT_BYTES)
+            }
+        });
+        accumulate_cursor_tool_call(&mut tools, &exact, &mut retained).unwrap();
+
+        let mut tools = Vec::new();
+        let mut retained = 0usize;
+        let oversized = json!({
+            "id": "large",
+            "function": {
+                "name": "run",
+                "arguments": "x".repeat(MAX_STREAM_TOOL_ARGUMENT_BYTES + 1)
+            }
+        });
+        assert!(accumulate_cursor_tool_call(&mut tools, &oversized, &mut retained).is_err());
+
+        let mut tools = Vec::new();
+        let mut retained = MAX_STREAM_ACCUMULATED_BYTES - 1;
+        let metadata = json!({
+            "id": "id",
+            "function": {"name": "n", "arguments": ""}
+        });
+        assert!(accumulate_cursor_tool_call(&mut tools, &metadata, &mut retained).is_err());
     }
 
     #[test]

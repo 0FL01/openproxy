@@ -24,6 +24,11 @@ pub fn openai_to_gemini_response(chunk: &[u8], state: &mut ResponseTransformStat
         Ok(v) => v,
         Err(_) => return vec![],
     };
+    if let Err(error) =
+        crate::core::translator::registry::track_openai_accumulation(state, &chunk_val, 2, false)
+    {
+        return state.fail(error);
+    }
 
     let gs = &mut state.gemini;
 
@@ -80,7 +85,9 @@ pub fn openai_to_gemini_response(chunk: &[u8], state: &mut ResponseTransformStat
     // Accumulate tool_calls
     if let Some(tool_calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
         for tc in tool_calls {
-            let idx = tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
+            let Some(idx) = tc.get("index").and_then(|v| v.as_u64()) else {
+                continue;
+            };
             let idx_str = idx.to_string();
 
             if !gs.tool_calls_accum.contains_key(&idx_str) {
@@ -120,7 +127,13 @@ pub fn openai_to_gemini_response(chunk: &[u8], state: &mut ResponseTransformStat
 
     // Emit parts as Gemini response chunk
     if !parts.is_empty() {
-        gs.current_part_index += 1;
+        let Some(next_part_index) = gs.current_part_index.checked_add(1) else {
+            state.failure.get_or_insert_with(|| {
+                crate::core::translator::limits::StreamLimitError::arithmetic("part index")
+            });
+            return vec![];
+        };
+        gs.current_part_index = next_part_index;
 
         let mut response = serde_json::json!({
             "candidates": [{
@@ -150,12 +163,26 @@ pub fn openai_to_gemini_response(chunk: &[u8], state: &mut ResponseTransformStat
             for idx in gs.tool_calls_accum.keys() {
                 if let Some(accum) = gs.tool_calls_accum.get(idx) {
                     let name = accum.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    if name.is_empty() {
+                        state.failure = Some(crate::core::translator::limits::StreamLimitError {
+                            code: "upstream_stream_invalid_tool_call",
+                            message: "Gemini compatibility tool call ended without a name"
+                                .to_string(),
+                        });
+                        return Vec::new();
+                    }
                     let args_str = accum
                         .get("arguments")
                         .and_then(|v| v.as_str())
-                        .unwrap_or("{}");
-                    let args: Value = serde_json::from_str(args_str)
-                        .unwrap_or(Value::Object(serde_json::Map::new()));
+                        .unwrap_or("");
+                    let Ok(args) = serde_json::from_str::<Value>(args_str) else {
+                        state.failure = Some(crate::core::translator::limits::StreamLimitError {
+                            code: "upstream_stream_invalid_tool_call",
+                            message: "Gemini compatibility tool arguments are incomplete"
+                                .to_string(),
+                        });
+                        return Vec::new();
+                    };
 
                     finish_parts.push(serde_json::json!({
                         "thoughtSignature": DEFAULT_THINKING_AG_SIGNATURE,

@@ -8,7 +8,12 @@
 //! and response_transform.rs (already partially implemented).
 
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+use super::limits::{
+    wire_index, StreamLimitError, MAX_STREAM_ACCUMULATED_BYTES, MAX_STREAM_CHOICES,
+    MAX_STREAM_TOOL_ARGUMENT_BYTES, MAX_STREAM_TOOL_CALLS,
+};
 
 /// Valid OpenAI content block types (mirrors VALID_OPENAI_CONTENT_TYPES in schema/blocks.js).
 const VALID_OPENAI_CONTENT_TYPES: &[&str] = &[
@@ -131,6 +136,190 @@ pub struct ResponseTransformState {
     /// Generic scratch map for Value-based response transforms
     /// (openai→claude, openai→antigravity, chat→responses, etc.).
     pub generic: serde_json::Map<String, Value>,
+    /// Shared accounting for state retained by active response translators.
+    pub accumulation: ResponseAccumulationBudget,
+    /// Terminal pre-emission transform failure for the registry caller.
+    pub failure: Option<StreamLimitError>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ResponseAccumulationBudget {
+    retained_bytes: usize,
+    choices: BTreeSet<(u8, u64)>,
+    tools: BTreeSet<(u8, u64, u64)>,
+    tool_argument_bytes: BTreeMap<(u8, u64, u64), usize>,
+}
+
+impl ResponseAccumulationBudget {
+    pub fn track_choice(
+        &mut self,
+        namespace: u8,
+        choice_index: u64,
+    ) -> Result<(), StreamLimitError> {
+        let key = (namespace, choice_index);
+        let namespace_choices = self
+            .choices
+            .iter()
+            .filter(|(stored_namespace, _)| *stored_namespace == namespace)
+            .count();
+        if !self.choices.contains(&key) && namespace_choices >= MAX_STREAM_CHOICES {
+            return Err(StreamLimitError::too_many(
+                "response choices",
+                MAX_STREAM_CHOICES,
+            ));
+        }
+        self.choices.insert(key);
+        Ok(())
+    }
+
+    pub fn track_tool(
+        &mut self,
+        namespace: u8,
+        choice_index: u64,
+        tool_index: u64,
+    ) -> Result<(), StreamLimitError> {
+        let key = (namespace, choice_index, tool_index);
+        let namespace_tools = self
+            .tools
+            .iter()
+            .filter(|(stored_namespace, _, _)| *stored_namespace == namespace)
+            .count();
+        if !self.tools.contains(&key) && namespace_tools >= MAX_STREAM_TOOL_CALLS {
+            return Err(StreamLimitError::too_many(
+                "tool calls",
+                MAX_STREAM_TOOL_CALLS,
+            ));
+        }
+        self.tools.insert(key);
+        Ok(())
+    }
+
+    pub fn track_tool_arguments(
+        &mut self,
+        namespace: u8,
+        choice_index: u64,
+        tool_index: u64,
+        bytes: usize,
+    ) -> Result<(), StreamLimitError> {
+        self.track_tool(namespace, choice_index, tool_index)?;
+        let key = (namespace, choice_index, tool_index);
+        let current = self.tool_argument_bytes.get(&key).copied().unwrap_or(0);
+        let next = current
+            .checked_add(bytes)
+            .ok_or_else(|| StreamLimitError::arithmetic("tool arguments"))?;
+        if next > MAX_STREAM_TOOL_ARGUMENT_BYTES {
+            return Err(StreamLimitError::bytes(
+                "tool arguments",
+                MAX_STREAM_TOOL_ARGUMENT_BYTES,
+            ));
+        }
+        self.track_retained(bytes, "tool arguments")?;
+        self.tool_argument_bytes.insert(key, next);
+        Ok(())
+    }
+
+    pub fn track_retained(&mut self, bytes: usize, kind: &str) -> Result<(), StreamLimitError> {
+        let next = self
+            .retained_bytes
+            .checked_add(bytes)
+            .ok_or_else(|| StreamLimitError::arithmetic(kind))?;
+        if next > MAX_STREAM_ACCUMULATED_BYTES {
+            return Err(StreamLimitError::bytes(
+                "retained state",
+                MAX_STREAM_ACCUMULATED_BYTES,
+            ));
+        }
+        self.retained_bytes = next;
+        Ok(())
+    }
+}
+
+impl ResponseTransformState {
+    pub fn fail(&mut self, error: StreamLimitError) -> Vec<String> {
+        if self.failure.is_none() {
+            self.failure = Some(error);
+        }
+        Vec::new()
+    }
+}
+
+/// Validate OpenAI wire indices and account for state retained by translators
+/// before those translators allocate or append to their maps and strings.
+pub fn track_openai_accumulation(
+    state: &mut ResponseTransformState,
+    chunk: &Value,
+    namespace: u8,
+    retain_text_and_reasoning: bool,
+) -> Result<(), StreamLimitError> {
+    let Some(choices) = chunk.get("choices").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    for choice in choices {
+        let choice_index = wire_index(choice.get("index"), "choices[].index")?;
+        state.accumulation.track_choice(namespace, choice_index)?;
+        let Some(delta) = choice.get("delta") else {
+            continue;
+        };
+        if retain_text_and_reasoning {
+            for key in ["content", "reasoning_content", "reasoning"] {
+                if let Some(text) = delta.get(key).and_then(Value::as_str) {
+                    state.accumulation.track_retained(text.len(), key)?;
+                }
+            }
+            if let Some(details) = delta.get("reasoning_details").and_then(Value::as_array) {
+                for detail in details {
+                    let text = detail.as_str().or_else(|| {
+                        detail
+                            .get("text")
+                            .or_else(|| detail.get("content"))
+                            .and_then(Value::as_str)
+                    });
+                    if let Some(text) = text {
+                        state.accumulation.track_retained(text.len(), "reasoning")?;
+                    }
+                }
+            }
+        }
+        let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) else {
+            continue;
+        };
+        for tool_call in tool_calls {
+            let tool_index = wire_index(tool_call.get("index"), "tool_calls[].index")?;
+            state
+                .accumulation
+                .track_tool(namespace, choice_index, tool_index)?;
+            if let Some(arguments) = tool_call
+                .pointer("/function/arguments")
+                .and_then(Value::as_str)
+            {
+                state.accumulation.track_tool_arguments(
+                    namespace,
+                    choice_index,
+                    tool_index,
+                    arguments.len(),
+                )?;
+            }
+            let id = tool_call.get("id").and_then(Value::as_str);
+            let name = tool_call.pointer("/function/name").and_then(Value::as_str);
+            if (id.is_some() || name.is_some())
+                && (!id.is_some_and(|value| !value.is_empty())
+                    || !name.is_some_and(|value| !value.is_empty()))
+            {
+                return Err(StreamLimitError {
+                    code: "upstream_stream_invalid_tool_call",
+                    message:
+                        "Upstream tool call declaration requires a non-empty id and function name"
+                            .to_string(),
+                });
+            }
+            for value in [id, name].into_iter().flatten() {
+                state
+                    .accumulation
+                    .track_retained(value.len(), "tool metadata")?;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default)]
@@ -142,8 +331,7 @@ pub struct OpenAiResponseState {
 pub struct AnthropicResponseState {
     pub line_buffer: String,
     pub current_block_index: Option<usize>,
-    pub text_accumulator: String,
-    pub thinking_buffer: String,
+    pub text_block_open: bool,
     pub in_thinking: bool,
     pub cache_lookaheads: Vec<String>,
     pub message_id: Option<String>,
@@ -172,9 +360,6 @@ pub struct GeminiResponseState {
 pub struct ResponsesResponseState {
     pub buffer: String,
     pub seq: usize,
-    pub msg_text_buf: String,
-    pub reasoning_buf: String,
-    pub func_args_buf: String,
     pub func_names: std::collections::HashMap<usize, String>,
     pub func_call_ids: std::collections::HashMap<usize, String>,
     pub msg_item_done: std::collections::HashMap<usize, bool>,
@@ -539,9 +724,9 @@ impl TranslationRegistry {
         target: Format,
         chunk: &[u8],
         state: &mut ResponseTransformState,
-    ) -> Vec<String> {
+    ) -> Result<Vec<String>, StreamLimitError> {
         if source == target {
-            return vec![String::from_utf8_lossy(chunk).to_string()];
+            return Ok(vec![String::from_utf8_lossy(chunk).to_string()]);
         }
 
         // Direct route (provider→client)
@@ -552,7 +737,8 @@ impl TranslationRegistry {
                 source.as_str(),
                 target.as_str()
             );
-            return transform(chunk, state);
+            let output = transform(chunk, state);
+            return state.failure.clone().map_or(Ok(output), Err);
         }
 
         tracing::debug!(
@@ -567,6 +753,9 @@ impl TranslationRegistry {
         if source != Format::OpenAi {
             if let Some(transform) = self.response_transforms.get(&(source, Format::OpenAi)) {
                 let converted = transform(chunk, state);
+                if let Some(error) = state.failure.clone() {
+                    return Err(error);
+                }
                 if !converted.is_empty() {
                     intermediates = converted;
                 }
@@ -582,15 +771,18 @@ impl TranslationRegistry {
                 let mut final_results = Vec::new();
                 for mid in &intermediates {
                     let converted = transform(mid.as_bytes(), state);
+                    if let Some(error) = state.failure.clone() {
+                        return Err(error);
+                    }
                     final_results.extend(converted);
                 }
                 if !final_results.is_empty() {
-                    return final_results;
+                    return Ok(final_results);
                 }
             }
         }
 
-        intermediates
+        Ok(intermediates)
     }
 
     /// Flush end-of-stream state for a response transform. Called once when
@@ -604,6 +796,9 @@ impl TranslationRegistry {
         target: Format,
         state: &mut ResponseTransformState,
     ) -> Vec<String> {
+        if state.failure.is_some() {
+            return Vec::new();
+        }
         if source == target {
             return Vec::new();
         }
@@ -617,7 +812,25 @@ impl TranslationRegistry {
                 return Vec::new();
             }
             if let Some(assembler) = state.kiro.assembler.as_mut() {
-                let chunks = assembler.finish();
+                let chunks = match assembler.finish() {
+                    Ok(chunks) => chunks,
+                    Err(message) => {
+                        state.kiro.stream_failed = true;
+                        return vec![
+                            format!(
+                                "data: {}\n\n",
+                                serde_json::json!({
+                                    "error": {
+                                        "message": message,
+                                        "type": "upstream_error",
+                                        "code": "kiro_event_parse_error"
+                                    }
+                                })
+                            ),
+                            "data: [DONE]\n\n".to_string(),
+                        ];
+                    }
+                };
                 let mut out = Vec::new();
                 for c in chunks {
                     out.push(format!(

@@ -166,12 +166,14 @@ fn native_and_translated_fixtures_characterize_protocol_semantics() {
     assert_eq!(translated_request["messages"][0]["role"], "user");
 
     let mut state = ResponseTransformState::default();
-    let output = global_registry().translate_response(
-        Format::Claude,
-        Format::OpenAi,
-        include_bytes!("fixtures/lean-proxy/claude-translated.sse"),
-        &mut state,
-    );
+    let output = global_registry()
+        .translate_response(
+            Format::Claude,
+            Format::OpenAi,
+            include_bytes!("fixtures/lean-proxy/claude-translated.sse"),
+            &mut state,
+        )
+        .expect("fixture response translation");
     let output = output.join("");
     assert!(output.contains("translated fixture"));
     assert!(output.contains("chatcmpl-msg_lean_fixture"));

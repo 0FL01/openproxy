@@ -38,7 +38,9 @@ pub fn claude_to_openai_response(chunk: &Value, state: &mut Map<String, Value>) 
         }
 
         "content_block_start" => {
-            let index = chunk.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
+            let Some(index) = chunk.get("index").and_then(|v| v.as_u64()) else {
+                return results;
+            };
             let block_type = chunk
                 .pointer("/content_block/type")
                 .and_then(|v| v.as_str())
@@ -65,7 +67,18 @@ pub fn claude_to_openai_response(chunk: &Value, state: &mut Map<String, Value>) 
                         .get("toolCallIndex")
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
-                    state.insert("toolCallIndex".into(), Value::from(tool_call_index + 1));
+                    let next_tool_call_index =
+                        tool_call_index.checked_add(1).unwrap_or_else(|| {
+                            state.insert(
+                                "_streamArithmeticFailure".into(),
+                                Value::String("tool index".to_string()),
+                            );
+                            tool_call_index
+                        });
+                    if state.contains_key("_streamArithmeticFailure") {
+                        return results;
+                    }
+                    state.insert("toolCallIndex".into(), Value::from(next_tool_call_index));
 
                     let raw_name = chunk
                         .pointer("/content_block/name")
@@ -107,7 +120,9 @@ pub fn claude_to_openai_response(chunk: &Value, state: &mut Map<String, Value>) 
         }
 
         "content_block_delta" => {
-            let index = chunk.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
+            let Some(index) = chunk.get("index").and_then(|v| v.as_u64()) else {
+                return results;
+            };
             let server_idx = state.get("serverToolBlockIndex").and_then(|v| v.as_u64());
             if server_idx == Some(index) {
                 return results;
@@ -189,7 +204,9 @@ pub fn claude_to_openai_response(chunk: &Value, state: &mut Map<String, Value>) 
         }
 
         "content_block_stop" => {
-            let index = chunk.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
+            let Some(index) = chunk.get("index").and_then(|v| v.as_u64()) else {
+                return results;
+            };
             let server_idx = state.get("serverToolBlockIndex").and_then(|v| v.as_u64());
             if server_idx == Some(index) {
                 state.insert("serverToolBlockIndex".into(), Value::from(u64::MAX));
@@ -383,6 +400,66 @@ fn convert_stop_reason(reason: &str) -> &'static str {
     }
 }
 
+fn track_claude_accumulation(
+    state: &mut crate::core::translator::registry::ResponseTransformState,
+    event: &Value,
+) -> Result<(), crate::core::translator::limits::StreamLimitError> {
+    use crate::core::translator::limits::wire_index;
+
+    let event_type = event.get("type").and_then(Value::as_str).unwrap_or("");
+    if !matches!(
+        event_type,
+        "content_block_start" | "content_block_delta" | "content_block_stop"
+    ) {
+        return Ok(());
+    }
+    let index = wire_index(event.get("index"), "content block index")?;
+    let block_type = event.pointer("/content_block/type").and_then(Value::as_str);
+    if event_type == "content_block_start" && block_type == Some("tool_use") {
+        for (field, value) in [
+            (
+                "id",
+                event.pointer("/content_block/id").and_then(Value::as_str),
+            ),
+            (
+                "name",
+                event.pointer("/content_block/name").and_then(Value::as_str),
+            ),
+        ] {
+            if !value.is_some_and(|value| !value.is_empty()) {
+                return Err(crate::core::translator::limits::StreamLimitError {
+                    code: "upstream_stream_invalid_tool_call",
+                    message: format!("Claude tool use is missing {field}"),
+                });
+            }
+        }
+        state.accumulation.track_tool(5, 0, index)?;
+        for value in [
+            event.pointer("/content_block/id").and_then(Value::as_str),
+            event.pointer("/content_block/name").and_then(Value::as_str),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            state
+                .accumulation
+                .track_retained(value.len(), "tool metadata")?;
+        }
+    }
+    if event_type == "content_block_delta"
+        && event.pointer("/delta/type").and_then(Value::as_str) == Some("input_json_delta")
+    {
+        let arguments = event
+            .pointer("/delta/partial_json")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        state
+            .accumulation
+            .track_tool_arguments(5, 0, index, arguments.len())?;
+    }
+    Ok(())
+}
+
 /// Registry-compatible wrapper: parses raw SSE/JSON bytes, calls the typed
 /// `claude_to_openai_response`, and serialises results back to SSE lines.
 ///
@@ -419,8 +496,18 @@ pub fn claude_to_openai_streaming(
             }
             if val.get("type").is_some() {
                 state.anthropic.line_buffer.clear();
+                if let Err(error) = track_claude_accumulation(state, &val) {
+                    return state.fail(error);
+                }
                 let inner = &mut state.anthropic.claude_state;
-                return claude_to_openai_response(&val, inner)
+                let values = claude_to_openai_response(&val, inner);
+                let arithmetic_failure = inner.remove("_streamArithmeticFailure").is_some();
+                if arithmetic_failure {
+                    return state.fail(
+                        crate::core::translator::limits::StreamLimitError::arithmetic("tool index"),
+                    );
+                }
+                return values
                     .into_iter()
                     .map(|v| {
                         format!(
@@ -459,8 +546,18 @@ pub fn claude_to_openai_streaming(
 
         if let Some(payload) = data_payload {
             if let Ok(val) = serde_json::from_str::<Value>(&payload) {
+                if let Err(error) = track_claude_accumulation(state, &val) {
+                    return state.fail(error);
+                }
                 let inner = &mut state.anthropic.claude_state;
-                for v in claude_to_openai_response(&val, inner) {
+                let values = claude_to_openai_response(&val, inner);
+                let arithmetic_failure = inner.remove("_streamArithmeticFailure").is_some();
+                if arithmetic_failure {
+                    return state.fail(
+                        crate::core::translator::limits::StreamLimitError::arithmetic("tool index"),
+                    );
+                }
+                for v in values {
                     out.push(format!(
                         "data: {}\n\n",
                         serde_json::to_string(&v).unwrap_or_default()
