@@ -69,6 +69,7 @@ docs/*
 !docs/goals/
 docs/goals/*
 !docs/goals/2026-09-17-lean-proxy-plan.md
+!docs/lean-proxy-results.md
 test/*
 bin/*
 open-sse/test/*

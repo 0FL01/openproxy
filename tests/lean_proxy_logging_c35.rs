@@ -20,6 +20,18 @@ use openproxy::types::ApiKey;
 
 use common::lean_harness::TempTestDb;
 
+/// The lean log pipeline is process-global (one bounded queue, one writer,
+/// one drop counter), so queue-touching tests must run serially within this
+/// binary; otherwise the overflow test's flood drops other tests' rows.
+static SERIAL: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+async fn serial_guard() -> tokio::sync::MutexGuard<'static, ()> {
+    SERIAL
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await
+}
+
 fn test_key() -> ApiKey {
     ApiKey {
         id: "key-c35".to_string(),
@@ -80,6 +92,7 @@ async fn wait_for_row(
 
 #[tokio::test]
 async fn lean_start_returns_without_waiting_for_slow_sqlite() {
+    let _serial = serial_guard().await;
     let tmp = TempTestDb::new().await;
     let ctx = lean_context(&tmp.db);
 
@@ -124,6 +137,7 @@ async fn lean_start_returns_without_waiting_for_slow_sqlite() {
 
 #[tokio::test]
 async fn durable_start_waits_for_sqlite() {
+    let _serial = serial_guard().await;
     let tmp = TempTestDb::new().await;
     let ctx = durable_context(&tmp.db);
 
@@ -154,6 +168,7 @@ async fn durable_start_waits_for_sqlite() {
 
 #[tokio::test]
 async fn lean_start_finish_preserves_order_and_metadata_only() {
+    let _serial = serial_guard().await;
     let tmp = TempTestDb::new().await;
     let ctx = lean_context(&tmp.db);
 
@@ -250,6 +265,7 @@ async fn lean_start_finish_preserves_order_and_metadata_only() {
 
 #[tokio::test]
 async fn lean_cancellation_marks_interrupted_without_blocking() {
+    let _serial = serial_guard().await;
     let tmp = TempTestDb::new().await;
     let ctx = lean_context(&tmp.db);
 
@@ -276,6 +292,7 @@ async fn lean_cancellation_marks_interrupted_without_blocking() {
 
 #[tokio::test]
 async fn lean_overflow_drops_with_explicit_counter() {
+    let _serial = serial_guard().await;
     let (max_events, max_bytes, max_event) = request_log_bounds();
     assert!(max_events > 0 && max_bytes > 0 && max_event > 0);
     let tmp = TempTestDb::new().await;
@@ -305,6 +322,7 @@ async fn lean_overflow_drops_with_explicit_counter() {
 
 #[tokio::test]
 async fn lean_event_bytes_are_bounded() {
+    let _serial = serial_guard().await;
     let tmp = TempTestDb::new().await;
     let ctx = lean_context(&tmp.db);
     let long_provider = "p".repeat(10_000);
@@ -346,6 +364,7 @@ async fn lean_event_bytes_are_bounded() {
 
 #[tokio::test]
 async fn flush_budget_is_honest_when_sqlite_is_blocked() {
+    let _serial = serial_guard().await;
     let tmp = TempTestDb::new().await;
     let ctx = lean_context(&tmp.db);
     let sqlite = tmp.db.sqlite.clone();

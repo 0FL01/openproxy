@@ -761,5 +761,15 @@
       "runtime_threads",
       "release_profile"
     ]
+  },
+  "final_acceptance": {
+    "checkpoint": "C42",
+    "artifact": "bench/lean/final.json",
+    "report": "docs/lean-proxy-results.md",
+    "regression_gates_tripped": 0,
+    "successes_attempts": "410/410 exact in both runs",
+    "required_done": true,
+    "conditionals_not_applicable": 0,
+    "release_blockers_open": 0
   }
 }

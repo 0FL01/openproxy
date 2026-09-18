@@ -153,18 +153,16 @@ fn log_service() -> &'static LogService {
     })
 }
 
-/// Ensure exactly one background writer consumes the queue. Safe to call from
-/// any async log path; spawns once on first use inside a runtime. Entries
-/// queued before any runtime existed stay ordered in the channel and drain
-/// once the writer starts.
+/// Ensure exactly one background writer consumes the queue. The writer is a
+/// dedicated OS thread (not a task on the caller's runtime), so it survives
+/// short-lived runtimes — e.g. one `#[tokio::test]` current-thread runtime
+/// per test — and the channel is never closed while the process lives.
+/// Exactly-once spawn keeps start/finish order intact.
 fn ensure_log_writer() {
     let service = log_service();
     if service.writer_started.load(Ordering::Acquire) {
         return;
     }
-    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-        return;
-    };
     // Only one caller wins the flag and takes the receiver, so exactly one
     // consumer ever exists and start/finish order is preserved.
     if service
@@ -176,14 +174,20 @@ fn ensure_log_writer() {
     }
     let rx = service.rx.lock().ok().and_then(|mut guard| guard.take());
     if let Some(rx) = rx {
-        runtime.spawn(log_writer_task(rx));
+        std::thread::Builder::new()
+            .name("openproxy-request-log-writer".to_string())
+            .spawn(move || log_writer_loop(rx))
+            .expect("request log writer thread must spawn");
     }
 }
 
-async fn log_writer_task(mut rx: tokio::sync::mpsc::Receiver<LogOp>) {
-    while let Some(op) = rx.recv().await {
+fn log_writer_loop(mut rx: tokio::sync::mpsc::Receiver<LogOp>) {
+    // `blocking_recv` parks this dedicated thread; it must never run on an
+    // async worker. Senders live in the process-global service, so this loop
+    // only ends at process exit.
+    while let Some(op) = rx.blocking_recv() {
         let bytes = op.bytes;
-        write_op_blocking(op).await;
+        write_op_sync(op);
         log_service().queued_bytes.fetch_sub(
             bytes.min(LEAN_LOG_QUEUE_BYTES + LEAN_LOG_MAX_EVENT_BYTES),
             Ordering::AcqRel,
@@ -191,8 +195,12 @@ async fn log_writer_task(mut rx: tokio::sync::mpsc::Receiver<LogOp>) {
     }
 }
 
-async fn write_op_blocking(op: LogOp) {
-    let result = tokio::task::spawn_blocking(move || match op.kind {
+/// Synchronous SQLite write for the dedicated writer thread (which has no
+/// async runtime, so no `spawn_blocking` here). `with_conn` serializes on the
+/// connection mutex; a slow database only slows this single writer, while
+/// lean producers keep their non-blocking enqueue contract.
+fn write_op_sync(op: LogOp) {
+    let result: rusqlite::Result<()> = match op.kind {
         LogOpKind::Insert {
             id,
             timestamp,
@@ -223,16 +231,9 @@ async fn write_op_blocking(op: LogOp) {
             .sqlite
             .with_conn(|conn| request_repo::finish(conn, &id, &status, &data))
             .map(|_| ()),
-    })
-    .await;
-    match result {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => {
-            tracing::warn!(target: "openproxy::logs", %error, "background request log write failed");
-        }
-        Err(error) => {
-            tracing::warn!(target: "openproxy::logs", %error, "request log writer task failed");
-        }
+    };
+    if let Err(error) = result {
+        tracing::warn!(target: "openproxy::logs", %error, "background request log write failed");
     }
 }
 
@@ -495,10 +496,8 @@ impl Drop for AttemptLog {
         }
         // C35: cancellation/interruption never spawns an unbounded detached
         // task. Enqueue best-effort through the same bounded pipeline in both
-        // modes; overflow is counted explicitly instead of growing.
-        if tokio::runtime::Handle::try_current().is_err() {
-            return;
-        }
+        // modes; overflow is counted explicitly instead of growing. The writer
+        // is a runtime-independent thread, so no runtime check is needed.
         let data = self.finished_data(None, None);
         try_enqueue_lean(
             self.db.clone(),

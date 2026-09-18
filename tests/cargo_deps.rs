@@ -29,7 +29,8 @@ fn key_dependencies_present_with_correct_versions() {
         ("tracing-subscriber", "0.3"),
         ("sha2", "0.11"),
         ("rsa", "0.9"),
-        ("dotenvy", "0.15"),
+        // dotenvy was deliberately dropped in b48d9653 (cargo-machete +
+        // manual grep: zero usage) and must stay out; see C41 census.
         ("rand", "0.8"),
     ];
 

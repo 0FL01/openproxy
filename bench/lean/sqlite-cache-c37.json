@@ -5,17 +5,17 @@
     266120
   ],
   "checkpoint": "C37",
-  "generated_at": "2026-09-18T06:58:47.218051094+00:00",
+  "generated_at": "2026-09-18T15:41:26.007000349+00:00",
   "limitations": [
     "Single 4096-byte pages; OS page cache cannot be dropped without privileges, so 'cold' means a freshly copied file, not a flushed cache.",
     "RSS is process-wide and allocator-retained; per-config RSS attribution is not claimed. Cache pressure is compared via SQLITE_DBSTATUS used/hit/miss and /proc/self/io deltas.",
     "mmap_size, temp_store, WAL, and synchronous were not varied in this experiment."
   ],
   "medians_ms": {
-    "big_64000_cold": 399.61263099999996,
-    "big_64000_warm": 401.946387,
-    "small_8192_cold": 421.23794899999996,
-    "small_8192_warm": 384.905829
+    "big_64000_cold": 414.29228700000004,
+    "big_64000_warm": 432.803264,
+    "small_8192_cold": 465.318316,
+    "small_8192_warm": 430.834136
   },
   "order": [
     8192,
@@ -34,13 +34,13 @@
       "cache_miss_delta": 36,
       "cache_used_after": 266120,
       "cache_used_before": 18056,
-      "io_read_bytes_delta": 0,
+      "io_read_bytes_delta": 32768,
       "io_write_bytes_delta": 0,
-      "read_ms": 362.283939,
+      "read_ms": 434.24377499999997,
       "rows_after": 20200,
       "temperature": "cold",
-      "total_ms": 388.93736299999995,
-      "write_ms": 26.653423999999998
+      "total_ms": 465.318316,
+      "write_ms": 31.074541
     },
     {
       "cache_hit_delta": 46801,
@@ -50,11 +50,11 @@
       "cache_used_before": 18056,
       "io_read_bytes_delta": 0,
       "io_write_bytes_delta": 0,
-      "read_ms": 352.15946199999996,
+      "read_ms": 398.654711,
       "rows_after": 20200,
       "temperature": "warm",
-      "total_ms": 378.964255,
-      "write_ms": 26.804793
+      "total_ms": 430.834136,
+      "write_ms": 32.179424999999995
     },
     {
       "cache_hit_delta": 46801,
@@ -64,11 +64,11 @@
       "cache_used_before": 18056,
       "io_read_bytes_delta": 0,
       "io_write_bytes_delta": 0,
-      "read_ms": 384.76574899999997,
+      "read_ms": 396.452523,
       "rows_after": 20200,
       "temperature": "cold",
-      "total_ms": 416.132867,
-      "write_ms": 31.367117999999998
+      "total_ms": 426.512154,
+      "write_ms": 30.059631
     },
     {
       "cache_hit_delta": 46801,
@@ -78,11 +78,11 @@
       "cache_used_before": 18056,
       "io_read_bytes_delta": 0,
       "io_write_bytes_delta": 0,
-      "read_ms": 371.268777,
+      "read_ms": 476.94659,
       "rows_after": 20200,
       "temperature": "warm",
-      "total_ms": 399.35427,
-      "write_ms": 28.085493
+      "total_ms": 514.714007,
+      "write_ms": 37.767416999999995
     },
     {
       "cache_hit_delta": 46801,
@@ -92,11 +92,11 @@
       "cache_used_before": 18056,
       "io_read_bytes_delta": 0,
       "io_write_bytes_delta": 0,
-      "read_ms": 363.636286,
+      "read_ms": 384.712098,
       "rows_after": 20200,
       "temperature": "cold",
-      "total_ms": 390.927342,
-      "write_ms": 27.291056
+      "total_ms": 414.29228700000004,
+      "write_ms": 29.580189
     },
     {
       "cache_hit_delta": 46801,
@@ -106,11 +106,11 @@
       "cache_used_before": 18056,
       "io_read_bytes_delta": 0,
       "io_write_bytes_delta": 0,
-      "read_ms": 396.9307,
+      "read_ms": 402.36959,
       "rows_after": 20200,
       "temperature": "warm",
-      "total_ms": 421.741237,
-      "write_ms": 24.810537
+      "total_ms": 432.803264,
+      "write_ms": 30.433674
     },
     {
       "cache_hit_delta": 46801,
@@ -120,11 +120,11 @@
       "cache_used_before": 18056,
       "io_read_bytes_delta": 0,
       "io_write_bytes_delta": 0,
-      "read_ms": 393.737087,
+      "read_ms": 446.838707,
       "rows_after": 20200,
       "temperature": "cold",
-      "total_ms": 421.23794899999996,
-      "write_ms": 27.500862
+      "total_ms": 475.543686,
+      "write_ms": 28.704978999999998
     },
     {
       "cache_hit_delta": 46801,
@@ -134,11 +134,11 @@
       "cache_used_before": 18056,
       "io_read_bytes_delta": 0,
       "io_write_bytes_delta": 0,
-      "read_ms": 407.307796,
+      "read_ms": 459.949945,
       "rows_after": 20200,
       "temperature": "warm",
-      "total_ms": 443.546255,
-      "write_ms": 36.238459
+      "total_ms": 493.533988,
+      "write_ms": 33.584043
     },
     {
       "cache_hit_delta": 46801,
@@ -148,11 +148,11 @@
       "cache_used_before": 18056,
       "io_read_bytes_delta": 0,
       "io_write_bytes_delta": 0,
-      "read_ms": 404.10513199999997,
+      "read_ms": 379.349708,
       "rows_after": 20200,
       "temperature": "cold",
-      "total_ms": 436.312845,
-      "write_ms": 32.207713
+      "total_ms": 406.824293,
+      "write_ms": 27.474584999999998
     },
     {
       "cache_hit_delta": 46801,
@@ -162,11 +162,11 @@
       "cache_used_before": 18056,
       "io_read_bytes_delta": 0,
       "io_write_bytes_delta": 0,
-      "read_ms": 358.063579,
+      "read_ms": 374.004421,
       "rows_after": 20200,
       "temperature": "warm",
-      "total_ms": 384.905829,
-      "write_ms": 26.84225
+      "total_ms": 405.61785299999997,
+      "write_ms": 31.613431999999996
     },
     {
       "cache_hit_delta": 46801,
@@ -176,11 +176,11 @@
       "cache_used_before": 18056,
       "io_read_bytes_delta": 0,
       "io_write_bytes_delta": 0,
-      "read_ms": 372.420263,
+      "read_ms": 375.059492,
       "rows_after": 20200,
       "temperature": "cold",
-      "total_ms": 399.61263099999996,
-      "write_ms": 27.192368000000002
+      "total_ms": 400.481995,
+      "write_ms": 25.422503
     },
     {
       "cache_hit_delta": 46801,
@@ -190,11 +190,11 @@
       "cache_used_before": 18056,
       "io_read_bytes_delta": 0,
       "io_write_bytes_delta": 0,
-      "read_ms": 373.519239,
+      "read_ms": 347.260627,
       "rows_after": 20200,
       "temperature": "warm",
-      "total_ms": 401.946387,
-      "write_ms": 28.427148
+      "total_ms": 375.832937,
+      "write_ms": 28.57231
     }
   ],
   "seed_bytes": 7069696,
@@ -208,8 +208,8 @@
     "note": "per-connection SQLITE_DBSTATUS_CACHE_USED bytes after workload"
   },
   "verdict": "keep -64000",
-  "warm_gain_8192": 0.04239510181242165,
-  "warm_write_ratio_8192": -0.0442663762391495,
+  "warm_gain_8192": 0.004549706907940537,
+  "warm_write_ratio_8192": 0.0573624794692877,
   "workload": {
     "lists": 40,
     "writes": 200
