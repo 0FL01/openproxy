@@ -23,7 +23,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::core::proxy::ProxyTarget;
 use crate::types::ProviderConnection;
 
-use super::{ClientPool, TransportKind, UpstreamResponse};
+use super::{
+    diagnostic_body_limit, read_reqwest_body, read_reqwest_diagnostic, success_body_limit,
+    ClientPool, TransportKind, UpstreamResponse,
+};
 
 const TRAE_BASE_URL: &str = "https://core-normal.trae.ai/api/remote/v1";
 const TRAE_UA: &str =
@@ -344,12 +347,25 @@ impl TraeExecutor {
             .send()
             .await?;
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
         if !status.is_success() {
+            let text = String::from_utf8_lossy(
+                &read_reqwest_diagnostic(resp, diagnostic_body_limit())
+                    .await
+                    .bytes,
+            )
+            .into_owned();
             return Err(TraeExecutorError::MissingCredentials(format!(
                 "[{status}] {text}"
             )));
         }
+        let bytes = read_reqwest_body(resp, success_body_limit())
+            .await
+            .map_err(|error| {
+                TraeExecutorError::MissingCredentials(format!(
+                    "trae create_session response read failed: {error}"
+                ))
+            })?;
+        let text = String::from_utf8_lossy(&bytes);
         let json: Value = serde_json::from_str(&text).map_err(|_| {
             TraeExecutorError::MissingCredentials(format!("trae create_session: {text}"))
         })?;
@@ -400,7 +416,13 @@ impl TraeExecutor {
                 resp.status()
             )));
         }
-        let bytes = resp.bytes().await.unwrap_or_default();
+        let bytes = read_reqwest_body(resp, success_body_limit())
+            .await
+            .map_err(|error| {
+                TraeExecutorError::MissingCredentials(format!(
+                    "trae events stream read failed: {error}"
+                ))
+            })?;
         let text = String::from_utf8_lossy(&bytes).to_string();
         let mut ev: Option<String> = None;
         for line in text.lines() {

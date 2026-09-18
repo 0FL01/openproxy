@@ -10,7 +10,10 @@ use time::Duration;
 use crate::core::proxy::ProxyTarget;
 use crate::types::{ProviderConnection, ProviderNode};
 
-use super::{ClientPool, TransportKind, UpstreamResponse};
+use super::{
+    diagnostic_body_limit, read_reqwest_body, read_reqwest_diagnostic, success_body_limit,
+    ClientPool, TransportKind, UpstreamResponse,
+};
 
 const VERTEX_AI_BASE_URL: &str = "https://aiplatform.googleapis.com/v2beta";
 const VERTEX_DEFAULT_LOCATION: &str = "us-central1";
@@ -307,7 +310,10 @@ impl VertexExecutor {
             expires_in: u64,
         }
 
-        let token_resp: TokenResponse = response.json().await.map_err(|e| {
+        let body = read_reqwest_body(response, success_body_limit())
+            .await
+            .map_err(|e| VertexExecutorError::InvalidToken(e.to_string()))?;
+        let token_resp: TokenResponse = serde_json::from_slice(&body).map_err(|e| {
             VertexExecutorError::InvalidToken(format!("Failed to parse token response: {}", e))
         })?;
 
@@ -628,14 +634,22 @@ impl VertexExecutor {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = String::from_utf8_lossy(
+                &read_reqwest_diagnostic(response, diagnostic_body_limit())
+                    .await
+                    .bytes,
+            )
+            .into_owned();
             return Err(VertexExecutorError::InvalidToken(format!(
                 "Authorized user token refresh returned {}: {}",
                 status, body
             )));
         }
 
-        let token_resp: TokenResponse = response.json().await.map_err(|e| {
+        let body = read_reqwest_body(response, success_body_limit())
+            .await
+            .map_err(|e| VertexExecutorError::InvalidToken(e.to_string()))?;
+        let token_resp: TokenResponse = serde_json::from_slice(&body).map_err(|e| {
             VertexExecutorError::InvalidToken(format!(
                 "Failed to parse authorized user token response: {}",
                 e
@@ -677,9 +691,17 @@ impl VertexExecutor {
                     e
                 ))
             })?;
-        let token = resp.text().await.map_err(|e| {
+        let token = read_reqwest_body(resp, success_body_limit())
+            .await
+            .map_err(|e| {
+                VertexExecutorError::InvalidToken(format!(
+                    "ADC metadata server token parse failed: {}",
+                    e
+                ))
+            })?;
+        let token = String::from_utf8(token.to_vec()).map_err(|e| {
             VertexExecutorError::InvalidToken(format!(
-                "ADC metadata server token parse failed: {}",
+                "ADC metadata server token was not UTF-8: {}",
                 e
             ))
         })?;

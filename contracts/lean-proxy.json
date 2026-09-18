@@ -401,6 +401,42 @@
     "tool_mapping_usage_and_cancellation_preserved": true,
     "public_route_or_schema_change": false
   },
+  "upstream_body_collection": {
+    "checkpoint": "C29",
+    "shared_reader_transports": [
+      "reqwest",
+      "hyper"
+    ],
+    "success_and_protocol_default_bytes": 67108864,
+    "success_and_protocol_environment": "OPENPROXY_MAX_UPSTREAM_JSON_BYTES",
+    "diagnostic_default_bytes": 1048576,
+    "diagnostic_environment": "OPENPROXY_MAX_UPSTREAM_DIAGNOSTIC_BYTES",
+    "environment_values_must_be_positive_integers": true,
+    "content_length_is_early_rejection_only": true,
+    "content_length_early_rejection_encoding": "identity",
+    "encoded_wire_length_is_not_decoded_length": true,
+    "yielded_and_decompressed_bytes_enforced": true,
+    "checked_add_before_buffer_growth": true,
+    "partial_success_body_can_be_returned": false,
+    "oversized_or_partial_success_status": 502,
+    "diagnostic_truncation_is_explicit": true,
+    "diagnostic_transport_failure_is_explicit": true,
+    "upstream_error_status_preserved": true,
+    "upstream_retry_after_preserved": true,
+    "bounded_protocol_collectors": [
+      "commandcode_ndjson",
+      "cursor_protobuf",
+      "windsurf_grpc_web",
+      "trae_session_and_events",
+      "zed_ndjson",
+      "grok_web_ndjson"
+    ],
+    "grok_web_whole_body_collector_bounded": true,
+    "native_chat_sse_is_collected": false,
+    "codex_first_event_preflight_changed": false,
+    "generation_attempt_budget_changed": false,
+    "post_commit_retry_changed": false
+  },
   "versions": {
     "opencode": "1.18.31",
     "custom_harness": "unknown"

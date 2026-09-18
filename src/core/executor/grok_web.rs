@@ -31,7 +31,7 @@ use uuid::Uuid;
 use crate::core::proxy::ProxyTarget;
 use crate::types::ProviderConnection;
 
-use super::{ClientPool, TransportKind, UpstreamResponse};
+use super::{read_reqwest_body, success_body_limit, ClientPool, TransportKind, UpstreamResponse};
 
 const GROK_CHAT_API: &str = "https://grok.com/rest/app-chat/conversations/new";
 const GROK_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
@@ -271,6 +271,7 @@ pub enum GrokWebExecutorError {
     HyperClientInit(std::io::Error),
     Hyper(hyper_util::client::legacy::Error),
     Request(reqwest::Error),
+    ResponseBody(String),
     UnsupportedFormat(String),
 }
 
@@ -322,6 +323,7 @@ impl std::fmt::Display for GrokWebExecutorError {
             Self::HyperClientInit(e) => write!(f, "Hyper client init error: {}", e),
             Self::Hyper(e) => write!(f, "Hyper error: {}", e),
             Self::Request(e) => write!(f, "Request error: {}", e),
+            Self::ResponseBody(message) => write!(f, "Response body error: {message}"),
             Self::UnsupportedFormat(msg) => write!(f, "Unsupported format: {}", msg),
         }
     }
@@ -678,15 +680,12 @@ async fn convert_grok_response(
     is_thinking_model: bool,
     stream: bool,
 ) -> Result<UpstreamResponse, GrokWebExecutorError> {
-    use futures_util::StreamExt;
-
-    // Drain the whole NDJSON body first (grok.com sends no SSE framing).
-    let mut text = String::new();
-    let mut stream_body = response.bytes_stream();
-    while let Some(chunk) = stream_body.next().await {
-        let bytes = chunk.map_err(GrokWebExecutorError::Request)?;
-        text.push_str(&String::from_utf8_lossy(&bytes));
-    }
+    // Grok Web requires complete NDJSON before it can synthesize either output
+    // shape. Keep that protocol behavior, but cap the collected upstream bytes.
+    let body = read_reqwest_body(response, success_body_limit())
+        .await
+        .map_err(|error| GrokWebExecutorError::ResponseBody(error.to_string()))?;
+    let text = String::from_utf8_lossy(&body);
 
     let mut fingerprint = String::new();
     let mut response_id = String::new();

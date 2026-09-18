@@ -399,6 +399,34 @@ fn contract_freezes_preservation_and_removal_lists() {
         true
     );
     assert_eq!(
+        manifest["upstream_body_collection"]["success_and_protocol_default_bytes"],
+        64 * 1024 * 1024
+    );
+    assert_eq!(
+        manifest["upstream_body_collection"]["diagnostic_default_bytes"],
+        1024 * 1024
+    );
+    assert_eq!(
+        manifest["upstream_body_collection"]["content_length_early_rejection_encoding"],
+        "identity"
+    );
+    assert_eq!(
+        manifest["upstream_body_collection"]["yielded_and_decompressed_bytes_enforced"],
+        true
+    );
+    assert_eq!(
+        manifest["upstream_body_collection"]["partial_success_body_can_be_returned"],
+        false
+    );
+    assert_eq!(
+        manifest["upstream_body_collection"]["native_chat_sse_is_collected"],
+        false
+    );
+    assert_eq!(
+        manifest["upstream_body_collection"]["grok_web_whole_body_collector_bounded"],
+        true
+    );
+    assert_eq!(
         manifest["generation_retry_policy"]["client_invalid_terminal_statuses"],
         serde_json::json!([400, 413, 422])
     );

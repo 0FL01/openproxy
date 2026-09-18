@@ -15,7 +15,10 @@ use serde_json::{json, Value};
 
 use crate::core::account_fallback::{GenerationAttemptBudget, ProviderAttemptError};
 use crate::core::chat::RequestPlan;
-use crate::core::executor::{PreparedUpstreamBody, UpstreamResponse};
+use crate::core::executor::{
+    diagnostic_body_limit, read_upstream_body, read_upstream_diagnostic, success_body_limit,
+    BoundedBodyError, PreparedUpstreamBody, UpstreamResponse,
+};
 use crate::core::model::get_model_info;
 use crate::core::proxy::resolve_proxy_target;
 use crate::core::translator::helpers::image_helper::fetch_image_as_base64;
@@ -1755,21 +1758,16 @@ async fn proxy_dashboard_sse(
 ) -> Response {
     let status = response.status();
     let headers = response.headers().clone();
-    let (body_bytes, body_complete) = collect_upstream_response_bytes(response).await;
+    let body_bytes = match read_upstream_body(response, success_body_limit()).await {
+        Ok(body) => body,
+        Err(error) => return collected_body_failure_response(error, attempt_log).await,
+    };
 
-    let token_usage = body_complete
-        .then(|| extract_token_usage_from_bytes(&body_bytes))
-        .flatten();
+    let token_usage = extract_token_usage_from_bytes(&body_bytes);
     if let Some(attempt_log) = attempt_log {
-        if body_complete {
-            attempt_log
-                .finish("success", Some(status.as_u16()), token_usage.as_ref())
-                .await;
-        } else {
-            attempt_log
-                .finish("error", Some(StatusCode::BAD_GATEWAY.as_u16()), None)
-                .await;
-        }
+        attempt_log
+            .finish("success", Some(status.as_u16()), token_usage.as_ref())
+            .await;
     }
 
     let text = extract_dashboard_assistant_text_from_bytes(&body_bytes);
@@ -1921,7 +1919,10 @@ async fn proxy_sse_to_json_response(
     attempt_log: Option<AttemptLog>,
 ) -> Response {
     let status = response.status();
-    let (body_bytes, body_complete) = collect_upstream_response_bytes(response).await;
+    let body_bytes = match read_upstream_body(response, success_body_limit()).await {
+        Ok(body) => body,
+        Err(error) => return collected_body_failure_response(error, attempt_log).await,
+    };
 
     let json_body = crate::core::chat::stream_to_json::sse_stream_to_json(&body_bytes, Some(model))
         .unwrap_or_else(|| {
@@ -1939,19 +1940,11 @@ async fn proxy_sse_to_json_response(
 
     let out = Bytes::from(serde_json::to_vec(&json_body).unwrap_or_default());
 
-    let usage = body_complete
-        .then(|| extract_token_usage_from_bytes(&out))
-        .flatten();
+    let usage = extract_token_usage_from_bytes(&out);
     if let Some(attempt_log) = attempt_log {
-        if body_complete {
-            attempt_log
-                .finish("success", Some(status.as_u16()), usage.as_ref())
-                .await;
-        } else {
-            attempt_log
-                .finish("error", Some(StatusCode::BAD_GATEWAY.as_u16()), None)
-                .await;
-        }
+        attempt_log
+            .finish("success", Some(status.as_u16()), usage.as_ref())
+            .await;
     }
     let resp = Response::builder()
         .status(status)
@@ -1976,7 +1969,10 @@ async fn proxy_response(
 ) -> Response {
     let status = response.status();
     let headers = response.headers().clone();
-    let (body_bytes, body_complete) = collect_upstream_response_bytes(response).await;
+    let body_bytes = match read_upstream_body(response, success_body_limit()).await {
+        Ok(body) => body,
+        Err(error) => return collected_body_failure_response(error, attempt_log).await,
+    };
 
     // 9router parity (open-sse/handlers/chatCore/nonStreamingHandler.js +
     // open-sse/shared/clineEnvelope.js unwrapClineEnvelope): unwrap before any
@@ -1985,86 +1981,73 @@ async fn proxy_response(
     // in via transport.quirks.clineEnvelope (cline/clinepass).
     let unenveloped_body = unwrap_cline_envelope(&body_bytes, provider);
 
-    let token_usage = body_complete
-        .then(|| extract_token_usage_from_bytes(unenveloped_body.as_ref()))
-        .flatten();
+    let token_usage = extract_token_usage_from_bytes(unenveloped_body.as_ref());
 
-    let final_body = if body_complete {
-        // 9router parity: translate non-streaming response body when source
-        // and target formats differ (handleNonStreamingResponse).
-        // For Responses API format (Codex), the raw body is a response.completed JSON,
-        // not SSE chunks. We parse it directly instead of using the streaming SSE transform.
-        let translated_body = if plan.needs_translation() {
-            if plan.target_format == registry::Format::OpenAiResponses
-                || plan.target_format == registry::Format::Codex
-            {
-                // The Codex/Responses API returns a response.completed JSON body for non-streaming.
-                // Parse out the text content and build a proper chat.completion response.
-                translate_codex_non_streaming(unenveloped_body.as_ref())
-                    .unwrap_or_else(|| unenveloped_body.clone())
-            } else if plan.target_format == registry::Format::Claude
-                && plan.source_format == registry::Format::OpenAi
-            {
-                // GitHub Copilot Claude /v1/messages (and other Claude-upstream
-                // non-stream paths): full Messages JSON → chat.completion.
-                match serde_json::from_slice::<Value>(unenveloped_body.as_ref()) {
-                    Ok(mut val) => {
-                        crate::core::translator::response::non_streaming::claude_to_openai_non_streaming(
+    // 9router parity: translate non-streaming response body when source
+    // and target formats differ (handleNonStreamingResponse).
+    // For Responses API format (Codex), the raw body is a response.completed JSON,
+    // not SSE chunks. We parse it directly instead of using the streaming SSE transform.
+    let translated_body = if plan.needs_translation() {
+        if plan.target_format == registry::Format::OpenAiResponses
+            || plan.target_format == registry::Format::Codex
+        {
+            // The Codex/Responses API returns a response.completed JSON body for non-streaming.
+            // Parse out the text content and build a proper chat.completion response.
+            translate_codex_non_streaming(unenveloped_body.as_ref())
+                .unwrap_or_else(|| unenveloped_body.clone())
+        } else if plan.target_format == registry::Format::Claude
+            && plan.source_format == registry::Format::OpenAi
+        {
+            // GitHub Copilot Claude /v1/messages (and other Claude-upstream
+            // non-stream paths): full Messages JSON → chat.completion.
+            match serde_json::from_slice::<Value>(unenveloped_body.as_ref()) {
+                Ok(mut val) => {
+                    crate::core::translator::response::non_streaming::claude_to_openai_non_streaming(
                             &mut val,
                         );
-                        Bytes::from(
-                            serde_json::to_vec(&val).unwrap_or_else(|_| unenveloped_body.to_vec()),
-                        )
-                    }
-                    Err(_) => unenveloped_body.clone(),
+                    Bytes::from(
+                        serde_json::to_vec(&val).unwrap_or_else(|_| unenveloped_body.to_vec()),
+                    )
                 }
-            } else {
-                use crate::core::translator::registry::ResponseTransformState;
-                let mut state = ResponseTransformState::default();
-                let chunks = registry::global_registry().translate_response(
-                    plan.target_format,
-                    plan.source_format,
-                    unenveloped_body.as_ref(),
-                    &mut state,
-                );
-                if !chunks.is_empty() {
-                    let mut result = String::new();
-                    for chunk in &chunks {
-                        if let Some(data) = chunk.strip_prefix("data: ") {
-                            result = data.to_string();
-                            if result == "[DONE]" {
-                                continue;
-                            }
-                        }
-                    }
-                    if result.is_empty() {
-                        unenveloped_body.clone()
-                    } else {
-                        Bytes::from(result)
-                    }
-                } else {
-                    unenveloped_body.clone()
-                }
+                Err(_) => unenveloped_body.clone(),
             }
         } else {
-            unenveloped_body.clone()
-        };
-
-        Body::from(translated_body)
+            use crate::core::translator::registry::ResponseTransformState;
+            let mut state = ResponseTransformState::default();
+            let chunks = registry::global_registry().translate_response(
+                plan.target_format,
+                plan.source_format,
+                unenveloped_body.as_ref(),
+                &mut state,
+            );
+            if !chunks.is_empty() {
+                let mut result = String::new();
+                for chunk in &chunks {
+                    if let Some(data) = chunk.strip_prefix("data: ") {
+                        result = data.to_string();
+                        if result == "[DONE]" {
+                            continue;
+                        }
+                    }
+                }
+                if result.is_empty() {
+                    unenveloped_body.clone()
+                } else {
+                    Bytes::from(result)
+                }
+            } else {
+                unenveloped_body.clone()
+            }
+        }
     } else {
-        Body::from(unenveloped_body)
+        unenveloped_body.clone()
     };
+    let final_body = Body::from(translated_body);
 
     if let Some(attempt_log) = attempt_log {
-        if body_complete {
-            attempt_log
-                .finish("success", Some(status.as_u16()), token_usage.as_ref())
-                .await;
-        } else {
-            attempt_log
-                .finish("error", Some(StatusCode::BAD_GATEWAY.as_u16()), None)
-                .await;
-        }
+        attempt_log
+            .finish("success", Some(status.as_u16()), token_usage.as_ref())
+            .await;
     }
 
     build_proxied_response(status, &headers, final_body)
@@ -2193,13 +2176,18 @@ async fn proxy_response_with_pending_tracking(
             || ct.contains("text/plain"))
     {
         // Collect body and return structured error instead of piping garbage as SSE
-        let (body_bytes, _) = collect_upstream_response_bytes(response).await;
-        let msg = String::from_utf8_lossy(&body_bytes);
-        let msg = if msg.len() > 500 {
-            format!("{}…", &msg[..500])
-        } else {
-            msg.to_string()
-        };
+        let diagnostic = read_upstream_diagnostic(response, diagnostic_body_limit()).await;
+        let mut msg = String::from_utf8_lossy(&diagnostic.bytes)
+            .chars()
+            .take(500)
+            .collect::<String>();
+        if diagnostic.truncated {
+            msg.push_str(" [openproxy: upstream diagnostic body truncated]");
+        } else if diagnostic.transport_failed {
+            msg.push_str(
+                " [openproxy: upstream diagnostic body incomplete after transport failure]",
+            );
+        }
         tracing::warn!(
             target: "openproxy::chat",
             "STREAM_GUARD non-SSE content-type={} status={} body_snip={}",
@@ -2800,50 +2788,6 @@ fn build_proxied_response(
     proxied
 }
 
-async fn collect_upstream_response_bytes(response: UpstreamResponse) -> (Bytes, bool) {
-    match response {
-        UpstreamResponse::Reqwest(response) => {
-            let mut stream = response.bytes_stream();
-            let mut collected = Vec::new();
-            let mut complete = true;
-
-            loop {
-                match stream.try_next().await {
-                    Ok(Some(chunk)) => collected.extend_from_slice(&chunk),
-                    Ok(None) => break,
-                    Err(_) => {
-                        complete = false;
-                        break;
-                    }
-                }
-            }
-
-            (Bytes::from(collected), complete)
-        }
-        UpstreamResponse::Hyper(response) => {
-            let (_, mut body) = response.into_parts();
-            let mut collected = Vec::new();
-            let mut complete = true;
-
-            while let Some(frame_result) = body.frame().await {
-                match frame_result {
-                    Ok(frame) => {
-                        if let Ok(data) = frame.into_data() {
-                            collected.extend_from_slice(&data);
-                        }
-                    }
-                    Err(_) => {
-                        complete = false;
-                        break;
-                    }
-                }
-            }
-
-            (Bytes::from(collected), complete)
-        }
-    }
-}
-
 /// Strip the SSE `data:` prefix from a chunk, returning the JSON payload.
 /// SSE data lines look like `data: {...}` or `data: {...}\n\nbuffer`.
 /// If the body is valid JSON already (non-streaming path), return as-is.
@@ -2995,7 +2939,9 @@ fn opt(v: u64) -> Option<u64> {
 /// This preserves the upstream body for verbatim passthrough (H23).
 async fn extract_upstream_error_with_body(response: UpstreamResponse) -> (String, Option<Vec<u8>>) {
     let status = response.status();
-    let (body_bytes, _) = collect_upstream_response_bytes(response).await;
+    let body_bytes = read_upstream_diagnostic(response, diagnostic_body_limit())
+        .await
+        .bytes;
     let text = String::from_utf8_lossy(&body_bytes).to_string();
     let message = if let Ok(value) = serde_json::from_str::<Value>(&text) {
         if let Some(msg) = value
@@ -3041,6 +2987,21 @@ async fn extract_upstream_error_with_body(response: UpstreamResponse) -> (String
         Some(body_bytes.to_vec())
     };
     (message, raw_body)
+}
+
+async fn collected_body_failure_response(
+    error: BoundedBodyError,
+    attempt_log: Option<AttemptLog>,
+) -> Response {
+    if let Some(attempt_log) = attempt_log {
+        attempt_log
+            .finish("error", Some(StatusCode::BAD_GATEWAY.as_u16()), None)
+            .await;
+    }
+    json_error_response(
+        StatusCode::BAD_GATEWAY,
+        &format!("Failed to read complete upstream response: {error}"),
+    )
 }
 
 fn fallback_error_text(status: StatusCode, text: &str) -> String {

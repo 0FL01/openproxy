@@ -19,7 +19,7 @@ use crate::core::proxy::ProxyTarget;
 use crate::core::utils::cursor_checksum;
 use crate::types::{ProviderConnection, ProviderNode};
 
-use super::{ClientPool, TransportKind, UpstreamResponse};
+use super::{read_reqwest_body, success_body_limit, ClientPool, TransportKind, UpstreamResponse};
 
 /// 9router registry default baseUrl + chatPath.
 const CURSOR_API_ENDPOINT: &str =
@@ -2170,10 +2170,9 @@ impl CursorExecutor {
         let is_stream = request.stream;
 
         if status == 200 {
-            let raw_body = raw_response
-                .bytes()
+            let raw_body = read_reqwest_body(raw_response, success_body_limit())
                 .await
-                .map_err(CursorExecutorError::Request)?;
+                .map_err(|error| CursorExecutorError::StreamError(error.to_string()))?;
             let body_value = request.body.clone();
             let cursor_model = request.model.clone();
 

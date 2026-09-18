@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use common::lean_harness::{MockUpstream, ScriptedResponse};
 use futures_util::StreamExt;
 use openproxy::core::executor::{
-    ClientPool, CodexExecutionRequest, CodexExecutor, UpstreamResponse,
+    read_upstream_body, ClientPool, CodexExecutionRequest, CodexExecutor, UpstreamResponse,
 };
 use openproxy::types::{ProviderConnection, ProviderNode};
 use serde_json::json;
@@ -94,7 +94,10 @@ async fn structured_first_error_reaches_planner_without_retry_or_sleep() {
     assert_eq!(result.response.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(result.response.headers().get("retry-after").unwrap(), "19");
     assert_eq!(result.response.headers().get("x-c11").unwrap(), "preserved");
-    assert_eq!(result.response.text().await, first_error);
+    let response_body = read_upstream_body(result.response, 64 * 1024)
+        .await
+        .expect("bounded C11 preflight error body");
+    assert_eq!(response_body, first_error);
     assert_eq!(
         upstream.request_count().await,
         1,
@@ -157,7 +160,10 @@ async fn error_after_meaningful_delta_is_streamed_once_without_new_generation() 
 
     let result = execute_against(&upstream).await;
     assert_eq!(result.response.status(), StatusCode::OK);
-    let body = result.response.text().await;
+    let body = read_upstream_body(result.response, 64 * 1024)
+        .await
+        .expect("bounded C11 post-commit body");
+    let body = String::from_utf8(body.to_vec()).expect("C11 UTF-8 body");
     assert!(body.contains("committed"), "{body}");
     assert!(body.contains("service_unavailable_error"), "{body}");
     assert_eq!(body.matches("committed").count(), 1, "{body}");

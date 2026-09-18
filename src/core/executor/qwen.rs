@@ -8,7 +8,10 @@ use serde_json::{json, Value};
 use crate::core::proxy::ProxyTarget;
 use crate::types::{ProviderConnection, ProviderNode};
 
-use super::{ClientPool, DefaultExecutor, TransportKind, UpstreamResponse};
+use super::{
+    read_reqwest_body, success_body_limit, ClientPool, DefaultExecutor, TransportKind,
+    UpstreamResponse,
+};
 
 const QWEN_USER_AGENT: &str = "QwenCode/0.12.3 (linux; x64)";
 const QWEN_DEFAULT_URL: &str = "portal.qwen.ai";
@@ -312,6 +315,9 @@ impl QwenExecutor {
             return None;
         }
 
-        response.json::<QwenTokenResponse>().await.ok()
+        let body = read_reqwest_body(response, success_body_limit())
+            .await
+            .ok()?;
+        serde_json::from_slice(&body).ok()
     }
 }

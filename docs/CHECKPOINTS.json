@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C29",
+  "next_checkpoint": "C30A",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -1515,7 +1515,7 @@
     {
       "id": "C29",
       "title": "Ограничить собираемые upstream JSON и ошибки во время чтения",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C02"
       ],
@@ -1528,7 +1528,48 @@
       "change": "Ввести небольшой общий bounded reader для Reqwest/Hyper только там, где требуется collect. Проверять checked addition до расширения buffer, включая распакованные bytes; Content-Length — лишь ранний отказ. Разделить бюджеты успешного JSON и диагностического тела. Обработать partial transport failure; не возвращать обрезанный успешный JSON.",
       "tests": "Chunked, ложный/отсутствующий Content-Length, compressed response, +1 byte к лимиту, большая ошибка, Unicode граница. До commitment вернуть явную ошибку; после commitment корректно завершить stream с доступным протоколу сигналом.",
       "acceptance": "Ни один проверенный collector не читает без своего byte limit. Native stream не превращён в collector ради унификации.",
-      "rollback": "Пределы конфигурируемы и возвращаемы; отключение проверки не является штатным способом исправления fixtures."
+      "rollback": "Пределы конфигурируемы и возвращаемы; отключение проверки не является штатным способом исправления fixtures.",
+      "result": {
+        "completed": "2026-09-18",
+        "files": [
+          "src/core/executor/bounded_body.rs",
+          "src/core/executor/mod.rs",
+          "src/core/executor/default.rs",
+          "src/core/executor/commandcode.rs",
+          "src/core/executor/cursor.rs",
+          "src/core/executor/github.rs",
+          "src/core/executor/mimo_free.rs",
+          "src/core/executor/qwen.rs",
+          "src/core/executor/trae.rs",
+          "src/core/executor/vertex.rs",
+          "src/core/executor/windsurf.rs",
+          "src/core/executor/zed.rs",
+          "src/server/api/chat.rs",
+          "tests/lean_proxy_bounded_c29.rs",
+          "tests/lean_proxy_antigravity_c12.rs",
+          "tests/lean_proxy_codex_c11.rs",
+          "tests/lean_proxy_retry_c10.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json",
+          "docs/CHECKPOINTS.json",
+          "docs/goals/2026-09-17-lean-proxy-plan.md"
+        ],
+        "budgets": "Successful JSON and protocol-required complete bodies default to 64 MiB and diagnostics to 1 MiB. OPENPROXY_MAX_UPSTREAM_JSON_BYTES and OPENPROXY_MAX_UPSTREAM_DIAGNOSTIC_BYTES accept positive integer byte overrides; invalid, zero, or missing values retain defaults.",
+        "reader": "One shared Reqwest/Hyper primitive checks identity-encoded Content-Length only for an early strict rejection; encoded wire lengths are not treated as decoded lengths. It then enforces every yielded byte (including Reqwest decompression) with checked_add and fallible reserve before Vec growth. Exact-limit bodies complete; +1 fails. Strict reads discard partial bytes on transport failure.",
+        "diagnostics": "Diagnostic reads retain only an in-budget prefix plus an explicit truncation or transport-incomplete marker. Final error handling preserves the original upstream status and Retry-After. The non-SSE stream guard repeats the marker in its intentionally short user-facing message.",
+        "callers": "Dashboard SSE normalization, forced SSE-to-JSON, non-stream JSON, the non-SSE stream guard, and upstream error extraction now choose the strict success or diagnostic policy explicitly. CommandCode NDJSON, Cursor protobuf, Windsurf gRPC-web, Trae session/events, Zed NDJSON, and Grok Web NDJSON collectors share the strict primitive. Remaining executor token/bootstrap JSON/text readers were bounded in the same census; dead UpstreamResponse::text was removed.",
+        "preserved": "Native chat SSE remains a live Reqwest/Hyper stream and was not routed through collection. C13 attempts and terminal statuses, Codex first-event preflight, post-commit behavior, protocol translation, cancellation, request limits, and the 64 MiB prepared-request limit are unchanged.",
+        "verification": [
+          "cargo test --test lean_proxy_bounded_c29 -- --nocapture: 9 passed",
+          "cargo test --test lean_proxy_bounded_c29 --test lean_proxy_transformed_c28 --test lean_proxy_budget_c13 --test lean_proxy_retry_c10 --test chat_completions --test codex_executor --test executor_pool_behavior -- --nocapture: 87 passed",
+          "cargo test --test lean_proxy_codex_c11 --test lean_proxy_antigravity_c12 --test lean_proxy_retry_c10 -- --nocapture: 9 passed",
+          "cargo test --lib --all-features -- --test-threads=1: 1180 passed",
+          "cargo clippy --all-targets --all-features: passed with exactly 3 pre-existing production style warnings",
+          "cargo fmt --all -- --check, jq JSON parse, git diff --check, and source collector census: passed"
+        ],
+        "acceptance_evidence": "Loopback tests cover exact limit, +1, missing/chunked length, identity Content-Length early rejection, a compressed response whose decompressed bytes exceed its Content-Length hint, split Unicode, partial transport failure, marked large diagnostics with original 429 and Retry-After, and unchanged valid JSON. A source census rejects direct executor bytes/text/json collectors (allowing only Codex's separately bounded first-event preflight) and proves the native streaming transport match still uses bytes_stream rather than the bounded collector. Existing C28 held-EOF evidence retains native first-event and cancellation coverage.",
+        "rollback": "Restore the prior per-caller collectors and remove the C29 manifest object, or tune the two positive byte environment settings independently. No persisted data, credential, route, model metadata, public schema, dependency, cache, attempt budget, or migration requires rollback; disabling byte enforcement is not a supported rollback."
+      }
     },
     {
       "id": "C30A",

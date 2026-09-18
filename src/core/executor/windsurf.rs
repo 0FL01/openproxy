@@ -29,7 +29,7 @@ use uuid::Uuid;
 use crate::core::proxy::ProxyTarget;
 use crate::types::ProviderConnection;
 
-use super::{ClientPool, TransportKind, UpstreamResponse};
+use super::{read_reqwest_body, success_body_limit, ClientPool, TransportKind, UpstreamResponse};
 
 const WS_BASE_URL: &str = "https://server.codeium.com";
 const WS_SERVICE: &str = "exa.language_server_pb.LanguageServerService";
@@ -681,12 +681,8 @@ impl WindsurfExecutor {
 
         let status = upstream.status();
         if !status.is_success() {
-            let status_code = status.as_u16();
-            let bytes = upstream.bytes().await.unwrap_or_default();
-            let body_str = String::from_utf8_lossy(&bytes).to_string();
-            let error_resp = json_error(status_code, &body_str);
             return Ok(WindsurfExecutorResponse {
-                response: error_resp,
+                response: UpstreamResponse::Reqwest(upstream),
                 url,
                 headers,
                 transport: TransportKind::Reqwest,
@@ -694,7 +690,17 @@ impl WindsurfExecutor {
         }
 
         // Collect the full gRPC-web binary stream and convert to OpenAI SSE.
-        let bytes = upstream.bytes().await.unwrap_or_default();
+        let bytes = match read_reqwest_body(upstream, success_body_limit()).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return Ok(WindsurfExecutorResponse {
+                    response: json_error(502, &format!("Windsurf response read failed: {error}")),
+                    url,
+                    headers,
+                    transport: TransportKind::Reqwest,
+                });
+            }
+        };
         let sse = transform_to_sse(&bytes, &request.model);
         let mut http_resp = http::Response::new(ReqwestBody::from(sse));
         *http_resp.status_mut() = reqwest::StatusCode::OK;

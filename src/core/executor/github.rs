@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::core::proxy::ProxyTarget;
 use crate::types::{ProviderConnection, ProviderNode};
 
-use super::{ClientPool, TransportKind, UpstreamResponse};
+use super::{read_reqwest_body, success_body_limit, ClientPool, TransportKind, UpstreamResponse};
 
 const GITHUB_COPILOT_VSCODE_VERSION: &str = "1.110.0";
 const GITHUB_COPILOT_CHAT_VERSION: &str = "0.38.0";
@@ -616,7 +616,10 @@ impl GithubExecutor {
             return None;
         }
 
-        response.json::<GithubCopilotTokenResponse>().await.ok()
+        let body = read_reqwest_body(response, success_body_limit())
+            .await
+            .ok()?;
+        serde_json::from_slice(&body).ok()
     }
 
     /// Refresh GitHub OAuth token
@@ -652,7 +655,10 @@ impl GithubExecutor {
             return None;
         }
 
-        response.json::<GithubOAuthTokenResponse>().await.ok()
+        let body = read_reqwest_body(response, success_body_limit())
+            .await
+            .ok()?;
+        serde_json::from_slice(&body).ok()
     }
 }
 

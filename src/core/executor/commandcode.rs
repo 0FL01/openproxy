@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::core::proxy::ProxyTarget;
 use crate::types::{ProviderConnection, ProviderNode};
 
-use super::{ClientPool, TransportKind, UpstreamResponse};
+use super::{read_reqwest_body, success_body_limit, ClientPool, TransportKind, UpstreamResponse};
 
 const COMMANDCODE_URL: &str = "https://api.commandcode.ai/alpha/generate";
 
@@ -170,16 +170,16 @@ pub async fn inspect_and_wrap_response(
         return UpstreamResponse::Reqwest(response);
     }
 
-    // Read the full body. CommandCode responses are typically small (code
-    // completions), so buffering the entire body is acceptable.
-    let body_bytes = match response.bytes().await {
+    // CommandCode requires full NDJSON inspection before it can expose a
+    // successful response, so this protocol-specific collection is bounded.
+    let body_bytes = match read_reqwest_body(response, success_body_limit()).await {
         Ok(b) => b,
         Err(e) => {
             tracing::warn!(
                 target: "openproxy::executor::commandcode",
                 "Failed to read CommandCode upstream body: {e}"
             );
-            return build_error_response(503, "Failed to read upstream response");
+            return build_error_response(502, &format!("Failed to read upstream response: {e}"));
         }
     };
 

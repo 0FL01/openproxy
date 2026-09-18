@@ -6,7 +6,9 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use common::lean_harness::{MockUpstream, ScriptedResponse};
-use openproxy::core::executor::{ClientPool, DefaultExecutor, ExecutionRequest};
+use openproxy::core::executor::{
+    read_upstream_body, ClientPool, DefaultExecutor, ExecutionRequest,
+};
 use openproxy::types::{ProviderConnection, ProviderNode, RuntimeTransport};
 use serde_json::json;
 
@@ -76,7 +78,10 @@ async fn assert_single_immediate_attempt(provider: &str, model: &str, status: St
     assert_eq!(result.response.status(), status);
     assert_eq!(result.response.headers().get("retry-after").unwrap(), "17");
     assert_eq!(result.response.headers().get("x-c10").unwrap(), "preserved");
-    assert_eq!(result.response.text().await, body);
+    let response_body = read_upstream_body(result.response, 64 * 1024)
+        .await
+        .expect("bounded C10 response body");
+    assert_eq!(response_body, body);
     assert_eq!(
         upstream.request_count().await,
         1,

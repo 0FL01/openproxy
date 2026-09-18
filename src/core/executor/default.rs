@@ -477,20 +477,6 @@ impl UpstreamResponse {
             Self::Hyper(response) => response.headers(),
         }
     }
-
-    /// Read the full body as text (lossy), consuming the response.
-    pub async fn text(self) -> String {
-        match self {
-            Self::Reqwest(response) => response.text().await.unwrap_or_default(),
-            Self::Hyper(response) => {
-                let bytes = http_body_util::BodyExt::collect(response.into_body())
-                    .await
-                    .map(|c| c.to_bytes())
-                    .unwrap_or_default();
-                String::from_utf8_lossy(&bytes).to_string()
-            }
-        }
-    }
 }
 
 #[derive(Debug)]

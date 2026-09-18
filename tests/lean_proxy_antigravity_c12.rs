@@ -7,7 +7,8 @@ use axum::http::StatusCode;
 use common::lean_harness::{MockUpstream, ScriptedResponse};
 use futures_util::StreamExt;
 use openproxy::core::executor::{
-    AntigravityExecutionRequest, AntigravityExecutor, ClientPool, UpstreamResponse,
+    read_upstream_body, AntigravityExecutionRequest, AntigravityExecutor, ClientPool,
+    UpstreamResponse,
 };
 use openproxy::types::{ProviderConnection, ProviderNode};
 use serde_json::json;
@@ -108,7 +109,10 @@ async fn errors_preserve_body_headers_endpoint_and_one_attempt() {
         if let Some(value) = retry_after {
             assert_eq!(result.response.headers().get("retry-after").unwrap(), value);
         }
-        assert_eq!(result.response.text().await, body, "case {name}");
+        let response_body = read_upstream_body(result.response, 64 * 1024)
+            .await
+            .expect("bounded C12 response body");
+        assert_eq!(response_body, body, "case {name}");
         assert_eq!(
             upstream.request_count().await,
             1,

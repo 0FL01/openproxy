@@ -1,6 +1,7 @@
 pub mod antigravity;
 mod api_key;
 mod azure;
+mod bounded_body;
 mod client_pool;
 mod codebuddy_cn;
 mod codebuddy_intl;
@@ -35,6 +36,13 @@ pub use api_key::{
     ApiKeyExecutorError, ApiKeyExecutorResponse,
 };
 pub use azure::{AzureExecutionRequest, AzureExecutor, AzureExecutorError, AzureExecutorResponse};
+pub use bounded_body::{
+    diagnostic_body_limit, read_reqwest_body, read_reqwest_diagnostic, read_upstream_body,
+    read_upstream_diagnostic, success_body_limit, BoundedBodyError, DiagnosticBody,
+    DEFAULT_DIAGNOSTIC_BODY_LIMIT_BYTES, DEFAULT_SUCCESS_BODY_LIMIT_BYTES,
+    DIAGNOSTIC_BODY_LIMIT_ENV, DIAGNOSTIC_TRANSPORT_MARKER, DIAGNOSTIC_TRUNCATION_MARKER,
+    SUCCESS_BODY_LIMIT_ENV,
+};
 pub use client_pool::{
     ClientPool, ClientTimeout, DirectHyperClient, CLIENT_POOL_IDLE_TIMEOUT,
     CLIENT_POOL_MAX_IDLE_PER_HOST, CLIENT_POOL_TCP_KEEPALIVE, DEFAULT_CONNECT_TIMEOUT,

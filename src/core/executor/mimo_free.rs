@@ -25,7 +25,10 @@ use sha2::{Digest, Sha256};
 use crate::core::proxy::ProxyTarget;
 use crate::types::ProviderConnection;
 
-use super::{ClientPool, TransportKind, UpstreamResponse};
+use super::{
+    diagnostic_body_limit, read_reqwest_body, read_reqwest_diagnostic, success_body_limit,
+    ClientPool, TransportKind, UpstreamResponse,
+};
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -308,7 +311,12 @@ impl MimoFreeExecutor {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body_text = response.text().await.unwrap_or_default();
+            let body_text = String::from_utf8_lossy(
+                &read_reqwest_diagnostic(response, diagnostic_body_limit())
+                    .await
+                    .bytes,
+            )
+            .into_owned();
             return Err(MimoFreeExecutorError::BootstrapAuthFailed(format!(
                 "bootstrap returned HTTP {}: {}",
                 status.as_u16(),
@@ -316,7 +324,10 @@ impl MimoFreeExecutor {
             )));
         }
 
-        let bootstrap: BootstrapResponse = response.json().await.map_err(|e| {
+        let body = read_reqwest_body(response, success_body_limit())
+            .await
+            .map_err(|error| MimoFreeExecutorError::BootstrapFailed(error.to_string()))?;
+        let bootstrap: BootstrapResponse = serde_json::from_slice(&body).map_err(|e| {
             MimoFreeExecutorError::BootstrapFailed(format!("JSON parse error: {}", e))
         })?;
 

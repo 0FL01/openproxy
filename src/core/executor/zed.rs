@@ -11,11 +11,13 @@
 //! the RSA-decrypted access token (see `crate::oauth::zed_auth`).
 
 use async_trait::async_trait;
-use futures_util::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{json, Value};
 
-use super::{TransportKind, UpstreamResponse};
+use super::{
+    diagnostic_body_limit, read_reqwest_body, read_reqwest_diagnostic, success_body_limit,
+    TransportKind, UpstreamResponse,
+};
 use crate::core::translator::response_transform::{transform_sse_stream, transformer_for_provider};
 use crate::oauth::zed_auth;
 use crate::types::ProviderConnection;
@@ -179,14 +181,16 @@ impl ZedExecutor {
                 request = request.header("x-zed-system-id", sid);
             }
             if let Ok(info) = request.send().await {
-                if let Ok(data) = info.json::<Value>().await {
-                    organization_id = data
-                        .pointer("/organization/id")
-                        .or_else(|| data.get("organizationId"))
-                        .or_else(|| data.get("organization_id"))
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string();
+                if let Ok(body) = read_reqwest_body(info, success_body_limit()).await {
+                    if let Ok(data) = serde_json::from_slice::<Value>(&body) {
+                        organization_id = data
+                            .pointer("/organization/id")
+                            .or_else(|| data.get("organizationId"))
+                            .or_else(|| data.get("organization_id"))
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                    }
                 }
             }
         }
@@ -342,35 +346,30 @@ impl ZedExecutor {
 
         let status = response.status();
         if !status.is_success() {
-            let text = response.text().await.unwrap_or_default();
+            let text = String::from_utf8_lossy(
+                &read_reqwest_diagnostic(response, diagnostic_body_limit())
+                    .await
+                    .bytes,
+            )
+            .into_owned();
             return Err(format!("Zed returned HTTP {}: {text}", status.as_u16()));
         }
 
-        // Drain the NDJSON line stream and translate each event to OpenAI SSE.
+        // Zed's adapter must inspect the complete NDJSON response before
+        // returning its synthetic SSE body; bound that protocol collection.
+        let body = read_reqwest_body(response, success_body_limit())
+            .await
+            .map_err(|error| format!("zed stream read failed: {error}"))?;
         let mut transformer = transformer_for_zed(provider);
         let mut sse = String::new();
         let model_name = request.model.clone();
-        let mut buffer = String::new();
-        let mut upstream = response.bytes_stream();
-        'outer: while let Some(chunk) = upstream.next().await {
-            let bytes = chunk.map_err(|e| format!("zed stream read failed: {e}"))?;
-            buffer.push_str(&String::from_utf8_lossy(&bytes));
-            while let Some(nl) = buffer.find('\n') {
-                let line: String = buffer.drain(..=nl).collect();
-                for frame in Self::line_to_sse(&line, transformer.as_mut()) {
-                    if frame.is_empty() {
-                        break 'outer; // [DONE] or terminal status
-                    }
-                    sse.push_str(&frame.replace("__MODEL__", &model_name));
+        let body = String::from_utf8_lossy(&body);
+        'outer: for line in body.lines() {
+            for frame in Self::line_to_sse(line, transformer.as_mut()) {
+                if frame.is_empty() {
+                    break 'outer; // [DONE] or terminal status
                 }
-            }
-        }
-        // Flush any trailing partial line.
-        if !buffer.trim().is_empty() {
-            for frame in Self::line_to_sse(&buffer, transformer.as_mut()) {
-                if !frame.is_empty() {
-                    sse.push_str(&frame.replace("__MODEL__", &model_name));
-                }
+                sse.push_str(&frame.replace("__MODEL__", &model_name));
             }
         }
         sse.push_str("data: [DONE]\n\n");
