@@ -470,7 +470,21 @@
     "claude_native_source_shape_preserved": true,
     "global_cache_lru_or_timer": false,
     "ssrf_connect_binding_owner": "C30B",
-    "pinned_ip_connect_gap_changed": false
+    "pinned_ip_connect_gap_changed": true
+  },
+  "image_ssrf_connection_binding": {
+    "checkpoint": "C30B",
+    "validated_address_used_for_socket_connect": true,
+    "hostname_url_preserved_for_http_host_and_tls": true,
+    "tls_hostname_verification_disabled": false,
+    "every_redirect_resolved_validated_and_pinned": true,
+    "all_validated_public_ipv4_and_ipv6_candidates_pinned": true,
+    "unvalidated_dns_fallback_after_connect_failure": false,
+    "system_proxy_can_reresolve_image_hostname": false,
+    "normal_client_pool_egress_policy_relaxed": false,
+    "private_loopback_link_local_unique_local_multicast_and_mapped_blocked": true,
+    "per_hop_clients_cached_cross_request": false,
+    "risk_test_claims_live_exploit_proof": false
   },
   "versions": {
     "opencode": "1.18.31",

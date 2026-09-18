@@ -2,7 +2,8 @@
 //!
 //! The fetch path retains the existing URL, DNS, redirect, TLS, MIME, and
 //! magic-byte checks. C30A adds request-scoped decoded, encoded, and final JSON
-//! bounds; C30B separately owns binding the validated IP to the actual connect.
+//! bounds. C30B binds every validated DNS result to the actual socket connect
+//! without replacing the URL hostname used for HTTP Host and TLS verification.
 
 use base64::Engine as _;
 use futures_util::StreamExt;
@@ -12,7 +13,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::fmt;
 use std::io::{self, Write};
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 use tokio::net;
 use url::Url;
@@ -29,6 +30,9 @@ pub const MAX_IMAGE_REQUEST_ENV: &str = "OPENPROXY_MAX_IMAGE_REQUEST_BYTES";
 
 /// Maximum number of redirect hops before aborting (matches JS `maxRedirects`).
 const MAX_REDIRECT_HOPS: usize = 5;
+const IMAGE_DNS_TIMEOUT: Duration = Duration::from_secs(5);
+const IMAGE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const IMAGE_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Known image magic-byte prefixes for validation.
 const IMAGE_MAGIC_BYTES: &[&[u8]] = &[
@@ -309,13 +313,20 @@ fn is_private_ip(ip: IpAddr) -> bool {
                 || (o[0] == 192 && o[1] == 168)
                 || (o[0] == 169 && o[1] == 254)
                 || (o[0] == 100 && (o[1] & 0xC0) == 0x40)
+                || v4.is_multicast()
+                || v4.is_broadcast()
                 || (o[0] >= 240)
                 || o[0] == 0
         }
         IpAddr::V6(v6) => {
             let o = v6.octets();
-            o == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
-                || (o[..12] == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff] && o[12] == 127)
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                // Unique-local (fc00::/7).
+                || (o[0] & 0xfe) == 0xfc
+                // Link-local (fe80::/10).
+                || (o[0] == 0xfe && (o[1] & 0xc0) == 0x80)
                 || (o[..12] == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff]
                     && is_private_ip(IpAddr::V4(Ipv4Addr::new(o[12], o[13], o[14], o[15]))))
         }
@@ -331,17 +342,71 @@ fn is_valid_image_body(bytes: &[u8]) -> bool {
         .any(|magic| bytes.starts_with(magic))
 }
 
-/// C30B will bind this result to the connection. C30A deliberately preserves
-/// the existing validation and ignored pin rather than weakening it.
-async fn resolve_public_ip(host: &str) -> Option<IpAddr> {
-    let addrs = net::lookup_host((host, 0)).await.ok()?;
-    for addr in addrs {
+#[derive(Debug, Clone)]
+struct ValidatedImageTarget {
+    host: String,
+    /// Empty only when the URL host itself is a validated IP literal.
+    pinned_addrs: Vec<SocketAddr>,
+}
+
+async fn resolve_image_target(url: &Url) -> Result<ValidatedImageTarget, ImagePrefetchError> {
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(ImagePrefetchError::InvalidUrl);
+    }
+    let host = url
+        .host_str()
+        .filter(|host| !host.is_empty())
+        .ok_or(ImagePrefetchError::InvalidUrl)?
+        .to_ascii_lowercase();
+
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        if is_private_ip(ip) {
+            return Err(ImagePrefetchError::BlockedDestination);
+        }
+        return Ok(ValidatedImageTarget {
+            host,
+            pinned_addrs: Vec::new(),
+        });
+    }
+
+    let resolved = tokio::time::timeout(IMAGE_DNS_TIMEOUT, net::lookup_host((host.as_str(), 0)))
+        .await
+        .map_err(|_| ImagePrefetchError::BlockedDestination)?
+        .map_err(|_| ImagePrefetchError::BlockedDestination)?;
+    let mut pinned_addrs: Vec<SocketAddr> = Vec::new();
+    for addr in resolved {
         let ip = addr.ip();
-        if !is_private_ip(ip) {
-            return Some(ip);
+        if !is_private_ip(ip) && !pinned_addrs.iter().any(|existing| existing.ip() == ip) {
+            // Reqwest documents that port zero uses the URL's scheme/default
+            // port and that an explicit URL port always wins.
+            pinned_addrs.push(SocketAddr::new(ip, 0));
         }
     }
-    None
+    if pinned_addrs.is_empty() {
+        return Err(ImagePrefetchError::BlockedDestination);
+    }
+
+    Ok(ValidatedImageTarget { host, pinned_addrs })
+}
+
+fn build_pinned_image_client(target: &ValidatedImageTarget) -> Result<Client, ImagePrefetchError> {
+    pinned_image_client_builder(target)
+        .build()
+        .map_err(|error| ImagePrefetchError::Transport(error.to_string()))
+}
+
+fn pinned_image_client_builder(target: &ValidatedImageTarget) -> reqwest::ClientBuilder {
+    let mut builder = reqwest::Client::builder()
+        .timeout(IMAGE_REQUEST_TIMEOUT)
+        .connect_timeout(IMAGE_CONNECT_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        // A system proxy can resolve the hostname again and bypass the pinned
+        // address set. Required inline image fetches are intentionally direct.
+        .no_proxy();
+    if !target.pinned_addrs.is_empty() {
+        builder = builder.resolve_to_addrs(&target.host, &target.pinned_addrs);
+    }
+    builder
 }
 
 pub async fn fetch_image_as_base64(
@@ -353,24 +418,14 @@ pub async fn fetch_image_as_base64(
         return Err(ImagePrefetchError::InvalidUrl);
     }
 
-    let parsed = Url::parse(image_url).map_err(|_| ImagePrefetchError::InvalidUrl)?;
-    let host = parsed.host_str().ok_or(ImagePrefetchError::InvalidUrl)?;
-
-    let _pinned_ip = resolve_public_ip(host)
-        .await
-        .ok_or(ImagePrefetchError::BlockedDestination)?;
-
-    let no_redirect_client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|error| ImagePrefetchError::Transport(error.to_string()))?;
-
     let mut current_url = image_url.to_string();
     let mut hop: usize = 0;
     let response = loop {
-        let response = no_redirect_client
-            .get(&current_url)
+        let parsed = Url::parse(&current_url).map_err(|_| ImagePrefetchError::InvalidUrl)?;
+        let target = resolve_image_target(&parsed).await?;
+        let pinned_client = build_pinned_image_client(&target)?;
+        let response = pinned_client
+            .get(parsed)
             .send()
             .await
             .map_err(|error| ImagePrefetchError::Transport(error.to_string()))?;
@@ -402,14 +457,6 @@ pub async fn fetch_image_as_base64(
                 .map_err(|_| ImagePrefetchError::InvalidUrl)?
                 .to_string(),
         };
-
-        let next_parsed = Url::parse(&next_url).map_err(|_| ImagePrefetchError::InvalidUrl)?;
-        let next_host = next_parsed
-            .host_str()
-            .ok_or(ImagePrefetchError::InvalidUrl)?;
-        if resolve_public_ip(next_host).await.is_none() {
-            return Err(ImagePrefetchError::BlockedDestination);
-        }
 
         hop += 1;
         current_url = next_url;
@@ -653,6 +700,28 @@ fn infer_mime_from_magic(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read as _, Write as _};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    // Non-secret, self-signed test-only certificate/key for image.test.
+    const TEST_ROOT_DER_B64: &str = "MIIDJTCCAg2gAwIBAgIURb/jtt0wjp1H54/sU0Duv3Di3eowDQYJKoZIhvcNAQELBQAwGTEXMBUGA1UEAwwOQzMwQiBUZXN0IFJvb3QwIBcNMjYwOTE4MDI0OTM2WhgPMjEyNjA4MjUwMjQ5MzZaMBkxFzAVBgNVBAMMDkMzMEIgVGVzdCBSb290MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA54+5giTc6Zp8Exrp8/RwSjpuDVWwzafH1kU14g5cJrTrmAB3w1deS/ibMqfFjMP7HIThnnMPB5pWtO3EtSnvrL5HH7ZfeqIfeLbhRcwr7+DqFbzTbupEADrf9WyYjRPebZb3tZfLtuudrZYpNGw0NaQLzkLTfexHNQthEePtfUQGHPVeavigOIQGFNmGX+OvrEXRZtJ0hzZMaipO7OZJPpX2iHgd9MGW+cPx/FR+GSi4HcAyWy4dFjMGTrDzVym5o3Trl7SEPWKA3YTnxHO3CEdcC5ElIarS2xxreRv/im34RNLEzqSE6YsahXry84FJ5RBxqkj0cLKNYmDRo1FUWwIDAQABo2MwYTAdBgNVHQ4EFgQU/fNJb/5IwFH9XjinK5maH6Blm1wwHwYDVR0jBBgwFoAU/fNJb/5IwFH9XjinK5maH6Blm1wwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMCAQYwDQYJKoZIhvcNAQELBQADggEBAHfw9BUHpanUJn5HVx42ycskfHd2SACZ/azTkDU+0Axcl/oF4VKaWp0LmkI3dOga7CSckac8zNAxL7ciyHNCqjgv/0WppZltLhutCesar+LTHF1MrvQj94GAHimkdj/RUfb0KX/lRyGgkUlIyUcd3xoUC7YDFJHzKBEMvi/pNW76zAB8HxJhedJcnhaG8Wh00RRoEMXXxBm382shAUsn3P78UjPM4TuHnQX1PRG4Zrn3Nj6p1BEEarQLU6JME2V3IC+6Mj+3ppU80bDVZebMnxgSIJmvgP5zSzRYmw99ujlgBa9zw1uAdHFUaICZrWuMWw5eS7pA6ENZJ0xOjDIJUUw=";
+    const TEST_CERT_DER_B64: &str = "MIIDTDCCAjSgAwIBAgIUU9IFOrZ6Ohj5KaJoH/oCiFuxjBswDQYJKoZIhvcNAQELBQAwGTEXMBUGA1UEAwwOQzMwQiBUZXN0IFJvb3QwIBcNMjYwOTE4MDI0OTM2WhgPMjEyNjA4MjUwMjQ5MzZaMBUxEzARBgNVBAMMCmltYWdlLnRlc3QwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCy1i1BmlntehbYtrv42VTW7PEFpYQedVRbdREu/Fa04DmQOaLi6ooeYiPwmAdDSeTQHaXDyeXo0b7EZV9JFTRQcZEEUw4kjIyO/0C3K9Xfx5Cti0jW4GOKNMX0zjAywMq7zdNeJ3lYasui7EiGkwrgpXoEIZQJM6eNy5P7/MRw40eeOUJH2ge42p7foCvR8UYKOZwKd2u/ojOYb2pIAc+LUOwCvjv9WWHcohVOcGdo/kkdzOcBhtEt1dolAVE66cGChN5tibjfh5fi54TN5dWraJQZ4511/z46UarGdB21MiRVXeUeHDlzIdjqF8hhRZx1LcfyTzDtjGi5a4RYkgJLAgMBAAGjgY0wgYowDAYDVR0TAQH/BAIwADAOBgNVHQ8BAf8EBAMCBaAwEwYDVR0lBAwwCgYIKwYBBQUHAwEwFQYDVR0RBA4wDIIKaW1hZ2UudGVzdDAdBgNVHQ4EFgQUIjZ0kSUzpm3F79JPHzqKj3d+2GcwHwYDVR0jBBgwFoAU/fNJb/5IwFH9XjinK5maH6Blm1wwDQYJKoZIhvcNAQELBQADggEBAMk8VOzOnA6C9vYIeqHR5Lte4YxMC2fVzxK9rsnTbEnttaNugx7we6ecitLb2E+EgNY+8bcFI9R50ecy9WjS7k2gXAMEIQnTf83953S8wBQtbuqIJITCoffE4qkbmPL9J3ILGawGOM9ZvyQxWzM5s9RIy6zBs7LgFXQpJQvZ4H7EWMLfCOvMFj0NlHCRNZf8tGEtVdpx6K8ImRjHDCRSAycnc2mJgZAJ5kwOyBUQbYWPem+RPIM1iifR7SHYS10EAlO+8zgXUFIP2iN/lj4arzHC9h8hxlzMzY/7ePfqd9HMbib1nq2X4QbTOypqn6YibUfnjBDA25AoDdTgs6eibH8=";
+    const TEST_KEY_DER_B64: &str = "MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCy1i1BmlntehbYtrv42VTW7PEFpYQedVRbdREu/Fa04DmQOaLi6ooeYiPwmAdDSeTQHaXDyeXo0b7EZV9JFTRQcZEEUw4kjIyO/0C3K9Xfx5Cti0jW4GOKNMX0zjAywMq7zdNeJ3lYasui7EiGkwrgpXoEIZQJM6eNy5P7/MRw40eeOUJH2ge42p7foCvR8UYKOZwKd2u/ojOYb2pIAc+LUOwCvjv9WWHcohVOcGdo/kkdzOcBhtEt1dolAVE66cGChN5tibjfh5fi54TN5dWraJQZ4511/z46UarGdB21MiRVXeUeHDlzIdjqF8hhRZx1LcfyTzDtjGi5a4RYkgJLAgMBAAECggEAL1Olu2A9Hy75n9VQDm15Wb1vlVZ1jdfwAJoM95m42noiUawnEpUOAzdmmnOpLGIARyEpbpReHwxuxyuqmT0e0JEVVwchzYNSaT9coXzcxzFZdMvQ9WiBfyAzKPNt5uiFXkj8gETDBKaSiGWuVcrRDJ1OGozGT98XHtu6qGt+kv7osq7+KuDSJV/GtiGk6VxFXJ0mJQAExB3Bjb2bnFerSEm9ji/OKxbL0dWFPWYPH1DwqkDH9LUUuX6ISCfR+VnmhQdHHdZKMxHTO7lPxTbH4OMTVfrTAYXAX1cfbimiEArkdRhZgcLlG6vhqKuJ6JGdQ3npQ/pfEFwoVkTs//b+jQKBgQDxQXNe8zyguhDQKidz+psDvNUG9TKgThQcIL1i9//movTn/fxiEEBm0iEGtK2qpqckT7LuGCwjnugQYTsvACu+6okqX4OhjiHJW3AG+tcDVLg9Iby1ghB3it9gVMgippZMSSuViVQ/cJUNEFBlg4rXzihBw3m254lmIX+FtY2OJwKBgQC9xCc6kyXv8ORy831/+s3NNVkHRMfVy87pBB4lAvQA5Ot9o6+2cXxV3GT7OJ/UCdUS6ZQ9CgTRFBoy2ZECLKIKbr7DHcKL0V8Z2gWg5w7GpzVb1QbeUufkUNp3iIrY5gSR+NVgdVAlEq0Sol9DkncOd/3ndO4JohCM0AIWWAilPQKBgQCJpd49fmpJCeAt5N89vO5U45hnr96CuAmhQszLetP2s2MoOjGVgdA82gcd3Fh51Tvn69EbJ4+Hg1LEhbVOy7op44b/Nh/UPVPpntH8KYIj1GKJ/oW8yci7a/Cm9bh6jLGUNOs5FnGLAKEKIxS71qGRH364ht8bDF/IdbRchYmOYQKBgEYnUelRpODDSXFFmsvJSHPomPUa9FWRdvil0Q8VvGboOjbEYJ0t7y0+wQYutMeKqv7G40p9fbJdoCHUVMtc/Lqmnlc7lURjLqk79IC7arb98bf1VQiz1Y6OZXVzQQFWZ7IfL6LtO6e488rDxDwS1Xi/21nJ3IYrJ7sm2t6vxOJxAoGBAKyXC+Rp4pgTzctmKqmmYvpJgbGIBD47L23rbMPfwfk4Qcui5LMnRDNiiHBBbnIG9EMAdSH7DR96yJcgB0oeNIjPGx50dGcDfOyzoRHLkazR+AtctHzR954G+dqd0P/YtP4j9ODe6J6F0KcS4Ujmf1/jmtqavjBp40ioV/XhGd1l";
+
+    struct RebindingResolver {
+        calls: AtomicUsize,
+    }
+
+    impl reqwest::dns::Resolve for RebindingResolver {
+        fn resolve(&self, _name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let private = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0);
+            let addrs: reqwest::dns::Addrs = Box::new(std::iter::once(private));
+            Box::pin(std::future::ready(Ok(addrs)))
+        }
+    }
 
     #[test]
     fn detects_private_addresses_without_weakening_ssrf() {
@@ -667,10 +736,159 @@ mod tests {
         assert!(is_private_ip(IpAddr::V6(
             "::ffff:10.0.0.1".parse().unwrap()
         )));
+        assert!(is_private_ip(IpAddr::V4(Ipv4Addr::new(224, 0, 0, 1))));
+        assert!(is_private_ip(IpAddr::V6("::".parse().unwrap())));
+        assert!(is_private_ip(IpAddr::V6("fe80::1".parse().unwrap())));
+        assert!(is_private_ip(IpAddr::V6("fc00::1".parse().unwrap())));
+        assert!(is_private_ip(IpAddr::V6("ff02::1".parse().unwrap())));
         assert!(!is_private_ip(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
         assert!(!is_private_ip(IpAddr::V6(
             "::ffff:8.8.8.8".parse().unwrap()
         )));
+    }
+
+    #[tokio::test]
+    async fn private_literal_targets_are_blocked_on_every_hop() {
+        for url in [
+            "http://127.0.0.1/image",
+            "http://2130706433/image",
+            "http://10.0.0.1/image",
+            "http://169.254.169.254/latest/meta-data",
+            "http://[::1]/image",
+            "http://[fe80::1]/image",
+            "http://[fc00::1]/image",
+            "http://[::ffff:127.0.0.1]/image",
+        ] {
+            let parsed = Url::parse(url).unwrap();
+            assert!(
+                matches!(
+                    resolve_image_target(&parsed).await,
+                    Err(ImagePrefetchError::BlockedDestination)
+                ),
+                "{url}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn pinned_client_connects_only_to_supplied_addresses_and_preserves_host() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = vec![0u8; 4096];
+            let read = socket.read(&mut buffer).await.unwrap();
+            buffer.truncate(read);
+            let _ = request_tx.send(String::from_utf8_lossy(&buffer).into_owned());
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 8\r\nConnection: close\r\n\r\n\x89PNG\r\n\x1a\n",
+                )
+                .await
+                .unwrap();
+        });
+
+        let target = ValidatedImageTarget {
+            host: "c30b.invalid".into(),
+            // Both candidates are passed to the connector. The first has no
+            // listener; the second is the only possible successful socket.
+            pinned_addrs: vec![
+                SocketAddr::new("127.0.0.2".parse().unwrap(), 0),
+                SocketAddr::new("127.0.0.1".parse().unwrap(), 0),
+            ],
+        };
+        let resolver = Arc::new(RebindingResolver {
+            calls: AtomicUsize::new(0),
+        });
+        let response = pinned_image_client_builder(&target)
+            .dns_resolver(resolver.clone())
+            .build()
+            .unwrap()
+            .get(format!("http://c30b.invalid:{}/image", address.port()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let request = request_rx.await.unwrap().to_ascii_lowercase();
+        assert!(request.contains(&format!("host: c30b.invalid:{}", address.port())));
+        assert_eq!(
+            resolver.calls.load(Ordering::SeqCst),
+            0,
+            "the pinned override must prevent a second, rebinding DNS lookup"
+        );
+        server.await.unwrap();
+    }
+
+    fn spawn_test_tls_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let cert_der = base64::engine::general_purpose::STANDARD
+            .decode(TEST_CERT_DER_B64)
+            .unwrap();
+        let key_der = base64::engine::general_purpose::STANDARD
+            .decode(TEST_KEY_DER_B64)
+            .unwrap();
+        let cert = rustls::pki_types::CertificateDer::from(cert_der);
+        let key = rustls::pki_types::PrivatePkcs8KeyDer::from(key_der).into();
+        let config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert], key)
+            .unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::task::spawn_blocking(move || {
+            let (socket, _) = listener.accept().unwrap();
+            let connection = rustls::ServerConnection::new(Arc::new(config)).unwrap();
+            let mut tls = rustls::StreamOwned::new(connection, socket);
+            let mut request = [0u8; 4096];
+            if tls.read(&mut request).is_ok() {
+                let _ = tls.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 8\r\nConnection: close\r\n\r\n\x89PNG\r\n\x1a\n",
+                );
+                let _ = tls.flush();
+            }
+        });
+        (address, task)
+    }
+
+    #[tokio::test]
+    async fn pinned_tls_keeps_hostname_verification_enabled() {
+        let root_der = base64::engine::general_purpose::STANDARD
+            .decode(TEST_ROOT_DER_B64)
+            .unwrap();
+        let root = reqwest::Certificate::from_der(&root_der).unwrap();
+
+        let (good_address, good_server) = spawn_test_tls_server();
+        let good_target = ValidatedImageTarget {
+            host: "image.test".into(),
+            pinned_addrs: vec![SocketAddr::new("127.0.0.1".parse().unwrap(), 0)],
+        };
+        let good = pinned_image_client_builder(&good_target)
+            .add_root_certificate(root.clone())
+            .build()
+            .unwrap()
+            .get(format!("https://image.test:{}/image", good_address.port()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(good.status(), reqwest::StatusCode::OK);
+        good_server.await.unwrap();
+
+        let (bad_address, bad_server) = spawn_test_tls_server();
+        let bad_target = ValidatedImageTarget {
+            host: "wrong.test".into(),
+            pinned_addrs: vec![SocketAddr::new("127.0.0.1".parse().unwrap(), 0)],
+        };
+        let error = pinned_image_client_builder(&bad_target)
+            .add_root_certificate(root)
+            .build()
+            .unwrap()
+            .get(format!("https://wrong.test:{}/image", bad_address.port()))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(error.is_connect(), "unexpected TLS error: {error}");
+        bad_server.await.unwrap();
     }
 
     #[test]

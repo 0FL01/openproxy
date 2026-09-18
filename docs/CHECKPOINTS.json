@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C30B",
+  "next_checkpoint": "C31",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c30a_cargo_1.98.1",
+    "rust_verification": "passed_through_c30b_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -1344,7 +1344,7 @@
         "verification": [
           "cargo test --test lean_proxy_auto_ping_c25 --test settings_api --test lean_proxy_contract --test lean_proxy_health_c24 -- --nocapture: 15 passed",
           "cargo test --lib quota_auto_ping --all-features -- --nocapture: 15 passed",
-          "cargo test --lib --all-features -- --test-threads=1: passed",
+          "cargo test --lib --all-features -- --test-threads=1: 1185 passed",
           "focused strict clippy and cargo clippy --all-targets --all-features: passed with only the 3 pre-existing production style warnings",
           "cargo fmt --all -- --check, JSON parse, git diff --check, and secret review: passed"
         ],
@@ -1621,7 +1621,7 @@
     {
       "id": "C30B",
       "title": "Связать SSRF-проверку изображения с реальным подключением",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C30A"
       ],
@@ -1633,7 +1633,33 @@
       "change": "Исправить разрыв между проверенным публичным IP и последующим независимым DNS resolution клиента. Выбрать доступный стеку способ связывания разрешённого адреса с фактическим connect, сохраняя hostname/TLS verification. Повторять проверку на каждом redirect и для IPv4/IPv6; не отключать TLS и не распространять relaxed egress policy на обычный pool.",
       "tests": "Mock resolver меняет ответ между lookup/connect; redirect на private/loopback/link-local/IPv6-mapped адрес; TLS hostname mismatch; несколько допустимых IP. Зафиксировать, что это проверка риска по коду, а не доказательство реальной эксплуатации.",
       "acceptance": "Валидация относится к адресу реального соединения, а не к проигнорированной _pinned_ip переменной. Нет SSRF-регрессии ради reuse или скорости.",
-      "rollback": "При отсутствии безопасной реализации inline fetch закрывается явной ошибкой для этого случая; не выпускать bypass проверки."
+      "rollback": "При отсутствии безопасной реализации inline fetch закрывается явной ошибкой для этого случая; не выпускать bypass проверки.",
+      "result": {
+        "files": [
+          "src/core/translator/helpers/image_helper.rs",
+          "tests/lean_proxy_images_c30b.rs",
+          "tests/lean_proxy_contract.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json",
+          "docs/CHECKPOINTS.json",
+          "docs/goals/2026-09-17-lean-proxy-plan.md"
+        ],
+        "connection_binding": "Every non-literal hostname is resolved once per redirect hop, all public IPv4/IPv6 candidates are supplied to Reqwest resolve_to_addrs, and the actual connect cannot fall back to an unvalidated resolver result. Literal IPs are validated directly.",
+        "hostname_and_tls": "The original URL is never rewritten to an IP literal. HTTP Host, TLS SNI, and certificate-name verification therefore remain bound to the requested hostname; no dangerous TLS option is enabled.",
+        "redirects_and_ranges": "Each redirect constructs a fresh validated pinned target. Loopback, private, shared-space, link-local, unique-local, multicast, unspecified, reserved, and IPv4-mapped private addresses are rejected. The existing five-hop bound remains.",
+        "proxy_and_pool": "System proxies are disabled only for the direct required-image fetch because a proxy could independently resolve the hostname. No normal ClientPool policy is relaxed and no pinned client is cached across requests.",
+        "timeouts": "DNS and connect are bounded to five seconds and each request hop to ten seconds. C30A streaming byte, MIME, magic, aggregate, final-request, and cancellation behavior is unchanged.",
+        "verification": [
+          "cargo test --lib image_helper --all-features -- --nocapture: 8 passed",
+          "cargo test --test lean_proxy_images_c30b --test lean_proxy_images_c30a --test lean_proxy_contract -- --nocapture: 16 passed",
+          "cargo test --lib --all-features -- --test-threads=1: passed",
+          "cargo clippy --all-targets --all-features: passed with exactly 3 pre-existing production style warnings",
+          "cargo fmt --all -- --check, JSON parse, and git diff --check: passed"
+        ],
+        "acceptance_evidence": "Deterministic tests prove a fake hostname connects only through supplied addresses while preserving Host, multiple candidates are available to the connector, trusted TLS succeeds only for the certificate hostname and a mismatch fails, and private/loopback/link-local/unique-local/IPv4-mapped literals fail before connect. Source guards prove per-hop resolve-to-addrs binding, no proxy re-resolution, and no TLS bypass. This is code-risk evidence, not a claim of live exploitation.",
+        "migration": "No persisted data, schema, credential, route, provider mapping, model metadata, or openproxy.v1 field changes. The image security policy becomes strictly narrower.",
+        "rollback": "Revert the C30B commit only if a safe hostname-preserving pinned connector must be replaced. Never restore an ignored validation result or disable TLS hostname verification; fail required inline fetch explicitly instead."
+      }
     },
     {
       "id": "C31",

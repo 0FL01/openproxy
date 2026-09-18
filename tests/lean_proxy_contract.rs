@@ -427,6 +427,30 @@ fn contract_freezes_preservation_and_removal_lists() {
         true
     );
     assert_eq!(
+        manifest["required_image_inlining"]["pinned_ip_connect_gap_changed"],
+        true
+    );
+    assert_eq!(
+        manifest["image_ssrf_connection_binding"]["validated_address_used_for_socket_connect"],
+        true
+    );
+    assert_eq!(
+        manifest["image_ssrf_connection_binding"]["hostname_url_preserved_for_http_host_and_tls"],
+        true
+    );
+    assert_eq!(
+        manifest["image_ssrf_connection_binding"]["tls_hostname_verification_disabled"],
+        false
+    );
+    assert_eq!(
+        manifest["image_ssrf_connection_binding"]["unvalidated_dns_fallback_after_connect_failure"],
+        false
+    );
+    assert_eq!(
+        manifest["image_ssrf_connection_binding"]["system_proxy_can_reresolve_image_hostname"],
+        false
+    );
+    assert_eq!(
         manifest["generation_retry_policy"]["client_invalid_terminal_statuses"],
         serde_json::json!([400, 413, 422])
     );
