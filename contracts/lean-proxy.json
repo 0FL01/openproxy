@@ -526,7 +526,13 @@
     "incremental_sse_framer_owner": "C32",
     "valid_out_of_order_repeated_index_unicode_and_argument_bytes_preserved": true,
     "c13_attempt_budget_changed": false,
-    "post_commit_generation_retry_changed": false
+    "post_commit_generation_retry_changed": false,
+    "responses_accumulator_copy_owner": "C34",
+    "responses_whole_map_clone_per_delta": false,
+    "responses_old_text_plus_delta_rebuild": false,
+    "responses_point_mutation": "single_map_entry_and_push_str",
+    "responses_completed_text_args_reasoning_freed_at_done": true,
+    "responses_append_complexity": "amortized_linear_behind_c31_bounds"
   },
   "forced_sse_to_json_incremental": {
     "checkpoint": "C33",

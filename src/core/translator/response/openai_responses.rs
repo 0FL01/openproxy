@@ -233,6 +233,85 @@ fn extract_custom_tool_input(arguments_text: &str) -> String {
     }
 }
 
+/// C34: point-mutation helpers for Responses accumulators.
+///
+/// The previous implementation cloned whole `func*`/`msg*` maps on every
+/// delta and rebuilt growing text via `format!("{old}{delta}")`, which copies
+/// the retained prefix on each fragment (quadratic). These helpers mutate a
+/// single map entry / string buffer in place so repeated small deltas append
+/// in amortized linear time behind the existing C31 bounds.
+fn state_obj_mut<'a>(
+    state: &'a mut serde_json::Map<String, Value>,
+    key: &str,
+) -> &'a mut serde_json::Map<String, Value> {
+    let slot = state
+        .entry(key.to_string())
+        .or_insert_with(|| Value::Object(Default::default()));
+    if !slot.is_object() {
+        *slot = Value::Object(Default::default());
+    }
+    slot.as_object_mut().expect("ensured object")
+}
+
+fn append_indexed_text(
+    state: &mut serde_json::Map<String, Value>,
+    map_key: &str,
+    idx_str: &str,
+    delta: &str,
+) {
+    if delta.is_empty() {
+        return;
+    }
+    let map = state_obj_mut(state, map_key);
+    let slot = map
+        .entry(idx_str.to_string())
+        .or_insert_with(|| Value::String(String::new()));
+    match slot {
+        Value::String(buf) => buf.push_str(delta),
+        _ => *slot = Value::String(delta.to_string()),
+    }
+}
+
+fn indexed_text(state: &serde_json::Map<String, Value>, map_key: &str, idx_str: &str) -> String {
+    state
+        .get(map_key)
+        .and_then(Value::as_object)
+        .and_then(|map| map.get(idx_str))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
+}
+
+fn indexed_flag(state: &serde_json::Map<String, Value>, map_key: &str, idx_str: &str) -> bool {
+    state
+        .get(map_key)
+        .and_then(Value::as_object)
+        .is_some_and(|map| map.contains_key(idx_str))
+}
+
+fn set_indexed_flag(state: &mut serde_json::Map<String, Value>, map_key: &str, idx_str: &str) {
+    state_obj_mut(state, map_key).insert(idx_str.to_string(), Value::Bool(true));
+}
+
+fn take_indexed_text(
+    state: &mut serde_json::Map<String, Value>,
+    map_key: &str,
+    idx_str: &str,
+    fallback: &str,
+) -> String {
+    let text = state
+        .get(map_key)
+        .and_then(Value::as_object)
+        .and_then(|map| map.get(idx_str))
+        .and_then(Value::as_str)
+        .unwrap_or(fallback)
+        .to_string();
+    if let Some(Value::Object(map)) = state.get_mut(map_key) {
+        map.remove(idx_str);
+    }
+    text
+}
+
 fn start_reasoning(state: &mut serde_json::Map<String, Value>, events: &mut Vec<Value>, idx: u64) {
     if state.get("reasoningId").is_none() || state["reasoningId"].is_null() {
         let reasoning_id = format!("rs_{}_{}", state["responseId"].as_str().unwrap_or(""), idx);
@@ -275,11 +354,12 @@ fn emit_reasoning_delta(
     if text.is_empty() {
         return;
     }
-    state["reasoningBuf"] = Value::String(format!(
-        "{}{}",
-        state["reasoningBuf"].as_str().unwrap_or(""),
-        text
-    ));
+    match state.get_mut("reasoningBuf") {
+        Some(Value::String(buf)) => buf.push_str(text),
+        _ => {
+            state.insert("reasoningBuf".to_string(), Value::String(text.to_string()));
+        }
+    }
     let reasoning_id = state["reasoningId"].as_str().unwrap_or("").to_string();
     let reasoning_idx = state
         .get("reasoningIndex")
@@ -310,6 +390,9 @@ fn close_reasoning(state: &mut serde_json::Map<String, Value>, events: &mut Vec<
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         let reasoning_buf = state["reasoningBuf"].as_str().unwrap_or("").to_string();
+        // C34: the full buffer is required for the done payloads below; drop
+        // it right after so idle state does not retain completed reasoning.
+        state.insert("reasoningBuf".to_string(), Value::String(String::new()));
         emit(
             events,
             state,
@@ -356,31 +439,21 @@ fn close_message(
     events: &mut Vec<Value>,
     idx_key: &str,
 ) {
-    let done = state
-        .get("msgItemDone")
-        .and_then(|v| v.get(idx_key))
-        .is_some();
-    let added = state
-        .get("msgItemAdded")
-        .and_then(|v| v.get(idx_key))
-        .is_some();
-    if !added || done {
+    if indexed_flag(state, "msgItemDone", idx_key) || !indexed_flag(state, "msgItemAdded", idx_key)
+    {
         return;
     }
-    if let Some(done_map) = state.get_mut("msgItemDone").and_then(|v| v.as_object_mut()) {
-        done_map.insert(idx_key.to_string(), Value::Bool(true));
-    }
+    set_indexed_flag(state, "msgItemDone", idx_key);
+    let msg_key = format!("msgId_{}", idx_key);
     let msg_id = state
-        .get(&format!("msgId_{}", idx_key))
+        .get(&msg_key)
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let full_text = state
-        .get("msgTextBuf")
-        .and_then(|v| v.get(idx_key))
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    // C34: the retained text is required for the done payloads below; take it
+    // out of the map so completed message state does not stay resident.
+    let full_text = take_indexed_text(state, "msgTextBuf", idx_key, "");
+    state.remove(&msg_key);
     let Ok(idx_num) = idx_key.parse::<u64>() else {
         return;
     };
@@ -431,46 +504,19 @@ fn close_tool_call(
     events: &mut Vec<Value>,
     idx_key: &str,
 ) {
-    let call_id = state
-        .get("funcCallIds")
-        .and_then(|v| v.get(idx_key))
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    let call_id = indexed_text(state, "funcCallIds", idx_key);
     if call_id.is_empty() {
         return;
     }
-    let done = state
-        .get("funcItemDone")
-        .and_then(|v| v.get(idx_key))
-        .is_some();
-    if done {
+    if indexed_flag(state, "funcItemDone", idx_key) {
         return;
     }
-    if let Some(done_map) = state
-        .get_mut("funcItemDone")
-        .and_then(|v| v.as_object_mut())
-    {
-        done_map.insert(idx_key.to_string(), Value::Bool(true));
-    }
-    if let Some(done_map) = state
-        .get_mut("funcArgsDone")
-        .and_then(|v| v.as_object_mut())
-    {
-        done_map.insert(idx_key.to_string(), Value::Bool(true));
-    }
-    let args = state
-        .get("funcArgsBuf")
-        .and_then(|v| v.get(idx_key))
-        .and_then(|v| v.as_str())
-        .unwrap_or("{}")
-        .to_string();
-    let name = state
-        .get("funcNames")
-        .and_then(|v| v.get(idx_key))
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    set_indexed_flag(state, "funcItemDone", idx_key);
+    set_indexed_flag(state, "funcArgsDone", idx_key);
+    // C34: full arguments are required once for the done payloads below; take
+    // them out so completed tool state does not stay resident.
+    let args = take_indexed_text(state, "funcArgsBuf", idx_key, "{}");
+    let name = indexed_text(state, "funcNames", idx_key);
     let custom = is_custom_tool(state, &name);
     let idx_num: u64 = idx_key.parse().unwrap_or(0);
     if custom {
@@ -613,23 +659,9 @@ fn emit_tool_calls_block(
     events: &mut Vec<Value>,
     tool_calls: &[Value],
 ) {
-    let mut func_call_ids = state
-        .get("funcCallIds")
-        .cloned()
-        .unwrap_or(serde_json::json!({}));
-    let mut func_args_buf = state
-        .get("funcArgsBuf")
-        .cloned()
-        .unwrap_or(serde_json::json!({}));
-    let mut func_names = state
-        .get("funcNames")
-        .cloned()
-        .unwrap_or(serde_json::json!({}));
-    let mut func_item_added = state
-        .get("funcItemAdded")
-        .cloned()
-        .unwrap_or(serde_json::json!({}));
-
+    // C34: mutate one map entry per tool index in place. The previous version
+    // cloned all four `func*` maps per chunk (O(items) per delta) and rebuilt
+    // argument strings via format! (O(prefix) per delta).
     for tc in tool_calls.iter() {
         let Some(tc_idx) = tc.get("index").and_then(|v| v.as_u64()) else {
             continue;
@@ -643,26 +675,23 @@ fn emit_tool_calls_block(
             .unwrap_or("");
 
         if !func_name.is_empty() {
-            func_names[&tc_idx_str] = Value::String(func_name.to_string());
+            state_obj_mut(state, "funcNames")
+                .insert(tc_idx_str.clone(), Value::String(func_name.to_string()));
         }
         if !new_call_id.is_empty() {
-            func_call_ids[&tc_idx_str] = Value::String(new_call_id.to_string());
+            state_obj_mut(state, "funcCallIds")
+                .insert(tc_idx_str.clone(), Value::String(new_call_id.to_string()));
         }
 
         // Wait for both id and name before deciding custom vs function;
         // otherwise a split-chunk call can be irreversibly announced wrong.
-        let call_id = func_call_ids
-            .get(&tc_idx_str)
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let name = func_names
-            .get(&tc_idx_str)
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        if func_item_added.get(&tc_idx_str).is_none() && !call_id.is_empty() && !name.is_empty() {
-            func_item_added[&tc_idx_str] = Value::Bool(true);
+        let call_id = indexed_text(state, "funcCallIds", &tc_idx_str);
+        let name = indexed_text(state, "funcNames", &tc_idx_str);
+        if !indexed_flag(state, "funcItemAdded", &tc_idx_str)
+            && !call_id.is_empty()
+            && !name.is_empty()
+        {
+            set_indexed_flag(state, "funcItemAdded", &tc_idx_str);
             let custom = is_custom_tool(state, &name);
             // Close any open text message first (JS 104: closeMessage).
             close_message(state, events, &tc_idx_str);
@@ -687,7 +716,7 @@ fn emit_tool_calls_block(
                             "type": "function_call",
                             "arguments": "",
                             "call_id": call_id,
-                            "name": func_names.get(&tc_idx_str).and_then(|v| v.as_str()).unwrap_or("")
+                            "name": name
                         })
                     },
                 }),
@@ -700,21 +729,18 @@ fn emit_tool_calls_block(
             .and_then(|v| v.as_str())
         {
             if !args.is_empty() {
-                let ref_call_id = func_call_ids
-                    .get(&tc_idx_str)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&call_id);
+                let ref_call_id = indexed_text(state, "funcCallIds", &tc_idx_str);
+                let ref_call_id = if ref_call_id.is_empty() {
+                    call_id.clone()
+                } else {
+                    ref_call_id
+                };
                 // Custom input is emitted once at close, after the Chat JSON
                 // wrapper can be parsed. Streaming raw fragments would expose
                 // {"input":"..."} instead of the freeform program.
-                let is_custom_now = is_custom_tool(
-                    state,
-                    func_names
-                        .get(&tc_idx_str)
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(""),
-                );
-                if func_item_added.get(&tc_idx_str).is_some()
+                let current_name = indexed_text(state, "funcNames", &tc_idx_str);
+                let is_custom_now = is_custom_tool(state, &current_name);
+                if indexed_flag(state, "funcItemAdded", &tc_idx_str)
                     && !ref_call_id.is_empty()
                     && !is_custom_now
                 {
@@ -730,20 +756,10 @@ fn emit_tool_calls_block(
                         }),
                     );
                 }
-                let existing = func_args_buf
-                    .get(&tc_idx_str)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                func_args_buf[&tc_idx_str] = Value::String(format!("{}{}", existing, args));
+                append_indexed_text(state, "funcArgsBuf", &tc_idx_str, args);
             }
         }
     }
-
-    state.insert("funcCallIds".to_string(), func_call_ids);
-    state.insert("funcArgsBuf".to_string(), func_args_buf);
-    state.insert("funcNames".to_string(), func_names);
-    state.insert("funcItemAdded".to_string(), func_item_added);
 }
 
 /// finish_reason arm of `chat_to_responses_response` (JS 110-116): close
@@ -990,21 +1006,10 @@ pub fn chat_to_responses_response(
                 );
             }
             let content: &str = &content;
-            let mut msg_item_added = state
-                .get("msgItemAdded")
-                .cloned()
-                .unwrap_or(serde_json::json!({}));
-            let mut msg_content_added = state
-                .get("msgContentAdded")
-                .cloned()
-                .unwrap_or(serde_json::json!({}));
-            let mut msg_text_buf = state
-                .get("msgTextBuf")
-                .cloned()
-                .unwrap_or(serde_json::json!({}));
-
-            if msg_item_added.get(&idx_str).is_none() {
-                msg_item_added[&idx_str] = Value::Bool(true);
+            // C34: point-mutate message maps instead of cloning all three per
+            // content delta.
+            if !indexed_flag(state, "msgItemAdded", &idx_str) {
+                set_indexed_flag(state, "msgItemAdded", &idx_str);
                 let msg_id = format!("msg_{}_{}", state["responseId"].as_str().unwrap_or(""), idx);
                 state.insert(format!("msgId_{}", idx), Value::String(msg_id.clone()));
 
@@ -1031,7 +1036,7 @@ pub fn chat_to_responses_response(
                         "part": {"type": "output_text", "annotations": [], "logprobs": [], "text": ""}
                     }),
                 );
-                msg_content_added[&idx_str] = Value::Bool(true);
+                set_indexed_flag(state, "msgContentAdded", &idx_str);
             }
 
             let msg_id = state
@@ -1053,16 +1058,7 @@ pub fn chat_to_responses_response(
                 }),
             );
 
-            let existing = msg_text_buf
-                .get(&idx_str)
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            msg_text_buf[&idx_str] = Value::String(format!("{}{}", existing, content));
-
-            state.insert("msgItemAdded".to_string(), msg_item_added);
-            state.insert("msgContentAdded".to_string(), msg_content_added);
-            state.insert("msgTextBuf".to_string(), msg_text_buf);
+            append_indexed_text(state, "msgTextBuf", &idx_str, content);
         }
     }
 

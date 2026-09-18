@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C34",
+  "next_checkpoint": "C35",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c33_cargo_1.98.1",
+    "rust_verification": "passed_through_c34_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -1826,7 +1826,7 @@
     {
       "id": "C34",
       "title": "Убрать квадратичное копирование в Responses translator",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C32"
       ],
@@ -1838,7 +1838,25 @@
       "change": "Заменить клонирование целых maps и format старый-текст+дельта на точечное mutable state/push_str. Не расширять переделку в универсальный новый engine. Сохранить полный text/arguments только для обязательных done/completed событий, освобождать завершённый state вовремя.",
       "tests": "Равный общий текст при растущем числе небольших дельт; tool arguments, reasoning, несколько output items, final ordering. Проверить объём скопированных/выделенных байтов, а не только финальный RSS.",
       "acceptance": "Рост временного копирования не квадратичный для затронутых накопителей; обязательные финальные payloads эквивалентны.",
-      "rollback": "Отдельный commit для text/tool/reasoning, если совмещённая правка слишком велика; не менять event schema."
+      "rollback": "Отдельный commit для text/tool/reasoning, если совмещённая правка слишком велика; не менять event schema.",
+      "result": {
+        "completed": "2026-09-18",
+        "files": [
+          "src/core/translator/response/openai_responses.rs",
+          "tests/lean_proxy_responses_c34.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json"
+        ],
+        "behavior": "Chat-to-Responses text/tool/reasoning accumulators mutate one map entry per delta with push_str instead of cloning whole func/msg maps and rebuilding strings via format. Completed message text, tool arguments, and reasoning buffers are freed at close after their required done payloads; C31 bounds and goldens unchanged.",
+        "tests": [
+          "cargo test --test lean_proxy_responses_c34 -- --nocapture: 5 passed",
+          "cargo test -p openproxy --lib translator::response::openai_responses: 9 passed",
+          "cargo test -p openproxy --lib translator: 339 passed",
+          "cargo test --test lean_proxy_stream_state_c31 --test lean_proxy_forced_c33 --test lean_proxy_framer_c32: passed"
+        ],
+        "measurements": "not measured; C34 removes temporary copies, not retained workload bytes",
+        "rollback": "Revert the C34 commit; no schema, route, or event shape changed."
+      }
     },
     {
       "id": "C35",
