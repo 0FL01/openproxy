@@ -746,5 +746,20 @@
     "failure_path_sleep_preserved": true,
     "format_retention_throttle_changed": false,
     "fixed_idle_retention_bytes_claimed": false
+  },
+  "dead_code_removal": {
+    "checkpoint": "C41",
+    "census": "every direct dependency referenced; every module has consumers; deleted replay modules stay deleted",
+    "group1": "serde_urlencoded normal->dev (test-only usage)",
+    "group2": "predicates dev-dep removed (zero references)",
+    "binary_size_claim": false,
+    "protected_untouched": [
+      "http_pool",
+      "security",
+      "crypto",
+      "allocator",
+      "runtime_threads",
+      "release_profile"
+    ]
   }
 }

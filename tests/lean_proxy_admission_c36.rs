@@ -264,5 +264,7 @@ fn source_guards_keep_admission_before_extraction() {
             && !admission.contains("TOTAL_TIMEOUT"),
         "admission must not impose a fixed total stream timeout"
     );
-    assert!(DEFAULT_MAX_ACTIVE_GENERATIONS >= 32);
+    const {
+        assert!(DEFAULT_MAX_ACTIVE_GENERATIONS >= 32);
+    }
 }
