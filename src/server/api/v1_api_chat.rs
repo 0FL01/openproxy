@@ -13,6 +13,7 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use serde_json::{json, Map, Value};
 
+use crate::core::stream_framing::{TextStreamFramer, TextStreamMode};
 use crate::server::state::AppState;
 
 use super::chat;
@@ -166,8 +167,14 @@ async fn convert_openai_sse_to_ollama(response: Response, model: &str) -> Respon
     }
 
     let mut headers = response.headers().clone();
+    let framing_mode = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.contains("text/event-stream") || value.contains("text/plain"))
+        .map_or(TextStreamMode::Lines, |_| TextStreamMode::Sse);
     let mut body_stream = response.into_body().into_data_stream();
-    let mut state = OllamaSseTransformState::default();
+    let mut state = OllamaSseTransformState::new(framing_mode);
     let model = model.to_string();
 
     let stream = stream! {
@@ -176,24 +183,30 @@ async fn convert_openai_sse_to_ollama(response: Response, model: &str) -> Respon
                 break;
             };
 
-            let events = match state.transform(&chunk, &model) {
-                Ok(events) => events,
-                Err(error) => {
-                    yield Ok::<_, Infallible>(ndjson_line(json!({
-                        "error": error.message,
-                        "error_code": error.code,
-                        "done": true
-                    })));
-                    return;
-                }
-            };
-            for event in events {
+            let batch = state.transform(&chunk, &model);
+            for event in batch.events {
                 yield Ok::<_, Infallible>(event);
+            }
+            if let Some(error) = batch.error {
+                yield Ok::<_, Infallible>(ndjson_line(json!({
+                    "error": error.message,
+                    "error_code": error.code,
+                    "done": true
+                })));
+                return;
             }
         }
 
-        if let Some(final_event) = state.finish(&model) {
-            yield Ok::<_, Infallible>(final_event);
+        let batch = state.finish_input(&model);
+        for event in batch.events {
+            yield Ok::<_, Infallible>(event);
+        }
+        if let Some(error) = batch.error {
+            yield Ok::<_, Infallible>(ndjson_line(json!({
+                "error": error.message,
+                "error_code": error.code,
+                "done": true
+            })));
         }
     };
 
@@ -212,12 +225,17 @@ async fn convert_openai_sse_to_ollama(response: Response, model: &str) -> Respon
     proxied
 }
 
-#[derive(Default)]
 struct OllamaSseTransformState {
-    buffer: String,
+    records: TextStreamFramer,
     pending_tool_calls: BTreeMap<u64, PendingToolCall>,
     retained_tool_bytes: usize,
     emitted_done: bool,
+}
+
+#[derive(Default)]
+struct OllamaTransformBatch {
+    events: Vec<Bytes>,
+    error: Option<crate::core::translator::limits::StreamLimitError>,
 }
 
 #[derive(Default)]
@@ -227,31 +245,88 @@ struct PendingToolCall {
 }
 
 impl OllamaSseTransformState {
-    fn transform(
-        &mut self,
-        chunk: &[u8],
-        model: &str,
-    ) -> Result<Vec<Bytes>, crate::core::translator::limits::StreamLimitError> {
-        self.buffer.push_str(&String::from_utf8_lossy(chunk));
-        let mut output = Vec::new();
-
-        while let Some(pos) = self.buffer.find('\n') {
-            let line = self.buffer[..pos].trim_end_matches('\r').to_string();
-            self.buffer.drain(..=pos);
-            output.extend(self.transform_line(&line, model)?);
+    fn new(mode: TextStreamMode) -> Self {
+        Self {
+            records: TextStreamFramer::new(mode),
+            pending_tool_calls: BTreeMap::new(),
+            retained_tool_bytes: 0,
+            emitted_done: false,
         }
-
-        Ok(output)
     }
 
-    fn transform_line(
+    fn transform(&mut self, chunk: &[u8], model: &str) -> OllamaTransformBatch {
+        let mut records = std::mem::replace(
+            &mut self.records,
+            TextStreamFramer::new(TextStreamMode::Sse),
+        );
+        let mut output = Vec::new();
+        let mut transform_error = None;
+        let frame_result = records.feed(chunk, |frame| {
+            if transform_error.is_some() {
+                return;
+            }
+            let Some(payload) = frame.payload() else {
+                return;
+            };
+            match self.transform_payload(payload, model) {
+                Ok(events) => output.extend(events),
+                Err(error) => transform_error = Some(error),
+            }
+        });
+        self.records = records;
+        let error = transform_error.or_else(|| {
+            frame_result
+                .err()
+                .map(|error| crate::core::translator::limits::StreamLimitError {
+                    code: error.code(),
+                    message: error.to_string(),
+                })
+        });
+        OllamaTransformBatch {
+            events: output,
+            error,
+        }
+    }
+
+    fn finish_input(&mut self, model: &str) -> OllamaTransformBatch {
+        let mode = self.records.mode();
+        let mut records = std::mem::replace(&mut self.records, TextStreamFramer::new(mode));
+        let mut output = Vec::new();
+        let mut transform_error = None;
+        let frame_result = records.finish(|frame| {
+            let Some(payload) = frame.payload() else {
+                return;
+            };
+            match self.transform_payload(payload, model) {
+                Ok(events) => output.extend(events),
+                Err(error) => transform_error = Some(error),
+            }
+        });
+        self.records = records;
+        let error = transform_error.or_else(|| {
+            frame_result
+                .err()
+                .map(|error| crate::core::translator::limits::StreamLimitError {
+                    code: error.code(),
+                    message: error.to_string(),
+                })
+        });
+        if error.is_none() {
+            if let Some(final_event) = self.finish(model) {
+                output.push(final_event);
+            }
+        }
+        OllamaTransformBatch {
+            events: output,
+            error,
+        }
+    }
+
+    fn transform_payload(
         &mut self,
-        line: &str,
+        data: &str,
         model: &str,
     ) -> Result<Vec<Bytes>, crate::core::translator::limits::StreamLimitError> {
-        let Some(data) = line.strip_prefix("data:") else {
-            return Ok(Vec::new());
-        };
         let data = data.trim();
         if data.is_empty() {
             return Ok(Vec::new());
@@ -586,14 +661,14 @@ mod tests {
 
     #[test]
     fn streaming_transformer_emits_content_then_single_done() {
-        let mut state = OllamaSseTransformState::default();
+        let mut state = OllamaSseTransformState::new(TextStreamMode::Lines);
         let output = state.transform(
             br#"data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}
 data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2}}
 data: [DONE]
 "#,
             "llama3.2",
-        ).unwrap();
+        ).events;
 
         assert_eq!(output.len(), 2);
         let first = String::from_utf8(output[0].to_vec()).unwrap();
@@ -607,18 +682,64 @@ data: [DONE]
 
     #[test]
     fn streaming_transformer_accumulates_tool_calls() {
-        let mut state = OllamaSseTransformState::default();
+        let mut state = OllamaSseTransformState::new(TextStreamMode::Lines);
         let output = state.transform(
             br#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"sea","arguments":"{\"q\""}}]},"finish_reason":null}]}
 data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"rch","arguments":":\"rust\"}"}}]},"finish_reason":"tool_calls"}]}
 "#,
             "llama3.2",
-        ).unwrap();
+        ).events;
 
         assert_eq!(output.len(), 1);
         let done = String::from_utf8(output[0].to_vec()).unwrap();
         assert!(done.contains("\"done_reason\":\"tool_calls\""));
         assert!(done.contains("\"name\":\"search\""));
         assert!(done.contains("\"q\":\"rust\""));
+    }
+
+    #[test]
+    fn streaming_transformer_distinguishes_ndjson_and_multiline_sse() {
+        let ndjson = concat!(
+            "{\"choices\":[{\"delta\":{\"content\":\"nd-one\"},\"finish_reason\":null}]}\n",
+            "{\"choices\":[{\"delta\":{\"content\":\"nd-two\"},\"finish_reason\":null}]}\n"
+        );
+        for split in 0..=ndjson.len() {
+            let mut state = OllamaSseTransformState::new(TextStreamMode::Lines);
+            let mut output = state.transform(&ndjson.as_bytes()[..split], "llama").events;
+            output.extend(state.transform(&ndjson.as_bytes()[split..], "llama").events);
+            let text = output
+                .iter()
+                .map(|bytes| String::from_utf8_lossy(bytes))
+                .collect::<String>();
+            assert!(text.contains("nd-one"), "split {split}: {text}");
+            assert!(text.contains("nd-two"), "split {split}: {text}");
+        }
+
+        let sse = b": keepalive\r\nevent: chunk\r\ndata: {\"choices\":[{\"delta\":\r\ndata: {\"content\":\"sse-multiline\"},\"finish_reason\":null}]}\r\n\r\n";
+        let mut state = OllamaSseTransformState::new(TextStreamMode::Sse);
+        let mut output = Vec::new();
+        for byte in sse {
+            output.extend(state.transform(std::slice::from_ref(byte), "llama").events);
+        }
+        assert_eq!(output.len(), 1);
+        assert!(String::from_utf8_lossy(&output[0]).contains("sse-multiline"));
+    }
+
+    #[test]
+    fn streaming_transformer_emits_valid_record_before_terminal_overflow() {
+        let valid = b"data: {\"choices\":[{\"delta\":{\"content\":\"before-limit\"},\"finish_reason\":null}]}\n\n";
+        let mut input = valid.to_vec();
+        input.extend(std::iter::repeat_n(b'x', 257));
+        let mut state = OllamaSseTransformState::new(TextStreamMode::Sse);
+        state.records = TextStreamFramer::with_max_frame_bytes(TextStreamMode::Sse, 256);
+        let batch = state.transform(&input, "llama");
+        assert!(batch
+            .events
+            .iter()
+            .any(|event| String::from_utf8_lossy(event).contains("before-limit")));
+        assert_eq!(
+            batch.error.as_ref().map(|error| error.code),
+            Some("upstream_sse_frame_too_large")
+        );
     }
 }

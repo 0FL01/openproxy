@@ -501,6 +501,35 @@ fn contract_freezes_preservation_and_removal_lists() {
         "numeric_choice_index"
     );
     assert_eq!(
+        manifest["incremental_sse_framing"]["default_max_incomplete_event_bytes"],
+        1024 * 1024
+    );
+    assert_eq!(
+        manifest["incremental_sse_framing"]["environment"],
+        "OPENPROXY_MAX_SSE_FRAME_BYTES"
+    );
+    assert_eq!(
+        manifest["incremental_sse_framing"]["scan_cursor_amortized_linear"],
+        true
+    );
+    assert_eq!(
+        manifest["incremental_sse_framing"]["per_frame_to_vec"],
+        false
+    );
+    assert_eq!(
+        manifest["incremental_sse_framing"]["native_same_format_bytes_changed_by_observer"],
+        false
+    );
+    assert_eq!(
+        manifest["incremental_sse_framing"]
+            ["native_compat_bypass_preserves_required_search_sanitization"],
+        true
+    );
+    assert_eq!(
+        manifest["incremental_sse_framing"]["raw_sse_history_removal_owner"],
+        "C33"
+    );
+    assert_eq!(
         manifest["generation_retry_policy"]["client_invalid_terminal_statuses"],
         serde_json::json!([400, 413, 422])
     );

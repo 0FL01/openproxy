@@ -1493,54 +1493,22 @@ pub fn chat_to_responses_streaming(
     chunk: &[u8],
     state: &mut crate::core::translator::registry::ResponseTransformState,
 ) -> Vec<String> {
-    let buffer_was_empty = state.responses.buffer.is_empty();
-    state
-        .responses
-        .buffer
-        .push_str(&String::from_utf8_lossy(chunk).replace("\r\n", "\n"));
-
-    if buffer_was_empty {
-        if let Ok(value) = serde_json::from_slice::<Value>(chunk) {
-            if let Err(error) =
-                crate::core::translator::registry::track_openai_accumulation(state, &value, 4, true)
-            {
-                return state.fail(error);
-            }
-            state.responses.buffer.clear();
-            let events = chat_to_responses_response(&value, &mut state.responses.state);
-            if let Some(error) = take_arithmetic_failure(&mut state.responses.state) {
-                return state.fail(error);
-            }
-            return format_responses_events(events);
-        }
+    if chunk == b"[DONE]" {
+        return vec!["data: [DONE]\n\n".to_string()];
     }
-
-    let mut results = Vec::new();
-    while let Some(frame_end) = state.responses.buffer.find("\n\n") {
-        let frame = state.responses.buffer[..frame_end].to_string();
-        state.responses.buffer.drain(..frame_end + 2);
-
-        for line in frame.lines() {
-            let Some(payload) = line.trim().strip_prefix("data:").map(str::trim) else {
-                continue;
-            };
-            if payload == "[DONE]" {
-                results.push("data: [DONE]\n\n".to_string());
-            } else if let Ok(value) = serde_json::from_str::<Value>(payload) {
-                if let Err(error) = crate::core::translator::registry::track_openai_accumulation(
-                    state, &value, 4, true,
-                ) {
-                    return state.fail(error);
-                }
-                let events = chat_to_responses_response(&value, &mut state.responses.state);
-                if let Some(error) = take_arithmetic_failure(&mut state.responses.state) {
-                    return state.fail(error);
-                }
-                results.extend(format_responses_events(events));
-            }
-        }
+    let Ok(value) = serde_json::from_slice::<Value>(chunk) else {
+        return Vec::new();
+    };
+    if let Err(error) =
+        crate::core::translator::registry::track_openai_accumulation(state, &value, 4, true)
+    {
+        return state.fail(error);
     }
-    results
+    let events = chat_to_responses_response(&value, &mut state.responses.state);
+    if let Some(error) = take_arithmetic_failure(&mut state.responses.state) {
+        return state.fail(error);
+    }
+    format_responses_events(events)
 }
 
 fn format_responses_events(events: Vec<Value>) -> Vec<String> {
@@ -1567,85 +1535,35 @@ pub fn responses_to_chat_streaming(
     chunk: &[u8],
     state: &mut ResponseTransformState,
 ) -> Vec<String> {
-    // Accumulate incoming bytes into the frame buffer.
-    // SSE frames (delimited by double newline \n\n) can straddle TCP chunks,
-    // so we must buffer across calls.
-    state
-        .responses
-        .buffer
-        .push_str(&String::from_utf8_lossy(chunk));
-
-    // Try as bare JSON first (when the upstream delivers data: lines without event: prefix,
-    // or when the full SSE event lands as one line, or on the final flush of a single frame).
-    if let Ok(val) = serde_json::from_slice::<Value>(chunk) {
-        // Only treat as bare JSON if the buffer is its natural size (nothing left over
-        // from a previous partial frame) — otherwise fall through to SSE extraction.
-        if state.responses.buffer.len() <= chunk.len() {
-            if let Err(error) = track_responses_accumulation(state, &val) {
-                return state.fail(error);
-            }
-            let inner = &mut state.responses.state;
-            let results = responses_to_chat_response(&val, inner);
-            let arithmetic_failure = take_arithmetic_failure(inner);
-            // Clear buffer — we consumed everything via the JSON path
-            state.responses.buffer.clear();
-            if let Some(error) = arithmetic_failure {
-                return state.fail(error);
-            }
-            return results
-                .into_iter()
-                .map(|v| {
-                    format!(
-                        "data: {}\n\n",
-                        serde_json::to_string(&v).unwrap_or_default()
-                    )
-                })
-                .collect();
-        }
+    if chunk == b"[DONE]" {
+        return Vec::new();
     }
-
-    // SSE-framed data: the buffer may contain one or more complete frames.
-    // Split on \n\n (SSE frame delimiter), process complete frames, store leftovers.
-    let mut results = Vec::new();
-
-    while let Some(frame_end) = state.responses.buffer.find("\n\n") {
-        let frame = state.responses.buffer[..frame_end].to_string();
-        state.responses.buffer.drain(..frame_end + 2);
-
-        for line in frame.lines() {
-            let trimmed = line.trim();
-            if let Some(data_content) = trimmed.strip_prefix("data: ") {
-                if data_content == "[DONE]" {
-                    continue;
-                }
-                if let Ok(val) = serde_json::from_str::<Value>(data_content) {
-                    if let Err(error) = track_responses_accumulation(state, &val) {
-                        return state.fail(error);
-                    }
-                    let inner = &mut state.responses.state;
-                    let values = responses_to_chat_response(&val, inner);
-                    let arithmetic_failure = take_arithmetic_failure(inner);
-                    if let Some(error) = arithmetic_failure {
-                        return state.fail(error);
-                    }
-                    for v in values {
-                        results.push(format!(
-                            "data: {}\n\n",
-                            serde_json::to_string(&v).unwrap_or_default()
-                        ));
-                    }
-                }
-            }
-        }
+    let Ok(val) = serde_json::from_slice::<Value>(chunk) else {
+        return Vec::new();
+    };
+    if let Err(error) = track_responses_accumulation(state, &val) {
+        return state.fail(error);
     }
-
+    let inner = &mut state.responses.state;
+    let results = responses_to_chat_response(&val, inner);
+    if let Some(error) = take_arithmetic_failure(inner) {
+        return state.fail(error);
+    }
     results
+        .into_iter()
+        .map(|value| {
+            format!(
+                "data: {}\n\n",
+                serde_json::to_string(&value).unwrap_or_default()
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::translator::registry::ResponseTransformState;
+    use crate::core::translator::registry::{global_registry, Format, ResponseTransformState};
     use serde_json::json;
 
     #[test]
@@ -1658,8 +1576,24 @@ mod tests {
         );
         let split = stream.find("READY").unwrap() + 2;
 
-        assert!(chat_to_responses_streaming(&stream.as_bytes()[..split], &mut state).is_empty());
-        let output = chat_to_responses_streaming(&stream.as_bytes()[split..], &mut state).join("");
+        assert!(global_registry()
+            .translate_response(
+                Format::OpenAi,
+                Format::OpenAiResponses,
+                &stream.as_bytes()[..split],
+                &mut state,
+            )
+            .unwrap()
+            .is_empty());
+        let output = global_registry()
+            .translate_response(
+                Format::OpenAi,
+                Format::OpenAiResponses,
+                &stream.as_bytes()[split..],
+                &mut state,
+            )
+            .unwrap()
+            .join("");
 
         let text = output.find("response.output_text.delta").unwrap();
         let completed = output.find("response.completed").unwrap();

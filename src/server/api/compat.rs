@@ -13,6 +13,8 @@ use futures_util::StreamExt;
 use http_body_util::BodyExt;
 use serde_json::{json, Map, Value};
 
+use crate::core::stream_framing::{FrameError, SseEvent, SseFramer};
+use crate::core::translator::registry::Format;
 use crate::core::translator::response_transform::{
     AnthropicToOpenAiTransformer, StreamingTransformer,
 };
@@ -128,12 +130,48 @@ async fn forward_compat(
         chat::chat_completions_for_endpoint(state, headers, Ok(Json(normalized)), Some(endpoint))
             .await;
 
+    let native_format = response
+        .extensions()
+        .get::<chat::RoutedResponseFormats>()
+        .copied();
+    let expected_format = match mode {
+        CompatMode::Messages => Format::Claude,
+        CompatMode::Responses { .. } => Format::OpenAiResponses,
+    };
+    let sanitize_injected_search = response
+        .extensions()
+        .get::<chat::CodexWebSearchInjected>()
+        .is_some();
+    if should_bypass_compat_conversion(
+        stream_request,
+        native_format,
+        expected_format,
+        sanitize_injected_search,
+    ) {
+        return with_cors_response(response);
+    }
+
     match mode {
         CompatMode::Responses { .. } => {
             with_cors_response(convert_to_responses_api(response, stream_request).await)
         }
         CompatMode::Messages => with_cors_response(convert_to_messages_api(response).await),
     }
+}
+
+fn should_bypass_compat_conversion(
+    stream_request: bool,
+    routed: Option<chat::RoutedResponseFormats>,
+    expected_format: Format,
+    sanitize_injected_search: bool,
+) -> bool {
+    stream_request
+        && !sanitize_injected_search
+        && routed.is_some_and(|formats| {
+            formats.native_passthrough
+                && formats.client == expected_format
+                && formats.upstream == expected_format
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -213,24 +251,23 @@ async fn convert_to_responses_api(response: Response, stream_request: bool) -> R
         Err(_) => return Response::from_parts(parts, Body::empty()),
     };
 
-    // Try to detect pseudo-streaming: the entire body is a single
-    // chat.completion JSON (not SSE). If so, handle as non-streaming.
-    // The upstream may wrap the JSON in SSE framing: `data: {...}\n\n`
-    let body_str = String::from_utf8_lossy(&body_bytes);
-    let pseudo_streaming_json = serde_json::from_slice::<Value>(&body_bytes)
-        .ok()
-        .or_else(|| {
-            // Try stripping SSE framing: `data:{JSON}\n\n` or `data: {JSON}\n\n`
-            if let Some(frame) = body_str
-                .lines()
-                .find(|l| l.trim().starts_with("data:"))
-                .and_then(|l| l.split_once(':').map(|x| x.1).map(|s| s.trim()))
-            {
-                serde_json::from_str::<Value>(frame).ok()
-            } else {
-                None
-            }
-        });
+    // Validate the complete collected SSE body before accepting any event.
+    // This prevents a valid first event from masking an oversized or invalid
+    // tail when no response.* marker is present.
+    let bare_json = serde_json::from_slice::<Value>(&body_bytes).ok();
+    let inspection = if bare_json.is_none() {
+        match inspect_collected_responses_sse(&body_bytes) {
+            Ok(inspection) => Some(inspection),
+            Err(error) => return precommit_framing_error_response(error),
+        }
+    } else {
+        None
+    };
+    let pseudo_streaming_json = bare_json.clone().or_else(|| {
+        inspection
+            .as_ref()
+            .and_then(|value| value.first_json.clone())
+    });
     if let Some(body_value) = pseudo_streaming_json {
         let is_pseudo_streaming = body_value
             .get("object")
@@ -259,14 +296,11 @@ async fn convert_to_responses_api(response: Response, stream_request: bool) -> R
     // A non-streaming client may still receive forced SSE from an upstream.
     // Prefer the final native Responses object when present; otherwise reuse
     // the incremental converter over the already-collected body.
-    let body_str = String::from_utf8_lossy(&body_bytes);
-    if body_str.contains("\"type\":\"response.") {
-        if let Some(mut responses_json) = extract_responses_from_sse(&body_str) {
-            if sanitize_injected_search {
-                remove_injected_web_search_items(&mut responses_json);
-            }
-            return Json(responses_json).into_response();
+    if let Some(mut responses_json) = inspection.and_then(|value| value.completed_response) {
+        if sanitize_injected_search {
+            remove_injected_web_search_items(&mut responses_json);
         }
+        return Json(responses_json).into_response();
     }
     stream_to_responses_api(
         Response::from_parts(parts, Body::from(body_bytes)),
@@ -279,7 +313,7 @@ fn stream_to_responses_api(response: Response, sanitize_injected_search: bool) -
     let (parts, body) = response.into_parts();
     let mut upstream = body.into_data_stream();
     let converted = async_stream::stream! {
-        let mut buffer = Vec::new();
+        let mut framer = SseFramer::new();
         let mut conv_state = ResponsesSseState::new();
         let mut claude_xform = AnthropicToOpenAiTransformer::new();
         let mut native_responses_stream = false;
@@ -289,50 +323,69 @@ fn stream_to_responses_api(response: Response, sanitize_injected_search: bool) -
                 Ok(chunk) => chunk,
                 Err(_) => return,
             };
-            buffer.extend_from_slice(&chunk);
-            while let Some(frame) = take_sse_frame(&mut buffer) {
-                let outputs = match convert_responses_sse_frame(
-                    &frame,
+            let mut converted_frames = Vec::new();
+            let mut conversion_error = None;
+            let frame_result = framer.feed(&chunk, |event| {
+                if conversion_error.is_some() {
+                    return;
+                }
+                match convert_responses_sse_event(
+                    &event,
                     &mut conv_state,
                     &mut claude_xform,
                     &mut native_responses_stream,
                     sanitize_injected_search,
                 ) {
-                    Ok(outputs) => outputs,
-                    Err(error) => {
-                        yield Ok::<Bytes, std::io::Error>(Bytes::from(format_sse_event(
-                            "error",
-                            &json!({"type": "error", "error": {"message": error.message, "code": error.code}}),
-                        )));
-                        return;
-                    }
-                };
-                for output in outputs {
-                    yield Ok::<Bytes, std::io::Error>(output);
+                    Ok(outputs) => converted_frames.extend(outputs),
+                    Err(error) => conversion_error = Some(error),
                 }
+            });
+            for output in converted_frames {
+                yield Ok::<Bytes, std::io::Error>(output);
+            }
+            if let Some(error) = conversion_error {
+                yield Ok::<Bytes, std::io::Error>(Bytes::from(format_sse_event(
+                    "error",
+                    &json!({"type": "error", "error": {"message": error.message, "code": error.code}}),
+                )));
+                return;
+            }
+            if let Err(error) = frame_result {
+                yield Ok::<Bytes, std::io::Error>(compat_framing_error_event(&error));
+                return;
             }
         }
 
-        if !buffer.is_empty() {
-            let outputs = match convert_responses_sse_frame(
-                &buffer,
+        let mut converted_frames = Vec::new();
+        let mut conversion_error = None;
+        let frame_result = framer.finish(|event| {
+            if conversion_error.is_some() {
+                return;
+            }
+            match convert_responses_sse_event(
+                &event,
                 &mut conv_state,
                 &mut claude_xform,
                 &mut native_responses_stream,
                 sanitize_injected_search,
             ) {
-                Ok(outputs) => outputs,
-                Err(error) => {
-                    yield Ok::<Bytes, std::io::Error>(Bytes::from(format_sse_event(
-                        "error",
-                        &json!({"type": "error", "error": {"message": error.message, "code": error.code}}),
-                    )));
-                    return;
-                }
-            };
-            for output in outputs {
-                yield Ok::<Bytes, std::io::Error>(output);
+                Ok(outputs) => converted_frames.extend(outputs),
+                Err(error) => conversion_error = Some(error),
             }
+        });
+        for output in converted_frames {
+            yield Ok::<Bytes, std::io::Error>(output);
+        }
+        if let Some(error) = conversion_error {
+            yield Ok::<Bytes, std::io::Error>(Bytes::from(format_sse_event(
+                "error",
+                &json!({"type": "error", "error": {"message": error.message, "code": error.code}}),
+            )));
+            return;
+        }
+        if let Err(error) = frame_result {
+            yield Ok::<Bytes, std::io::Error>(compat_framing_error_event(&error));
+            return;
         }
 
         if !native_responses_stream {
@@ -381,37 +434,19 @@ fn stream_to_responses_api(response: Response, sanitize_injected_search: bool) -
     response
 }
 
-fn take_sse_frame(buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
-    let lf = buffer.windows(2).position(|window| window == b"\n\n");
-    let crlf = buffer.windows(4).position(|window| window == b"\r\n\r\n");
-    let (end, delimiter_len) = match (lf, crlf) {
-        (Some(lf), Some(crlf)) if lf <= crlf => (lf, 2),
-        (Some(_), Some(crlf)) => (crlf, 4),
-        (Some(lf), None) => (lf, 2),
-        (None, Some(crlf)) => (crlf, 4),
-        (None, None) => return None,
-    };
-    let frame = buffer[..end].to_vec();
-    buffer.drain(..end + delimiter_len);
-    Some(frame)
-}
-
-fn convert_responses_sse_frame(
-    frame: &[u8],
+fn convert_responses_sse_event(
+    event: &SseEvent<'_>,
     conv_state: &mut ResponsesSseState,
     claude_xform: &mut AnthropicToOpenAiTransformer,
     native_responses_stream: &mut bool,
     sanitize_injected_search: bool,
 ) -> Result<Vec<Bytes>, crate::core::translator::limits::StreamLimitError> {
-    let frame = String::from_utf8_lossy(frame);
-    let frame = frame.trim();
-    if frame.is_empty() || frame.starts_with(':') {
+    let frame = event.raw().trim();
+    if frame.is_empty() {
         return Ok(Vec::new());
     }
-    let Some(json_str) = frame
-        .lines()
-        .find(|line| line.trim().starts_with("data:"))
-        .and_then(|line| line.split_once(':').map(|(_, value)| value.trim()))
+    let Some(json_str) = event
+        .data()
         .or_else(|| frame.starts_with('{').then_some(frame))
     else {
         return Ok(Vec::new());
@@ -514,31 +549,58 @@ fn remove_injected_web_search_items(response: &mut Value) {
 
 /// Extract the final Responses API JSON from a series of Responses API SSE events.
 /// Finds the `response.completed` event and returns its `response` payload.
-fn extract_responses_from_sse(body: &str) -> Option<Value> {
-    let mut latest_completed_response: Option<Value> = None;
-    for frame in body.split("\n\n") {
-        let frame = frame.trim();
-        if frame.is_empty() {
-            continue;
-        }
-        // Find the data: line in this SSE frame; skip frames without one
-        let json_str = match frame
-            .lines()
-            .find(|l| l.trim().starts_with("data:"))
-            .and_then(|l| l.split_once(':').map(|x| x.1).map(|s| s.trim()))
-        {
-            Some(s) => s,
-            None => continue,
+struct CollectedSseInspection {
+    first_json: Option<Value>,
+    completed_response: Option<Value>,
+}
+
+fn inspect_collected_responses_sse(body: &[u8]) -> Result<CollectedSseInspection, FrameError> {
+    let mut inspection = CollectedSseInspection {
+        first_json: None,
+        completed_response: None,
+    };
+    let mut framer = SseFramer::new();
+    let mut inspect = |event: SseEvent<'_>| {
+        let Some(json_str) = event.data() else {
+            return;
         };
         if let Ok(v) = serde_json::from_str::<Value>(json_str) {
+            if inspection.first_json.is_none() {
+                inspection.first_json = Some(v.clone());
+            }
             if v.get("type").and_then(|t| t.as_str()) == Some("response.completed") {
                 if let Some(response) = v.get("response").cloned() {
-                    latest_completed_response = Some(response);
+                    inspection.completed_response = Some(response);
                 }
             }
         }
-    }
-    latest_completed_response
+    };
+    framer.feed(body, &mut inspect)?;
+    framer.finish(inspect)?;
+    Ok(inspection)
+}
+
+fn compat_framing_error_event(error: &FrameError) -> Bytes {
+    Bytes::from(format_sse_event(
+        "error",
+        &json!({"type": "error", "error": {"message": error.to_string(), "code": error.code()}}),
+    ))
+}
+
+fn precommit_framing_error_response(error: FrameError) -> Response {
+    (
+        StatusCode::BAD_GATEWAY,
+        [(header::CONTENT_TYPE, "application/json")],
+        json!({
+            "error": {
+                "message": error.to_string(),
+                "type": "upstream_error",
+                "code": error.code(),
+            }
+        })
+        .to_string(),
+    )
+        .into_response()
 }
 
 /// Convert a completed chat-completion JSON object to a Responses API JSON object.
@@ -1408,7 +1470,7 @@ async fn convert_to_messages_api(response: Response) -> Response {
     let (parts, body) = response.into_parts();
     let data_stream = body.into_data_stream();
     let converted = async_stream::stream! {
-        let buf = &mut String::new();
+        let mut framer = SseFramer::new();
         let mut conv_state = MessagesSseState::new();
 
         let mut stream = data_stream;
@@ -1416,42 +1478,73 @@ async fn convert_to_messages_api(response: Response) -> Response {
             let next = stream.next().await;
             match next {
                 Some(Ok(chunk)) => {
-                    let chunk_str = String::from_utf8_lossy(&chunk);
-                    buf.push_str(&chunk_str);
-
-                    while let Some(frame_end) = buf.find("\n\n") {
-                        let frame = buf[..frame_end].to_string();
-                        buf.drain(..frame_end + 2);
-
-                        let frame = frame.trim();
-                        if frame.is_empty() || frame.starts_with(':') {
-                            continue;
+                    let mut events = Vec::new();
+                    let mut conversion_error = None;
+                    let frame_result = framer.feed(&chunk, |event| {
+                        if conversion_error.is_some() {
+                            return;
                         }
-
-                        let json_str = frame.strip_prefix("data:").unwrap_or(frame).trim();
+                        let Some(json_str) = event.data() else {
+                            return;
+                        };
                         if json_str == "[DONE]" {
-                            break;
+                            return;
                         }
-
                         if let Ok(chunk_value) = serde_json::from_str::<Value>(json_str) {
-                            let events = match openai_chunk_to_messages(&mut conv_state, &chunk_value) {
-                                Ok(events) => events,
-                                Err(error) => {
-                                    yield Ok::<Bytes, std::io::Error>(Bytes::from(format_messages_sse_event(
-                                        "error",
-                                        &json!({"type": "error", "error": {"message": error.message, "code": error.code}}),
-                                    )));
-                                    return;
-                                }
-                            };
-                            for event_bytes in events {
-                                yield Ok::<Bytes, std::io::Error>(Bytes::from(event_bytes));
+                            match openai_chunk_to_messages(&mut conv_state, &chunk_value) {
+                                Ok(converted) => events.extend(converted),
+                                Err(error) => conversion_error = Some(error),
                             }
                         }
+                    });
+                    for event_bytes in events {
+                        yield Ok::<Bytes, std::io::Error>(Bytes::from(event_bytes));
+                    }
+                    if let Some(error) = conversion_error {
+                        yield Ok::<Bytes, std::io::Error>(Bytes::from(format_messages_sse_event(
+                            "error",
+                            &json!({"type": "error", "error": {"message": error.message, "code": error.code}}),
+                        )));
+                        return;
+                    }
+                    if let Err(error) = frame_result {
+                        yield Ok::<Bytes, std::io::Error>(compat_framing_error_event(&error));
+                        return;
                     }
                 }
                 Some(Err(_)) | None => break,
             }
+        }
+
+        let mut tail_events = Vec::new();
+        let mut conversion_error = None;
+        let frame_result = framer.finish(|event| {
+            let Some(json_str) = event.data() else {
+                return;
+            };
+            if json_str == "[DONE]" {
+                return;
+            }
+            if let Ok(chunk_value) = serde_json::from_str::<Value>(json_str) {
+                match openai_chunk_to_messages(&mut conv_state, &chunk_value) {
+                    Ok(converted) => tail_events.extend(converted),
+                    Err(error) => conversion_error = Some(error),
+                }
+            }
+        });
+        for event_bytes in tail_events {
+            yield Ok::<Bytes, std::io::Error>(Bytes::from(event_bytes));
+        }
+        if let Some(error) = conversion_error {
+            yield Ok::<Bytes, std::io::Error>(Bytes::from(format_messages_sse_event(
+                "error",
+                &json!({"type": "error", "error": {"message": error.message, "code": error.code}}),
+            )));
+            return;
+        }
+        if let Err(error) = frame_result {
+            yield Ok::<Bytes, std::io::Error>(compat_framing_error_event(&error));
+            return;
         }
 
         // Send message_stop if not already sent
@@ -2330,6 +2423,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_stream_bypass_never_skips_injected_search_sanitization() {
+        let routed = Some(chat::RoutedResponseFormats {
+            client: Format::OpenAiResponses,
+            upstream: Format::OpenAiResponses,
+            native_passthrough: true,
+        });
+        assert!(should_bypass_compat_conversion(
+            true,
+            routed,
+            Format::OpenAiResponses,
+            false,
+        ));
+        assert!(!should_bypass_compat_conversion(
+            true,
+            routed,
+            Format::OpenAiResponses,
+            true,
+        ));
+    }
+
+    #[test]
     fn responses_input_is_left_for_format_registry() {
         let body = json!({
             "model": "openai/gpt-4o-mini",
@@ -2887,5 +3001,48 @@ mod tests {
         state.seq = u64::MAX;
         let error = state.flush_frames().unwrap_err();
         assert_eq!(error.code, "upstream_stream_arithmetic_overflow");
+    }
+
+    #[test]
+    fn collected_responses_validates_unmarked_oversized_tail() {
+        let mut body = b"data: {\"choices\":[]}\n\n".to_vec();
+        body.extend(std::iter::repeat_n(
+            b'x',
+            crate::core::stream_framing::DEFAULT_MAX_SSE_FRAME_BYTES + 1,
+        ));
+        assert!(matches!(
+            inspect_collected_responses_sse(&body),
+            Err(FrameError::FrameTooLarge { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn compat_converters_emit_completed_event_before_same_chunk_overflow() {
+        let valid = b": comment\nevent: chunk\ndata: {\"id\":\"chatcmpl-c32\",\"model\":\"c32\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"valid-before-limit\"},\"finish_reason\":null}]}\n\n";
+        let mut combined = valid.to_vec();
+        combined.extend(std::iter::repeat_n(
+            b'x',
+            crate::core::stream_framing::DEFAULT_MAX_SSE_FRAME_BYTES + 1,
+        ));
+
+        for messages in [false, true] {
+            let upstream_body =
+                Body::from_stream(futures_util::stream::iter([Ok::<Bytes, std::io::Error>(
+                    Bytes::from(combined.clone()),
+                )]));
+            let upstream =
+                ([(header::CONTENT_TYPE, "text/event-stream")], upstream_body).into_response();
+            let response = if messages {
+                convert_to_messages_api(upstream).await
+            } else {
+                convert_to_responses_api(upstream, true).await
+            };
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let output = String::from_utf8(body.to_vec()).unwrap();
+            let valid_position = output.find("valid-before-limit").unwrap();
+            let error_position = output.find("upstream_sse_frame_too_large").unwrap();
+            assert!(valid_position < error_position, "{output}");
+            assert_eq!(output.matches("upstream_sse_frame_too_large").count(), 1);
+        }
     }
 }

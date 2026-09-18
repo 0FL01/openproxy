@@ -21,12 +21,14 @@ use crate::core::executor::{
 };
 use crate::core::model::get_model_info;
 use crate::core::proxy::resolve_proxy_target;
+use crate::core::stream_framing::{FrameError, TextStreamFrame, TextStreamFramer};
 use crate::core::translator::helpers::image_helper::{
     ensure_final_request_size, fetch_image_as_base64, ImagePrefetchBudget, ImagePrefetchError,
 };
 use crate::core::translator::helpers::modality_helper::{
     capabilities_for_format, strip_unsupported_modalities, ModalityCapabilities,
 };
+use crate::core::translator::limits::StreamLimitError;
 use crate::core::translator::registry::{self, Format};
 use crate::core::translator::response_transform::{transform_sse_stream, transformer_for_provider};
 use crate::core::utils::client_detector::{detect_client_tool, ClientTool};
@@ -103,6 +105,22 @@ const CODEX_WEB_SEARCH_CONTEXT_SIZE_KEY: &str = "codexWebSearchContextSize";
 
 #[derive(Clone, Debug)]
 pub(super) struct CodexWebSearchInjected;
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct RoutedResponseFormats {
+    pub client: Format,
+    pub upstream: Format,
+    pub native_passthrough: bool,
+}
+
+fn mark_routed_response_formats(mut response: Response, plan: &RequestPlan) -> Response {
+    response.extensions_mut().insert(RoutedResponseFormats {
+        client: plan.source_format,
+        upstream: plan.target_format,
+        native_passthrough: plan.passthrough,
+    });
+    response
+}
 
 fn has_native_codex_web_search(body: &Value) -> bool {
     body.get("tools")
@@ -1692,6 +1710,7 @@ async fn forward_with_provider_fallback(
                     if !stream {
                         let response =
                             proxy_response(result.response, provider, plan, attempt_log).await;
+                        let response = mark_routed_response_formats(response, plan);
                         let response =
                             mark_codex_web_search_injected(response, codex_web_search_injected);
                         return Ok(response);
@@ -1708,6 +1727,7 @@ async fn forward_with_provider_fallback(
                         attempt_log,
                     )
                     .await;
+                    let response = mark_routed_response_formats(response, plan);
                     let response =
                         mark_codex_web_search_injected(response, codex_web_search_injected);
                     return Ok(response);
@@ -2112,6 +2132,7 @@ async fn proxy_response(
                 .unwrap_or_else(|| unenveloped_body.clone())
         } else if plan.target_format == registry::Format::Claude
             && plan.source_format == registry::Format::OpenAi
+            && serde_json::from_slice::<Value>(unenveloped_body.as_ref()).is_ok()
         {
             // GitHub Copilot Claude /v1/messages (and other Claude-upstream
             // non-stream paths): full Messages JSON → chat.completion.
@@ -2129,7 +2150,7 @@ async fn proxy_response(
         } else {
             use crate::core::translator::registry::ResponseTransformState;
             let mut state = ResponseTransformState::default();
-            let chunks = match registry::global_registry().translate_response(
+            let mut chunks = match registry::global_registry().translate_response(
                 plan.target_format,
                 plan.source_format,
                 unenveloped_body.as_ref(),
@@ -2159,6 +2180,33 @@ async fn proxy_response(
                     );
                 }
             };
+            chunks.extend(registry::global_registry().finish_stream(
+                plan.target_format,
+                plan.source_format,
+                &mut state,
+            ));
+            if let Some(error) = state.failure.clone() {
+                if let Some(attempt_log) = attempt_log {
+                    attempt_log
+                        .finish("error", Some(StatusCode::BAD_GATEWAY.as_u16()), None)
+                        .await;
+                }
+                return with_cors_response(
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        [(header::CONTENT_TYPE, "application/json")],
+                        json!({
+                            "error": {
+                                "message": error.message,
+                                "type": "upstream_error",
+                                "code": error.code
+                            }
+                        })
+                        .to_string(),
+                    )
+                        .into_response(),
+                );
+            }
             if !chunks.is_empty() {
                 let mut result = String::new();
                 for chunk in &chunks {
@@ -2355,41 +2403,30 @@ async fn proxy_response_with_pending_tracking(
                 .into_response(),
         );
     }
-    let capture_sse_frames = ct.is_empty() || ct.contains("text/event-stream");
-
+    // Dashboard normalization follows the resolved upstream wire format, not
+    // the configurable provider name. Custom Gemini-compatible routes, Vertex,
+    // and Antigravity all carry Gemini events; CommandCode carries NDJSON (or
+    // an SSE envelope around one NDJSON record).
     let transformer = normalize_for_dashboard
-        .then(|| transformer_for_provider(&provider))
+        .then(|| dashboard_transformer_for_format(stream_target_format))
         .flatten();
+    let passthrough = transformer.is_none() && !needs_stream_translation;
     let body = match response {
         UpstreamResponse::Reqwest(response) => {
             let provider = provider.clone();
             let model = model.clone();
-            let mut transformer = transformer;
-            let mut pending_text = String::new();
             let custom_tool_names = custom_tool_names.clone();
             let mut attempt_log = attempt_log;
             let stream = async_stream::stream! {
                 let mut upstream = response.bytes_stream();
-                // Persistent state for streaming format translation (e.g. Responses API -> Chat Completions).
-                let mut t_state = if needs_stream_translation {
-                    let mut s = crate::core::translator::registry::ResponseTransformState::default();
-                    // Thread custom-tool names into streaming state so
-                    // function_call vs custom_tool_call branching survives
-                    // (9router chatCore customToolNames → stream handler).
-                    if let Some(ref names) = custom_tool_names {
-                        if !names.is_empty() {
-                            s.responses.state.insert(
-                                "customToolNames".to_string(),
-                                Value::String(names.clone()),
-                            );
-                        }
-                    }
-                    Some(s)
-                } else {
-                    None
-                };
-                let mut usage_capture = StreamingUsageCapture::new(capture_sse_frames);
-                let mut completion_frames = String::new();
+                let mut dispatch = StreamDispatch::new(
+                    stream_target_format,
+                    stream_source_format,
+                    &ct,
+                    transformer,
+                    custom_tool_names.as_deref(),
+                    stop_on_response_completed,
+                );
                 loop {
                     let next = tokio::time::timeout(SSE_STALL_TIMEOUT, upstream.try_next()).await;
                     match next {
@@ -2402,7 +2439,7 @@ async fn proxy_response_with_pending_tracking(
                                 model = %model,
                                 "SSE stalled, closing stream"
                             );
-                            let usage = usage_capture.usage.clone();
+                            let usage = dispatch.usage.clone();
                             if let Some(log) = attempt_log.take() {
                                 log.finish("error", Some(502), usage.as_ref()).await;
                             }
@@ -2413,65 +2450,30 @@ async fn proxy_response_with_pending_tracking(
                             return;
                         }
                         Ok(Ok(Some(chunk))) => {
-                            usage_capture.observe(&chunk);
-                            let response_completed = stop_on_response_completed
-                                && responses_stream_completed(&mut completion_frames, &chunk);
-                            if let Some(transformer) = transformer.as_mut() {
-                                for line in transform_dashboard_sse_chunk(&chunk, transformer.as_mut(), &mut pending_text) {
-                                    if let Some(frame) = sse_frame_for_dashboard(&line) {
-                                        yield Ok::<Bytes, std::io::Error>(frame);
-                                    }
-                                }
-                            } else if needs_stream_translation {
-                                if let Some(ref mut t_state) = t_state {
-                                    let chunks = registry::global_registry()
-                                        .translate_response(
-                                            stream_target_format,
-                                            stream_source_format,
-                                            &chunk,
-                                            t_state,
-                                        );
-                                    let chunks = match chunks {
-                                        Ok(chunks) => chunks,
-                                        Err(error) => {
-                                            let usage = usage_capture.usage.clone();
-                                            if let Some(log) = attempt_log.take() {
-                                                log.finish("error", Some(502), usage.as_ref()).await;
-                                            }
-                                            yield Ok::<Bytes, std::io::Error>(Bytes::from(
-                                                write_streaming_error_with_code(
-                                                    &error.message,
-                                                    "upstream_error",
-                                                    Some(error.code),
-                                                ),
-                                            ));
-                                            return;
-                                        }
-                                    };
-                                    for line in chunks {
-                                        if let Some(frame) = sse_frame_for_dashboard(&line) {
-                                            yield Ok::<Bytes, std::io::Error>(frame);
-                                        }
-                                    }
-                                } else {
-                                    yield Ok::<Bytes, std::io::Error>(chunk);
-                                }
-                            } else {
+                            let batch = dispatch.feed(&chunk);
+                            // Passthrough bytes are committed before observer
+                            // failures; framing is observational on native routes.
+                            if passthrough {
                                 yield Ok::<Bytes, std::io::Error>(chunk);
                             }
-                            if response_completed {
-                                if let Some(ref mut t_state) = t_state {
-                                    for line in registry::global_registry().finish_stream(
-                                        stream_source_format,
-                                        stream_target_format,
-                                        t_state,
-                                    ) {
-                                        if let Some(frame) = sse_frame_for_dashboard(&line) {
-                                            yield Ok::<Bytes, std::io::Error>(frame);
-                                        }
-                                    }
+                            for output in batch.output {
+                                yield Ok::<Bytes, std::io::Error>(output);
+                            }
+                            if let Some(error) = batch.error {
+                                let usage = dispatch.usage.clone();
+                                if let Some(log) = attempt_log.take() {
+                                    log.finish("error", Some(502), usage.as_ref()).await;
                                 }
-                                let usage = usage_capture.usage.clone();
+                                yield Ok::<Bytes, std::io::Error>(Bytes::from(write_streaming_error_with_code(
+                                    &error.message, "upstream_error", Some(error.code),
+                                )));
+                                return;
+                            }
+                            if batch.response_completed {
+                                for output in dispatch.finish_after_completed() {
+                                    yield Ok::<Bytes, std::io::Error>(output);
+                                }
+                                let usage = dispatch.usage.clone();
                                 if let Some(log) = attempt_log.take() {
                                     log.finish("success", Some(status.as_u16()), usage.as_ref()).await;
                                 }
@@ -2480,7 +2482,7 @@ async fn proxy_response_with_pending_tracking(
                         }
                         Ok(Ok(None)) => break,
                         Ok(Err(_)) => {
-                            let usage = usage_capture.usage.clone();
+                            let usage = dispatch.usage.clone();
                             if let Some(log) = attempt_log.take() {
                                 log.finish("error", Some(502), usage.as_ref()).await;
                             }
@@ -2492,27 +2494,21 @@ async fn proxy_response_with_pending_tracking(
                         }
                     }
                 }
-                if let Some(transformer) = transformer.as_mut() {
-                    for line in flush_dashboard_sse_chunk(transformer.as_mut(), &mut pending_text) {
-                        if let Some(frame) = sse_frame_for_dashboard(&line) {
-                            yield Ok::<Bytes, std::io::Error>(frame);
-                        }
-                    }
+                let batch = dispatch.finish();
+                for output in batch.output {
+                    yield Ok::<Bytes, std::io::Error>(output);
                 }
-                // End-of-stream flush: emit the terminal chunk + [DONE] for
-                // buffered binary transforms (kiro EventStream → SSE).
-                if let Some(ref mut t_state) = t_state {
-                    for line in registry::global_registry().finish_stream(
-                        stream_source_format,
-                        stream_target_format,
-                        t_state,
-                    ) {
-                        if let Some(frame) = sse_frame_for_dashboard(&line) {
-                            yield Ok::<Bytes, std::io::Error>(frame);
-                        }
+                if let Some(error) = batch.error {
+                    let usage = dispatch.usage.clone();
+                    if let Some(log) = attempt_log.take() {
+                        log.finish("error", Some(502), usage.as_ref()).await;
                     }
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from(write_streaming_error_with_code(
+                        &error.message, "upstream_error", Some(error.code),
+                    )));
+                    return;
                 }
-                let usage = usage_capture.usage.clone();
+                let usage = dispatch.usage.clone();
                 if let Some(log) = attempt_log.take() {
                     log.finish("success", Some(status.as_u16()), usage.as_ref()).await;
                 }
@@ -2523,27 +2519,17 @@ async fn proxy_response_with_pending_tracking(
             let (_, mut body) = response.into_parts();
             let provider = provider.clone();
             let model = model.clone();
-            let mut transformer = transformer;
-            let mut pending_text = String::new();
             let custom_tool_names2 = custom_tool_names.clone();
             let mut attempt_log = attempt_log;
             let stream = async_stream::stream! {
-                // Persistent state for streaming format translation (e.g. Responses API -> Chat Completions).
-                let mut t_state = if needs_stream_translation {
-                    let mut s = crate::core::translator::registry::ResponseTransformState::default();
-                    if let Some(ref names) = custom_tool_names2 {
-                        if !names.is_empty() {
-                            s.responses.state.insert(
-                                "customToolNames".to_string(),
-                                Value::String(names.clone()),
-                            );
-                        }
-                    }
-                    Some(s)
-                } else {
-                    None
-                };
-                let mut usage_capture = StreamingUsageCapture::new(capture_sse_frames);
+                let mut dispatch = StreamDispatch::new(
+                    stream_target_format,
+                    stream_source_format,
+                    &ct,
+                    transformer,
+                    custom_tool_names2.as_deref(),
+                    stop_on_response_completed,
+                );
                 loop {
                     let next = tokio::time::timeout(SSE_STALL_TIMEOUT, body.frame()).await;
                     let frame_result = match next {
@@ -2554,7 +2540,7 @@ async fn proxy_response_with_pending_tracking(
                                 model = %model,
                                 "SSE stalled, closing stream"
                             );
-                            let usage = usage_capture.usage.clone();
+                            let usage = dispatch.usage.clone();
                             if let Some(log) = attempt_log.take() {
                                 log.finish("error", Some(502), usage.as_ref()).await;
                             }
@@ -2570,54 +2556,37 @@ async fn proxy_response_with_pending_tracking(
                     match frame_result {
                         Ok(frame) => {
                             if let Ok(data) = frame.into_data() {
-                                usage_capture.observe(&data);
-                                if let Some(transformer) = transformer.as_mut() {
-                                    for line in transform_dashboard_sse_chunk(&data, transformer.as_mut(), &mut pending_text) {
-                                        if let Some(frame) = sse_frame_for_dashboard(&line) {
-                                            yield Ok::<Bytes, std::io::Error>(frame);
-                                        }
-                                    }
-                                } else if needs_stream_translation {
-                                    if let Some(ref mut t_state) = t_state {
-                                        let chunks = registry::global_registry()
-                                            .translate_response(
-                                                stream_target_format,
-                                                stream_source_format,
-                                                &data,
-                                                t_state,
-                                            );
-                                        let chunks = match chunks {
-                                            Ok(chunks) => chunks,
-                                            Err(error) => {
-                                                let usage = usage_capture.usage.clone();
-                                                if let Some(log) = attempt_log.take() {
-                                                    log.finish("error", Some(502), usage.as_ref()).await;
-                                                }
-                                                yield Ok::<Bytes, std::io::Error>(Bytes::from(
-                                                    write_streaming_error_with_code(
-                                                        &error.message,
-                                                        "upstream_error",
-                                                        Some(error.code),
-                                                    ),
-                                                ));
-                                                return;
-                                            }
-                                        };
-                                        for line in chunks {
-                                            if let Some(frame) = sse_frame_for_dashboard(&line) {
-                                                yield Ok::<Bytes, std::io::Error>(frame);
-                                            }
-                                        }
-                                    } else {
-                                        yield Ok::<Bytes, std::io::Error>(data);
-                                    }
-                                } else {
+                                let batch = dispatch.feed(&data);
+                                if passthrough {
                                     yield Ok::<Bytes, std::io::Error>(data);
+                                }
+                                for output in batch.output {
+                                    yield Ok::<Bytes, std::io::Error>(output);
+                                }
+                                if let Some(error) = batch.error {
+                                    let usage = dispatch.usage.clone();
+                                    if let Some(log) = attempt_log.take() {
+                                        log.finish("error", Some(502), usage.as_ref()).await;
+                                    }
+                                    yield Ok::<Bytes, std::io::Error>(Bytes::from(write_streaming_error_with_code(
+                                        &error.message, "upstream_error", Some(error.code),
+                                    )));
+                                    return;
+                                }
+                                if batch.response_completed {
+                                    for output in dispatch.finish_after_completed() {
+                                        yield Ok::<Bytes, std::io::Error>(output);
+                                    }
+                                    let usage = dispatch.usage.clone();
+                                    if let Some(log) = attempt_log.take() {
+                                        log.finish("success", Some(status.as_u16()), usage.as_ref()).await;
+                                    }
+                                    return;
                                 }
                             }
                         }
                         Err(_) => {
-                            let usage = usage_capture.usage.clone();
+                            let usage = dispatch.usage.clone();
                             if let Some(log) = attempt_log.take() {
                                 log.finish("error", Some(502), usage.as_ref()).await;
                             }
@@ -2629,27 +2598,21 @@ async fn proxy_response_with_pending_tracking(
                         }
                     }
                 }
-                if let Some(transformer) = transformer.as_mut() {
-                    for line in flush_dashboard_sse_chunk(transformer.as_mut(), &mut pending_text) {
-                        if let Some(frame) = sse_frame_for_dashboard(&line) {
-                            yield Ok::<Bytes, std::io::Error>(frame);
-                        }
-                    }
+                let batch = dispatch.finish();
+                for output in batch.output {
+                    yield Ok::<Bytes, std::io::Error>(output);
                 }
-                // End-of-stream flush: emit the terminal chunk + [DONE] for
-                // buffered binary transforms (kiro EventStream → SSE).
-                if let Some(ref mut t_state) = t_state {
-                    for line in registry::global_registry().finish_stream(
-                        stream_source_format,
-                        stream_target_format,
-                        t_state,
-                    ) {
-                        if let Some(frame) = sse_frame_for_dashboard(&line) {
-                            yield Ok::<Bytes, std::io::Error>(frame);
-                        }
+                if let Some(error) = batch.error {
+                    let usage = dispatch.usage.clone();
+                    if let Some(log) = attempt_log.take() {
+                        log.finish("error", Some(502), usage.as_ref()).await;
                     }
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from(write_streaming_error_with_code(
+                        &error.message, "upstream_error", Some(error.code),
+                    )));
+                    return;
                 }
-                let usage = usage_capture.usage.clone();
+                let usage = dispatch.usage.clone();
                 if let Some(log) = attempt_log.take() {
                     log.finish("success", Some(status.as_u16()), usage.as_ref()).await;
                 }
@@ -2676,90 +2639,291 @@ async fn proxy_response_with_pending_tracking(
     response
 }
 
-struct StreamingUsageCapture {
-    capture_sse_frames: bool,
-    pending: Vec<u8>,
+struct StreamDispatch {
+    framer: Option<TextStreamFramer>,
+    stop_on_response_completed: bool,
     usage: Option<TokenUsage>,
+    dashboard_transformer:
+        Option<Box<dyn crate::core::translator::response_transform::StreamingTransformer>>,
+    translation_state: Option<crate::core::translator::registry::ResponseTransformState>,
+    source: Format,
+    target: Format,
 }
 
-impl StreamingUsageCapture {
-    fn new(capture_sse_frames: bool) -> Self {
+#[derive(Default)]
+struct DispatchBatch {
+    output: Vec<Bytes>,
+    response_completed: bool,
+    error: Option<StreamLimitError>,
+}
+
+impl StreamDispatch {
+    fn new(
+        source: Format,
+        target: Format,
+        content_type: &str,
+        dashboard_transformer: Option<
+            Box<dyn crate::core::translator::response_transform::StreamingTransformer>,
+        >,
+        custom_tool_names: Option<&str>,
+        stop_on_response_completed: bool,
+    ) -> Self {
+        let mut translation_state = (dashboard_transformer.is_none() && source != target)
+            .then(crate::core::translator::registry::ResponseTransformState::default);
+        if let (Some(state), Some(names)) = (translation_state.as_mut(), custom_tool_names) {
+            if !names.is_empty() {
+                state.responses.state.insert(
+                    "customToolNames".to_string(),
+                    Value::String(names.to_string()),
+                );
+            }
+        }
         Self {
-            capture_sse_frames,
-            pending: Vec::new(),
+            framer: source
+                .text_stream_mode(Some(content_type))
+                .map(TextStreamFramer::new),
+            stop_on_response_completed,
             usage: None,
+            dashboard_transformer,
+            translation_state,
+            source,
+            target,
         }
     }
 
-    fn observe(&mut self, chunk: &[u8]) {
-        if let Some(usage) = extract_token_usage_from_bytes(chunk) {
-            self.usage = Some(usage);
+    fn feed(&mut self, chunk: &[u8]) -> DispatchBatch {
+        let Some(mut framer) = self.framer.take() else {
+            if let Some(usage) = extract_token_usage_from_bytes(chunk) {
+                self.usage = Some(usage);
+            }
+            let mut batch = DispatchBatch::default();
+            if let Some(transformer) = self.dashboard_transformer.as_mut() {
+                for line in
+                    transform_sse_stream(&Bytes::copy_from_slice(chunk), transformer.as_mut())
+                {
+                    if let Some(frame) = sse_frame_for_dashboard(&line) {
+                        batch.output.push(frame);
+                    }
+                }
+            } else if let Some(state) = self.translation_state.as_mut() {
+                match registry::global_registry().translate_response_payload(
+                    self.source,
+                    self.target,
+                    chunk,
+                    state,
+                ) {
+                    Ok(chunks) => append_translated_chunks(&mut batch.output, chunks),
+                    Err(error) => batch.error = Some(error),
+                }
+            }
+            return batch;
+        };
+
+        let mut batch = DispatchBatch::default();
+        let mut consumer_error = None;
+        let frame_result = framer.feed(chunk, |frame| {
+            if consumer_error.is_some() {
+                return;
+            }
+            if let Err(error) = self.consume_frame(frame, &mut batch) {
+                consumer_error = Some(error);
+            }
+        });
+        self.framer = Some(framer);
+        batch.error = consumer_error.or_else(|| frame_result.err().map(frame_error_to_stream));
+        batch
+    }
+
+    fn finish(&mut self) -> DispatchBatch {
+        let mut batch = DispatchBatch::default();
+        if let Some(mut framer) = self.framer.take() {
+            let mut consumer_error = None;
+            let frame_result = framer.finish(|frame| {
+                if consumer_error.is_some() {
+                    return;
+                }
+                if let Err(error) = self.consume_frame(frame, &mut batch) {
+                    consumer_error = Some(error);
+                }
+            });
+            self.framer = Some(framer);
+            batch.error = consumer_error.or_else(|| frame_result.err().map(frame_error_to_stream));
         }
-        if !self.capture_sse_frames {
-            return;
+        if batch.error.is_none() {
+            self.finish_transforms(&mut batch.output);
+        }
+        batch
+    }
+
+    fn finish_after_completed(&mut self) -> Vec<Bytes> {
+        let mut output = Vec::new();
+        self.finish_transforms(&mut output);
+        output
+    }
+
+    fn finish_transforms(&mut self, output: &mut Vec<Bytes>) {
+        if let Some(state) = self.translation_state.as_mut() {
+            let chunks = registry::global_registry().finish_stream(self.source, self.target, state);
+            append_translated_chunks(output, chunks);
+        }
+    }
+
+    fn consume_frame(
+        &mut self,
+        frame: TextStreamFrame<'_>,
+        batch: &mut DispatchBatch,
+    ) -> Result<(), StreamLimitError> {
+        if self.stop_on_response_completed && frame.event() == Some("response.completed") {
+            batch.response_completed = true;
+        }
+        // Native passthrough has no downstream parser, so parse once here for
+        // usage/completion observation. Translated/dashboard streams let their
+        // transformer parse the source payload and observe usage on the emitted
+        // OpenAI frames instead. A Responses stream without an `event:` field
+        // still needs one source parse to detect response.completed.
+        let dashboard_multiline_data = self.dashboard_transformer.is_some()
+            && frame
+                .payload()
+                .is_some_and(|payload| payload.contains('\n'));
+        let parse_source = dashboard_multiline_data
+            || (self.dashboard_transformer.is_none() && self.translation_state.is_none())
+            || (self.stop_on_response_completed && frame.event() != Some("response.completed"));
+        let parsed = parse_source
+            .then(|| frame.payload())
+            .flatten()
+            .and_then(|payload| serde_json::from_str::<Value>(payload).ok());
+        if let Some(value) = parsed.as_ref() {
+            if let Some(usage) = extract_token_usage_from_value(value) {
+                self.usage = Some(usage);
+            }
+            if self.stop_on_response_completed
+                && value.get("type").and_then(Value::as_str) == Some("response.completed")
+            {
+                batch.response_completed = true;
+            }
         }
 
-        self.pending.extend_from_slice(chunk);
-        while let Some((frame_end, separator_len)) = next_sse_frame(&self.pending) {
-            let frame = self.pending[..frame_end].to_vec();
-            self.pending.drain(..frame_end + separator_len);
-            for line in String::from_utf8_lossy(&frame).lines() {
-                let Some(payload) = line.trim().strip_prefix("data:").map(str::trim) else {
-                    continue;
-                };
-                if let Some(usage) = extract_token_usage_from_bytes(payload.as_bytes()) {
+        let output_start = batch.output.len();
+        if let Some(transformer) = self.dashboard_transformer.as_mut() {
+            batch.output.extend(transform_dashboard_frame(
+                &frame,
+                self.source,
+                parsed.as_ref(),
+                transformer.as_mut(),
+            ));
+        } else if let (Some(state), Some(payload)) =
+            (self.translation_state.as_mut(), frame.payload())
+        {
+            let chunks = registry::global_registry().translate_response_payload(
+                self.source,
+                self.target,
+                payload.as_bytes(),
+                state,
+            )?;
+            append_translated_chunks(&mut batch.output, chunks);
+        }
+        if !parse_source {
+            // Only inspect output produced for this frame. Re-scanning the
+            // whole transport-chunk batch here would make N coalesced events
+            // perform 1+2+...+N JSON parses.
+            for output in &batch.output[output_start..] {
+                if let Some(usage) = extract_token_usage_from_bytes(output) {
                     self.usage = Some(usage);
                 }
             }
         }
+        Ok(())
     }
 }
 
-fn next_sse_frame(buffer: &[u8]) -> Option<(usize, usize)> {
-    let lf = buffer.windows(2).position(|window| window == b"\n\n");
-    let crlf = buffer.windows(4).position(|window| window == b"\r\n\r\n");
-    match (lf, crlf) {
-        (Some(left), Some(right)) if left <= right => Some((left, 2)),
-        (Some(_), Some(right)) => Some((right, 4)),
-        (Some(left), None) => Some((left, 2)),
-        (None, Some(right)) => Some((right, 4)),
-        (None, None) => None,
+fn dashboard_transformer_for_format(
+    format: Format,
+) -> Option<Box<dyn crate::core::translator::response_transform::StreamingTransformer>> {
+    match format {
+        Format::Claude => transformer_for_provider("claude"),
+        Format::Gemini | Format::Vertex | Format::Antigravity => transformer_for_provider("gemini"),
+        Format::Ollama => transformer_for_provider("ollama"),
+        Format::CommandCode => transformer_for_provider("commandcode"),
+        Format::OpenAi
+        | Format::OpenAiResponses
+        | Format::OpenAiResponse
+        | Format::Codex
+        | Format::Kiro
+        | Format::Cursor => transformer_for_provider("openai"),
     }
 }
 
-fn responses_stream_completed(buffer: &mut String, chunk: &[u8]) -> bool {
-    buffer.push_str(&String::from_utf8_lossy(chunk));
-    if buffer.contains("\r\n") {
-        *buffer = buffer.replace("\r\n", "\n");
+fn frame_error_to_stream(error: FrameError) -> StreamLimitError {
+    StreamLimitError {
+        code: error.code(),
+        message: error.to_string(),
     }
+}
 
-    while let Some(end) = buffer.find("\n\n") {
-        let frame: String = buffer.drain(..end + 2).collect();
-        let mut completed = false;
-        for line in frame.lines() {
-            if line
-                .strip_prefix("event:")
-                .is_some_and(|event| event.trim() == "response.completed")
-            {
-                completed = true;
-                break;
-            }
-            if let Some(data) = line.strip_prefix("data:") {
-                completed = serde_json::from_str::<Value>(data.trim())
-                    .ok()
-                    .and_then(|value| value.get("type").and_then(Value::as_str).map(str::to_owned))
-                    .as_deref()
-                    == Some("response.completed");
-                if completed {
-                    break;
-                }
-            }
-        }
-        if completed {
-            return true;
+fn append_translated_chunks(output: &mut Vec<Bytes>, chunks: Vec<String>) {
+    for line in chunks {
+        if let Some(frame) = sse_frame_for_dashboard(&line) {
+            output.push(frame);
         }
     }
-    false
+}
+
+fn transform_dashboard_frame(
+    frame: &TextStreamFrame<'_>,
+    source: Format,
+    parsed_payload: Option<&Value>,
+    transformer: &mut dyn crate::core::translator::response_transform::StreamingTransformer,
+) -> Vec<Bytes> {
+    let metadata = if frame.is_sse() {
+        frame
+            .raw()
+            .lines()
+            .map(|line| line.strip_suffix('\r').unwrap_or(line))
+            .filter(|line| {
+                line.starts_with(':')
+                    || line.starts_with("event:")
+                    || line.starts_with("id:")
+                    || line.starts_with("retry:")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        String::new()
+    };
+    let Some(payload) = frame.payload() else {
+        return (!metadata.is_empty())
+            .then(|| Bytes::from(format!("{metadata}\n\n")))
+            .into_iter()
+            .collect();
+    };
+
+    // Legacy dashboard transformers consume framed SSE for the OpenAI/Claude/
+    // Gemini/Ollama families, but CommandCode consumes one bare JSON record.
+    // Do not parse+serialize here: the selected transformer is the sole JSON
+    // parser for translated dashboard traffic.
+    let normalized_payload = parsed_payload.and_then(|value| serde_json::to_string(value).ok());
+    let payload = normalized_payload.as_deref().unwrap_or(payload);
+    let input = if source == Format::CommandCode {
+        Bytes::copy_from_slice(payload.as_bytes())
+    } else {
+        Bytes::from(format!("data: {payload}\n\n"))
+    };
+    let mut output = transform_sse_stream(&input, transformer)
+        .into_iter()
+        .filter_map(|line| sse_frame_for_dashboard(&line))
+        .collect::<Vec<_>>();
+    if !metadata.is_empty() {
+        if let Some(first) = output.first_mut() {
+            let mut combined = Vec::with_capacity(metadata.len() + 1 + first.len());
+            combined.extend_from_slice(metadata.as_bytes());
+            combined.push(b'\n');
+            combined.extend_from_slice(first);
+            *first = Bytes::from(combined);
+        } else {
+            output.push(Bytes::from(format!("{metadata}\n\n")));
+        }
+    }
+    output
 }
 
 fn sse_frame_for_dashboard(line: &str) -> Option<Bytes> {
@@ -2893,53 +3057,6 @@ fn extract_dashboard_assistant_text_from_bytes(body: &[u8]) -> Option<String> {
     }
 }
 
-fn transform_dashboard_sse_chunk(
-    chunk: &Bytes,
-    transformer: &mut dyn crate::core::translator::response_transform::StreamingTransformer,
-    pending_text: &mut String,
-) -> Vec<String> {
-    pending_text.push_str(&String::from_utf8_lossy(chunk));
-    let mut ready_lines = Vec::new();
-
-    while let Some(newline_index) = pending_text.find('\n') {
-        let mut line = pending_text[..newline_index].to_string();
-        if line.ends_with('\r') {
-            line.pop();
-        }
-        pending_text.drain(..=newline_index);
-        if line.is_empty() {
-            continue;
-        }
-        ready_lines.extend(transform_sse_stream(&Bytes::from(line), transformer));
-    }
-
-    ready_lines
-}
-
-fn flush_dashboard_sse_chunk(
-    transformer: &mut dyn crate::core::translator::response_transform::StreamingTransformer,
-    pending_text: &mut String,
-) -> Vec<String> {
-    if pending_text.trim().is_empty() {
-        pending_text.clear();
-        return Vec::new();
-    }
-    let mut line = std::mem::take(pending_text);
-    if line.ends_with('\r') {
-        line.pop();
-    }
-    let pending_len = line.len();
-    let output = transform_sse_stream(&Bytes::from(line), transformer);
-    if output.is_empty() {
-        tracing::trace!(
-            target: "openproxy::chat::stream",
-            "flush_dashboard_sse_chunk: {} bytes of partial/invalid buffer content yielded no output lines",
-            pending_len,
-        );
-    }
-    output
-}
-
 fn build_proxied_response(
     status: StatusCode,
     headers: &reqwest::header::HeaderMap,
@@ -2987,6 +3104,10 @@ fn extract_token_usage_from_bytes(body: &[u8]) -> Option<TokenUsage> {
     let body = strip_sse_data_prefix(body);
     let value = serde_json::from_slice::<Value>(body).ok()?;
 
+    extract_token_usage_from_value(&value)
+}
+
+fn extract_token_usage_from_value(value: &Value) -> Option<TokenUsage> {
     let usage_obj = value
         .get("usage")
         .and_then(Value::as_object)
@@ -3055,11 +3176,11 @@ fn extract_token_usage_from_bytes(body: &[u8]) -> Option<TokenUsage> {
     // top level (e.g. Anthropic, some proxies). Only use this when at least
     // one token field is present to avoid creating a zero-filled entry for
     // responses that have no usage data at all.
-    let input = extract_u64_from_value(&value, "input_tokens");
-    let prompt = extract_u64_from_value(&value, "prompt_tokens");
-    let output = extract_u64_from_value(&value, "output_tokens");
-    let completion = extract_u64_from_value(&value, "completion_tokens");
-    let total = extract_u64_from_value(&value, "total_tokens");
+    let input = extract_u64_from_value(value, "input_tokens");
+    let prompt = extract_u64_from_value(value, "prompt_tokens");
+    let output = extract_u64_from_value(value, "output_tokens");
+    let completion = extract_u64_from_value(value, "completion_tokens");
+    let total = extract_u64_from_value(value, "total_tokens");
     if input + prompt + output + completion + total > 0 {
         return Some(TokenUsage {
             prompt_tokens: opt(prompt).or(opt(input)),
@@ -3067,11 +3188,11 @@ fn extract_token_usage_from_bytes(body: &[u8]) -> Option<TokenUsage> {
             completion_tokens: opt(completion).or(opt(output)),
             output_tokens: opt(output).filter(|_| completion == 0),
             total_tokens: opt(total),
-            reasoning_tokens: opt(extract_u64_from_value(&value, "reasoning_tokens")),
-            cached_tokens: opt(extract_u64_from_value(&value, "cached_tokens")),
-            cache_read_input_tokens: opt(extract_u64_from_value(&value, "cache_read_input_tokens")),
+            reasoning_tokens: opt(extract_u64_from_value(value, "reasoning_tokens")),
+            cached_tokens: opt(extract_u64_from_value(value, "cached_tokens")),
+            cache_read_input_tokens: opt(extract_u64_from_value(value, "cache_read_input_tokens")),
             cache_creation_input_tokens: opt(extract_u64_from_value(
-                &value,
+                value,
                 "cache_creation_input_tokens",
             )),
             extra: BTreeMap::new(),
@@ -3382,11 +3503,13 @@ mod tests {
     use super::{
         build_dashboard_sse_response, build_proxied_response, codex_models_support_search,
         codex_web_search_context_size, codex_web_search_is_injected,
-        mark_codex_web_search_injected, requests_codex_web_search, responses_stream_completed,
-        select_connection, select_connection_with_supporters, should_prefetch_message_images,
-        CodexWebSearchInjected,
+        mark_codex_web_search_injected, requests_codex_web_search, select_connection,
+        select_connection_with_supporters, should_prefetch_message_images, CodexWebSearchInjected,
+        StreamDispatch,
     };
     use crate::core::chat::RequestPlan;
+    use crate::core::translator::registry::Format;
+    use crate::core::translator::response_transform::OpenAiTransformer;
     use crate::server::codex_catalog::CodexModelMetadata;
     use crate::types::{AppDb, ProviderConnection, Settings};
 
@@ -3826,14 +3949,125 @@ mod tests {
 
     #[test]
     fn detects_fragmented_responses_completion_frame() {
-        let mut buffer = String::new();
-        assert!(!responses_stream_completed(
-            &mut buffer,
-            b"event: response.compl"
-        ));
-        assert!(responses_stream_completed(
-            &mut buffer,
-            b"eted\r\ndata: {\"type\":\"response.completed\"}\r\n\r\n: ping\r\n\r\n"
-        ));
+        let mut observer = StreamDispatch::new(
+            Format::OpenAiResponses,
+            Format::OpenAiResponses,
+            "text/event-stream",
+            None,
+            None,
+            true,
+        );
+        assert!(!observer.feed(b"event: response.compl").response_completed);
+        assert!(
+            observer
+                .feed(b"eted\r\ndata: {\"type\":\"response.completed\"}\r\n\r\n: ping\r\n\r\n")
+                .response_completed
+        );
+    }
+
+    #[test]
+    fn usage_and_dashboard_framing_survive_every_split() {
+        let fixture = b": ping\r\nevent: chunk\r\nid: 4\r\nretry: 250\r\ndata: {\"choices\":[],\r\ndata: \"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\r\n\r\n";
+        for split in 0..=fixture.len() {
+            let mut usage = StreamDispatch::new(
+                Format::OpenAi,
+                Format::OpenAi,
+                "text/event-stream",
+                None,
+                None,
+                false,
+            );
+            usage.feed(&fixture[..split]);
+            usage.feed(&fixture[split..]);
+            assert_eq!(
+                usage.usage.as_ref().and_then(|value| value.total_tokens),
+                Some(5)
+            );
+
+            let mut dashboard = StreamDispatch::new(
+                Format::OpenAi,
+                Format::OpenAi,
+                "text/event-stream",
+                Some(Box::new(OpenAiTransformer::new())),
+                None,
+                false,
+            );
+            let mut output = dashboard.feed(&fixture[..split]).output;
+            output.extend(dashboard.feed(&fixture[split..]).output);
+            let output = output
+                .iter()
+                .map(|bytes| String::from_utf8_lossy(bytes))
+                .collect::<String>();
+            assert!(output.contains("total_tokens"));
+            assert!(output.contains(": ping"));
+            assert!(output.contains("event: chunk"));
+            assert!(output.contains("id: 4"));
+            assert!(output.contains("retry: 250"));
+        }
+    }
+
+    #[test]
+    fn dashboard_line_dispatch_handles_split_ollama_ndjson_records() {
+        let fixture = concat!(
+            "{\"model\":\"llama\",\"message\":{\"content\":\"line-one\"},\"done\":false}\n",
+            "{\"model\":\"llama\",\"message\":{\"content\":\"line-two\"},\"done\":false}\n"
+        );
+        for split in 0..=fixture.len() {
+            let mut dashboard = StreamDispatch::new(
+                Format::Ollama,
+                Format::OpenAi,
+                "application/x-ndjson",
+                super::transformer_for_provider("ollama"),
+                None,
+                false,
+            );
+            let mut output = dashboard.feed(&fixture.as_bytes()[..split]).output;
+            output.extend(dashboard.feed(&fixture.as_bytes()[split..]).output);
+            let output = output
+                .iter()
+                .map(|bytes| String::from_utf8_lossy(bytes))
+                .collect::<String>();
+            assert!(output.contains("line-one"), "split {split}: {output}");
+            assert!(output.contains("line-two"), "split {split}: {output}");
+        }
+    }
+
+    #[test]
+    fn dashboard_dispatch_uses_resolved_wire_format() {
+        let gemini = b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"format-gemini\"}]}}]}\n\n";
+        for source in [Format::Gemini, Format::Vertex, Format::Antigravity] {
+            let mut dashboard = StreamDispatch::new(
+                source,
+                Format::OpenAi,
+                "text/event-stream",
+                super::dashboard_transformer_for_format(source),
+                None,
+                false,
+            );
+            let output = dashboard
+                .feed(gemini)
+                .output
+                .iter()
+                .map(|bytes| String::from_utf8_lossy(bytes))
+                .collect::<String>();
+            assert!(output.contains("format-gemini"), "{source:?}: {output}");
+        }
+
+        let commandcode = b"{\"type\":\"text-delta\",\"text\":\"format-commandcode\"}\n";
+        let mut dashboard = StreamDispatch::new(
+            Format::CommandCode,
+            Format::OpenAi,
+            "application/x-ndjson",
+            super::dashboard_transformer_for_format(Format::CommandCode),
+            None,
+            false,
+        );
+        let output = dashboard
+            .feed(commandcode)
+            .output
+            .iter()
+            .map(|bytes| String::from_utf8_lossy(bytes))
+            .collect::<String>();
+        assert!(output.contains("format-commandcode"), "{output}");
     }
 }

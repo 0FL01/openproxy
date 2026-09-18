@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C32",
+  "next_checkpoint": "C33",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c31_cargo_1.98.1",
+    "rust_verification": "passed_through_c32_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -401,7 +401,9 @@
           "tests/lean_proxy_context_c07.rs",
           "tests/lean_proxy_contract.rs",
           "contracts/lean-proxy.md",
-          "contracts/lean-proxy.json"
+          "contracts/lean-proxy.json",
+          "docs/CHECKPOINTS.json",
+          "docs/goals/2026-09-17-lean-proxy-plan.md"
         ],
         "separation": "AdvertisedModelLimits and advertised_model_limits now own client metadata. The temporary legacy_proxy_rejection_limit and legacy_proxy_input_limit names isolate the default heuristic policy for deletion in C08. Both metadata and rejection retain the exact pre-C07 values during this transition, so C08 can delete policy without changing OpenCode metadata.",
         "migration": "providerContextLimits retains its serialized map and u32 values. Missing and empty maps still normalize to four 500000 compatibility defaults; legacy opencode migrates to opencode-zen with or_insert; explicit and unknown persisted entries and custom model opencode metadata round-trip. Codex compatibility metadata is explicitly not claimed as a verified upstream limit.",
@@ -795,7 +797,9 @@
           "tests/lean_proxy_refresh_c16.rs",
           "tests/lean_proxy_contract.rs",
           "contracts/lean-proxy.md",
-          "contracts/lean-proxy.json"
+          "contracts/lean-proxy.json",
+          "docs/CHECKPOINTS.json",
+          "docs/goals/2026-09-17-lean-proxy-plan.md"
         ],
         "coordination": "Added an in-flight-only ConnectionRefreshCoordinator keyed by configured provider/connection identity. Credential generation is a SHA-256 digest over canonical authorization inputs; full tokens are never map keys. The active map is empty while idle and has no completed-result TTL cache.",
         "canonical_state": "The detached winner re-reads the canonical connection before provider I/O. A stale observed generation returns current credentials without refreshing. Persistence applies only if the canonical generation still matches; concurrent delete/recreate or rotation wins and is never overwritten.",
@@ -1734,7 +1738,7 @@
     {
       "id": "C32",
       "title": "Один инкрементальный bounded SSE framer",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C29",
         "C31"
@@ -1747,7 +1751,43 @@
       "change": "Сначала покрыть текущие правила framing, затем заменить повторные pending/to_vec/drain полным инкрементальным framer с scan cursor. Ограничивать размер незавершённого события и удерживаемого состояния, а не весь переданный stream. Использовать framing совместно для нужных observers, без двойного JSON parse одной и той же нагрузки, где это возможно.",
       "tests": "Каждая возможная граница chunk для небольших fixtures, UTF-8 split, LF/CRLF, multiline data, heartbeat/comment, несколько frames в chunk, frame без delimiter. Один байт за раз не даёт повторного полного сканирования. Малый tail не удерживает неограниченно большой backing allocation.",
       "acceptance": "Корректные native события передаются сразу; pending ограничен и нет квадратичного scan/copy. Full-message accumulator не замаскирован под framer.",
-      "rollback": "Внедрять по одному observer/adapter при необходимости; rollback не меняет wire contract."
+      "rollback": "Внедрять по одному observer/adapter при необходимости; rollback не меняет wire contract.",
+      "result": {
+        "completed": "2026-09-18",
+        "files": [
+          "src/core/stream_framing.rs",
+          "src/core/mod.rs",
+          "src/core/translator/registry.rs",
+          "src/core/translator/response/claude_to_openai.rs",
+          "src/core/translator/response/openai_responses.rs",
+          "src/server/api/chat.rs",
+          "src/server/api/compat.rs",
+          "src/server/api/v1_api_chat.rs",
+          "tests/lean_proxy_bounded_c29.rs",
+          "tests/lean_proxy_framer_c32.rs",
+          "tests/lean_proxy_contract.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json"
+        ],
+        "framer": "One bytes-first SseFramer plus the same bounded cursor in LineFramer enforce a 1 MiB default per incomplete event/line. OPENPROXY_MAX_SSE_FRAME_BYTES accepts positive integer overrides. checked_add and try_reserve precede growth; completed frames borrow the reusable buffer, scan position is monotonic, and disproportionate backing capacity is compacted around a tiny tail.",
+        "semantics": "LF and CRLF framing, arbitrary byte boundaries, split UTF-8, multiline data joined by newline, comments, event/id/retry, multiple frames, and one non-empty EOF tail are characterized. UTF-8 is checked only after event completion. Invalid UTF-8, arithmetic/capacity failure, and exact/+1 frame overflow are explicit errors. Complete output preceding a later error is delivered first and is invariant to whether both records share one transport chunk.",
+        "migration": "One source-aware TextStreamFramer dispatch per live chat body feeds usage/completion plus translation or dashboard normalization for both Reqwest and Hyper. SSE mode covers OpenAI, Claude, Responses/Codex, Gemini, Vertex, and Antigravity; Ollama uses line mode, and CommandCode selects actual executor SSE versus NDJSON framing. Responses/Messages compatibility adapters and /v1/api/chat share the same cursor implementation. Stateless and pivot stage-two translators receive complete payloads. Native Responses/Messages bypass compatibility conversion from explicit route-plan metadata and preserve exact LF/CRLF bytes. Codex preflight and binary Kiro/Cursor decoders remain separate.",
+        "failure_contract": "A framing failure on a collected or translated response before commitment returns structured 502 and cannot enter a fallback. Non-stream translation flushes delimiterless EOF state, and collected Responses validates the complete SSE body without marker sniffing. A live response emits all completed output followed by one terminal structured SSE/NDJSON error and stops without retry; native observer failure occurs only after the original bytes are yielded. Cancellation still drops the upstream body.",
+        "scope_boundaries": "C32 does not remove the forced-conversion raw SSE body retained by C33 and does not optimize Responses accumulator cloning owned by C34. The collected C33 parser therefore retains its C31 exact 1 MiB tool-argument contract until its incremental migration.",
+        "verification": [
+          "cargo test --test lean_proxy_framer_c32 --test lean_proxy_stream_state_c31 -- --nocapture: 19 passed",
+          "cargo test --lib core::chat::stream_to_json --all-features -- --nocapture: 25 passed",
+          "cargo test --lib core::translator::response --all-features -- --nocapture: 149 passed",
+          "cargo test --lib server::api::compat::tests --all-features -- --nocapture: 21 passed",
+          "cargo test --lib server::api::chat::tests --all-features -- --nocapture: 23 passed",
+          "cargo test --lib server::api::v1_api_chat::tests --all-features -- --nocapture: 5 passed",
+          "cargo test --lib --all-features -- --test-threads=1: 1220 passed",
+          "cargo clippy --all-targets --all-features: passed with exactly 3 pre-existing production style warnings",
+          "cargo fmt --all -- --check, JSON parse, and git diff --check: passed"
+        ],
+        "acceptance_evidence": "Deterministic tests cover every split point and one-byte chunks, linear scan counts, no-delimiter overflow, exact/+1, LF/CRLF, multiline fields, comments/event/id/retry, multiple events, split and invalid UTF-8, EOF tails, large-input bounded retention, and capacity compaction. Format coverage includes Gemini SSE, Ollama and CommandCode NDJSON, executor-wrapped CommandCode SSE, Claude-to-Responses/Codex and Responses-to-Gemini pivots, resolved-format dashboard normalization for Gemini/Vertex/Antigravity and CommandCode, dashboard SSE metadata plus NDJSON, and /v1/api/chat multiline SSE. Same-chunk valid-plus-overflow ordering matches split chunks across registry, compat, dashboard/chat, and Ollama compatibility paths. Full handlers prove native Responses/Claude CRLF byte identity, delimiterless collected translation, structured pre/post-commit overflow, held-EOF immediacy, and cancellation. Native compat bypass is disabled when proxy-injected web-search items require sanitization, and usage observation inspects only the newly emitted slice for each event rather than rescanning the whole chunk batch.",
+        "rollback": "Revert C32 runtime/tests/contract changes together or migrate one adapter back only as a diagnosed rollback. Do not merge raw SSE history removal or Responses accumulator changes into that rollback."
+      }
     },
     {
       "id": "C33",

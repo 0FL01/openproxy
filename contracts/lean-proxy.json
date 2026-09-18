@@ -528,6 +528,66 @@
     "c13_attempt_budget_changed": false,
     "post_commit_generation_retry_changed": false
   },
+  "incremental_sse_framing": {
+    "checkpoint": "C32",
+    "default_max_incomplete_event_bytes": 1048576,
+    "environment": "OPENPROXY_MAX_SSE_FRAME_BYTES",
+    "environment_values_must_be_positive_integers": true,
+    "limits_can_be_disabled": false,
+    "bytes_first": true,
+    "utf8_validation": "after_complete_frame",
+    "delimiters": [
+      "LF",
+      "CRLF"
+    ],
+    "multiline_data_join": "newline",
+    "fields_handled": [
+      "comments",
+      "data",
+      "event",
+      "id",
+      "retry"
+    ],
+    "eof_nonempty_tail_policy": "dispatch_once",
+    "checked_add_before_growth": true,
+    "fallible_reserve_before_growth": true,
+    "scan_cursor_amortized_linear": true,
+    "per_frame_to_vec": false,
+    "front_drain": false,
+    "tiny_tail_retains_large_capacity": false,
+    "sse_formats": [
+      "openai",
+      "claude",
+      "openai-responses",
+      "codex",
+      "gemini",
+      "vertex",
+      "antigravity"
+    ],
+    "line_formats": [
+      "ollama"
+    ],
+    "commandcode_framing": "actual_content_type_selects_executor_sse_or_ndjson_lines",
+    "one_live_source_dispatch_for_observation_and_transform": true,
+    "duplicate_live_incomplete_buffers": false,
+    "registry_text_translators_receive_complete_events": true,
+    "pivot_stage_receives_openai_event_payload_not_sse_envelope": true,
+    "completed_output_precedes_later_same_chunk_error": true,
+    "collected_nonstream_translation_flushes_eof": true,
+    "collected_responses_validated_without_marker_sniff": true,
+    "native_compat_bypass_uses_route_plan_formats": true,
+    "native_compat_bypass_preserves_required_search_sanitization": true,
+    "native_responses_and_messages_wire_identity": true,
+    "native_same_format_bytes_changed_by_observer": false,
+    "native_same_format_delivery_delayed_for_frame_completion": false,
+    "precommit_overflow": "structured_502_without_fallback",
+    "postcommit_overflow": "one_terminal_sse_error_then_stop",
+    "postcommit_generation_retry": false,
+    "codex_first_event_preflight_shared": false,
+    "kiro_cursor_binary_framing_shared": false,
+    "raw_sse_history_removal_owner": "C33",
+    "responses_accumulator_optimization_owner": "C34"
+  },
   "versions": {
     "opencode": "1.18.31",
     "custom_harness": "unknown"

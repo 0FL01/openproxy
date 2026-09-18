@@ -273,7 +273,7 @@ fn generation_collector_census_and_native_stream_guard() {
     let native = chat
         .split("async fn proxy_response_with_pending_tracking")
         .nth(1)
-        .and_then(|tail| tail.split("fn responses_stream_completed").next())
+        .and_then(|tail| tail.split("struct StreamDispatch").next())
         .expect("native streaming function source");
     assert!(native.contains("response.bytes_stream()"));
     let live_match = native

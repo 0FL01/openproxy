@@ -46,6 +46,35 @@ pub enum Format {
 }
 
 impl Format {
+    /// Incremental text framing used on this format's streaming wire. Cursor
+    /// and Kiro retain their protocol-specific binary framers.
+    pub fn text_stream_mode(
+        self,
+        content_type: Option<&str>,
+    ) -> Option<crate::core::stream_framing::TextStreamMode> {
+        use crate::core::stream_framing::TextStreamMode;
+
+        match self {
+            Self::Kiro | Self::Cursor => None,
+            Self::Ollama => Some(TextStreamMode::Lines),
+            Self::CommandCode => {
+                if content_type.is_some_and(|value| value.contains("text/event-stream")) {
+                    Some(TextStreamMode::Sse)
+                } else {
+                    Some(TextStreamMode::Lines)
+                }
+            }
+            Self::OpenAi
+            | Self::OpenAiResponses
+            | Self::OpenAiResponse
+            | Self::Claude
+            | Self::Gemini
+            | Self::Vertex
+            | Self::Codex
+            | Self::Antigravity => Some(TextStreamMode::Sse),
+        }
+    }
+
     /// Parse from string (used for registry key lookups).
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
@@ -117,6 +146,10 @@ pub type ResponseTransformFn = fn(chunk: &[u8], state: &mut ResponseTransformSta
 /// Each format has its own state variant tracked here.
 #[derive(Debug, Clone, Default)]
 pub struct ResponseTransformState {
+    /// Shared incremental source framer used by registry callers. The chat
+    /// stream dispatcher uses the same abstraction externally and calls the
+    /// payload-only transform entry point, so source bytes are scanned once.
+    pub text_framer: Option<crate::core::stream_framing::TextStreamFramer>,
     /// OpenAI SSE state
     pub openai: OpenAiResponseState,
     /// Anthropic SSE state
@@ -323,13 +356,10 @@ pub fn track_openai_accumulation(
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct OpenAiResponseState {
-    pub line_buffer: String,
-}
+pub struct OpenAiResponseState {}
 
 #[derive(Debug, Clone, Default)]
 pub struct AnthropicResponseState {
-    pub line_buffer: String,
     pub current_block_index: Option<usize>,
     pub text_block_open: bool,
     pub in_thinking: bool,
@@ -342,7 +372,6 @@ pub struct AnthropicResponseState {
 
 #[derive(Debug, Clone, Default)]
 pub struct GeminiResponseState {
-    pub line_buffer: String,
     pub current_part_index: usize,
     /// Accumulated tool call data: tool-call-index -> {id, name, arguments_buf}
     pub tool_calls_accum: serde_json::Map<String, Value>,
@@ -358,7 +387,6 @@ pub struct GeminiResponseState {
 
 #[derive(Debug, Clone, Default)]
 pub struct ResponsesResponseState {
-    pub buffer: String,
     pub seq: usize,
     pub func_names: std::collections::HashMap<usize, String>,
     pub func_call_ids: std::collections::HashMap<usize, String>,
@@ -379,7 +407,6 @@ pub struct CursorResponseState {
 
 #[derive(Debug, Clone, Default)]
 pub struct OllamaResponseState {
-    pub line_buffer: String,
     pub message_idx: usize,
     /// Generic state used by ollama_to_openai_response.
     pub state: std::collections::HashMap<String, Value>,
@@ -565,6 +592,12 @@ pub struct TranslationRegistry {
     response_transforms: HashMap<(Format, Format), ResponseTransformFn>,
 }
 
+#[derive(Debug, Default)]
+pub struct ResponseTranslationBatch {
+    pub chunks: Vec<String>,
+    pub error: Option<StreamLimitError>,
+}
+
 impl TranslationRegistry {
     pub fn new() -> Self {
         Self::default()
@@ -725,6 +758,107 @@ impl TranslationRegistry {
         chunk: &[u8],
         state: &mut ResponseTransformState,
     ) -> Result<Vec<String>, StreamLimitError> {
+        let mut batch = self.translate_response_batch(source, target, chunk, state);
+        if let Some(error) = batch.error {
+            if batch.chunks.is_empty() {
+                return Err(error);
+            }
+            batch.chunks.push(stream_error_event(&error));
+        }
+        Ok(batch.chunks)
+    }
+
+    /// Frame source bytes and retain both completed output and a later terminal
+    /// framing/semantic error. This is needed when one transport chunk contains
+    /// a valid event followed by an oversized incomplete event.
+    pub fn translate_response_batch(
+        &self,
+        source: Format,
+        target: Format,
+        chunk: &[u8],
+        state: &mut ResponseTransformState,
+    ) -> ResponseTranslationBatch {
+        if let Some(error) = state.failure.clone() {
+            return ResponseTranslationBatch {
+                chunks: Vec::new(),
+                error: Some(error),
+            };
+        }
+
+        let no_pending_frame = state
+            .text_framer
+            .as_ref()
+            .is_none_or(|framer| framer.pending_len() == 0);
+        let complete_bare_json = no_pending_frame
+            && serde_json::from_slice::<Value>(chunk)
+                .is_ok_and(|value| value.is_object() || value.is_array());
+        let Some(mode) = source.text_stream_mode(None) else {
+            return match self.translate_response_payload(source, target, chunk, state) {
+                Ok(chunks) => ResponseTranslationBatch {
+                    chunks,
+                    error: None,
+                },
+                Err(error) => ResponseTranslationBatch {
+                    chunks: Vec::new(),
+                    error: Some(error),
+                },
+            };
+        };
+        if source == target || complete_bare_json {
+            return match self.translate_response_payload(source, target, chunk, state) {
+                Ok(chunks) => ResponseTranslationBatch {
+                    chunks,
+                    error: None,
+                },
+                Err(error) => ResponseTranslationBatch {
+                    chunks: Vec::new(),
+                    error: Some(error),
+                },
+            };
+        }
+
+        if state
+            .text_framer
+            .as_ref()
+            .is_none_or(|framer| framer.mode() != mode)
+        {
+            state.text_framer = Some(crate::core::stream_framing::TextStreamFramer::new(mode));
+        }
+        let mut framer = state
+            .text_framer
+            .take()
+            .expect("text framer initialized above");
+        let mut chunks = Vec::new();
+        let mut transform_error = None;
+        let frame_result = framer.feed(chunk, |frame| {
+            if transform_error.is_some() {
+                return;
+            }
+            let Some(payload) = frame.payload() else {
+                return;
+            };
+            match self.translate_response_payload(source, target, payload.as_bytes(), state) {
+                Ok(output) => chunks.extend(output),
+                Err(error) => transform_error = Some(error),
+            }
+        });
+        state.text_framer = Some(framer);
+        let error = transform_error.or_else(|| frame_result.err().map(frame_limit_error));
+        if let Some(error) = error.as_ref() {
+            state.failure = Some(error.clone());
+        }
+        ResponseTranslationBatch { chunks, error }
+    }
+
+    /// Translate one complete source payload. Callers that own a shared source
+    /// framer use this entry point to avoid duplicate scan/buffer state.
+    pub fn translate_response_payload(
+        &self,
+        source: Format,
+        target: Format,
+        chunk: &[u8],
+        state: &mut ResponseTransformState,
+    ) -> Result<Vec<String>, StreamLimitError> {
         if source == target {
             return Ok(vec![String::from_utf8_lossy(chunk).to_string()]);
         }
@@ -770,11 +904,7 @@ impl TranslationRegistry {
             if let Some(transform) = self.response_transforms.get(&(Format::OpenAi, target)) {
                 let mut final_results = Vec::new();
                 for mid in &intermediates {
-                    let converted = transform(mid.as_bytes(), state);
-                    if let Some(error) = state.failure.clone() {
-                        return Err(error);
-                    }
-                    final_results.extend(converted);
+                    transform_openai_intermediate(mid, state, *transform, &mut final_results)?;
                 }
                 if !final_results.is_empty() {
                     return Ok(final_results);
@@ -801,6 +931,37 @@ impl TranslationRegistry {
         }
         if source == target {
             return Vec::new();
+        }
+        let mut output = Vec::new();
+        if state
+            .text_framer
+            .as_ref()
+            .is_some_and(|framer| framer.pending_len() > 0)
+        {
+            let mut framer = state
+                .text_framer
+                .take()
+                .expect("pending text framer exists");
+            let mut transform_error = None;
+            let frame_result = framer.finish(|frame| {
+                if transform_error.is_some() {
+                    return;
+                }
+                let Some(payload) = frame.payload() else {
+                    return;
+                };
+                match self.translate_response_payload(source, target, payload.as_bytes(), state) {
+                    Ok(chunks) => output.extend(chunks),
+                    Err(error) => transform_error = Some(error),
+                }
+            });
+            state.text_framer = Some(framer);
+            let error = transform_error.or_else(|| frame_result.err().map(frame_limit_error));
+            if let Some(error) = error {
+                state.failure = Some(error.clone());
+                output.push(stream_error_event(&error));
+                return output;
+            }
         }
         if let Some(transform) = self.response_transforms.get(&(source, target)) {
             // Only the kiro binary EventStream transform has buffered state
@@ -831,7 +992,7 @@ impl TranslationRegistry {
                         ];
                     }
                 };
-                let mut out = Vec::new();
+                let mut out = output;
                 for c in chunks {
                     out.push(format!(
                         "data: {}\n\n",
@@ -856,8 +1017,57 @@ impl TranslationRegistry {
                 return out;
             }
         }
-        Vec::new()
+        output
     }
+}
+
+fn frame_limit_error(error: crate::core::stream_framing::FrameError) -> StreamLimitError {
+    StreamLimitError {
+        code: error.code(),
+        message: error.to_string(),
+    }
+}
+
+fn stream_error_event(error: &StreamLimitError) -> String {
+    format!(
+        "data: {}\n\n",
+        serde_json::json!({
+            "error": {
+                "message": error.message,
+                "type": "upstream_error",
+                "code": error.code,
+            }
+        })
+    )
+}
+
+fn transform_openai_intermediate(
+    intermediate: &str,
+    state: &mut ResponseTransformState,
+    transform: ResponseTransformFn,
+    output: &mut Vec<String>,
+) -> Result<(), StreamLimitError> {
+    if serde_json::from_str::<Value>(intermediate)
+        .is_ok_and(|value| value.is_object() || value.is_array())
+    {
+        output.extend(transform(intermediate.as_bytes(), state));
+        return state.failure.clone().map_or(Ok(()), Err);
+    }
+
+    let mut framer = crate::core::stream_framing::SseFramer::new();
+    let mut apply = |event: crate::core::stream_framing::SseEvent<'_>| {
+        if state.failure.is_some() {
+            return;
+        }
+        if let Some(payload) = event.data() {
+            output.extend(transform(payload.as_bytes(), state));
+        }
+    };
+    framer
+        .feed(intermediate.as_bytes(), &mut apply)
+        .map_err(frame_limit_error)?;
+    framer.finish(apply).map_err(frame_limit_error)?;
+    state.failure.clone().map_or(Ok(()), Err)
 }
 
 /// Apply normalization hooks that are always run regardless of translation.

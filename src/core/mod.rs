@@ -7,6 +7,7 @@ pub mod executor;
 pub mod h2c;
 pub mod model;
 pub mod proxy;
+pub mod stream_framing;
 pub mod translator;
 pub mod usage;
 pub mod utils;

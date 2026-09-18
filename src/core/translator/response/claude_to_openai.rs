@@ -460,113 +460,50 @@ fn track_claude_accumulation(
     Ok(())
 }
 
-/// Registry-compatible wrapper: parses raw SSE/JSON bytes, calls the typed
+/// Registry-compatible wrapper: parses one complete event payload, calls the typed
 /// `claude_to_openai_response`, and serialises results back to SSE lines.
-///
-/// Buffers partial SSE frames across chunks (Anthropic events arrive as
-/// `event: …\ndata: …\n\n`). Signature matches `registry::ResponseTransformFn`.
+/// Framing is owned by the registry or chat stream's shared text dispatcher.
 pub fn claude_to_openai_streaming(
     chunk: &[u8],
     state: &mut crate::core::translator::registry::ResponseTransformState,
 ) -> Vec<String> {
-    // Append into line buffer so partial frames spanning TCP chunks still parse.
-    state
-        .anthropic
-        .line_buffer
-        .push_str(&String::from_utf8_lossy(chunk));
-
-    // Fast path: entire chunk is a bare JSON event (no SSE framing).
-    // Only when buffer is exactly this chunk (nothing left over from prior).
-    if state.anthropic.line_buffer.len() <= chunk.len() {
-        if let Ok(val) = serde_json::from_slice::<Value>(chunk) {
-            // Non-streaming Claude Messages JSON body (type=message) — convert
-            // via the non-streaming helper so OpenAI clients get chat.completion.
-            if val.get("type").and_then(|t| t.as_str()) == Some("message")
-                && val.get("content").is_some()
-            {
-                state.anthropic.line_buffer.clear();
-                let mut body = val;
-                crate::core::translator::response::non_streaming::claude_to_openai_non_streaming(
-                    &mut body,
-                );
-                return vec![format!(
-                    "data: {}\n\n",
-                    serde_json::to_string(&body).unwrap_or_default()
-                )];
-            }
-            if val.get("type").is_some() {
-                state.anthropic.line_buffer.clear();
-                if let Err(error) = track_claude_accumulation(state, &val) {
-                    return state.fail(error);
-                }
-                let inner = &mut state.anthropic.claude_state;
-                let values = claude_to_openai_response(&val, inner);
-                let arithmetic_failure = inner.remove("_streamArithmeticFailure").is_some();
-                if arithmetic_failure {
-                    return state.fail(
-                        crate::core::translator::limits::StreamLimitError::arithmetic("tool index"),
-                    );
-                }
-                return values
-                    .into_iter()
-                    .map(|v| {
-                        format!(
-                            "data: {}\n\n",
-                            serde_json::to_string(&v).unwrap_or_default()
-                        )
-                    })
-                    .collect();
-            }
-        }
+    if chunk == b"[DONE]" {
+        return vec!["data: [DONE]\n\n".to_string()];
     }
-
-    let mut out = Vec::new();
-    // Drain complete SSE frames delimited by blank lines.
-    while let Some(frame_end) = state.anthropic.line_buffer.find("\n\n") {
-        let frame = state.anthropic.line_buffer[..frame_end].to_string();
-        state.anthropic.line_buffer.drain(..frame_end + 2);
-
-        let mut data_payload: Option<String> = None;
-        for line in frame.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with(':') {
-                continue;
-            }
-            if let Some(rest) = trimmed.strip_prefix("data:") {
-                let payload = rest.trim();
-                if payload == "[DONE]" {
-                    out.push("data: [DONE]\n\n".to_string());
-                    data_payload = None;
-                    break;
-                }
-                data_payload = Some(payload.to_string());
-            }
-            // event: lines are ignored — Claude event type lives in JSON `type`.
-        }
-
-        if let Some(payload) = data_payload {
-            if let Ok(val) = serde_json::from_str::<Value>(&payload) {
-                if let Err(error) = track_claude_accumulation(state, &val) {
-                    return state.fail(error);
-                }
-                let inner = &mut state.anthropic.claude_state;
-                let values = claude_to_openai_response(&val, inner);
-                let arithmetic_failure = inner.remove("_streamArithmeticFailure").is_some();
-                if arithmetic_failure {
-                    return state.fail(
-                        crate::core::translator::limits::StreamLimitError::arithmetic("tool index"),
-                    );
-                }
-                for v in values {
-                    out.push(format!(
-                        "data: {}\n\n",
-                        serde_json::to_string(&v).unwrap_or_default()
-                    ));
-                }
-            }
-        }
+    let Ok(val) = serde_json::from_slice::<Value>(chunk) else {
+        return Vec::new();
+    };
+    if val.get("type").and_then(|value| value.as_str()) == Some("message")
+        && val.get("content").is_some()
+    {
+        let mut body = val;
+        crate::core::translator::response::non_streaming::claude_to_openai_non_streaming(&mut body);
+        return vec![format!(
+            "data: {}\n\n",
+            serde_json::to_string(&body).unwrap_or_default()
+        )];
     }
-    out
+    if val.get("type").is_none() {
+        return Vec::new();
+    }
+    if let Err(error) = track_claude_accumulation(state, &val) {
+        return state.fail(error);
+    }
+    let inner = &mut state.anthropic.claude_state;
+    let values = claude_to_openai_response(&val, inner);
+    if inner.remove("_streamArithmeticFailure").is_some() {
+        return state
+            .fail(crate::core::translator::limits::StreamLimitError::arithmetic("tool index"));
+    }
+    values
+        .into_iter()
+        .map(|value| {
+            format!(
+                "data: {}\n\n",
+                serde_json::to_string(&value).unwrap_or_default()
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]
