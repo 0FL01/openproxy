@@ -23,6 +23,7 @@ export default function ApplicationLogDrawer({ log, onClose }: Props) {
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Field label="Status" value={log.status.toUpperCase()} />
             <Field label="HTTP status" value={log.statusCode} />
+            {log.errorKind && <Field label="Error kind" value={log.errorKind} />}
             <Field label="Request ID" value={log.requestId} />
             <Field label="Route" value={log.route} />
             <Field label="Model" value={log.model} />

@@ -4,6 +4,7 @@ export interface ApplicationLog {
   route: string;
   status: "pending" | "success" | "error" | "interrupted" | string;
   statusCode?: number;
+  errorKind?: string;
   model: string;
   provider: string;
   durationMs: number;

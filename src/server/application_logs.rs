@@ -430,6 +430,24 @@ impl RequestLogContext {
     }
 }
 
+/// Closed error-cause vocabulary for failed attempt rows (C43).
+/// Metadata only: fixed enum strings, never free text, never bodies.
+/// Passed as an explicit literal at each `finish("error")` branch —
+/// never inferred from status codes.
+pub mod error_kind {
+    /// Upstream rejected credentials or the token is dead (401/403,
+    /// refreshable OAuth failure observed on the attempt).
+    pub const AUTH_FAILURE: &str = "auth_failure";
+    /// Upstream or proxy rate limit (429).
+    pub const RATE_LIMITED: &str = "rate_limited";
+    /// Client/upstream rejected the request shape (400/413/422).
+    pub const INVALID_REQUEST: &str = "invalid_request";
+    /// Upstream transport error, 5xx, stall, or non-SSE garbage.
+    pub const UPSTREAM_FAILURE: &str = "upstream_failure";
+    /// Local failure: translation, framing, body collection/stream limits.
+    pub const LOCAL_FAILURE: &str = "local_failure";
+}
+
 pub struct AttemptLog {
     db: Arc<Db>,
     id: String,
@@ -445,11 +463,12 @@ impl AttemptLog {
         status: &'static str,
         status_code: Option<u16>,
         tokens: Option<&TokenUsage>,
+        error_kind: Option<&'static str>,
     ) {
         if self.finished.load(Ordering::Acquire) {
             return;
         }
-        let data = self.finished_data(status_code, tokens);
+        let data = self.finished_data(status_code, tokens, error_kind);
         if self.lean {
             // Lean: enqueue the finish without waiting for SQLite.
             try_enqueue_lean(
@@ -466,9 +485,17 @@ impl AttemptLog {
         self.finished.store(true, Ordering::Release);
     }
 
-    fn finished_data(&self, status_code: Option<u16>, tokens: Option<&TokenUsage>) -> Value {
+    fn finished_data(
+        &self,
+        status_code: Option<u16>,
+        tokens: Option<&TokenUsage>,
+        error_kind: Option<&'static str>,
+    ) -> Value {
         let mut data = self.data.as_object().cloned().unwrap_or_else(Map::new);
         data.insert("statusCode".into(), json!(status_code));
+        if let Some(kind) = error_kind {
+            data.insert("errorKind".into(), json!(kind));
+        }
         data.insert(
             "durationMs".into(),
             json!(self.started.elapsed().as_millis()),
@@ -498,7 +525,7 @@ impl Drop for AttemptLog {
         // task. Enqueue best-effort through the same bounded pipeline in both
         // modes; overflow is counted explicitly instead of growing. The writer
         // is a runtime-independent thread, so no runtime check is needed.
-        let data = self.finished_data(None, None);
+        let data = self.finished_data(None, None, None);
         try_enqueue_lean(
             self.db.clone(),
             LogOpKind::Finish {
@@ -572,6 +599,8 @@ struct RequestLogRecord {
     model: String,
     status: String,
     status_code: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error_kind: Option<String>,
     duration_ms: u64,
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
@@ -678,6 +707,11 @@ fn request_log_from_row(row: request_repo::RequestDetailRow) -> RequestLogRecord
             .get("statusCode")
             .and_then(Value::as_u64)
             .and_then(|value| u16::try_from(value).ok()),
+        error_kind: row
+            .data
+            .get("errorKind")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         duration_ms: row
             .data
             .get("durationMs")
@@ -729,5 +763,47 @@ mod tests {
         let serialized = value.to_string();
         assert!(!serialized.contains("secret"));
         assert!(!serialized.contains("internal"));
+    }
+
+    #[test]
+    fn request_log_exposes_error_kind() {
+        let with_kind = request_log_from_row(request_repo::RequestDetailRow {
+            id: "request-2".into(),
+            timestamp: "2026-09-18T12:00:00Z".into(),
+            provider: Some("codex".into()),
+            model: Some("gpt-5.6-luna".into()),
+            connection_id: None,
+            status: Some("error".into()),
+            api_key_id: Some("key-1".into()),
+            api_key_name: Some("OpenCode".into()),
+            correlation_id: None,
+            data: json!({
+                "route": "cx/gpt-5.6-luna",
+                "statusCode": 502,
+                "errorKind": error_kind::UPSTREAM_FAILURE,
+                "durationMs": 1200,
+            }),
+        });
+        let value = serde_json::to_value(with_kind).unwrap();
+        assert_eq!(value["errorKind"], error_kind::UPSTREAM_FAILURE);
+
+        let without_kind = request_log_from_row(request_repo::RequestDetailRow {
+            id: "request-3".into(),
+            timestamp: "2026-09-18T12:00:00Z".into(),
+            provider: Some("codex".into()),
+            model: Some("gpt-5.6-luna".into()),
+            connection_id: None,
+            status: Some("success".into()),
+            api_key_id: Some("key-1".into()),
+            api_key_name: Some("OpenCode".into()),
+            correlation_id: None,
+            data: json!({
+                "route": "cx/gpt-5.6-luna",
+                "statusCode": 200,
+                "durationMs": 800,
+            }),
+        });
+        let value = serde_json::to_value(without_kind).unwrap();
+        assert!(value.get("errorKind").is_none());
     }
 }

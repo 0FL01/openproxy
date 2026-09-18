@@ -681,8 +681,18 @@
       "durationMs",
       "inputTokens",
       "outputTokens",
-      "cachedTokens"
+      "cachedTokens",
+      "errorKind"
     ],
+    "error_kind_checkpoint": "C43",
+    "error_kind_values": [
+      "auth_failure",
+      "rate_limited",
+      "invalid_request",
+      "upstream_failure",
+      "local_failure"
+    ],
+    "error_kind_policy": "explicit_literal_per_error_branch_never_inferred_from_status",
     "payload_bodies_stored": false,
     "config_and_credentials_always_durable": true
   },

@@ -112,7 +112,7 @@ async fn lean_start_returns_without_waiting_for_slow_sqlite() {
     let id = {
         // AttemptLog holds a private id; recover it via flush + listing.
         // Finish immediately so the row becomes observable after the gate.
-        attempt.finish("success", Some(200), None).await;
+        attempt.finish("success", Some(200), None, None).await;
         assert!(
             request_log_flush_with_budget(Duration::from_secs(5)).await,
             "queue must drain after the SQLite gate releases"
@@ -163,7 +163,7 @@ async fn durable_start_waits_for_sqlite() {
         .await
         .expect("durable start completes")
         .expect("durable row inserted");
-    attempt.finish("success", Some(200), None).await;
+    attempt.finish("success", Some(200), None, None).await;
 }
 
 #[tokio::test]
@@ -188,7 +188,7 @@ async fn lean_start_finish_preserves_order_and_metadata_only() {
         cache_creation_input_tokens: None,
         extra: Default::default(),
     };
-    attempt.finish("success", Some(200), Some(&usage)).await;
+    attempt.finish("success", Some(200), Some(&usage), None).await;
     assert!(
         request_log_flush_with_budget(Duration::from_secs(5)).await,
         "lean finish must drain"
@@ -331,7 +331,7 @@ async fn lean_event_bytes_are_bounded() {
         .start_attempt(&long_provider, &long_model)
         .await
         .expect("oversized fields truncate, not fail");
-    attempt.finish("success", Some(200), None).await;
+    attempt.finish("success", Some(200), None, None).await;
     assert!(
         request_log_flush_with_budget(Duration::from_secs(5)).await,
         "truncated event must drain"

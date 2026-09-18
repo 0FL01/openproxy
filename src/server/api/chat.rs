@@ -37,7 +37,7 @@ use crate::core::utils::stream_flags::resolve_stream_flags;
 use crate::oauth::token_refresh::{
     connection_credential_generation, CONNECTION_REFRESH_COORDINATOR,
 };
-use crate::server::application_logs::{AttemptLog, RequestLogContext};
+use crate::server::application_logs::{error_kind, AttemptLog, RequestLogContext};
 use crate::server::auth::{extract_api_key, require_api_key, require_api_key_with_reload};
 use crate::server::state::AppState;
 use crate::types::{AppDb, ProviderConnection, TokenUsage};
@@ -1623,11 +1623,6 @@ async fn forward_with_provider_fallback(
                 let body_retry_after = upstream_body
                     .as_deref()
                     .and_then(crate::core::account_fallback::parse_retry_after_from_body);
-                if let Some(attempt_log) = attempt_log {
-                    attempt_log
-                        .finish("error", Some(status.as_u16()), None)
-                        .await;
-                }
                 let retry_after = header_retry_after.or(body_retry_after);
                 let refreshable_auth_failure =
                     is_refreshable_auth_failure(status, upstream_body.as_deref());
@@ -1637,6 +1632,22 @@ async fn forward_with_provider_fallback(
                     retry_after,
                     upstream_body,
                 });
+                if let Some(attempt_log) = attempt_log {
+                    // C43: explicit error-kind literal per branch — never
+                    // inferred from the status code.
+                    let error_kind = if refreshable_auth_failure {
+                        error_kind::AUTH_FAILURE
+                    } else if matches!(status.as_u16(), 429) {
+                        error_kind::RATE_LIMITED
+                    } else if matches!(status.as_u16(), 400 | 413 | 422) {
+                        error_kind::INVALID_REQUEST
+                    } else {
+                        error_kind::UPSTREAM_FAILURE
+                    };
+                    attempt_log
+                        .finish("error", Some(status.as_u16()), None, Some(error_kind))
+                        .await;
+                }
 
                 // A body-invalid request is account-independent. Replaying it
                 // across every configured credential only multiplies an
@@ -1687,7 +1698,15 @@ async fn forward_with_provider_fallback(
             }
             Err(error) => {
                 if let Some(attempt_log) = attempt_log {
-                    attempt_log.finish("error", Some(error.status), None).await;
+                    let error_kind = match error.status {
+                        401 | 403 => error_kind::AUTH_FAILURE,
+                        429 => error_kind::RATE_LIMITED,
+                        400 | 413 | 422 => error_kind::INVALID_REQUEST,
+                        _ => error_kind::UPSTREAM_FAILURE,
+                    };
+                    attempt_log
+                        .finish("error", Some(error.status), None, Some(error_kind))
+                        .await;
                 }
                 last_error = Some(error);
                 // Local/upstream payload-limit failures are body-dependent, not
@@ -1757,7 +1776,7 @@ async fn proxy_dashboard_sse(
     let token_usage = extract_token_usage_from_bytes(&body_bytes);
     if let Some(attempt_log) = attempt_log {
         attempt_log
-            .finish("success", Some(status.as_u16()), token_usage.as_ref())
+            .finish("success", Some(status.as_u16()), token_usage.as_ref(), None)
             .await;
     }
 
@@ -2100,7 +2119,7 @@ async fn proxy_sse_to_json_response(
     let usage = extract_token_usage_from_bytes(&out);
     if let Some(attempt_log) = attempt_log {
         attempt_log
-            .finish("success", Some(status.as_u16()), usage.as_ref())
+            .finish("success", Some(status.as_u16()), usage.as_ref(), None)
             .await;
     }
     let resp = Response::builder()
@@ -2182,7 +2201,12 @@ async fn proxy_response(
                 Err(error) => {
                     if let Some(attempt_log) = attempt_log {
                         attempt_log
-                            .finish("error", Some(StatusCode::BAD_GATEWAY.as_u16()), None)
+                            .finish(
+                                "error",
+                                Some(StatusCode::BAD_GATEWAY.as_u16()),
+                                None,
+                                Some(error_kind::LOCAL_FAILURE),
+                            )
                             .await;
                     }
                     return with_cors_response(
@@ -2210,7 +2234,12 @@ async fn proxy_response(
             if let Some(error) = state.failure.clone() {
                 if let Some(attempt_log) = attempt_log {
                     attempt_log
-                        .finish("error", Some(StatusCode::BAD_GATEWAY.as_u16()), None)
+                        .finish(
+                            "error",
+                            Some(StatusCode::BAD_GATEWAY.as_u16()),
+                            None,
+                            Some(error_kind::LOCAL_FAILURE),
+                        )
                         .await;
                 }
                 return with_cors_response(
@@ -2255,7 +2284,7 @@ async fn proxy_response(
 
     if let Some(attempt_log) = attempt_log {
         attempt_log
-            .finish("success", Some(status.as_u16()), token_usage.as_ref())
+            .finish("success", Some(status.as_u16()), token_usage.as_ref(), None)
             .await;
     }
 
@@ -2406,7 +2435,12 @@ async fn proxy_response_with_pending_tracking(
         );
         if let Some(attempt_log) = attempt_log.take() {
             attempt_log
-                .finish("error", Some(StatusCode::BAD_GATEWAY.as_u16()), None)
+                .finish(
+                    "error",
+                    Some(StatusCode::BAD_GATEWAY.as_u16()),
+                    None,
+                    Some(error_kind::UPSTREAM_FAILURE),
+                )
                 .await;
         }
         let err = json!({
@@ -2463,7 +2497,7 @@ async fn proxy_response_with_pending_tracking(
                             );
                             let usage = dispatch.usage.clone();
                             if let Some(log) = attempt_log.take() {
-                                log.finish("error", Some(502), usage.as_ref()).await;
+                                log.finish("error", Some(502), usage.as_ref(), Some(error_kind::UPSTREAM_FAILURE)).await;
                             }
                             yield Ok::<Bytes, std::io::Error>(Bytes::from(write_streaming_error(
                                 "Upstream SSE stream stalled",
@@ -2484,7 +2518,7 @@ async fn proxy_response_with_pending_tracking(
                             if let Some(error) = batch.error {
                                 let usage = dispatch.usage.clone();
                                 if let Some(log) = attempt_log.take() {
-                                    log.finish("error", Some(502), usage.as_ref()).await;
+                                    log.finish("error", Some(502), usage.as_ref(), Some(error_kind::LOCAL_FAILURE)).await;
                                 }
                                 yield Ok::<Bytes, std::io::Error>(Bytes::from(write_streaming_error_with_code(
                                     &error.message, "upstream_error", Some(error.code),
@@ -2497,7 +2531,7 @@ async fn proxy_response_with_pending_tracking(
                                 }
                                 let usage = dispatch.usage.clone();
                                 if let Some(log) = attempt_log.take() {
-                                    log.finish("success", Some(status.as_u16()), usage.as_ref()).await;
+                                    log.finish("success", Some(status.as_u16()), usage.as_ref(), None).await;
                                 }
                                 return;
                             }
@@ -2506,7 +2540,7 @@ async fn proxy_response_with_pending_tracking(
                         Ok(Err(_)) => {
                             let usage = dispatch.usage.clone();
                             if let Some(log) = attempt_log.take() {
-                                log.finish("error", Some(502), usage.as_ref()).await;
+                                log.finish("error", Some(502), usage.as_ref(), Some(error_kind::UPSTREAM_FAILURE)).await;
                             }
                             yield Ok::<Bytes, std::io::Error>(Bytes::from(write_streaming_error(
                                 "Upstream stream error",
@@ -2523,7 +2557,7 @@ async fn proxy_response_with_pending_tracking(
                 if let Some(error) = batch.error {
                     let usage = dispatch.usage.clone();
                     if let Some(log) = attempt_log.take() {
-                        log.finish("error", Some(502), usage.as_ref()).await;
+                        log.finish("error", Some(502), usage.as_ref(), Some(error_kind::LOCAL_FAILURE)).await;
                     }
                     yield Ok::<Bytes, std::io::Error>(Bytes::from(write_streaming_error_with_code(
                         &error.message, "upstream_error", Some(error.code),
@@ -2532,7 +2566,7 @@ async fn proxy_response_with_pending_tracking(
                 }
                 let usage = dispatch.usage.clone();
                 if let Some(log) = attempt_log.take() {
-                    log.finish("success", Some(status.as_u16()), usage.as_ref()).await;
+                    log.finish("success", Some(status.as_u16()), usage.as_ref(), None).await;
                 }
             };
             Body::from_stream(stream)
@@ -2564,7 +2598,7 @@ async fn proxy_response_with_pending_tracking(
                             );
                             let usage = dispatch.usage.clone();
                             if let Some(log) = attempt_log.take() {
-                                log.finish("error", Some(502), usage.as_ref()).await;
+                                log.finish("error", Some(502), usage.as_ref(), Some(error_kind::UPSTREAM_FAILURE)).await;
                             }
                             yield Ok::<Bytes, std::io::Error>(Bytes::from(write_streaming_error(
                                 "Upstream SSE stream stalled",
@@ -2588,7 +2622,7 @@ async fn proxy_response_with_pending_tracking(
                                 if let Some(error) = batch.error {
                                     let usage = dispatch.usage.clone();
                                     if let Some(log) = attempt_log.take() {
-                                        log.finish("error", Some(502), usage.as_ref()).await;
+                                        log.finish("error", Some(502), usage.as_ref(), Some(error_kind::LOCAL_FAILURE)).await;
                                     }
                                     yield Ok::<Bytes, std::io::Error>(Bytes::from(write_streaming_error_with_code(
                                         &error.message, "upstream_error", Some(error.code),
@@ -2601,7 +2635,7 @@ async fn proxy_response_with_pending_tracking(
                                     }
                                     let usage = dispatch.usage.clone();
                                     if let Some(log) = attempt_log.take() {
-                                        log.finish("success", Some(status.as_u16()), usage.as_ref()).await;
+                                        log.finish("success", Some(status.as_u16()), usage.as_ref(), None).await;
                                     }
                                     return;
                                 }
@@ -2610,7 +2644,7 @@ async fn proxy_response_with_pending_tracking(
                         Err(_) => {
                             let usage = dispatch.usage.clone();
                             if let Some(log) = attempt_log.take() {
-                                log.finish("error", Some(502), usage.as_ref()).await;
+                                log.finish("error", Some(502), usage.as_ref(), Some(error_kind::UPSTREAM_FAILURE)).await;
                             }
                             yield Ok::<Bytes, std::io::Error>(Bytes::from(write_streaming_error(
                                 "Upstream stream error",
@@ -2627,7 +2661,7 @@ async fn proxy_response_with_pending_tracking(
                 if let Some(error) = batch.error {
                     let usage = dispatch.usage.clone();
                     if let Some(log) = attempt_log.take() {
-                        log.finish("error", Some(502), usage.as_ref()).await;
+                        log.finish("error", Some(502), usage.as_ref(), Some(error_kind::LOCAL_FAILURE)).await;
                     }
                     yield Ok::<Bytes, std::io::Error>(Bytes::from(write_streaming_error_with_code(
                         &error.message, "upstream_error", Some(error.code),
@@ -2636,7 +2670,7 @@ async fn proxy_response_with_pending_tracking(
                 }
                 let usage = dispatch.usage.clone();
                 if let Some(log) = attempt_log.take() {
-                    log.finish("success", Some(status.as_u16()), usage.as_ref()).await;
+                    log.finish("success", Some(status.as_u16()), usage.as_ref(), None).await;
                 }
             };
             Body::from_stream(stream)
@@ -3308,7 +3342,12 @@ async fn collected_body_failure_response(
 ) -> Response {
     if let Some(attempt_log) = attempt_log {
         attempt_log
-            .finish("error", Some(StatusCode::BAD_GATEWAY.as_u16()), None)
+            .finish(
+                "error",
+                Some(StatusCode::BAD_GATEWAY.as_u16()),
+                None,
+                Some(error_kind::LOCAL_FAILURE),
+            )
             .await;
     }
     json_error_response(
@@ -3323,7 +3362,12 @@ async fn stream_limit_failure_response(
 ) -> Response {
     if let Some(attempt_log) = attempt_log {
         attempt_log
-            .finish("error", Some(StatusCode::BAD_GATEWAY.as_u16()), None)
+            .finish(
+                "error",
+                Some(StatusCode::BAD_GATEWAY.as_u16()),
+                None,
+                Some(error_kind::LOCAL_FAILURE),
+            )
             .await;
     }
     with_cors_response(

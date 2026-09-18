@@ -124,7 +124,7 @@ export default function ApplicationLogsClient() {
               {loading && logs.length === 0 ? <tr><td colSpan={8} className="p-10 text-center text-text-muted">Loading logs…</td></tr> :
                logs.length === 0 ? <tr><td colSpan={8} className="p-10 text-center text-text-muted">No application logs yet.</td></tr> :
                logs.map((log) => <tr key={log.requestId} onClick={() => setSelected(log)} className="cursor-pointer border-b border-border/60 transition-colors hover:bg-primary/5">
-                 <td className="p-4"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(log.status)}`}>{log.status === "pending" ? "LIVE" : log.status.toUpperCase()}</span></td>
+                 <td className="p-4"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(log.status)}`}>{log.status === "pending" ? "LIVE" : log.status.toUpperCase()}</span>{log.status === "error" && log.errorKind && <div className="mt-1 font-mono text-xs text-text-muted">{log.errorKind}</div>}</td>
                   <td className="max-w-[240px] p-4"><div className="truncate font-mono text-text-main">{log.model}</div></td>
                   <td className="p-4 text-text-main">{log.provider || "—"}</td><td className="p-4 font-mono text-text-main">{log.route || "—"}</td>
                   <td className="p-4 text-text-main"><div className="font-medium">{log.apiKeyName || "—"}</div>{log.apiKeyId && <div className="mt-1 max-w-[180px] truncate font-mono text-xs text-text-muted">{log.apiKeyId}</div>}</td>
