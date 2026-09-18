@@ -1,4 +1,5 @@
 pub mod admin_items;
+pub mod admission;
 mod auth;
 pub mod chat;
 pub mod cli_tools;
@@ -141,6 +142,14 @@ pub fn routes(state: AppState) -> Router<AppState> {
             "/v1/v1/responses/compact",
             post(compat::responses_compact).options(compat::cors_options),
         )
+        // C36: admission runs outside the body limit/handler so overload is
+        // refused before JSON extraction; the permit is held for the whole
+        // response body via extensions. Health/admin routes are separate and
+        // never take a permit.
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            admission::admit_llm_request,
+        ))
         .layer(DefaultBodyLimit::max(LLM_BODY_LIMIT_BYTES));
 
     // ── PROTECTED: valid API key required ──
@@ -190,9 +199,17 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .merge(tags::routes())
         .merge(translator::routes())
         .merge(oauth::routes())
-        .route(
-            "/api/dashboard/chat/completions",
-            post(chat::dashboard_chat_completions)
+        .merge(
+            Router::new()
+                .route(
+                    "/api/dashboard/chat/completions",
+                    post(chat::dashboard_chat_completions),
+                )
+                // C36: same early admission as the public LLM routes.
+                .route_layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    admission::admit_llm_request,
+                ))
                 .layer(DefaultBodyLimit::max(LLM_BODY_LIMIT_BYTES)),
         )
         .route("/api/providers", get(list_providers_api))

@@ -10,6 +10,7 @@ use crate::core::model::models_dev::ModelsDevCatalog;
 use crate::db::Db;
 use crate::oauth::antigravity_onboarding::AntigravityOnboardingCoordinator;
 use crate::oauth::pending::PendingFlowStore;
+use crate::server::api::admission::LlmAdmission;
 use crate::server::api::oauth::{CodexProxyState, XaiProxyState, ZedProxyState};
 use crate::server::api::quota_auto_ping::QuotaAutoPingLifecycle;
 use crate::server::auth::login_limiter::LoginLimiter;
@@ -76,6 +77,9 @@ pub struct AppState {
     pub codex_models: Arc<CodexModelCatalog>,
     pub antigravity_onboarding: Arc<AntigravityOnboardingCoordinator>,
     pub quota_auto_ping: Arc<QuotaAutoPingLifecycle>,
+    /// C36 early admission: caps concurrently active LLM generations before
+    /// JSON extraction. Health/admin routes never take a permit.
+    pub llm_admission: Arc<LlmAdmission>,
 }
 
 impl AppState {
@@ -102,6 +106,7 @@ impl AppState {
             codex_models: Arc::new(CodexModelCatalog::default()),
             antigravity_onboarding: Arc::new(AntigravityOnboardingCoordinator::new()),
             quota_auto_ping: Arc::new(QuotaAutoPingLifecycle::new()),
+            llm_admission: Arc::new(LlmAdmission::from_env()),
         }
     }
 

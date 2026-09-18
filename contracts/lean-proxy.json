@@ -651,5 +651,30 @@
     ],
     "payload_bodies_stored": false,
     "config_and_credentials_always_durable": true
+  },
+  "generation_admission": {
+    "checkpoint": "C36",
+    "max_active_generations_default": 64,
+    "max_active_env": "OPENPROXY_MAX_ACTIVE_GENERATIONS",
+    "admission_wait_default_ms": 0,
+    "admission_wait_env": "OPENPROXY_ADMISSION_WAIT_MS",
+    "admission_point": "middleware_before_json_extraction",
+    "permit_held_until": "response_body_eof_or_drop",
+    "permit_release_on": [
+      "success",
+      "error",
+      "client_cancel_before_headers",
+      "client_cancel_after_headers",
+      "upstream_timeout"
+    ],
+    "overload_status": 429,
+    "overload_code": "admission_queue_full",
+    "overload_retry_after_secs": 1,
+    "overload_body_read": false,
+    "health_admin_take_permit": false,
+    "non_post_takes_permit": false,
+    "total_duration_timeout_on_streams": false,
+    "request_body_limit_bytes": 33554432,
+    "overload_counted_as_memory_optimization": false
   }
 }
