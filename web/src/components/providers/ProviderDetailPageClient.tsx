@@ -92,7 +92,6 @@ export default function ProviderDetailPageClient() {
   const [suggestedModels, setSuggestedModels] = useState([]);
   const [autoPing, setAutoPing] = useState<{ enabled: boolean; connections: Record<string, boolean> }>({ enabled: false, connections: {} });
   const [autoPingSaving, setAutoPingSaving] = useState(false);
-  const [showAgRiskModal, setShowAgRiskModal] = useState(false);
   const [oneByOneRunning, setOneByOneRunning] = useState(false);
   const [oneByOneStopping, setOneByOneStopping] = useState(false);
   const [oneByOneCurrentConnectionId, setOneByOneCurrentConnectionId] = useState<string | null>(null);
@@ -101,7 +100,6 @@ export default function ProviderDetailPageClient() {
   const stopOneByOneRef = useRef(false);
   const { copied, copy } = useCopyToClipboard();
   const notify = useNotificationStore();
-  const AG_RISK_STORAGE_KEY = "ag_risk_confirmed";
   const [deleteConnTarget, setDeleteConnTarget] = useState<any>(null);
   const [deletingConn, setDeletingConn] = useState<boolean>(false);
   const [deleteNodeTarget, setDeleteNodeTarget] = useState<{ name: string; type: string } | null>(null);
@@ -402,13 +400,6 @@ export default function ProviderDetailPageClient() {
   };
 
   const triggerOAuthConnection = () => {
-    if (providerId === "antigravity" && typeof window !== "undefined") {
-      const confirmed = window.localStorage.getItem(AG_RISK_STORAGE_KEY) === "true";
-      if (!confirmed) {
-        setShowAgRiskModal(true);
-        return;
-      }
-    }
     if (isOAuth) {
       openOAuthConnection();
       return;
@@ -428,14 +419,6 @@ export default function ProviderDetailPageClient() {
       return;
     }
     triggerApiKeyConnection();
-  };
-
-  const handleAgRiskConfirm = () => {
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(AG_RISK_STORAGE_KEY, "true");
-    }
-    setShowAgRiskModal(false);
-    openOAuthConnection();
   };
 
   const handleRunOneByOneTest = async () => {
@@ -1789,17 +1772,6 @@ export default function ProviderDetailPageClient() {
         loading={bulkDeleting}
       />
 
-      {/* Antigravity risk confirmation — gate OAuth until user acknowledges */}
-      <ConfirmModal
-        isOpen={showAgRiskModal}
-        onClose={() => setShowAgRiskModal(false)}
-        onConfirm={handleAgRiskConfirm}
-        title="Risk Notice"
-        message={providerInfo?.deprecationNotice || "This provider is designed exclusively for its official IDE. Using it with other tools may result in account restrictions or bans."}
-        confirmText="I Understand, Continue"
-        cancelText="Cancel"
-        variant="danger"
-      />
     </div>
   );
 }

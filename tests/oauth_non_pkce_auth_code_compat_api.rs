@@ -180,7 +180,6 @@ async fn antigravity_exchange_matches_openproxy_and_saves_connection() {
         .and(path("/userinfo"))
         .and(query_param("alt", "json"))
         .and(header("authorization", "Bearer antigravity-access"))
-        .and(header("x-request-source", "local"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "email": "antigravity@example.com"
         })))
@@ -242,19 +241,21 @@ async fn antigravity_exchange_matches_openproxy_and_saves_connection() {
     assert_eq!(
         load_request
             .headers
-            .get("x-request-source")
-            .and_then(|value| value.to_str().ok()),
-        Some("local")
+            .get("user-agent")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or(""),
+        "antigravity/cli/1.1.5 (aidev_client; os_type=darwin; arch=arm64; auth_method=consumer)"
     );
+    assert!(load_request.headers.get("x-goog-api-client").is_none());
+    assert!(load_request.headers.get("client-metadata").is_none());
+    assert!(load_request.headers.get("x-request-source").is_none());
     let load_body: serde_json::Value =
         serde_json::from_slice(&load_request.body).expect("load request body");
     assert_eq!(
         load_body,
         json!({
             "metadata": {
-                "ideType": "IDE_UNSPECIFIED",
-                "platform": "PLATFORM_UNSPECIFIED",
-                "pluginType": "GEMINI"
+                "ideType": "ANTIGRAVITY"
             }
         })
     );
@@ -333,29 +334,22 @@ async fn antigravity_project_discovery_failure_is_saved_explicitly() {
         .await
         .expect("Antigravity exchange response");
     let (status, body) = response_json(response).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["success"], true);
+    // CLI hard-cut: empty project after loadCodeAssist failure → fail fast,
+    // no degraded connection is persisted.
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        body.get("error").is_some(),
+        "expected error body, got {body}"
+    );
 
     let snapshot = state.db.snapshot();
-    let connection = snapshot
-        .provider_connections
-        .iter()
-        .find(|connection| connection.provider == "antigravity")
-        .expect("saved Antigravity connection");
-    assert!(connection.project_id.is_none());
-    assert_eq!(connection.test_status.as_deref(), Some("error"));
-    assert_eq!(
-        connection.last_error.as_deref(),
-        Some("Antigravity project discovery failed with HTTP 503 Service Unavailable")
-    );
-    assert!(connection.last_error_at.is_some());
-    assert_eq!(
-        connection.access_token.as_deref(),
-        Some("antigravity-error-access")
-    );
-    assert_eq!(
-        connection.refresh_token.as_deref(),
-        Some("antigravity-error-refresh")
+    assert!(
+        snapshot
+            .provider_connections
+            .iter()
+            .find(|connection| connection.provider == "antigravity")
+            .is_none(),
+        "failed CLI discovery must not persist a connection"
     );
 }
 

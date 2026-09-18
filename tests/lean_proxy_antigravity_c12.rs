@@ -120,7 +120,7 @@ async fn errors_preserve_body_headers_endpoint_and_one_attempt() {
         );
         let requests = upstream.requests().await;
         assert_eq!(
-            requests[0].path, "/alternate/v1internal:generateContent",
+            requests[0].path, "/alternate/v1internal:streamGenerateContent",
             "configured endpoint was not used for case {name}"
         );
         upstream.shutdown().await;

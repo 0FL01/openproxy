@@ -11,21 +11,11 @@ use crate::types::ProviderConnection;
 
 /// Read the project id from canonical connection metadata.
 ///
-/// The typed field is authoritative.  The provider-specific fallbacks remain
-/// readable for non-destructive compatibility with imported legacy data.
+/// Hard-cut: only the typed `project_id` field is authoritative.
+/// Legacy `providerSpecificData` fallbacks were IDE-era imports and are no
+/// longer readable (old IDE connections must reconnect via CLI).
 pub fn antigravity_project_id(connection: &ProviderConnection) -> Option<String> {
     trimmed(connection.project_id.as_deref())
-        .or_else(|| provider_string(connection, "projectId"))
-        .or_else(|| provider_string(connection, "project"))
-}
-
-fn provider_string(connection: &ProviderConnection, key: &str) -> Option<String> {
-    trimmed(
-        connection
-            .provider_specific_data
-            .get(key)
-            .and_then(Value::as_str),
-    )
 }
 
 fn trimmed(value: Option<&str>) -> Option<String> {
@@ -57,7 +47,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn canonical_field_precedes_preserved_legacy_values() {
+    fn canonical_field_is_only_source() {
         let connection = ProviderConnection {
             project_id: Some(" canonical ".into()),
             provider_specific_data: BTreeMap::from([
@@ -79,7 +69,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_values_remain_readable_without_state() {
+    fn legacy_values_are_no_longer_readable() {
         let project_id = ProviderConnection {
             provider_specific_data: BTreeMap::from([("projectId".into(), json!(" p-id "))]),
             ..Default::default()
@@ -89,8 +79,8 @@ mod tests {
             ..Default::default()
         };
 
-        assert_eq!(antigravity_project_id(&project_id).as_deref(), Some("p-id"));
-        assert_eq!(antigravity_project_id(&project).as_deref(), Some("p-short"));
+        assert!(antigravity_project_id(&project_id).is_none());
+        assert!(antigravity_project_id(&project).is_none());
         assert!(antigravity_project_id(&ProviderConnection::default()).is_none());
     }
 

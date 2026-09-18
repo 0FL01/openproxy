@@ -20,69 +20,26 @@ pub mod github_copilot {
     pub const API_VERSION: &str = "2025-04-01";
 }
 
-// ─── Antigravity Cloud Code enums ─────────────────────────────────────────
+// ─── Antigravity CLI (AGY) — IDE removed, CLI-only ──────────────────────────
+// Donor: omnirouter open-sse/services/antigravityHeaders.ts +
+// antigravityVersion.ts (CLI fallback 1.1.5). No version feed/TTL in MVP,
+// no IDE profile, no compat.
 
-#[allow(non_camel_case_types)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum IdeType {
-    Unspecified = 0,
-    Jetski = 10,
-    Antigravity = 9,
-    Plugins = 7,
-}
+pub const AGY_CLI_VERSION: &str = "1.1.5";
 
-#[allow(non_camel_case_types)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum AgPlatform {
-    Unspecified = 0,
-    DarwinAmd64 = 1,
-    DarwinArm64 = 2,
-    LinuxAmd64 = 3,
-    LinuxArm64 = 4,
-    WindowsAmd64 = 5,
-}
-
-#[allow(non_camel_case_types)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum AgPluginType {
-    Unspecified = 0,
-    CloudCode = 1,
-    Gemini = 2,
-}
-
-/// Best-effort detection of the current host's `Platform` enum value.
-/// Returns [`AgPlatform::Unspecified`] on unknown OS/arch combinations.
-pub fn current_platform() -> AgPlatform {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("macos", "aarch64") => AgPlatform::DarwinArm64,
-        ("macos", _) => AgPlatform::DarwinAmd64,
-        ("linux", "aarch64") => AgPlatform::LinuxArm64,
-        ("linux", _) => AgPlatform::LinuxAmd64,
-        ("windows", _) => AgPlatform::WindowsAmd64,
-        _ => AgPlatform::Unspecified,
-    }
-}
-
-/// Antigravity advertised User-Agent for chat / stream requests.
-/// Mirrors ANTAGRAVITY_IDE_VERSION in `open-sse/providers/shared.js:81-83`.
-pub fn ag_chat_user_agent() -> String {
+/// Antigravity CLI advertised User-Agent for chat / stream requests.
+/// Pinned darwin/arm64 per donor (#8098), not host OS/ARCH.
+pub fn agy_cli_user_agent() -> String {
     format!(
-        "antigravity/2.11.0 {}/{}",
-        std::env::consts::OS,
-        std::env::consts::ARCH
+        "antigravity/cli/{AGY_CLI_VERSION} (aidev_client; os_type=darwin; arch=arm64; auth_method=consumer)"
     )
 }
 
-/// Antigravity advertised User-Agent for the platform handshake.
-pub fn ag_platform_user_agent() -> String {
-    format!(
-        "antigravity/1.104.0 {}/{}",
-        std::env::consts::OS,
-        std::env::consts::ARCH
-    )
+/// Native loadCodeAssist body metadata for the CLI profile.
+pub fn agy_load_metadata() -> serde_json::Value {
+    serde_json::json!({
+        "ideType": "ANTIGRAVITY",
+    })
 }
 
 // ─── Anti-loop / cloaking ────────────────────────────────────────────────
@@ -100,29 +57,18 @@ pub mod cloud_code_api {
     pub const ONBOARD_USER: &str = "https://cloudcode-pa.googleapis.com/v1internal:onboardUser";
 }
 
-/// Build the headers Cloud Code Assist expects on `loadCodeAssist`.
+/// Build the headers Cloud Code Assist expects on `loadCodeAssist` (CLI profile).
 pub fn load_code_assist_headers() -> serde_json::Value {
-    let metadata = json!({
-        "ideType": IdeType::Antigravity as u8,
-        "platform": current_platform() as u8,
-        "pluginType": AgPluginType::Gemini as u8,
-    });
     json!({
         "Content-Type": "application/json",
-        "User-Agent": "google-api-nodejs-client/9.15.1",
-        "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
-        "Client-Metadata": serde_json::to_string(&metadata).unwrap_or_default(),
+        "User-Agent": agy_cli_user_agent(),
     })
 }
 
 /// Same metadata Cloud Code Assist reads from the headers, but as a JSON
-/// object the caller can embed in a request body.
+/// object the caller can embed in a request body (CLI profile).
 pub fn load_code_assist_metadata() -> serde_json::Value {
-    json!({
-        "ideType": IdeType::Antigravity as u8,
-        "platform": current_platform() as u8,
-        "pluginType": AgPluginType::Gemini as u8,
-    })
+    agy_load_metadata()
 }
 
 // ─── Token refresh lead times (proactive renewal) ────────────────────────

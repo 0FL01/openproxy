@@ -8,8 +8,7 @@
 //! - Antigravity uses Gemini's request shape (`request.contents/tools/...`),
 //!   not OpenAI's. This executor expects the body to already be in that
 //!   shape (the request translator pipeline does the conversion).
-//! - A per-connection session id is derived statelessly via [`derive_session_id`]
-//!   so prompt caching survives without process-global retained state.
+//! - A fresh CLI session id is generated per request (donor parity).
 //! - Tool function names are sanitised to Gemini's regex
 //!   `[a-zA-Z_][a-zA-Z0-9_.:\-]{0,63}`.
 //! - The `cleanJSONSchemaForAntigravity` schema-cleaning step from 9router
@@ -21,16 +20,13 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
+use rand::RngCore;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{json, Map, Value};
-use sha2::{Digest, Sha256};
 
-use crate::core::config::app_constants::{
-    ag_chat_user_agent, INTERNAL_REQUEST_HEADER_NAME, INTERNAL_REQUEST_HEADER_VALUE,
-};
+use crate::core::config::app_constants::agy_cli_user_agent;
 use crate::core::proxy::ProxyTarget;
 use crate::core::utils::antigravity_project::antigravity_project_id;
-use crate::core::utils::session_manager::derive_session_id;
 use crate::types::{ProviderConnection, ProviderNode};
 
 use super::{ClientPool, TransportKind, UpstreamResponse};
@@ -45,93 +41,24 @@ pub const ANTIGRAVITY_BASE_URL: &str = "https://daily-cloudcode-pa.googleapis.co
 /// asks for; matches the upstream JS `MAX_ANTIGRAVITY_OUTPUT_TOKENS` (antigravity.js:21).
 const MAX_ANTIGRAVITY_OUTPUT_TOKENS: u64 = 64_000;
 
-/// Regex for a client-supplied IDE request id that we should preserve
-/// (`agent/{conversation}/{timestamp}/{trajectory}/{step}`). Mirrors JS
-/// `ANTIGRAVITY_IDE_REQUEST_ID_RE`.
-fn matches_ide_request_id(request_id: &str) -> bool {
-    let mut parts = request_id.split('/');
-    match (
-        parts.next(),
-        parts.next(),
-        parts.next(),
-        parts.next(),
-        parts.next(),
-        parts.next(),
-    ) {
-        (Some("agent"), Some(_), Some(ts), Some(_), Some(_), None) => {
-            ts.chars().all(|c| c.is_ascii_digit())
-        }
-        _ => false,
-    }
-}
-
-/// Deterministic UUID v5-style from a seed string, matching JS
-/// `uuidFromSeed` (antigravity.js:91-97): SHA-256(seed) → first 16 bytes →
-/// set version (5) and variant (RFC 4122) bits → hyphenated hex.
-fn uuid_from_seed(seed: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(seed.as_bytes());
-    let digest = hasher.finalize();
-    let mut bytes = [0u8; 16];
-    bytes.copy_from_slice(&digest[..16]);
-    bytes[6] = (bytes[6] & 0x0f) | 0x50; // version 5
-    bytes[8] = (bytes[8] & 0x3f) | 0x80; // RFC 4122 variant
-    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    format!(
-        "{}-{}-{}-{}-{}",
-        &hex[0..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..32]
-    )
-}
-
-/// Build the `requestId` for the Antigravity request envelope. Mirrors JS
-/// `buildIdeRequestId` (antigravity.js:99-110). Preserves a client-supplied
-/// `agent/...` id; otherwise derives one from the session.
-fn build_ide_request_id(
-    body: &Value,
-    request: &Value,
-    credentials: &ProviderConnection,
-    model: &str,
-    request_type: &str,
-) -> String {
-    let client_id = body.get("requestId").and_then(Value::as_str).unwrap_or("");
-    if matches_ide_request_id(client_id) {
-        return client_id.to_string();
-    }
-
-    let session_id = request
-        .get("sessionId")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            body.get("request")
-                .and_then(|r| r.get("sessionId"))
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-        })
-        .or_else(|| credentials.email.as_deref().filter(|s| !s.is_empty()))
-        .unwrap_or("anonymous");
-
-    let conversation_id = uuid_from_seed(&format!("antigravity:conversation:{session_id}"));
-    let trajectory_id = uuid_from_seed(&format!(
-        "antigravity:trajectory:{session_id}:{model}:{request_type}"
-    ));
-    let content_count = request
-        .get("contents")
-        .and_then(Value::as_array)
-        .map(|a| a.len())
-        .unwrap_or(1);
-    // JS `Math.max(1, contentCount * 2 - 1)` — guard the underflow when
-    // contentCount is 0 (i64 so the -1 stays in range).
-    let step = std::cmp::max(1, (content_count as i64) * 2 - 1);
+/// Build the `requestId` for the Antigravity CLI request envelope.
+/// Donor: `generateAntigravityRequestId` — always fresh `agent/{ms}/{rand4hex}`.
+fn build_cli_request_id() -> String {
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    format!("agent/{conversation_id}/{now_ms}/{trajectory_id}/{step}")
+    let mut bytes = [0u8; 4];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    format!("agent/{now_ms}/{}", hex::encode(bytes))
+}
+
+/// Build a fresh CLI `sessionId`. Donor: random `-{0..9e18}` per request.
+fn build_cli_session_id() -> String {
+    let mut bytes = [0u8; 8];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    let value = u64::from_be_bytes(bytes) % 9_000_000_000_000_000_000u64;
+    format!("-{value}")
 }
 
 #[derive(Clone)]
@@ -211,34 +138,33 @@ impl AntigravityExecutor {
         &self.pool
     }
 
-    /// Build the Antigravity URL.
-    pub fn build_url(stream: bool) -> String {
-        Self::build_url_from_base(ANTIGRAVITY_BASE_URL, stream)
+    /// Build the Antigravity CLI URL (always streaming — donor parity:
+    /// unary `generateContent` 400s on some models, chatCore converts SSE→JSON).
+    pub fn build_url(_stream: bool) -> String {
+        Self::build_url_from_base(ANTIGRAVITY_BASE_URL, true)
     }
 
-    fn build_url_from_base(base_url: &str, stream: bool) -> String {
-        let action = if stream {
-            "streamGenerateContent?alt=sse"
-        } else {
-            "generateContent"
-        };
-        format!("{}/v1internal:{action}", base_url.trim_end_matches('/'))
+    fn build_url_from_base(base_url: &str, _stream: bool) -> String {
+        format!(
+            "{}/v1internal:streamGenerateContent?alt=sse",
+            base_url.trim_end_matches('/')
+        )
     }
 
     fn request_url(&self, stream: bool) -> String {
+        let _ = stream;
         let configured_base = self
             .provider_node
             .as_ref()
             .and_then(|node| node.base_url.as_deref())
             .map(str::trim)
             .filter(|base_url| !base_url.is_empty());
-        Self::build_url_from_base(configured_base.unwrap_or(ANTIGRAVITY_BASE_URL), stream)
+        Self::build_url_from_base(configured_base.unwrap_or(ANTIGRAVITY_BASE_URL), true)
     }
 
     fn build_headers(
         access_token: &str,
-        stream: bool,
-        session_id: Option<&str>,
+        project_id: &str,
     ) -> Result<HeaderMap, AntigravityExecutorError> {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -246,55 +172,28 @@ impl AntigravityExecutor {
         let auth = format!("Bearer {access_token}");
         headers.insert(AUTHORIZATION, HeaderValue::from_str(&auth)?);
 
-        let ua = ag_chat_user_agent();
+        // CLI identity only: pinned darwin/arm64, no X-Goog-Api-Client,
+        // no Client-Metadata, no proxy/fingerprint headers upstream.
+        let ua = agy_cli_user_agent();
         headers.insert("User-Agent", HeaderValue::from_str(&ua)?);
+        if !project_id.trim().is_empty() {
+            headers.insert(
+                "x-goog-user-project",
+                HeaderValue::from_str(project_id.trim())?,
+            );
+        }
+        headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
         headers.insert(
-            INTERNAL_REQUEST_HEADER_NAME,
-            HeaderValue::from_static(INTERNAL_REQUEST_HEADER_VALUE),
+            "Accept-Encoding",
+            HeaderValue::from_static("gzip, deflate, br"),
         );
-
-        if let Some(sid) = session_id {
-            if !sid.is_empty() {
-                headers.insert("X-Machine-Session-Id", HeaderValue::from_str(sid)?);
-            }
-        }
-
-        if stream {
-            headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
-        } else {
-            headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
-        }
 
         Ok(headers)
     }
 
-    /// Build the Client-Metadata + api-client headers that Antigravity's
-    /// Cloud Code endpoint expects. These are sent alongside the standard
-    /// auth headers produced by [`build_headers`].
-    ///
-    /// - `User-Agent: google-api-nodejs-client/9.15.1`
-    /// - `X-Goog-Api-Client: google-cloud-sdk vscode_cloudshelleditor/0.1`
-    /// - `Client-Metadata: {"ideType":9,"platform":<enum>,"pluginType":2}`
-    pub fn build_antigravity_headers() -> Result<HeaderMap, AntigravityExecutorError> {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "User-Agent",
-            HeaderValue::from_static("google-api-nodejs-client/9.15.1"),
-        );
-        headers.insert(
-            "X-Goog-Api-Client",
-            HeaderValue::from_static("google-cloud-sdk vscode_cloudshelleditor/0.1"),
-        );
-        let metadata = json!({
-            "ideType": 9,
-            "platform": crate::core::config::app_constants::current_platform() as u8,
-            "pluginType": 2,
-        });
-        headers.insert(
-            "Client-Metadata",
-            HeaderValue::from_str(&serde_json::to_string(&metadata)?)?,
-        );
-        Ok(headers)
+    #[cfg(test)]
+    fn build_headers_for_test(access_token: &str, project_id: &str) -> HeaderMap {
+        Self::build_headers(access_token, project_id).expect("test headers")
     }
 
     /// Sanitize a tool function name so it matches Gemini's allowed
@@ -519,27 +418,14 @@ impl AntigravityExecutor {
             // some values cause 400s).
             request_obj.remove("safetySettings");
 
-            // Resolve session id.
-            let connection_id = credentials
-                .email
-                .as_deref()
-                .or_else(|| credentials.id.as_str().into())
-                .unwrap_or("");
-            let session_id = match request_obj.get("sessionId").and_then(|v| v.as_str()) {
-                Some(s) if !s.is_empty() => s.to_string(),
-                _ => derive_session_id(connection_id),
-            };
+            // Resolve session id: fresh CLI random per request (donor parity).
+            let session_id = build_cli_session_id();
             request_obj.insert("sessionId".into(), Value::String(session_id.clone()));
             return Ok(session_id);
         }
 
-        // No `request` envelope → fall back to a fresh session id.
-        let connection_id = credentials
-            .email
-            .as_deref()
-            .or_else(|| credentials.id.as_str().into())
-            .unwrap_or("");
-        Ok(derive_session_id(connection_id))
+        // No `request` envelope → fresh CLI session id.
+        Ok(build_cli_session_id())
     }
 
     pub async fn execute_request(
@@ -570,11 +456,10 @@ impl AntigravityExecutor {
         // setup/control-plane operations and never adds a warm-path RTT.
         let project_id = antigravity_project_id(&request.credentials).unwrap_or_default();
 
-        let session_id = Self::transform_request(&mut request.body, &request.credentials)?;
+        let _session_id = Self::transform_request(&mut request.body, &request.credentials)?;
 
-        // Add the top-level request envelope (JS transformRequest return,
-        // antigravity.js:268-276): project, model, userAgent, requestType,
-        // requestId around the `request` sub-object.
+        // Add the top-level request envelope: project, model, userAgent,
+        // requestType, requestId around the `request` sub-object (CLI profile).
         let request_type = "agent";
         let model_for_envelope = request
             .body
@@ -582,14 +467,7 @@ impl AntigravityExecutor {
             .and_then(Value::as_str)
             .unwrap_or(&request.model)
             .to_string();
-        let request_ref = request.body.get("request").cloned().unwrap_or(Value::Null);
-        let request_id = build_ide_request_id(
-            &request.body,
-            &request_ref,
-            &request.credentials,
-            &model_for_envelope,
-            request_type,
-        );
+        let request_id = build_cli_request_id();
         if let Some(obj) = request.body.as_object_mut() {
             obj.insert("project".into(), Value::String(project_id.clone()));
             obj.insert("model".into(), Value::String(model_for_envelope));
@@ -602,13 +480,7 @@ impl AntigravityExecutor {
         }
 
         let url = self.request_url(request.stream);
-        let mut headers = Self::build_headers(&access_token, request.stream, Some(&session_id))?;
-
-        // Add Antigravity-specific headers (Client-Metadata, etc.).
-        let ag_headers = Self::build_antigravity_headers()?;
-        for (key, value) in ag_headers.iter() {
-            headers.insert(key, value.clone());
-        }
+        let headers = Self::build_headers(&access_token, &project_id)?;
 
         let client = self.pool.get("antigravity", request.proxy.as_ref())?;
         let response = client
@@ -635,9 +507,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_url_picks_stream_or_unary_path() {
+    fn build_url_always_uses_streaming_path() {
         assert!(AntigravityExecutor::build_url(true).ends_with("streamGenerateContent?alt=sse"));
-        assert!(AntigravityExecutor::build_url(false).ends_with("generateContent"));
+        assert!(AntigravityExecutor::build_url(false).ends_with("streamGenerateContent?alt=sse"));
     }
 
     #[test]
@@ -865,137 +737,45 @@ mod tests {
     }
 
     #[test]
-    fn build_antigravity_headers_sets_expected_statics() {
-        let headers = AntigravityExecutor::build_antigravity_headers().unwrap();
-        assert_eq!(
-            headers.get("User-Agent").and_then(|v| v.to_str().ok()),
-            Some("google-api-nodejs-client/9.15.1")
+    fn build_headers_uses_cli_identity() {
+        let headers = super::AntigravityExecutor::build_headers_for_test("tok", "proj");
+        let ua = headers
+            .get("User-Agent")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            ua.starts_with("antigravity/cli/"),
+            "CLI UA expected, got {ua}"
         );
+        assert!(headers.get("X-Goog-Api-Client").is_none());
+        assert!(headers.get("Client-Metadata").is_none());
+        assert!(headers.get("X-Machine-Session-Id").is_none());
         assert_eq!(
             headers
-                .get("X-Goog-Api-Client")
+                .get("x-goog-user-project")
                 .and_then(|v| v.to_str().ok()),
-            Some("google-cloud-sdk vscode_cloudshelleditor/0.1")
-        );
-        // Client-Metadata should be valid JSON.
-        let cm = headers
-            .get("Client-Metadata")
-            .and_then(|v| v.to_str().ok())
-            .expect("Client-Metadata header present");
-        let parsed: serde_json::Value =
-            serde_json::from_str(cm).expect("Client-Metadata is valid JSON");
-        assert_eq!(parsed["ideType"], 9);
-        assert!(parsed["platform"].is_number());
-        assert_eq!(parsed["pluginType"], 2);
-    }
-
-    #[test]
-    fn build_antigravity_headers_platform_detection() {
-        let headers = AntigravityExecutor::build_antigravity_headers().unwrap();
-        let cm = headers
-            .get("Client-Metadata")
-            .and_then(|v| v.to_str().ok())
-            .unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(cm).unwrap();
-        let platform = parsed["platform"].as_u64().unwrap();
-        // Platform should be a valid AgPlatform value (1-5 or 0 for unknown).
-        assert!(
-            platform <= 5,
-            "platform value {platform} is in expected range"
+            Some("proj")
         );
     }
 
     #[test]
-    fn test_uuid_from_seed_is_deterministic_and_version5() {
-        let u1 = uuid_from_seed("antigravity:conversation:abc");
-        let u2 = uuid_from_seed("antigravity:conversation:abc");
-        let u3 = uuid_from_seed("antigravity:conversation:xyz");
-        assert_eq!(u1, u2, "same seed must produce the same uuid");
-        assert_ne!(u1, u3, "different seeds must produce different uuids");
-        // Version 5 + RFC 4122 variant bits.
-        assert_eq!(&u1[14..15], "5");
+    fn cli_request_id_has_agent_shape() {
+        let id = super::build_cli_request_id();
         assert!(
-            matches!(
-                u1.chars().nth(19),
-                Some('8') | Some('9') | Some('a') | Some('b')
-            ),
-            "variant bit must be RFC 4122, got {}",
-            u1.chars().nth(19).unwrap()
+            id.starts_with("agent/"),
+            "CLI id must start with agent/: {id}"
         );
-        // Hyphenated shape 8-4-4-4-12.
-        let parts: Vec<&str> = u1.split('-').collect();
-        assert_eq!(parts.len(), 5);
-        assert_eq!(parts[0].len(), 8);
-        assert_eq!(parts[1].len(), 4);
-        assert_eq!(parts[2].len(), 4);
-        assert_eq!(parts[3].len(), 4);
-        assert_eq!(parts[4].len(), 12);
+        let parts: Vec<&str> = id.split('/').collect();
+        assert_eq!(parts.len(), 3);
+        assert!(parts[1].chars().all(|c| c.is_ascii_digit()));
+        assert_eq!(parts[2].len(), 8);
     }
 
     #[test]
-    fn stateless_session_is_stable_isolated_and_preserves_client_value() {
-        let mut account_a = ProviderConnection {
-            id: "account-a".to_string(),
-            email: Some("a@example.test".to_string()),
-            ..Default::default()
-        };
-        let mut first = json!({"request": {"contents": []}});
-        let mut second = first.clone();
-        let id_a = AntigravityExecutor::transform_request(&mut first, &account_a).unwrap();
-        assert_eq!(
-            id_a,
-            AntigravityExecutor::transform_request(&mut second, &account_a).unwrap()
-        );
-        assert_eq!(id_a.len(), 49);
-        assert_eq!(
-            uuid::Uuid::parse_str(&id_a[..36])
-                .unwrap()
-                .get_version_num(),
-            5
-        );
-        assert!(id_a[36..]
-            .chars()
-            .all(|character| character.is_ascii_digit()));
-
-        account_a.email = Some("b@example.test".to_string());
-        let mut other = json!({"request": {"contents": []}});
-        assert_ne!(
-            id_a,
-            AntigravityExecutor::transform_request(&mut other, &account_a).unwrap()
-        );
-
-        let mut supplied = json!({"request": {
-            "sessionId": "client-session", "contents": []
-        }});
-        assert_eq!(
-            AntigravityExecutor::transform_request(&mut supplied, &account_a).unwrap(),
-            "client-session"
-        );
-    }
-
-    #[test]
-    fn test_build_ide_request_id_agent_pattern() {
-        let body = json!({ "requestId": "agent/conv/12345/traj/3" });
-        let request = json!({ "contents": [] });
-        let creds = ProviderConnection::default();
-        // A valid client-supplied agent id is preserved.
-        let id = build_ide_request_id(&body, &request, &creds, "gpt-5", "agent");
-        assert_eq!(id, "agent/conv/12345/traj/3");
-
-        // A non-matching id is replaced with a derived one.
-        let body2 = json!({ "requestId": "not-agent-id" });
-        let id2 = build_ide_request_id(&body2, &request, &creds, "gpt-5", "agent");
-        assert!(
-            id2.starts_with("agent/"),
-            "derived id must start with agent/: {id2}"
-        );
-        let parts: Vec<&str> = id2.split('/').collect();
-        assert_eq!(parts.len(), 5);
-        assert_eq!(parts[0], "agent");
-        assert!(
-            parts[2].chars().all(|c| c.is_ascii_digit()),
-            "timestamp part must be numeric"
-        );
+    fn cli_session_id_is_negative_number() {
+        let id = super::build_cli_session_id();
+        assert!(id.starts_with('-'));
+        assert!(id[1..].chars().all(|c| c.is_ascii_digit()));
     }
 
     #[test]

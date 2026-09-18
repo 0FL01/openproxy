@@ -517,24 +517,11 @@ pub async fn fetch_minimax_quota(api_key: &str, _provider: &str) -> Value {
 const CLOUD_CODE_BASE: &str = "https://cloudcode-pa.googleapis.com/v1internal";
 
 fn cloud_code_metadata() -> Value {
-    let platform = if cfg!(target_os = "macos") {
-        2
-    } else if cfg!(target_os = "linux") {
-        1
-    } else {
-        4 // WINDOWS_X64
-    };
-    json!({
-        "ideType": 9,
-        "platform": platform,
-        "pluginType": 2,
-    })
+    crate::core::config::app_constants::agy_load_metadata()
 }
 
 fn antigravity_user_agent() -> String {
-    let os = std::env::consts::OS;
-    let arch = std::env::consts::ARCH;
-    format!("antigravity/1.107.0 {os}/{arch}")
+    crate::core::config::app_constants::agy_cli_user_agent()
 }
 
 /// Normalise a reset-time value to an RFC 3339 string (seconds precision).
@@ -1937,18 +1924,13 @@ const ANTIGRAVITY_IMPORTANT_MODELS: &[&str] = &[
     "gemini-3.7-flash-high",
     "gemini-3.7-flash-medium",
     "gemini-3.7-flash-low",
-    "gemini-3.6-flash-high",
-    "gemini-3.6-flash-medium",
-    "gemini-3.6-flash-low",
-    "gemini-3-flash-agent",
-    "gemini-3.5-flash-low",
-    "gemini-3.5-flash-extra-low",
+    "gemini-3.7-flash-tiered",
     "gemini-pro-agent",
     "gemini-3.1-pro-low",
+    "gemini-3.1-flash-lite",
     "claude-sonnet-4-6",
     "claude-opus-4-6-thinking",
     "gpt-oss-120b-medium",
-    "gemini-3-flash",
 ];
 
 pub async fn fetch_antigravity_quota(access_token: &str, _provider: &str) -> Value {
@@ -1963,8 +1945,10 @@ pub async fn fetch_antigravity_quota(access_token: &str, _provider: &str) -> Val
     let extra_headers = [
         ("User-Agent", user_agent.as_str()),
         ("X-Client-Name", "antigravity"),
-        ("X-Client-Version", "1.107.0"),
-        ("x-request-source", "local"),
+        (
+            "X-Client-Version",
+            crate::core::config::app_constants::AGY_CLI_VERSION,
+        ),
     ];
 
     let load_body = match load_code_assist(
@@ -2007,8 +1991,10 @@ pub async fn fetch_antigravity_quota(access_token: &str, _provider: &str) -> Val
         .header("Content-Type", "application/json")
         .header("User-Agent", &user_agent)
         .header("X-Client-Name", "antigravity")
-        .header("X-Client-Version", "1.107.0")
-        .header("x-request-source", "local")
+        .header(
+            "X-Client-Version",
+            crate::core::config::app_constants::AGY_CLI_VERSION,
+        )
         .json(&json!({ "project": project_id }))
         .send()
         .await

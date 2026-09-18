@@ -82,7 +82,7 @@ export const THINKING_CONFIG: Record<string, ThinkingConfig> = {
 // OAuth Providers
 export const OAUTH_PROVIDERS: Record<string, Provider> = {
   claude: { id: "claude", alias: "cc", name: "Claude Code", icon: "smart_toy", color: "#D97757", website: "https://claude.ai", notice: { signupUrl: "https://claude.ai" }, priority: 10 },
-  antigravity: { id: "antigravity", alias: "ag", name: "Antigravity", icon: "rocket_launch", color: "#F59E0B", deprecated: true, deprecationNotice: "AG is designed exclusively for Antigravity IDE. Using it with other tools (OpenClaw, Claude, Codex...) may result in account restrictions or bans.", website: "https://antigravity.google", notice: { signupUrl: "https://antigravity.google" }, priority: 20 },
+  antigravity: { id: "antigravity", alias: "ag", name: "Antigravity CLI", icon: "rocket_launch", color: "#F59E0B", website: "https://antigravity.google", notice: { signupUrl: "https://antigravity.google" }, priority: 20 },
   codex: { id: "codex", alias: "cx", name: "OpenAI Codex", icon: "code", color: "#3B82F6", thinkingConfig: THINKING_CONFIG.effort, serviceKinds: ["llm"], website: "https://chatgpt.com/codex", notice: { signupUrl: "https://chatgpt.com/codex" }, priority: 15 },
   github: { id: "github", alias: "gh", name: "GitHub Copilot", icon: "code", color: "#333333", serviceKinds: ["llm"], website: "https://github.com/features/copilot", notice: { signupUrl: "https://github.com/features/copilot" }, priority: 25, authModes: ["device_code"] },
   cursor: { id: "cursor", alias: "cu", name: "Cursor IDE", icon: "edit_note", color: "#00D4AA", website: "https://cursor.com", notice: { signupUrl: "https://cursor.com" }, priority: 30 },

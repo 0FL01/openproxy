@@ -15,16 +15,16 @@ use parking_lot::Mutex;
 use serde_json::{json, Value};
 use tokio::sync::{Mutex as AsyncMutex, Notify};
 
-use crate::core::config::app_constants::{cloud_code_api, current_platform};
+use crate::core::config::app_constants::{agy_cli_user_agent, agy_load_metadata, cloud_code_api};
 use crate::core::executor::ClientPool;
 use crate::core::proxy::resolve_proxy_target;
 use crate::core::utils::antigravity_project::antigravity_project_id;
 use crate::db::Db;
 use crate::oauth::token_refresh::{connection_credential_generation, CredentialGeneration};
 
-const DEFAULT_MAX_ATTEMPTS: usize = 10;
-const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(5);
-const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_MAX_ATTEMPTS: usize = 3;
+const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(3);
+const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(8);
 
 type SharedOnboardingResult = Result<(), String>;
 
@@ -219,15 +219,9 @@ impl AntigravityOnboardingCoordinator {
             .map_err(|error| format!("Antigravity onboarding transport: {error}"))?;
         drop(snapshot);
 
-        let metadata = json!({
-            "ideType": 9,
-            "platform": current_platform() as u8,
-            "pluginType": 2,
-        });
-        let metadata_header = metadata.to_string();
+        let metadata = agy_load_metadata();
         let body = json!({
-            "tierId": tier_id,
-            "projectId": project_id,
+            "tier_id": tier_id,
             "metadata": metadata,
         });
 
@@ -242,13 +236,7 @@ impl AntigravityOnboardingCoordinator {
                 .post(&self.endpoint)
                 .header("Authorization", format!("Bearer {access_token}"))
                 .header("Content-Type", "application/json")
-                .header("User-Agent", "google-api-nodejs-client/9.15.1")
-                .header(
-                    "X-Goog-Api-Client",
-                    "google-cloud-sdk vscode_cloudshelleditor/0.1",
-                )
-                .header("Client-Metadata", &metadata_header)
-                .header("x-request-source", "local")
+                .header("User-Agent", agy_cli_user_agent())
                 .json(&body);
             let cancelled = operation.cancel.notified();
             tokio::pin!(cancelled);
@@ -290,9 +278,12 @@ impl AntigravityOnboardingCoordinator {
             if attempt + 1 < self.max_attempts {
                 let cancelled = operation.cancel.notified();
                 tokio::pin!(cancelled);
+                // Bounded retry with jitter (donor: 3s + rand*4s).
+                let jitter_ms = rand::random::<u64>() % 4000;
+                let backoff = self.poll_interval + Duration::from_millis(jitter_ms);
                 tokio::select! {
                     _ = &mut cancelled => return Err("Antigravity onboarding cancelled".to_string()),
-                    _ = tokio::time::sleep(self.poll_interval) => {}
+                    _ = tokio::time::sleep(backoff) => {}
                 }
             }
         }

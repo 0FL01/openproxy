@@ -1,11 +1,12 @@
-//! Antigravity OAuth 2.0 flow (Authorization Code, no PKCE).
+//! Antigravity CLI (AGY) OAuth 2.0 flow (Authorization Code, no PKCE).
 //!
-//! - Google OAuth with extended scopes
-//! - loadCodeAssist project discovery during connection setup
-//! - Numeric Client-Metadata headers for EVERY call
+//! - Google OAuth with extended scopes (same consumer client as IDE before it)
+//! - loadCodeAssist project discovery during connection setup (CLI identity)
+//! - CLI headers only: `antigravity/cli/...`, no Client-Metadata
 //! - ProjectId discovery during connection setup
 //! - connect_antigravity(), refresh_antigravity()
 
+use crate::core::config::app_constants::{agy_cli_user_agent, agy_load_metadata};
 use crate::core::utils::antigravity_project::extract_google_project_id;
 use crate::oauth::TokenResponse;
 use base64::Engine;
@@ -32,43 +33,7 @@ const ANTIGRAVITY_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform 
     https://www.googleapis.com/auth/cclog \
     https://www.googleapis.com/auth/experimentsandconfigs";
 
-const ANTIGRAVITY_LOAD_CODE_ASSIST_USER_AGENT: &str = "google-api-nodejs-client/9.15.1";
-const ANTIGRAVITY_LOAD_CODE_ASSIST_API_CLIENT: &str =
-    "google-cloud-sdk vscode_cloudshelleditor/0.1";
-
 pub const REFRESH_LEAD_MS: u64 = 5 * 60 * 1000;
-
-// ---------------------------------------------------------------------------
-// Platform helper
-// ---------------------------------------------------------------------------
-
-fn google_oauth_platform_enum() -> i64 {
-    let is_arm64 = matches!(std::env::consts::ARCH, "aarch64" | "arm64");
-    match std::env::consts::OS {
-        "macos" => {
-            if is_arm64 { 2 } else { 1 }
-        }
-        "linux" => {
-            if is_arm64 { 4 } else { 3 }
-        }
-        "windows" => 5,
-        _ => 0,
-    }
-}
-
-/// Numeric Client-Metadata for Antigravity (ideType:9, platform per OS, pluginType:2).
-pub fn client_metadata() -> serde_json::Value {
-    serde_json::json!({
-        "ideType": 9,
-        "platform": google_oauth_platform_enum(),
-        "pluginType": 2,
-    })
-}
-
-/// Stringified Client-Metadata header value for Antigravity (IDE_UNSPECIFIED format for legacy compat).
-fn antigravity_metadata_header() -> String {
-    client_metadata().to_string()
-}
 
 // ---------------------------------------------------------------------------
 // State generation
@@ -131,6 +96,7 @@ async fn exchange_code_for_token(code: &str, redirect_uri: &str) -> Result<Value
         .post(ANTIGRAVITY_TOKEN_URL)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .header("Accept", "application/json")
+        .header("User-Agent", agy_cli_user_agent())
         .form(&params)
         .send()
         .await
@@ -156,7 +122,6 @@ async fn fetch_user_info(access_token: &str) -> Value {
     match client
         .get(format!("{}?alt=json", ANTIGRAVITY_USER_INFO_URL))
         .header("Authorization", format!("Bearer {access_token}"))
-        .header("x-request-source", "local")
         .send()
         .await
     {
@@ -174,17 +139,13 @@ async fn fetch_user_info(access_token: &str) -> Value {
 async fn call_load_code_assist(
     access_token: &str,
 ) -> Result<(Option<String>, Option<String>), String> {
-    let metadata_json = antigravity_metadata_header();
     let client = reqwest::Client::new();
     let response = client
         .post(ANTIGRAVITY_LOAD_CODE_ASSIST_ENDPOINT)
         .header("Authorization", format!("Bearer {access_token}"))
         .header("Content-Type", "application/json")
-        .header("User-Agent", ANTIGRAVITY_LOAD_CODE_ASSIST_USER_AGENT)
-        .header("X-Goog-Api-Client", ANTIGRAVITY_LOAD_CODE_ASSIST_API_CLIENT)
-        .header("Client-Metadata", &metadata_json)
-        .header("x-request-source", "local")
-        .json(&serde_json::json!({ "metadata": client_metadata() }))
+        .header("User-Agent", agy_cli_user_agent())
+        .json(&serde_json::json!({ "metadata": agy_load_metadata() }))
         .send()
         .await
         .map_err(|e| format!("loadCodeAssist request failed: {e}"))?;
@@ -387,9 +348,20 @@ pub async fn connect_antigravity() -> Result<AntigravityConnectResult, String> {
         .and_then(Value::as_str)
         .map(str::to_string);
 
-    // 6. Fetch projectId via loadCodeAssist
+    // 6. Fetch projectId via loadCodeAssist (CLI identity). Empty project
+    // means BYOP: fail fast, the caller must surface reconnect-with-project.
     let (project_id, tier_id) =
         call_load_code_assist(&token_response.access_token).await.unwrap_or((None, None));
+    if project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .is_none()
+    {
+        return Err(
+            "requires_manual_project: Antigravity CLI found no Cloud Code project. Create a free GCP project and reconnect.".to_string(),
+        );
+    }
 
     // 7. Return discovered metadata. The configured-connection lifecycle
     // schedules onboarding after this result is persisted with a stable id.
@@ -403,7 +375,7 @@ pub async fn connect_antigravity() -> Result<AntigravityConnectResult, String> {
     if let Some(ref tid) = tier_id {
         extra.insert("tierId".to_string(), Value::String(tid.clone()));
     }
-    extra.insert("clientMetadata".to_string(), client_metadata());
+    extra.insert("clientProfile".to_string(), Value::String("cli".to_string()));
 
     Ok(AntigravityConnectResult {
         token_response,
@@ -427,12 +399,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_client_metadata_contains_numeric_enums() {
-        let md = client_metadata();
-        assert_eq!(md.get("ideType").and_then(Value::as_i64), Some(9));
-        assert_eq!(md.get("pluginType").and_then(Value::as_i64), Some(2));
-        let platform = md.get("platform").and_then(Value::as_i64);
-        assert!(platform.is_some());
+    fn test_cli_metadata_is_string_enum() {
+        let md = agy_load_metadata();
+        assert_eq!(md.get("ideType").and_then(Value::as_str), Some("ANTIGRAVITY"));
     }
 
     #[test]

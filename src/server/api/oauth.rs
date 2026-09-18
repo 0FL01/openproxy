@@ -65,11 +65,6 @@ const ANTIGRAVITY_USER_INFO_URL: &str = "https://www.googleapis.com/oauth2/v1/us
 const ANTIGRAVITY_LOAD_CODE_ASSIST_ENDPOINT: &str =
     "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
 const ANTIGRAVITY_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/cclog https://www.googleapis.com/auth/experimentsandconfigs";
-const ANTIGRAVITY_LOAD_CODE_ASSIST_USER_AGENT: &str = "google-api-nodejs-client/9.15.1";
-const ANTIGRAVITY_LOAD_CODE_ASSIST_API_CLIENT: &str =
-    "google-cloud-sdk vscode_cloudshelleditor/0.1";
-const ANTIGRAVITY_LOAD_CODE_ASSIST_CLIENT_METADATA: &str =
-    "{\"ideType\":\"IDE_UNSPECIFIED\",\"platform\":\"PLATFORM_UNSPECIFIED\",\"pluginType\":\"GEMINI\"}";
 const CLINE_AUTHORIZE_URL: &str = "https://api.cline.bot/api/v1/auth/authorize";
 const CLINE_TOKEN_URL: &str = "https://api.cline.bot/api/v1/auth/token";
 const KIRO_SOCIAL_REDIRECT_URI: &str = "kiro://kiro.kiroAgent/authenticate-success";
@@ -867,42 +862,8 @@ fn kiro_social_idp(provider: &str) -> Option<&'static str> {
     }
 }
 
-fn google_oauth_platform_enum() -> i64 {
-    let is_arm64 = matches!(std::env::consts::ARCH, "aarch64" | "arm64");
-    match std::env::consts::OS {
-        "macos" => {
-            if is_arm64 {
-                2
-            } else {
-                1
-            }
-        }
-        "linux" => {
-            if is_arm64 {
-                4
-            } else {
-                3
-            }
-        }
-        "windows" => 5,
-        _ => 0,
-    }
-}
-
-fn google_oauth_client_metadata() -> Value {
-    json!({
-        "ideType": 9,
-        "platform": google_oauth_platform_enum(),
-        "pluginType": 2,
-    })
-}
-
 fn antigravity_load_metadata() -> Value {
-    json!({
-        "ideType": "IDE_UNSPECIFIED",
-        "platform": "PLATFORM_UNSPECIFIED",
-        "pluginType": "GEMINI",
-    })
+    crate::core::config::app_constants::agy_load_metadata()
 }
 
 fn first_nonempty_str<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
@@ -3536,6 +3497,10 @@ async fn exchange_google_token(
         .post(token_url)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .header("Accept", "application/json")
+        .header(
+            "User-Agent",
+            crate::core::config::app_constants::agy_cli_user_agent(),
+        )
         .form(&[
             ("grant_type", "authorization_code"),
             ("client_id", client_id),
@@ -3587,7 +3552,6 @@ async fn exchange_antigravity_compat(
     let user_info = match reqwest::Client::new()
         .get(format!("{}?alt=json", antigravity_user_info_url()))
         .header("Authorization", format!("Bearer {access_token}"))
-        .header("x-request-source", "local")
         .send()
         .await
     {
@@ -3599,18 +3563,15 @@ async fn exchange_antigravity_compat(
 
     let mut project_id = None;
     let mut project_discovery_error = None;
-    let mut tier_id = "legacy-tier".to_string();
+    let mut tier_id: Option<String> = None;
     match reqwest::Client::new()
         .post(antigravity_load_code_assist_endpoint())
         .header("Authorization", format!("Bearer {access_token}"))
         .header("Content-Type", "application/json")
-        .header("User-Agent", ANTIGRAVITY_LOAD_CODE_ASSIST_USER_AGENT)
-        .header("X-Goog-Api-Client", ANTIGRAVITY_LOAD_CODE_ASSIST_API_CLIENT)
         .header(
-            "Client-Metadata",
-            ANTIGRAVITY_LOAD_CODE_ASSIST_CLIENT_METADATA,
+            "User-Agent",
+            crate::core::config::app_constants::agy_cli_user_agent(),
         )
-        .header("x-request-source", "local")
         .json(&json!({ "metadata": antigravity_load_metadata() }))
         .send()
         .await
@@ -3639,7 +3600,7 @@ async fn exchange_antigravity_compat(
                         })
                     })
                 {
-                    tier_id = default_tier;
+                    tier_id = Some(default_tier);
                 }
             }
             Err(error) => {
@@ -3661,9 +3622,24 @@ async fn exchange_antigravity_compat(
         }
     }
 
-    let discovery_failed = project_discovery_error.is_some();
+    if project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .is_none()
+    {
+        return Err(project_discovery_error.unwrap_or_else(|| {
+            "requires_manual_project: Antigravity CLI found no Cloud Code project. Create a free GCP project and reconnect.".to_string()
+        }));
+    }
     let mut provider_specific_data = std::collections::BTreeMap::new();
-    provider_specific_data.insert("tierId".to_string(), Value::String(tier_id));
+    if let Some(tier) = tier_id {
+        provider_specific_data.insert("tierId".to_string(), Value::String(tier));
+    }
+    provider_specific_data.insert(
+        "clientProfile".to_string(),
+        Value::String("cli".to_string()),
+    );
     Ok(ProviderConnection {
         provider: "antigravity".to_string(),
         auth_type: "oauth".to_string(),
@@ -3676,9 +3652,9 @@ async fn exchange_antigravity_compat(
         expires_at: expires_in.map(crate::oauth::expires_at_from_seconds),
         scope,
         project_id,
-        test_status: Some(if discovery_failed { "error" } else { "active" }.to_string()),
-        last_error: project_discovery_error,
-        last_error_at: discovery_failed.then(|| chrono::Utc::now().to_rfc3339()),
+        test_status: Some("active".to_string()),
+        last_error: None,
+        last_error_at: None,
         provider_specific_data,
         ..Default::default()
     })
