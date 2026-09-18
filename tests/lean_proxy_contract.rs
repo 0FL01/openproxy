@@ -530,6 +530,23 @@ fn contract_freezes_preservation_and_removal_lists() {
         "C33"
     );
     assert_eq!(
+        manifest["forced_sse_to_json_incremental"]["retained_raw_sse_history"],
+        false
+    );
+    assert_eq!(
+        manifest["forced_sse_to_json_incremental"]
+            ["truncated_or_oversized_stream_can_be_partial_success"],
+        false
+    );
+    assert_eq!(
+        manifest["forced_sse_to_json_incremental"]["cancellation_drops_upstream"],
+        true
+    );
+    assert_eq!(
+        manifest["forced_sse_to_json_incremental"]["native_streaming_changed"],
+        false
+    );
+    assert_eq!(
         manifest["generation_retry_policy"]["client_invalid_terminal_statuses"],
         serde_json::json!([400, 413, 422])
     );

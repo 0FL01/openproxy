@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C33",
+  "next_checkpoint": "C34",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c32_cargo_1.98.1",
+    "rust_verification": "passed_through_c33_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -1792,7 +1792,7 @@
     {
       "id": "C33",
       "title": "Собирать SSE→JSON без хранения сырой истории SSE",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C32"
       ],
@@ -1805,7 +1805,23 @@
       "change": "Подавать завершённые события инкрементально в итоговый accumulator. Удалить полный raw SSE buffer, оставив только обязательный итоговый JSON/state. Применить общий итоговый byte budget, tool limits и error propagation.",
       "tests": "Длинный response, content/tools/reasoning/refusal/usage, оборванный stream и финальное событие. Сравнить semantic JSON с golden fixtures; ошибка незавершённой передачи не становится успешным частичным completion.",
       "acceptance": "Нет двух полных представлений «весь исходный SSE плюс весь результат». Итоговое содержимое всё равно O(response); это указано в метриках и документации.",
-      "rollback": "Откат одной conversion path; не менять native streaming ради non-stream клиента."
+      "rollback": "Откат одной conversion path; не менять native streaming ради non-stream клиента.",
+      "result": {
+        "completed": "2026-09-18",
+        "files": [
+          "src/core/chat/stream_to_json.rs",
+          "src/server/api/chat.rs",
+          "tests/lean_proxy_forced_c33.rs",
+          "tests/lean_proxy_stream_state_c31.rs",
+          "tests/lean_proxy_contract.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json"
+        ],
+        "change": "Forced SSE-to-JSON feeds completed C32 frames into a request-local C31-bounded accumulator without retaining full raw SSE history; wire bytes counted against C29 limit; explicit pre-commit 502; bare-JSON prefix fallback; cancellation drops upstream.",
+        "tests": "9 focused C33 tests (golden equivalence at every split, long chat/responses goldens, bare JSON, truncation, oversized frame, cancellation, source guards); C31/C29/C32/contract regressions green; full lib 1220 pass.",
+        "acceptance": "No two full representations (raw SSE plus result); final content remains O(response) and is documented.",
+        "rollback": "Revert single forced-conversion path; native streaming untouched."
+      }
     },
     {
       "id": "C34",

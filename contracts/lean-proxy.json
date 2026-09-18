@@ -528,6 +528,20 @@
     "c13_attempt_budget_changed": false,
     "post_commit_generation_retry_changed": false
   },
+  "forced_sse_to_json_incremental": {
+    "checkpoint": "C33",
+    "retained_raw_sse_history": false,
+    "incomplete_frame_bound_bytes": 1048576,
+    "accumulator_bound_bytes": 16777216,
+    "wire_limit_environment": "OPENPROXY_MAX_UPSTREAM_JSON_BYTES",
+    "wire_bytes_counted_with_checked_add": true,
+    "completed_events_feed_accumulator_incrementally": true,
+    "final_json_and_accumulator_are_only_complete_representations": true,
+    "bare_json_fallback_uses_prefix_only_before_first_sse_frame": true,
+    "truncated_or_oversized_stream_can_be_partial_success": false,
+    "cancellation_drops_upstream": true,
+    "native_streaming_changed": false
+  },
   "incremental_sse_framing": {
     "checkpoint": "C32",
     "default_max_incomplete_event_bytes": 1048576,

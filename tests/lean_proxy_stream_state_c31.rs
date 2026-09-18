@@ -138,7 +138,10 @@ fn source_guards_keep_c31_separate_from_c32_c33_and_sparse_vectors() {
         !caller.contains("sse_stream_to_json(&body_bytes, Some(model))\n        .unwrap_or_else")
     );
     assert!(caller.contains("read_upstream_body(response, success_body_limit()).await"));
-    assert!(caller.contains("stream_to_json::sse_stream_to_json("));
+    // C33: forced SSE-to-JSON no longer converts retained bytes; it feeds C32
+    // frames incrementally into a C31-bounded accumulator.
+    assert!(!caller.contains("sse_stream_to_json(&body_bytes"));
+    assert!(caller.contains("ForcedSseAccumulator"));
 
     let compat = std::fs::read_to_string(root.join("src/server/api/compat.rs")).unwrap();
     assert!(!compat.contains("ensure_toolcall_idx"));

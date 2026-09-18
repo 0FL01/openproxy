@@ -14,6 +14,7 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 
 use crate::core::account_fallback::{GenerationAttemptBudget, ProviderAttemptError};
+use crate::core::chat::stream_to_json::ForcedSseAccumulator;
 use crate::core::chat::RequestPlan;
 use crate::core::executor::{
     diagnostic_body_limit, read_upstream_body, read_upstream_diagnostic, success_body_limit,
@@ -21,7 +22,7 @@ use crate::core::executor::{
 };
 use crate::core::model::get_model_info;
 use crate::core::proxy::resolve_proxy_target;
-use crate::core::stream_framing::{FrameError, TextStreamFrame, TextStreamFramer};
+use crate::core::stream_framing::{FrameError, SseFramer, TextStreamFrame, TextStreamFramer};
 use crate::core::translator::helpers::image_helper::{
     ensure_final_request_size, fetch_image_as_base64, ImagePrefetchBudget, ImagePrefetchError,
 };
@@ -2028,18 +2029,168 @@ async fn proxy_sse_to_json_response(
     plan: &RequestPlan,
     attempt_log: Option<AttemptLog>,
 ) -> Response {
+    // C33: feed completed C32 SSE frames incrementally into a request-local
+    // C31-bounded accumulator. No full raw SSE history is retained: peak is
+    // ≤1 MiB incomplete framer tail + ≤16 MiB accumulator + final JSON.
+    // Wire bytes are still counted against the C29 success-body limit.
     let status = response.status();
-    let body_bytes = match read_upstream_body(response, success_body_limit()).await {
-        Ok(body) => body,
-        Err(error) => return collected_body_failure_response(error, attempt_log).await,
-    };
+    let headers = response.headers().clone();
+    let wire_limit = success_body_limit();
+    if is_identity_encoded(&headers) {
+        if let Some(declared) = declared_content_length(&headers) {
+            if declared > wire_limit as u64 {
+                return collected_body_failure_response(
+                    BoundedBodyError::DeclaredTooLarge {
+                        declared,
+                        limit: wire_limit,
+                    },
+                    attempt_log,
+                )
+                .await;
+            }
+        }
+    }
+    let mut framer = SseFramer::new();
+    let mut accumulator = ForcedSseAccumulator::new();
+    let mut wire_seen: usize = 0;
+    // Prefix retained only until the first SSE frame proves the wire is SSE.
+    // Bare non-SSE JSON (forced upstream ignored `stream=true`) falls back to
+    // direct JSON parse from this prefix. Once SSE is confirmed the prefix is
+    // dropped so SSE bytes and final JSON are never retained together.
+    let mut prefix_raw: Vec<u8> = Vec::new();
 
-    let json_body =
-        match crate::core::chat::stream_to_json::sse_stream_to_json(&body_bytes, Some(model)) {
-            Ok(Some(value)) => value,
-            Ok(None) => {
-                // Fallback: try parse as JSON already, else wrap error
-                serde_json::from_slice(&body_bytes).unwrap_or_else(|_| {
+    macro_rules! account_wire {
+        ($len:expr) => {{
+            let next = match wire_seen.checked_add($len) {
+                Some(next) => next,
+                None => {
+                    return collected_body_failure_response(
+                        BoundedBodyError::TooLarge { limit: wire_limit },
+                        attempt_log,
+                    )
+                    .await;
+                }
+            };
+            if next > wire_limit {
+                return collected_body_failure_response(
+                    BoundedBodyError::TooLarge { limit: wire_limit },
+                    attempt_log,
+                )
+                .await;
+            }
+            wire_seen = next;
+        }};
+    }
+
+    macro_rules! retain_prefix {
+        ($chunk:expr) => {{
+            if !accumulator.saw_any_event() {
+                if prefix_raw.try_reserve($chunk.len()).is_err() {
+                    return collected_body_failure_response(
+                        BoundedBodyError::Capacity { limit: wire_limit },
+                        attempt_log,
+                    )
+                    .await;
+                }
+                prefix_raw.extend_from_slice($chunk);
+            }
+        }};
+    }
+
+    macro_rules! feed_chunk {
+        ($chunk:expr) => {{
+            let mut ingest_error: Option<StreamLimitError> = None;
+            let feed_result = framer.feed($chunk, |event| {
+                if ingest_error.is_some() {
+                    return;
+                }
+                if let Err(error) = accumulator.ingest(&event) {
+                    ingest_error = Some(error);
+                }
+            });
+            if let Some(error) = ingest_error {
+                return stream_limit_failure_response(error, attempt_log).await;
+            }
+            if let Err(frame) = feed_result {
+                return stream_limit_failure_response(frame_error_to_stream(frame), attempt_log)
+                    .await;
+            }
+            if accumulator.saw_any_event() && !prefix_raw.is_empty() {
+                prefix_raw = Vec::new();
+            }
+        }};
+    }
+
+    match response {
+        UpstreamResponse::Reqwest(resp) => {
+            let mut stream = resp.bytes_stream();
+            loop {
+                let chunk = match futures_util::TryStreamExt::try_next(&mut stream).await {
+                    Ok(Some(chunk)) => chunk,
+                    Ok(None) => break,
+                    Err(error) => {
+                        return collected_body_failure_response(
+                            BoundedBodyError::Transport(error.to_string()),
+                            attempt_log,
+                        )
+                        .await;
+                    }
+                };
+                account_wire!(chunk.len());
+                retain_prefix!(&chunk);
+                feed_chunk!(&chunk);
+            }
+        }
+        UpstreamResponse::Hyper(resp) => {
+            let mut body = resp.into_body();
+            loop {
+                let frame = match body.frame().await {
+                    Some(Ok(frame)) => frame,
+                    Some(Err(error)) => {
+                        return collected_body_failure_response(
+                            BoundedBodyError::Transport(error.to_string()),
+                            attempt_log,
+                        )
+                        .await;
+                    }
+                    None => break,
+                };
+                let Ok(data) = frame.into_data() else {
+                    continue;
+                };
+                account_wire!(data.len());
+                retain_prefix!(&data);
+                feed_chunk!(&data);
+            }
+        }
+    }
+
+    {
+        let mut finish_error: Option<StreamLimitError> = None;
+        let finish_result = framer.finish(|event| {
+            if finish_error.is_some() {
+                return;
+            }
+            if let Err(error) = accumulator.ingest(&event) {
+                finish_error = Some(error);
+            }
+        });
+        if let Some(error) = finish_error {
+            return stream_limit_failure_response(error, attempt_log).await;
+        }
+        if let Err(frame) = finish_result {
+            return stream_limit_failure_response(frame_error_to_stream(frame), attempt_log).await;
+        }
+    }
+
+    let saw_sse = accumulator.saw_any_event();
+    let json_body = match accumulator.finish(Some(model)) {
+        Ok(Some(value)) => value,
+        Ok(None) => {
+            if !saw_sse && !prefix_raw.is_empty() {
+                // Bare non-SSE JSON fallback (forced upstream ignored stream).
+                // Single representation: prefix holds the complete JSON body.
+                serde_json::from_slice(&prefix_raw).unwrap_or_else(|_| {
                     json!({
                         "error": {
                             "message": "Failed to convert forced SSE stream to JSON",
@@ -2048,30 +2199,21 @@ async fn proxy_sse_to_json_response(
                         }
                     })
                 })
+            } else {
+                // SSE with no convertible content, or comment-only stream.
+                json!({
+                    "error": {
+                        "message": "Failed to convert forced SSE stream to JSON",
+                        "type": "server_error",
+                        "code": "sse_to_json_failed"
+                    }
+                })
             }
-            Err(error) => {
-                if let Some(attempt_log) = attempt_log {
-                    attempt_log
-                        .finish("error", Some(StatusCode::BAD_GATEWAY.as_u16()), None)
-                        .await;
-                }
-                return with_cors_response(
-                    (
-                        StatusCode::BAD_GATEWAY,
-                        [(header::CONTENT_TYPE, "application/json")],
-                        json!({
-                            "error": {
-                                "message": error.message,
-                                "type": "upstream_error",
-                                "code": error.code
-                            }
-                        })
-                        .to_string(),
-                    )
-                        .into_response(),
-                );
-            }
-        };
+        }
+        Err(error) => {
+            return stream_limit_failure_response(error, attempt_log).await;
+        }
+    };
 
     let out = Bytes::from(serde_json::to_vec(&json_body).unwrap_or_default());
 
@@ -3296,6 +3438,46 @@ async fn collected_body_failure_response(
         StatusCode::BAD_GATEWAY,
         &format!("Failed to read complete upstream response: {error}"),
     )
+}
+
+async fn stream_limit_failure_response(
+    error: StreamLimitError,
+    attempt_log: Option<AttemptLog>,
+) -> Response {
+    if let Some(attempt_log) = attempt_log {
+        attempt_log
+            .finish("error", Some(StatusCode::BAD_GATEWAY.as_u16()), None)
+            .await;
+    }
+    with_cors_response(
+        (
+            StatusCode::BAD_GATEWAY,
+            [(header::CONTENT_TYPE, "application/json")],
+            json!({
+                "error": {
+                    "message": error.message,
+                    "type": "upstream_error",
+                    "code": error.code
+                }
+            })
+            .to_string(),
+        )
+            .into_response(),
+    )
+}
+
+fn is_identity_encoded(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .is_none_or(|value| value.trim().is_empty() || value.eq_ignore_ascii_case("identity"))
+}
+
+fn declared_content_length(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse().ok())
 }
 
 fn fallback_error_text(status: StatusCode, text: &str) -> String {

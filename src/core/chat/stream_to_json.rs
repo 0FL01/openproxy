@@ -13,6 +13,7 @@
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
+use crate::core::stream_framing::{SseEvent, SseFramer};
 use crate::core::translator::limits::{
     checked_add_u64, checked_append, checked_retain, wire_index, StreamLimitError,
     MAX_STREAM_ACCUMULATED_BYTES, MAX_STREAM_CHOICES, MAX_STREAM_TOOL_ARGUMENT_BYTES,
@@ -58,6 +59,498 @@ pub fn sse_stream_to_json(
     } else {
         convert_chat_completion_stream(input_str, fallback_model)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Incremental forced SSE accumulator (C33).
+//
+// Feeds completed C32 `SseEvent` frames directly into C31-bounded state
+// without retaining the full raw SSE history. Only the parsed accumulator
+// (≤16 MiB retained state) plus the final JSON output survive. Wire bytes
+// are counted by the caller against the C29 success-body limit.
+// ---------------------------------------------------------------------------
+
+/// Which SSE family the forced stream belongs to. Decided by the first
+/// non-empty event: an `event:` field means Responses, otherwise Chat.
+/// Pure comment/empty frames leave the kind undecided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ForcedKind {
+    Chat,
+    Responses,
+}
+
+/// Request-local incremental accumulator for forced SSE→JSON conversion.
+#[derive(Debug, Default)]
+pub struct ForcedSseAccumulator {
+    kind: Option<ForcedKind>,
+    saw_any_event: bool,
+    chat: ChatForcedState,
+    responses: ResponsesForcedState,
+}
+
+#[derive(Debug, Default)]
+struct ChatForcedState {
+    id: Option<String>,
+    created: Option<i64>,
+    model: Option<String>,
+    usage: Option<Value>,
+    choices: BTreeMap<u64, ChoiceAccum>,
+    tool_call_count: usize,
+    retained_bytes: usize,
+}
+
+#[derive(Debug)]
+struct ResponsesForcedState {
+    summary: ResponsesStreamSummary,
+}
+
+impl Default for ResponsesForcedState {
+    fn default() -> Self {
+        Self {
+            summary: ResponsesStreamSummary {
+                response_id: String::new(),
+                created: None,
+                status: "in_progress".to_string(),
+                output: BTreeMap::new(),
+                usage: json!({"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}),
+                retained_bytes: 0,
+            },
+        }
+    }
+}
+
+impl ForcedSseAccumulator {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// True once any SSE frame (including comment-only) has been observed.
+    /// Used to distinguish bare non-SSE JSON (fallback path) from SSE with
+    /// no convertible content (wrapper error path).
+    pub fn saw_any_event(&self) -> bool {
+        self.saw_any_event
+    }
+
+    pub fn ingest(&mut self, event: &SseEvent<'_>) -> Result<(), StreamLimitError> {
+        // Bare JSON tails dispatched by the framer have no SSE fields and
+        // must not mark the wire as SSE; otherwise the bare-JSON fallback in
+        // the caller could never trigger.
+        let is_sse = event.data().is_some() || event.event().is_some() || event.comment_count() > 0;
+        if !is_sse {
+            return Ok(());
+        }
+        self.saw_any_event = true;
+        if self.kind.is_none() {
+            if event.event().is_some() {
+                self.kind = Some(ForcedKind::Responses);
+            } else if event.data().is_some() {
+                self.kind = Some(ForcedKind::Chat);
+            } else {
+                // Comment-only frame: SSE confirmed but no payload.
+                return Ok(());
+            }
+        }
+        match self.kind {
+            Some(ForcedKind::Chat) => {
+                let Some(data_str) = event.data() else {
+                    return Ok(());
+                };
+                self.chat.ingest_data_str(data_str)
+            }
+            Some(ForcedKind::Responses) => self
+                .responses
+                .ingest_event(event.event(), event.data().unwrap_or("")),
+            None => Ok(()),
+        }
+    }
+
+    pub fn finish(self, fallback_model: Option<&str>) -> Result<Option<Value>, StreamLimitError> {
+        match self.kind {
+            None => Ok(None),
+            Some(ForcedKind::Chat) => self.chat.finish(fallback_model),
+            Some(ForcedKind::Responses) => self.responses.finish(fallback_model),
+        }
+    }
+}
+
+impl ChatForcedState {
+    fn ingest_data_str(&mut self, data_str: &str) -> Result<(), StreamLimitError> {
+        if data_str == "[DONE]" {
+            return Ok(());
+        }
+        let Ok(data) = serde_json::from_str::<Value>(data_str) else {
+            return Ok(());
+        };
+        // Capture metadata from the very first data frame.
+        if self.id.is_none() {
+            if let Some(value) = data.get("id").and_then(Value::as_str) {
+                replace_bounded_string(
+                    &mut self.id,
+                    value,
+                    &mut self.retained_bytes,
+                    "response id",
+                )?;
+            }
+            self.created = data.get("created").and_then(|v| v.as_i64());
+            if let Some(value) = data.get("model").and_then(Value::as_str) {
+                replace_bounded_string(&mut self.model, value, &mut self.retained_bytes, "model")?;
+            }
+        }
+        if self.usage.is_none() {
+            if let Some(u) = data.get("usage") {
+                if !u.is_null() {
+                    let next = self
+                        .retained_bytes
+                        .checked_add(data_str.len())
+                        .ok_or_else(|| StreamLimitError::arithmetic("usage state"))?;
+                    if next > MAX_STREAM_ACCUMULATED_BYTES {
+                        return Err(StreamLimitError::bytes(
+                            "retained state",
+                            MAX_STREAM_ACCUMULATED_BYTES,
+                        ));
+                    }
+                    self.usage = Some(u.clone());
+                    self.retained_bytes = next;
+                }
+            }
+        }
+        let Some(choices_arr) = data.get("choices").and_then(|v| v.as_array()) else {
+            return Ok(());
+        };
+        for choice_val in choices_arr {
+            let idx = wire_index(choice_val.get("index"), "choices[].index")?;
+            if !self.choices.contains_key(&idx) && self.choices.len() >= MAX_STREAM_CHOICES {
+                return Err(StreamLimitError::too_many(
+                    "response choices",
+                    MAX_STREAM_CHOICES,
+                ));
+            }
+            let entry = self.choices.entry(idx).or_default();
+            if let Some(reason) = choice_val.get("finish_reason") {
+                if reason.is_string() {
+                    let r = reason.as_str().unwrap();
+                    if !r.is_empty() && r != "null" {
+                        replace_bounded_string(
+                            &mut entry.finish_reason,
+                            r,
+                            &mut self.retained_bytes,
+                            "finish reason",
+                        )?;
+                    }
+                }
+            }
+            let Some(delta) = choice_val.get("delta") else {
+                continue;
+            };
+            if entry.role.is_none() {
+                if let Some(role) = delta.get("role").and_then(|v| v.as_str()) {
+                    replace_bounded_string(
+                        &mut entry.role,
+                        role,
+                        &mut self.retained_bytes,
+                        "role",
+                    )?;
+                }
+            }
+            if let Some(content) = delta.get("content") {
+                if content.is_string() {
+                    checked_append(
+                        &mut entry.content,
+                        content.as_str().unwrap(),
+                        MAX_STREAM_ACCUMULATED_BYTES,
+                        &mut self.retained_bytes,
+                        "content",
+                    )?;
+                }
+            }
+            if let Some(refusal) = delta.get("refusal").and_then(|v| v.as_str()) {
+                checked_append(
+                    &mut entry.refusal,
+                    refusal,
+                    MAX_STREAM_ACCUMULATED_BYTES,
+                    &mut self.retained_bytes,
+                    "refusal",
+                )?;
+            }
+            if let Some(tcs) = delta.get("tool_calls").and_then(|v| v.as_array()) {
+                for tc in tcs {
+                    let tc_idx = wire_index(tc.get("index"), "tool_calls[].index")?;
+                    if !entry.tool_calls.contains_key(&tc_idx) {
+                        if self.tool_call_count >= MAX_STREAM_TOOL_CALLS {
+                            return Err(StreamLimitError::too_many(
+                                "tool calls",
+                                MAX_STREAM_TOOL_CALLS,
+                            ));
+                        }
+                        self.tool_call_count = self
+                            .tool_call_count
+                            .checked_add(1)
+                            .ok_or_else(|| StreamLimitError::arithmetic("tool call"))?;
+                    }
+                    let tool = entry.tool_calls.entry(tc_idx).or_default();
+                    if let Some(tc_id) = tc.get("id").and_then(|v| v.as_str()) {
+                        replace_bounded_string(
+                            &mut tool.id,
+                            tc_id,
+                            &mut self.retained_bytes,
+                            "tool id",
+                        )?;
+                    }
+                    if let Some(tc_type) = tc.get("type").and_then(|v| v.as_str()) {
+                        replace_bounded_string(
+                            &mut tool.call_type,
+                            tc_type,
+                            &mut self.retained_bytes,
+                            "tool type",
+                        )?;
+                    }
+                    if let Some(func) = tc.get("function") {
+                        if let Some(name) = func.get("name").and_then(|v| v.as_str()) {
+                            replace_bounded_string(
+                                &mut tool.name,
+                                name,
+                                &mut self.retained_bytes,
+                                "tool name",
+                            )?;
+                        }
+                        if let Some(args) = func.get("arguments").and_then(|v| v.as_str()) {
+                            checked_append(
+                                &mut tool.arguments,
+                                args,
+                                MAX_STREAM_TOOL_ARGUMENT_BYTES,
+                                &mut self.retained_bytes,
+                                "tool arguments",
+                            )?;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(self, fallback_model: Option<&str>) -> Result<Option<Value>, StreamLimitError> {
+        if self.choices.is_empty() {
+            return Ok(None);
+        }
+        let mut response_choices: Vec<Value> = Vec::new();
+        for (idx, accum) in &self.choices {
+            let mut message = serde_json::Map::new();
+            message.insert(
+                "role".to_string(),
+                Value::String(
+                    accum
+                        .role
+                        .clone()
+                        .unwrap_or_else(|| "assistant".to_string()),
+                ),
+            );
+            if !accum.tool_calls.is_empty() {
+                message.insert("content".to_string(), Value::Null);
+                let mut call_arr = Vec::new();
+                for tool in accum.tool_calls.values() {
+                    let id = tool.id.as_ref().ok_or_else(|| StreamLimitError {
+                        code: "upstream_stream_invalid_tool_call",
+                        message: "Upstream tool call ended without an id".to_string(),
+                    })?;
+                    let name = tool.name.as_ref().ok_or_else(|| StreamLimitError {
+                        code: "upstream_stream_invalid_tool_call",
+                        message: "Upstream tool call ended without a function name".to_string(),
+                    })?;
+                    let mut tc_obj = serde_json::Map::new();
+                    tc_obj.insert("id".to_string(), Value::String(id.clone()));
+                    tc_obj.insert(
+                        "type".to_string(),
+                        Value::String(
+                            tool.call_type
+                                .clone()
+                                .unwrap_or_else(|| "function".to_string()),
+                        ),
+                    );
+                    let mut func_obj = serde_json::Map::new();
+                    func_obj.insert("name".to_string(), Value::String(name.clone()));
+                    func_obj.insert(
+                        "arguments".to_string(),
+                        Value::String(tool.arguments.clone()),
+                    );
+                    tc_obj.insert("function".to_string(), Value::Object(func_obj));
+                    call_arr.push(Value::Object(tc_obj));
+                }
+                message.insert("tool_calls".to_string(), Value::Array(call_arr));
+            } else {
+                message.insert("content".to_string(), Value::String(accum.content.clone()));
+            }
+            response_choices.push(json!({
+                "index": *idx,
+                "message": Value::Object(message),
+                "finish_reason": accum.finish_reason.clone().unwrap_or_else(|| "stop".to_string()),
+            }));
+        }
+        let final_model = self
+            .model
+            .or_else(|| fallback_model.map(String::from))
+            .unwrap_or_else(|| "unknown".to_string());
+        Ok(Some(json!({
+            "id": self.id.unwrap_or_else(|| {
+                format!("chatcmpl-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("0000"))
+            }),
+            "object": "chat.completion",
+            "created": self.created.unwrap_or_else(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64
+            }),
+            "model": final_model,
+            "choices": response_choices,
+            "usage": self.usage.unwrap_or_else(|| json!({
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            })),
+        })))
+    }
+}
+
+impl ResponsesForcedState {
+    fn ingest_event(
+        &mut self,
+        event_name: Option<&str>,
+        data_str: &str,
+    ) -> Result<(), StreamLimitError> {
+        let Some(event) = event_name else {
+            return Ok(());
+        };
+        if data_str == "[DONE]" {
+            return Ok(());
+        }
+        let Ok(parsed) = serde_json::from_str::<Value>(data_str) else {
+            return Ok(());
+        };
+        match event {
+            "response.created" => {
+                if let Some(id_val) = parsed.pointer("/response/id").and_then(|v| v.as_str()) {
+                    replace_bounded_plain_string(
+                        &mut self.summary.response_id,
+                        id_val,
+                        &mut self.summary.retained_bytes,
+                        "response id",
+                    )?;
+                }
+                if let Some(t) = parsed
+                    .pointer("/response/created_at")
+                    .and_then(|v| v.as_i64())
+                {
+                    self.summary.created = Some(t);
+                }
+            }
+            "response.output_item.done" => {
+                if let Some(item) = parsed.get("item") {
+                    let idx = wire_index(parsed.get("output_index"), "output_index")?;
+                    if !self.summary.output.contains_key(&idx)
+                        && self.summary.output.len() >= MAX_STREAM_TOOL_CALLS
+                    {
+                        return Err(StreamLimitError::too_many(
+                            "response output items",
+                            MAX_STREAM_TOOL_CALLS,
+                        ));
+                    }
+                    let old_charge = self.summary.output.get(&idx).map_or(0, |(_, bytes)| *bytes);
+                    let charge = data_str.len();
+                    let next = self
+                        .summary
+                        .retained_bytes
+                        .checked_sub(old_charge)
+                        .and_then(|bytes| bytes.checked_add(charge))
+                        .ok_or_else(|| StreamLimitError::arithmetic("response output state"))?;
+                    if next > MAX_STREAM_ACCUMULATED_BYTES {
+                        return Err(StreamLimitError::bytes(
+                            "response output state",
+                            MAX_STREAM_ACCUMULATED_BYTES,
+                        ));
+                    }
+                    self.summary.output.insert(idx, (item.clone(), charge));
+                    self.summary.retained_bytes = next;
+                }
+            }
+            "response.completed" => {
+                self.summary.status = "completed".to_string();
+                if let Some(usage) = parsed.pointer("/response/usage") {
+                    let mut map = serde_json::Map::new();
+                    for key in &[
+                        "input_tokens",
+                        "output_tokens",
+                        "total_tokens",
+                        "cache_read_input_tokens",
+                        "cached_tokens",
+                        "cache_creation_input_tokens",
+                    ] {
+                        map.insert(
+                            key.to_string(),
+                            usage.get(*key).cloned().unwrap_or(json!(0)),
+                        );
+                    }
+                    self.summary.usage = Value::Object(map);
+                }
+            }
+            "response.failed" => {
+                self.summary.status = "failed".to_string();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn finish(self, fallback_model: Option<&str>) -> Result<Option<Value>, StreamLimitError> {
+        if self.summary.response_id.is_empty() {
+            return Ok(None);
+        }
+        assemble_responses_summary(self.summary, fallback_model)
+    }
+}
+
+/// Feed one complete SSE wire into a fresh accumulator. Test/oracle helper
+/// that shares the incremental ingest path with live streaming.
+#[allow(dead_code)]
+pub fn accumulate_sse_bytes(
+    input: &[u8],
+    fallback_model: Option<&str>,
+) -> Result<Option<Value>, StreamLimitError> {
+    let mut framer = SseFramer::new();
+    let mut accumulator = ForcedSseAccumulator::new();
+    let mut ingest_error: Option<StreamLimitError> = None;
+    let feed_result = framer.feed(input, |event| {
+        if ingest_error.is_some() {
+            return;
+        }
+        if let Err(error) = accumulator.ingest(&event) {
+            ingest_error = Some(error);
+        }
+    });
+    if let Some(error) = ingest_error {
+        return Err(error);
+    }
+    feed_result.map_err(|frame| StreamLimitError {
+        code: frame.code(),
+        message: frame.to_string(),
+    })?;
+    let mut finish_error: Option<StreamLimitError> = None;
+    let finish_result = framer.finish(|event| {
+        if finish_error.is_some() {
+            return;
+        }
+        if let Err(error) = accumulator.ingest(&event) {
+            finish_error = Some(error);
+        }
+    });
+    if let Some(error) = finish_error {
+        return Err(error);
+    }
+    finish_result.map_err(|frame| StreamLimitError {
+        code: frame.code(),
+        message: frame.to_string(),
+    })?;
+    accumulator.finish(fallback_model)
 }
 
 // ---------------------------------------------------------------------------
@@ -436,6 +929,7 @@ fn replace_bounded_plain_string(
 // ---------------------------------------------------------------------------
 
 /// Parsed summary of a Responses API SSE stream.
+#[derive(Debug)]
 struct ResponsesStreamSummary {
     response_id: String,
     created: Option<i64>,
@@ -595,7 +1089,16 @@ fn convert_responses_api_stream(
         Some(summary) => summary,
         None => return Ok(None),
     };
+    assemble_responses_summary(summary, fallback_model)
+}
 
+fn assemble_responses_summary(
+    summary: ResponsesStreamSummary,
+    fallback_model: Option<&str>,
+) -> Result<Option<Value>, StreamLimitError> {
+    if summary.response_id.is_empty() {
+        return Ok(None);
+    }
     // Extract text and function calls from output items.
     let mut content_text = String::new();
     let mut tool_calls: Vec<Value> = Vec::new();
