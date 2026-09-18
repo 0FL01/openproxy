@@ -162,6 +162,7 @@
     "auth_recovery_attempts_per_incoming_request": 1,
     "client_invalid_terminal_statuses": [
       400,
+      413,
       422
     ],
     "cross_request_cooldown_routing": false,
@@ -349,6 +350,31 @@
       "c26_allocated_bytes_per_request": 269265,
       "delta_bytes_per_request": -19188,
       "delta_percent": -6.6520369002922495
+    }
+  },
+  "default_executor_prepared_body": {
+    "checkpoint": "C27",
+    "scope": "request_scoped_default_executor_only",
+    "transform_then_serialize_count_for_identical_attempts": 1,
+    "serialization": "bounded_serde_json_writer_to_shared_bytes",
+    "maximum_bytes": 67108864,
+    "same_body_model_and_transform_configuration_reuses_bytes": true,
+    "changed_body_model_or_transform_configuration_requires_rebuild": true,
+    "account_url_headers_credentials_and_proxy_rebuilt_per_attempt": true,
+    "reqwest_and_hyper_use_same_prepared_bytes": true,
+    "content_type": "application/json",
+    "cross_request_cache": false,
+    "c13_attempt_budget_preserved": true,
+    "payload_limit_failures_are_terminal": true,
+    "one_allocation_per_request_claimed": false,
+    "response_transformed_body_lifetime_owner": "C28",
+    "allocation_measurement": {
+      "workload": "C02_release_equal_work_warm_concurrency_32_single_attempt",
+      "c02_baseline_allocated_bytes_per_request": 288453,
+      "c26_allocated_bytes_per_request": 269265,
+      "c27_allocated_bytes_per_request": 269135,
+      "delta_from_c26_bytes_per_request": -130,
+      "note": "The benchmark uses one successful upstream attempt, so account-fallback serialization reuse is verified by focused tests rather than expected to materially change this cell."
     }
   },
   "versions": {

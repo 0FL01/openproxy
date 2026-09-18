@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 
 use crate::core::account_fallback::{GenerationAttemptBudget, ProviderAttemptError};
 use crate::core::chat::RequestPlan;
-use crate::core::executor::UpstreamResponse;
+use crate::core::executor::{PreparedUpstreamBody, UpstreamResponse};
 use crate::core::model::get_model_info;
 use crate::core::proxy::resolve_proxy_target;
 use crate::core::translator::helpers::image_helper::fetch_image_as_base64;
@@ -724,6 +724,10 @@ async fn forward_with_provider_fallback(
     let mut last_error: Option<ProviderAttemptError> = None;
     let mut reloaded = false;
     let mut auth_recovery_used = false;
+    // C27: the post-planning body becomes immutable after the stream/dashboard
+    // fields below are normalized. DefaultExecutor transforms and serializes it
+    // once, then shares the bounded bytes across eligible account attempts.
+    let mut default_prepared_body: Option<PreparedUpstreamBody> = None;
     let codex_supporters = if provider == "codex" {
         let snapshot = state.db.snapshot();
         let supporters = state.codex_models.cached_supporters(model, &snapshot);
@@ -921,12 +925,12 @@ async fn forward_with_provider_fallback(
             AntigravityExecutionRequest, AntigravityExecutor, AzureExecutionRequest, AzureExecutor,
             CodexExecutionRequest, CodexExecutor, CommandCodeExecutionRequest, CommandCodeExecutor,
             CursorExecutionRequest, CursorExecutor, DefaultExecutor, DevinCliExecutor,
-            DevinExecutionRequest, ExecutionRequest, GithubExecutionRequest, GithubExecutor,
-            GrokWebExecutionRequest, GrokWebExecutor, KimchiExecutor, KiroExecutionRequest,
-            KiroExecutor, KiroExecutorResponse, OpenCodeExecutionRequest, OpenCodeExecutor,
-            OpenCodeTier, ProviderExecutionRequest, ProviderExecutor, QwenExecutionRequest,
-            QwenExecutor, TraeExecutionRequest, TraeExecutor, VertexExecutionRequest,
-            VertexExecutor, WindsurfExecutionRequest, WindsurfExecutor,
+            DevinExecutionRequest, GithubExecutionRequest, GithubExecutor, GrokWebExecutionRequest,
+            GrokWebExecutor, KimchiExecutor, KiroExecutionRequest, KiroExecutor,
+            KiroExecutorResponse, OpenCodeExecutionRequest, OpenCodeExecutor, OpenCodeTier,
+            ProviderExecutionRequest, ProviderExecutor, QwenExecutionRequest, QwenExecutor,
+            TraeExecutionRequest, TraeExecutor, VertexExecutionRequest, VertexExecutor,
+            WindsurfExecutionRequest, WindsurfExecutor,
         };
 
         let is_codex_model = provider == "codex";
@@ -1550,19 +1554,33 @@ async fn forward_with_provider_fallback(
                     retry_after: None,
                     upstream_body: None,
                 })?;
+                if default_prepared_body
+                    .as_ref()
+                    .is_none_or(|prepared| !executor.can_reuse_prepared_body(prepared, model))
+                {
+                    default_prepared_body = Some(
+                        executor
+                            .prepare_upstream_body(&request_body, model)
+                            .map_err(|err| err.into_provider_attempt_error())?,
+                    );
+                }
+                let prepared = default_prepared_body
+                    .as_ref()
+                    .expect("prepared body was initialized");
+                let request_headers: BTreeMap<String, String> = client_headers
+                    .into_iter()
+                    .flatten()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect();
                 let result = executor
-                    .execute(ExecutionRequest {
-                        model: model.to_string(),
-                        body: request_body.clone(),
+                    .execute_prepared(
+                        model,
                         stream,
-                        credentials: connection.clone(),
-                        proxy,
-                        client_headers: client_headers
-                            .into_iter()
-                            .flatten()
-                            .map(|(key, value)| (key.clone(), value.clone()))
-                            .collect(),
-                    })
+                        &connection,
+                        proxy.as_ref(),
+                        &request_headers,
+                        prepared,
+                    )
                     .await
                     .map_err(|err| err.into_provider_attempt_error())?;
                 Ok(KiroExecutorResponse {
@@ -1650,7 +1668,7 @@ async fn forward_with_provider_fallback(
                 // A body-invalid request is account-independent. Replaying it
                 // across every configured credential only multiplies an
                 // already-known client failure.
-                if matches!(status.as_u16(), 400 | 422) {
+                if matches!(status.as_u16(), 400 | 413 | 422) {
                     return Err(last_error.expect("upstream error recorded"));
                 }
 
@@ -1699,6 +1717,12 @@ async fn forward_with_provider_fallback(
                     attempt_log.finish("error", Some(error.status), None).await;
                 }
                 last_error = Some(error);
+                // Local/upstream payload-limit failures are body-dependent, not
+                // credential-dependent. Replaying the same prepared body on
+                // every account cannot succeed and would repeat serialization.
+                if last_error.as_ref().is_some_and(|error| error.status == 413) {
+                    return Err(last_error.expect("payload-limit error recorded"));
+                }
                 excluded.insert(connection.id.clone());
                 continue;
             }

@@ -56,7 +56,8 @@ pub use cursor::{
 };
 pub use default::{
     provider_config_base_url, select_anthropic_beta, DefaultExecutor, ExecutionRequest,
-    ExecutionResponse, ExecutorError, ProviderConfig, TransportKind, UpstreamResponse,
+    ExecutionResponse, ExecutorError, PreparedUpstreamBody, ProviderConfig, TransportKind,
+    UpstreamResponse, MAX_PREPARED_UPSTREAM_BODY_BYTES,
 };
 pub use devin_cli::{DevinCliExecutor, DevinExecutionRequest, DevinExecutorResponse};
 pub use github::{

@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
-use std::io;
+use std::io::{self, Write};
 use std::sync::Arc;
 
+use bytes::Bytes;
 use http_body_util::Full;
 use hyper::body::Incoming as HyperIncoming;
 use hyper::http;
@@ -419,6 +420,40 @@ pub struct ExecutionResponse {
     pub transport: TransportKind,
 }
 
+/// Maximum serialized request body retained by the DefaultExecutor.
+///
+/// Public generation routes already cap inbound JSON at 32 MiB. A transform
+/// may duplicate a large JSON schema into an instruction, so the prepared
+/// representation allows bounded expansion without restoring an unbounded
+/// serializer buffer.
+pub const MAX_PREPARED_UPSTREAM_BODY_BYTES: usize = 64 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PreparedBodyKey {
+    provider: String,
+    provider_node: Option<ProviderNode>,
+    model: String,
+}
+
+/// Request-scoped, fully transformed JSON and its one bounded serialization.
+///
+/// The bytes may be shared by byte-identical account attempts. URL, headers,
+/// credentials, and proxy selection are deliberately rebuilt for every
+/// attempt. This object is never stored across incoming requests.
+#[derive(Debug)]
+pub struct PreparedUpstreamBody {
+    key: PreparedBodyKey,
+    transformed_body: Value,
+    bytes: Bytes,
+}
+
+impl PreparedUpstreamBody {
+    #[doc(hidden)]
+    pub fn serialized_bytes(&self) -> &Bytes {
+        &self.bytes
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportKind {
     Reqwest,
@@ -469,6 +504,8 @@ pub enum ExecutorError {
     InvalidUri(InvalidUri),
     InvalidRequest(http::Error),
     Serialize(serde_json::Error),
+    PreparedBodyTooLarge { limit: usize },
+    PreparedBodyMismatch,
     HyperClientInit(io::Error),
     Hyper(hyper_util::client::legacy::Error),
     Request(reqwest::Error),
@@ -495,6 +532,12 @@ impl ExecutorError {
             Self::MissingCredentials(p) => ProviderAttemptError {
                 status: 400,
                 message: format!("Missing credentials for provider: {p}"),
+                retry_after: None,
+                upstream_body: None,
+            },
+            Self::PreparedBodyTooLarge { limit } => ProviderAttemptError {
+                status: http::StatusCode::PAYLOAD_TOO_LARGE.as_u16(),
+                message: format!("Prepared upstream request exceeds the {limit}-byte limit"),
                 retry_after: None,
                 upstream_body: None,
             },
@@ -1110,28 +1153,71 @@ impl DefaultExecutor {
         &self,
         request: ExecutionRequest,
     ) -> Result<ExecutionResponse, ExecutorError> {
-        let headers = self.build_headers_for_request(
+        let prepared = self.prepare_upstream_body(&request.body, &request.model)?;
+        self.execute_prepared(
             &request.model,
-            &request.credentials,
             request.stream,
+            &request.credentials,
+            request.proxy.as_ref(),
             &request.client_headers,
-        )?;
-        let transformed_body = self.transform_request(&request.body, &request.model);
-        let url = self.build_url(&request.model, request.stream, &request.credentials)?;
+            &prepared,
+        )
+        .await
+    }
+
+    /// Apply all provider-required body transforms and serialize exactly once.
+    pub fn prepare_upstream_body(
+        &self,
+        body: &Value,
+        model: &str,
+    ) -> Result<PreparedUpstreamBody, ExecutorError> {
+        let transformed_body = self.transform_request(body, model);
+        let bytes = serialize_json_bounded(&transformed_body, MAX_PREPARED_UPSTREAM_BODY_BYTES)?;
+        Ok(PreparedUpstreamBody {
+            key: self.prepared_body_key(model),
+            transformed_body,
+            bytes,
+        })
+    }
+
+    /// Whether `prepared` was built by an executor with the same transform
+    /// configuration and routed model. The caller must additionally guarantee
+    /// that the post-planning JSON body has not changed; the chat planner does
+    /// so by preparing only after its final request-body mutation.
+    pub fn can_reuse_prepared_body(&self, prepared: &PreparedUpstreamBody, model: &str) -> bool {
+        prepared.key == self.prepared_body_key(model)
+    }
+
+    /// Send an already transformed and bounded body with current account
+    /// credentials. Account-dependent URL/header/proxy state is rebuilt while
+    /// the immutable request bytes are shared by reference count.
+    pub async fn execute_prepared(
+        &self,
+        model: &str,
+        stream: bool,
+        credentials: &ProviderConnection,
+        proxy: Option<&ProxyTarget>,
+        client_headers: &BTreeMap<String, String>,
+        prepared: &PreparedUpstreamBody,
+    ) -> Result<ExecutionResponse, ExecutorError> {
+        if !self.can_reuse_prepared_body(prepared, model) {
+            return Err(ExecutorError::PreparedBodyMismatch);
+        }
+        let headers = self.build_headers_for_request(model, credentials, stream, client_headers)?;
+        let url = self.build_url(model, stream, credentials)?;
 
         // Acquire semaphore for tokenrouter free models to limit concurrent requests to 1
         let _tokenrouter_permit = if self.provider == "tokenrouter"
-            && (request.model == "qwen/qwen3.8-max-free"
-                || request.model == "moonshotai/kimi-k3-free")
+            && (model == "qwen/qwen3.8-max-free" || model == "moonshotai/kimi-k3-free")
         {
             Some(TOKENROUTER_SEMAPHORE.acquire().await?)
         } else {
             None
         };
 
-        let use_hyper = self.use_hyper_transport(&request, &url);
+        let use_hyper = Self::use_hyper_transport(proxy, &url);
         let upstream = self
-            .send_one(&url, &headers, &transformed_body, &request, use_hyper)
+            .send_one(&url, &headers, &prepared.bytes, proxy, use_hyper)
             .await?;
 
         // C13: account selection and the sole 401/403 recovery live in the
@@ -1140,7 +1226,7 @@ impl DefaultExecutor {
             response: upstream,
             url,
             headers,
-            transformed_body,
+            transformed_body: prepared.transformed_body.clone(),
             transport: if use_hyper {
                 TransportKind::Hyper
             } else {
@@ -1154,15 +1240,14 @@ impl DefaultExecutor {
         &self,
         url: &str,
         headers: &HeaderMap,
-        transformed_body: &Value,
-        request: &ExecutionRequest,
+        body: &Bytes,
+        proxy: Option<&ProxyTarget>,
         use_hyper: bool,
     ) -> Result<UpstreamResponse, ExecutorError> {
         if use_hyper {
             let client = self.pool.get_hyper_direct(&self.provider)?;
             let uri: Uri = url.parse()?;
-            let body_bytes = serde_json::to_vec(transformed_body)?;
-            let mut req = HyperRequest::post(uri).body(Full::new(body_bytes.into()))?;
+            let mut req = HyperRequest::post(uri).body(Full::new(body.clone()))?;
             *req.headers_mut() = headers.clone();
             client
                 .request(req)
@@ -1170,11 +1255,11 @@ impl DefaultExecutor {
                 .map_err(ExecutorError::Hyper)
                 .map(UpstreamResponse::Hyper)
         } else {
-            let client = self.pool.get(&self.provider, request.proxy.as_ref())?;
+            let client = self.pool.get(&self.provider, proxy)?;
             client
                 .post(url)
                 .headers(headers.clone())
-                .json(transformed_body)
+                .body(body.clone())
                 .send()
                 .await
                 .map_err(ExecutorError::Request)
@@ -1186,13 +1271,67 @@ impl DefaultExecutor {
         &self.pool
     }
 
-    fn use_hyper_transport(&self, request: &ExecutionRequest, url: &str) -> bool {
-        request.proxy.is_none()
+    fn prepared_body_key(&self, model: &str) -> PreparedBodyKey {
+        PreparedBodyKey {
+            provider: self.provider.clone(),
+            provider_node: self.provider_node.clone(),
+            model: model.to_string(),
+        }
+    }
+
+    fn use_hyper_transport(proxy: Option<&ProxyTarget>, url: &str) -> bool {
+        proxy.is_none()
             && url
                 .split('?')
                 .next()
                 .is_some_and(|path| path.ends_with("/chat/completions"))
     }
+}
+
+struct BoundedJsonWriter {
+    bytes: Vec<u8>,
+    limit: usize,
+    exceeded: bool,
+}
+
+impl BoundedJsonWriter {
+    fn new(limit: usize) -> Self {
+        Self {
+            bytes: Vec::new(),
+            limit,
+            exceeded: false,
+        }
+    }
+}
+
+impl Write for BoundedJsonWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let Some(next_len) = self.bytes.len().checked_add(buf.len()) else {
+            self.exceeded = true;
+            return Err(io::Error::other("prepared JSON body length overflow"));
+        };
+        if next_len > self.limit {
+            self.exceeded = true;
+            return Err(io::Error::other("prepared JSON body exceeds limit"));
+        }
+        self.bytes.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn serialize_json_bounded(value: &Value, limit: usize) -> Result<Bytes, ExecutorError> {
+    let mut writer = BoundedJsonWriter::new(limit);
+    if let Err(error) = serde_json::to_writer(&mut writer, value) {
+        if writer.exceeded {
+            return Err(ExecutorError::PreparedBodyTooLarge { limit });
+        }
+        return Err(ExecutorError::Serialize(error));
+    }
+    Ok(Bytes::from(writer.bytes))
 }
 
 fn compatible_value(value: Option<&Value>) -> Option<&str> {
@@ -1349,6 +1488,20 @@ fn convert_openai_tools_to_claude(body: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_serializer_accepts_exact_limit_and_rejects_plus_one() {
+        let value = serde_json::json!({"unicode": "Привет 🌍", "unknown": {"x": true}});
+        let exact = serde_json::to_vec(&value).unwrap();
+        let prepared = serialize_json_bounded(&value, exact.len()).unwrap();
+        assert_eq!(prepared.as_ref(), exact.as_slice());
+
+        let error = serialize_json_bounded(&value, exact.len() - 1).unwrap_err();
+        assert!(matches!(
+            error,
+            ExecutorError::PreparedBodyTooLarge { limit } if limit == exact.len() - 1
+        ));
+    }
 
     #[test]
     fn drops_client_metadata_for_cerebras() {

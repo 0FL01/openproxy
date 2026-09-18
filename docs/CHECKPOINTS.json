@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C27",
+  "next_checkpoint": "C28",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c26_cargo_1.98.1",
+    "rust_verification": "passed_through_c27_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -677,7 +677,7 @@
         ],
         "budget": "The request-scoped planner owns a shared atomic generation budget: eligible accounts multiplied by the provider's bounded protocol endpoint surfaces, plus exactly one post-refresh generation attempt. Normal accounts are selected once; Kiro's three static endpoint surfaces reserve from the same budget.",
         "auth_recovery": "DefaultExecutor credential refresh and Mimo same-request rebootstrap were removed. Chat owns one global 401/403 refresh invocation per incoming request, persists it, and its follow-up generation consumes the shared budget. Mimo invalidates stale derived JWT state but returns the original response for a later client-owned request.",
-        "status_policy": "Upstream 400/422 is terminal and is not replayed across accounts. Auth failures without the one permitted recovery, 429, 5xx, other account-specific failures, and transport errors may advance only to another eligible account with no sleep. Final raw status/body/Retry-After are preserved. Success immediately hands off the response, after which fallback cannot resume.",
+        "status_policy": "Upstream body/payload-invalid 400/413/422 is terminal and is not replayed across accounts. Auth failures without the one permitted recovery, 429, 5xx, other account-specific failures, and transport errors may advance only to another eligible account with no sleep. Final raw status/body/Retry-After are preserved. Success immediately hands off the response, after which fallback cannot resume.",
         "tests": [
           "cargo test --test lean_proxy_budget_c13 -- --nocapture: 4 passed",
           "cargo test --lib account_fallback --all-features -- --nocapture: 14 passed",
@@ -1380,7 +1380,7 @@
           "docs/goals/2026-09-17-lean-proxy-plan.md"
         ],
         "ownership_boundary": "chat_completions_impl now moves the parsed owned JSON Value into execute_single_model after all request-planning borrows finish. execute_single_model mutates that owned value directly instead of deep-cloning the full request.",
-        "fallback_preservation": "forward_with_provider_fallback still owns one immutable request-scoped prepared Value and clones it per eligible account/provider attempt. C13's attempt budget, terminal 400/422 handling, sole auth recovery, Kiro endpoint accounting, raw final errors, and no-retry-after-commitment behavior are unchanged.",
+        "fallback_preservation": "forward_with_provider_fallback still owns one immutable request-scoped prepared Value and clones it per eligible account/provider attempt. C13's attempt budget, terminal body/payload-invalid 400/413/422 handling, sole auth recovery, Kiro endpoint accounting, raw final errors, and no-retry-after-commitment behavior are preserved.",
         "scope_boundary": "Executor request structs remain owned Value APIs. Prepared byte serialization remains C27-owned and response transformed_body lifetime remains C28-owned; no translator-wide rewrite, unsafe aliasing, Arc<Value>, or cross-request cache was introduced.",
         "allocation_measurement": {
           "command": "LEAN_BENCH_OUTPUT=/tmp/opencode/c26-benchmark.json scripts/bench-lean",
@@ -1408,7 +1408,7 @@
     {
       "id": "C27",
       "title": "Сериализовать подготовленное upstream тело один раз",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C26"
       ],
@@ -1420,7 +1420,49 @@
       "change": "Получать ограниченное по размеру Bytes после обязательных преобразований; переиспользовать разделяемые байты для разрешённых идентичных повторов. При смене тела/формата/необходимого account field пересоздавать representation. Не хранить несколько полных буферов «на всякий случай».",
       "tests": "Одинаковая разрешённая отправка использует одну сериализацию; изменение routed model/account-dependent body делает новую. Проверить Content-Type/encoding, Unicode и сохранение unknown fields.",
       "acceptance": "Устранены повторные serialize одного и того же тела в затронутом executor; не заявлена одна аллокация на весь запрос.",
-      "rollback": "Откат per-executor commit; prepared bytes не записываются в межзапросный cache."
+      "rollback": "Откат per-executor commit; prepared bytes не записываются в межзапросный cache.",
+      "result": {
+        "files": [
+          "src/core/executor/default.rs",
+          "src/core/executor/mod.rs",
+          "src/server/api/chat.rs",
+          "tests/lean_proxy_prepared_c27.rs",
+          "tests/lean_proxy_budget_c13.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json"
+        ],
+        "serialization": "DefaultExecutor applies required transforms once and writes JSON through a checked bounded writer into one request-scoped Bytes value. send_one contains no JSON serialization for either Hyper or Reqwest.",
+        "bound": {
+          "bytes": 67108864,
+          "checked_before_extend": true,
+          "plus_one_tested": true,
+          "terminal_status": 413
+        },
+        "reuse": "The chat planner initializes one prepared DefaultExecutor body after its final dashboard/stream mutation and reuses it only while provider, provider-node transform configuration, and routed model match. Account URL, headers, credentials, proxy, and transport are rebuilt for every C13-counted attempt.",
+        "regeneration": "Changed request content is prepared as a new object; changed routed model or transform configuration fails compatibility and rebuilds. DefaultExecutor transforms currently consume no account credential fields; a future account-dependent body transform must stay per-attempt.",
+        "wire": "Reqwest .body(Bytes) and Hyper Full<Bytes> send the same UTF-8 JSON, derive Content-Length, and retain application/json. Unicode, tools, and unknown fields are preserved.",
+        "scope": "DefaultExecutor only. Other executors remain separate sub-checkpoints. ExecutionResponse.transformed_body remains for C28, so Value plus Bytes temporarily coexist and no one-allocation claim is made.",
+        "measurement": {
+          "command": "LEAN_BENCH_OUTPUT=target/c27-benchmark.json scripts/bench-lean",
+          "artifact_committed": false,
+          "workload": "C02 equal-work release/default-feature warm concurrency 32, one successful upstream attempt",
+          "c02_baseline_allocated_bytes_per_request": 288453,
+          "c26_allocated_bytes_per_request": 269265,
+          "c27_allocated_bytes_per_request": 269135,
+          "delta_from_c26_bytes_per_request": -130,
+          "interpretation": "The baseline cell has no fallback attempt, so the focused two-account test is the direct evidence for eliminated repeated serialization."
+        },
+        "verification": [
+          "cargo test --test lean_proxy_prepared_c27 --test lean_proxy_ownership_c26 --test lean_proxy_budget_c13 --test lean_proxy_retry_c10 --test lean_proxy_context_c08 --test lean_proxy_passthrough_c09 --test chat_completions -- --nocapture: 26 passed",
+          "cargo test --lib core::executor::default --all-features -- --nocapture: 11 passed",
+          "scripts/bench-lean release latency/allocation matrix and 2 artifact validators passed",
+          "cargo test --lib --all-features -- --test-threads=1: 1178 passed",
+          "focused strict clippy passed with only the two known unrelated lint-class allowances; cargo clippy --all-targets --all-features passed with exactly 3 pre-existing production style warnings",
+          "cargo fmt --all -- --check, jq JSON parse, and git diff --check: passed"
+        ],
+        "acceptance_evidence": "Direct reuse sends one prepared allocation through both pooled Hyper and Reqwest with account-specific authorization; full-handler two-account fallback emits identical bodies and exact C13 attempts. Changed model/body creates different preparation, the checked serializer accepts the exact edge and rejects +1, and source guards prove send_one has no serializer.",
+        "rollback": "Revert the C27 DefaultExecutor/planner commit. No persisted data, route, credential, model metadata, public schema, dependency, or cross-request cache migration occurred."
+      }
     },
     {
       "id": "C28",

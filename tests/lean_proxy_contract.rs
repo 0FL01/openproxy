@@ -356,4 +356,34 @@ fn contract_freezes_preservation_and_removal_lists() {
         manifest["request_body_ownership"]["prepared_bytes_owner"],
         "C27"
     );
+    assert_eq!(
+        manifest["default_executor_prepared_body"]
+            ["transform_then_serialize_count_for_identical_attempts"],
+        1
+    );
+    assert_eq!(
+        manifest["default_executor_prepared_body"]["maximum_bytes"],
+        64 * 1024 * 1024
+    );
+    assert_eq!(
+        manifest["default_executor_prepared_body"]
+            ["account_url_headers_credentials_and_proxy_rebuilt_per_attempt"],
+        true
+    );
+    assert_eq!(
+        manifest["default_executor_prepared_body"]["cross_request_cache"],
+        false
+    );
+    assert_eq!(
+        manifest["default_executor_prepared_body"]["payload_limit_failures_are_terminal"],
+        true
+    );
+    assert_eq!(
+        manifest["default_executor_prepared_body"]["one_allocation_per_request_claimed"],
+        false
+    );
+    assert_eq!(
+        manifest["generation_retry_policy"]["client_invalid_terminal_statuses"],
+        serde_json::json!([400, 413, 422])
+    );
 }

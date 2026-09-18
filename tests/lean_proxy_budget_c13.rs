@@ -87,6 +87,7 @@ async fn post_chat(app: &axum::Router, provider: &str, stream: bool) -> axum::re
 async fn status_matrix_has_exact_account_bound_and_preserves_final_error() {
     let cases = [
         (StatusCode::BAD_REQUEST, 1usize),
+        (StatusCode::PAYLOAD_TOO_LARGE, 1),
         (StatusCode::UNAUTHORIZED, 3),
         (StatusCode::FORBIDDEN, 3),
         (StatusCode::TOO_MANY_REQUESTS, 3),
@@ -285,7 +286,7 @@ fn source_has_one_recovery_owner_and_no_hidden_generation_multiplier() {
     assert!(chat.contains("CONNECTION_REFRESH_COORDINATOR"));
     assert!(chat.contains("connection_credential_generation"));
     assert!(chat.contains("GenerationAttemptBudget::new"));
-    assert!(chat.contains("matches!(status.as_u16(), 400 | 422)"));
+    assert!(chat.contains("matches!(status.as_u16(), 400 | 413 | 422)"));
     for removed in [
         "try_refresh_credentials",
         "refresh_with_retry",
