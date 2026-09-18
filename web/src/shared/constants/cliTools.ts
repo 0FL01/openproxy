@@ -128,27 +128,6 @@ export const CLI_TOOLS: Record<string, CLITool> = {
     description: "Factory Droid AI Assistant",
     configType: "custom",
   },
-  cursor: {
-    id: "cursor",
-    name: "Cursor",
-    image: "/providers/cursor.png",
-    color: "#000000",
-    description: "Cursor AI Code Editor",
-    configType: "guide",
-    requiresExternalUrl: true,
-    notes: [
-      { type: "warning", text: "Requires Cursor Pro account to use this feature." },
-      { type: "cloudCheck", text: "Cursor routes requests through its own server, so local endpoint is not supported. Please enable Cloud Endpoint in Settings." },
-    ],
-    guideSteps: [
-      { step: 1, title: "Open Settings", desc: "Go to Settings → Models" },
-      { step: 2, title: "Enable OpenAI API", desc: "Enable \"OpenAI API key\" option" },
-      { step: 3, title: "Base URL", value: "{{baseUrl}}", copyable: true },
-      { step: 4, title: "API Key", type: "apiKeySelector" },
-      { step: 5, title: "Add Custom Model", desc: "Click \"View All Model\" → \"Add Custom Model\"" },
-      { step: 6, title: "Select Model", type: "modelSelector" },
-    ],
-  },
   cline: {
     id: "cline",
     name: "Cline",
@@ -354,39 +333,6 @@ amp --model "{{model}}"
       { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", alias: "sonnet", defaultValue: "cc/claude-sonnet-4-6" },
       { id: "gpt-5.5", name: "GPT 5.5", alias: "gpt5", defaultValue: "cx/gpt-5.5" },
       { id: "gemini-3.1-pro", name: "Gemini 3.1 Pro", alias: "gemini", defaultValue: "gemini/gemini-3.1-pro" },
-    ],
-  },
-  "grok-build": {
-    id: "grok-build",
-    name: "Grok Build (Grok CLI)",
-    image: "/providers/grok-cli.png",
-    color: "#1DA1F2",
-    description: "xAI Grok Build TUI coding agent",
-    configType: "custom",
-    docsUrl: "https://x.ai/cli",
-    defaultCommand: "grok",
-    notes: [
-      {
-        type: "info",
-        text: "Grok Build uses ~/.grok/config.toml. OpenProxy writes a [model.openproxy] custom model and sets it as the default.",
-      },
-      {
-        type: "info",
-        text: "After Apply, run grok (or /model openproxy) to use the routed model. Switch back anytime with /model grok-build. You can also pass --model provider/model-id.",
-      },
-      {
-        type: "warning",
-        text: "Config path: Linux/macOS ~/.grok/config.toml • Windows %USERPROFILE%\\.grok\\config.toml",
-      },
-    ],
-    defaultModels: [
-      { id: "grok-build", name: "Grok Build", alias: "grok-build", defaultValue: "gcli/grok-build" },
-      {
-        id: "grok-composer-2.5-fast",
-        name: "Grok Composer 2.5 Fast",
-        alias: "composer",
-        defaultValue: "gcli/grok-composer-2.5-fast",
-      },
     ],
   },
 };

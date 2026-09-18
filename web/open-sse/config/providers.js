@@ -166,18 +166,6 @@ export const PROVIDERS = {
     },
     clientId: "Iv1.b507a08c87ecfe98"
   },
-  cursor: {
-    baseUrl: "https://api2.cursor.sh",
-    chatPath: "/aiserver.v1.ChatService/StreamUnifiedChatWithTools",
-    format: "cursor",
-    headers: {
-      "connect-accept-encoding": "gzip",
-      "connect-protocol-version": "1",
-      "Content-Type": "application/connect+proto",
-      "User-Agent": "connect-es/1.6.1"
-    },
-    clientVersion: "3.1.0"
-  },
   "kimi-coding": {
     baseUrl: KIMI_CODING_BASE_URL,
     format: "claude",
@@ -319,11 +307,6 @@ export const PROVIDERS = {
     baseUrl: "https://opencode.ai/zen/go/v1/chat/completions",
     format: "openai",
     headers: {}
-  },
-  "grok-web": {
-    baseUrl: "https://grok.com/rest/app-chat/conversations/new",
-    format: "grok-web",
-    authType: "cookie"
   },
   azure: {
     baseUrl: "",

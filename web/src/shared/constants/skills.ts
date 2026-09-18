@@ -44,14 +44,14 @@ export const SKILLS: Skill[] = [
   {
     id: "openproxy-providers",
     name: "Providers",
-    description: "Configure AI providers: OAuth (Claude Code, Codex, Copilot, Cursor), API key (OpenAI, Anthropic, Gemini — 40+), and free tiers (Vertex AI).",
+    description: "Configure AI providers: OAuth (Claude Code, Codex, Copilot), API key (OpenAI, Anthropic, Gemini — 40+), and free tiers (Vertex AI).",
     endpoint: null,
     icon: "cloud",
   },
   {
     id: "openproxy-cli-tools",
     name: "CLI Tools",
-    description: "Wire Claude Code, Codex, Cursor, Cline, Continue, Roo, Kilo, Copilot, OpenClaw, and more into OpenProxy with one-click configuration.",
+    description: "Wire Claude Code, Codex, Cline, Continue, Roo, Kilo, Copilot, OpenClaw, and more into OpenProxy with one-click configuration.",
     endpoint: null,
     icon: "terminal",
   },

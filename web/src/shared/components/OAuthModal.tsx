@@ -184,7 +184,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     try {
       setError(null);
 
-      // Must match backend device-code providers (oauth.rs is_device_code_provider + grok-cli)
+      // Must match backend device-code providers (oauth.rs is_device_code_provider)
       const deviceCodeProviders = [
         "github",
         "qwen",
@@ -193,7 +193,6 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         "kilocode",
         "codebuddy",
         "codebuddy-cn",
-        "grok-cli",
         "kimchi",
       ];
       if (deviceCodeProviders.includes(provider)) {

@@ -83,7 +83,6 @@ export const OAUTH_PROVIDERS: Record<string, Provider> = {
   antigravity: { id: "antigravity", alias: "ag", name: "Antigravity CLI", icon: "rocket_launch", color: "#F59E0B", website: "https://antigravity.google", notice: { signupUrl: "https://antigravity.google" }, priority: 20 },
   codex: { id: "codex", alias: "cx", name: "OpenAI Codex", icon: "code", color: "#3B82F6", thinkingConfig: THINKING_CONFIG.effort, serviceKinds: ["llm"], website: "https://chatgpt.com/codex", notice: { signupUrl: "https://chatgpt.com/codex" }, priority: 15 },
   github: { id: "github", alias: "gh", name: "GitHub Copilot", icon: "code", color: "#333333", serviceKinds: ["llm"], website: "https://github.com/features/copilot", notice: { signupUrl: "https://github.com/features/copilot" }, priority: 25, authModes: ["device_code"] },
-  cursor: { id: "cursor", alias: "cu", name: "Cursor IDE", icon: "edit_note", color: "#00D4AA", website: "https://cursor.com", notice: { signupUrl: "https://cursor.com" }, priority: 30 },
   // Dual auth (OAuth device-code + API key) — merged in 68566f5; also under APIKEY_PROVIDERS.
   kimi: { id: "kimi", alias: "kimi", name: "Kimi", icon: "psychology", color: "#1E3A8A", textIcon: "KM", website: "https://kimi.moonshot.cn", notice: { signupUrl: "https://www.kimi.com/code", apiKeyUrl: "https://platform.moonshot.ai/console/api-keys" }, serviceKinds: ["llm"], authModes: ["oauth", "apikey"], hasOAuth: true, priority: 42 },
   // Dual auth (OAuth device-code + API key) — api key is primary; device flow kept for compat (ad51c2ce).
@@ -91,23 +90,6 @@ export const OAUTH_PROVIDERS: Record<string, Provider> = {
   cline: { id: "cline", alias: "cl", name: "Cline", icon: "smart_toy", color: "#5B9BD5", textIcon: "CL", website: "https://cline.bot", notice: { signupUrl: "https://cline.bot" }, priority: 45 },
   // Dual auth (OAuth + API key) — also listed under APIKEY_PROVIDERS for key path.
   xai: { id: "xai", alias: "xai", name: "xAI (Grok)", icon: "auto_awesome", color: "#1DA1F2", textIcon: "XA", website: "https://x.ai", notice: { apiKeyUrl: "https://console.x.ai", signupUrl: "https://accounts.x.ai" }, serviceKinds: ["llm", "imageToText"], authModes: ["oauth", "apikey"], priority: 35 },
-  // Grok CLI / Grok Build device-code OAuth (cli-chat-proxy.grok.com) — distinct from xai + grok-web.
-  "grok-cli": {
-    id: "grok-cli",
-    alias: "gcli",
-    name: "Grok CLI (Grok Build)",
-    icon: "auto_awesome",
-    color: "#1DA1F2",
-    textIcon: "GC",
-    website: "https://x.ai",
-    notice: {
-      text: "Sign in with your xAI / Grok account via device code. Uses Grok Build subscription credits (cli-chat-proxy.grok.com).",
-      signupUrl: "https://grok.com/supergrok",
-    },
-    serviceKinds: ["llm"],
-    authModes: ["oauth"],
-    priority: 36,
-  },
   // opencode: { id: "opencode", alias: "oc", name: "OpenCode", icon: "terminal", color: "#E87040", textIcon: "OC" },
 };
 
@@ -151,8 +133,9 @@ export const APIKEY_PROVIDERS: Record<string, Provider> = {
 };
 
 // Web Cookie Providers (use browser session cookie instead of API key)
+// Empty: grok-web retired. Kept as an empty record so provider pages
+// render no cookie section; backend is_web_cookie_provider matches.
 export const WEB_COOKIE_PROVIDERS: Record<string, Provider> = {
-  "grok-web": { id: "grok-web", alias: "gw", name: "Grok Web (Subscription)", icon: "auto_awesome", color: "#1DA1F2", textIcon: "GW", website: "https://grok.com", authType: "cookie", authHint: "Paste your sso= cookie value from grok.com", passthroughModels: true, serviceKinds: ["llm"] },
 };
 
 export const OPENAI_COMPATIBLE_PREFIX = "openai-compatible-";
@@ -472,7 +455,6 @@ export const USAGE_SUPPORTED_PROVIDERS: string[] = [
   "kimi-coding",
   "deepseek",
   "ollama",
-  "grok-cli",
   "glm",
   "glm-cn",
   "minimax",

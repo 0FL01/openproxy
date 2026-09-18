@@ -18,7 +18,6 @@ import {
   KiloToolCard,
   DeepSeekTuiToolCard,
   JcodeToolCard,
-  GrokBuildToolCard,
 } from "@/components/cli-tools";
 
 const CLOUD_URL: string | undefined = (import.meta.env as Record<string, string | undefined>)?.PUBLIC_CLOUD_URL;
@@ -35,7 +34,6 @@ const STATUS_ENDPOINTS: Record<string, string> = {
   cowork: "/api/cli-tools/cowork-settings",
   "deepseek-tui": "/api/cli-tools/deepseek-tui-settings",
   jcode: "/api/cli-tools/jcode-settings",
-  "grok-build": "/api/cli-tools/grok-build-settings",
 };
 
 export default function ToolDetailClient() {
@@ -194,16 +192,6 @@ export default function ToolDetailClient() {
         return <DeepSeekTuiToolCard {...commonProps} activeProviders={getActiveProviders()} hasActiveProviders={hasActiveProviders} cloudEnabled={cloudEnabled} initialStatus={toolStatus} />;
       case "jcode":
         return <JcodeToolCard {...commonProps} activeProviders={getActiveProviders()} hasActiveProviders={hasActiveProviders} cloudEnabled={cloudEnabled} initialStatus={toolStatus} />;
-      case "grok-build":
-        return (
-          <GrokBuildToolCard
-            {...commonProps}
-            activeProviders={getActiveProviders()}
-            hasActiveProviders={hasActiveProviders}
-            cloudEnabled={cloudEnabled}
-            initialStatus={toolStatus}
-          />
-        );
       default:
         return <DefaultToolCard toolId={toolId} {...commonProps} activeProviders={getActiveProviders()} cloudEnabled={cloudEnabled} />;
     }

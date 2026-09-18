@@ -103,6 +103,30 @@
       "retired_response_transforms": ["kiro->claude", "kiro->openai"],
       "history_preserved": true,
       "note": "remove kiro provider (retired); frozen provider_target_formats and registered transform entries above are retained unchanged for history"
+    },
+    "cursor": {
+      "status": "retired",
+      "provider_target_format": "cursor",
+      "retired_request_transforms": ["openai->cursor"],
+      "retired_response_transforms": ["cursor->openai"],
+      "history_preserved": true,
+      "note": "remove cursor provider (retired); frozen provider_target_formats and registered transform entries above are retained unchanged for history"
+    },
+    "windsurf": {
+      "status": "retired",
+      "history_preserved": true,
+      "note": "remove windsurf provider (retired); frozen entries above are retained unchanged for history"
+    },
+    "grok-web": {
+      "status": "retired",
+      "history_preserved": true,
+      "note": "remove grok-web provider (retired); frozen entries above are retained unchanged for history"
+    },
+    "grok-cli": {
+      "status": "retired",
+      "provider_target_format": "openai-responses",
+      "history_preserved": true,
+      "note": "remove grok-cli/gcli/gb provider aliases (retired); shared openai-responses format stays for codex/perplexity-agent"
     }
   },
   "preserved_contracts": [
