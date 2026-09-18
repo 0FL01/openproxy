@@ -21,7 +21,9 @@ use crate::core::executor::{
 };
 use crate::core::model::get_model_info;
 use crate::core::proxy::resolve_proxy_target;
-use crate::core::translator::helpers::image_helper::fetch_image_as_base64;
+use crate::core::translator::helpers::image_helper::{
+    ensure_final_request_size, fetch_image_as_base64, ImagePrefetchBudget, ImagePrefetchError,
+};
 use crate::core::translator::helpers::modality_helper::{
     capabilities_for_format, strip_unsupported_modalities, ModalityCapabilities,
 };
@@ -452,9 +454,21 @@ async fn chat_completions_impl(
 }
 
 /// Prefetch remote images in OpenAI/Claude message content arrays.
-async fn prefetch_images_in_messages(body: &mut Value) {
+fn image_prefetch_attempt_error(error: ImagePrefetchError) -> ProviderAttemptError {
+    ProviderAttemptError::new(
+        error.http_status(),
+        format!("Image prefetch failed: {error}"),
+    )
+}
+
+fn should_prefetch_message_images(plan: &RequestPlan) -> bool {
+    !plan.passthrough && plan.target_format.needs_image_prefetch()
+}
+
+async fn prefetch_images_in_messages(body: &mut Value) -> Result<(), ImagePrefetchError> {
+    let mut budget = ImagePrefetchBudget::new(body)?;
     let Some(messages) = body.get_mut("messages").and_then(|m| m.as_array_mut()) else {
-        return;
+        return Ok(());
     };
     let client = reqwest::Client::new();
     for msg in messages.iter_mut() {
@@ -463,41 +477,92 @@ async fn prefetch_images_in_messages(body: &mut Value) {
             _ => continue,
         };
         for part in content_array.iter_mut() {
-            if let Some(url) = part
-                .get("image_url")
-                .and_then(|iu| iu.get("url"))
-                .and_then(|u| u.as_str())
-            {
-                if url.starts_with("http://") || url.starts_with("https://") {
-                    if let Some(fetched) = fetch_image_as_base64(&client, url).await {
-                        if let Some(img) =
-                            part.get_mut("image_url").and_then(|iu| iu.as_object_mut())
-                        {
-                            img.insert("url".into(), Value::String(fetched.data_url));
-                        }
-                    }
+            if part.get("image_url").is_some() {
+                let url = part
+                    .get("image_url")
+                    .and_then(|image_url| image_url.get("url"))
+                    .and_then(Value::as_str)
+                    .ok_or(ImagePrefetchError::InvalidAttachment(
+                        "image_url.url must be a string",
+                    ))?
+                    .to_string();
+                if url.starts_with("data:") {
+                    budget.account_existing_data_url(&url)?;
+                } else {
+                    let fetched = fetch_image_as_base64(&client, &url, &mut budget).await?;
+                    let image = part
+                        .get_mut("image_url")
+                        .and_then(Value::as_object_mut)
+                        .ok_or(ImagePrefetchError::InvalidAttachment(
+                            "image_url must be an object",
+                        ))?;
+                    image.insert("url".into(), Value::String(fetched.data_url));
                 }
             }
-            if let Some(source) = part.get("image").and_then(|im| im.get("source")) {
-                if source.get("type").and_then(|t| t.as_str()) == Some("url") {
-                    if let Some(url) = source.get("url").and_then(|u| u.as_str()) {
-                        if url.starts_with("http://") || url.starts_with("https://") {
-                            if let Some(fetched) = fetch_image_as_base64(&client, url).await {
-                                if let Some(src) = part
-                                    .get_mut("image")
-                                    .and_then(|im| im.get_mut("source"))
-                                    .and_then(|s| s.as_object_mut())
-                                {
-                                    src.insert("data".into(), Value::String(fetched.data_url));
-                                    src.insert("type".into(), Value::String("base64".into()));
-                                }
-                            }
+            let direct_claude_source = part.get("type").and_then(Value::as_str) == Some("image");
+            let source = if direct_claude_source {
+                part.get("source")
+            } else {
+                part.get("image").and_then(|image| image.get("source"))
+            };
+            if direct_claude_source && source.is_none() {
+                return Err(ImagePrefetchError::InvalidAttachment(
+                    "Claude image.source must be an object",
+                ));
+            }
+            if let Some(source) = source {
+                match source.get("type").and_then(Value::as_str) {
+                    Some("url") => {
+                        let url = source
+                            .get("url")
+                            .and_then(Value::as_str)
+                            .ok_or(ImagePrefetchError::InvalidAttachment(
+                                "image.source.url must be a string",
+                            ))?
+                            .to_string();
+                        let fetched = fetch_image_as_base64(&client, &url, &mut budget).await?;
+                        let (mime_type, data) = fetched.into_claude_source();
+                        let source = if direct_claude_source {
+                            part.get_mut("source")
+                        } else {
+                            part.get_mut("image")
+                                .and_then(|image| image.get_mut("source"))
                         }
+                        .and_then(Value::as_object_mut)
+                        .ok_or(ImagePrefetchError::InvalidAttachment(
+                            "image.source must be an object",
+                        ))?;
+                        source.remove("url");
+                        source.insert("type".into(), Value::String("base64".into()));
+                        source.insert("media_type".into(), Value::String(mime_type));
+                        source.insert("data".into(), Value::String(data));
                     }
+                    Some("base64") => {
+                        let data = source.get("data").and_then(Value::as_str).ok_or(
+                            ImagePrefetchError::InvalidAttachment(
+                                "image.source.data must be a string",
+                            ),
+                        )?;
+                        let mime = source.get("media_type").and_then(Value::as_str).ok_or(
+                            ImagePrefetchError::InvalidAttachment(
+                                "image.source.media_type must be a string",
+                            ),
+                        )?;
+                        let encoded_len = 5usize
+                            .checked_add(mime.len())
+                            .and_then(|value| value.checked_add(8))
+                            .and_then(|value| value.checked_add(data.len()))
+                            .ok_or(ImagePrefetchError::AggregateEncodedTooLarge {
+                                limit: usize::MAX,
+                            })?;
+                        budget.account_existing_encoded_len(encoded_len)?;
+                    }
+                    Some(_) | None => {}
                 }
             }
         }
     }
+    budget.ensure_final_request(body)
 }
 
 /// Apply 9router stream decision to a RequestPlan (mutates stream + sse_to_json).
@@ -583,12 +648,16 @@ async fn execute_single_model(
     }
 
     // 1–2. Modality strip + image prefetch only when NOT passthrough (9router)
+    let mut images_prefetched = false;
     if !plan.passthrough {
         let caps = capabilities_for_format(plan.source_format);
         strip_unsupported_modalities(&mut body, plan.source_format, &caps);
 
-        if plan.target_format.needs_image_prefetch() {
-            prefetch_images_in_messages(&mut body).await;
+        if should_prefetch_message_images(&plan) {
+            prefetch_images_in_messages(&mut body)
+                .await
+                .map_err(image_prefetch_attempt_error)?;
+            images_prefetched = true;
         }
     }
 
@@ -678,6 +747,19 @@ async fn execute_single_model(
     // Sync stream flag onto body for executors that read body.stream
     if let Some(obj) = body.as_object_mut() {
         obj.insert("stream".into(), Value::Bool(plan.stream));
+    }
+
+    // Codex has one additional existing remote-image shape under `input`.
+    // Resolve it once at the request boundary, never once per account attempt.
+    if plan.provider == "codex" {
+        crate::core::executor::CodexExecutor::prefetch_images_in_request(&mut body)
+            .await
+            .map_err(image_prefetch_attempt_error)?;
+        images_prefetched = true;
+    }
+
+    if images_prefetched {
+        ensure_final_request_size(&body).map_err(image_prefetch_attempt_error)?;
     }
 
     tracing::debug!(
@@ -1004,7 +1086,7 @@ async fn forward_with_provider_fallback(
                         upstream_body: None,
                     })?;
                 let result = executor
-                    .execute(CodexExecutionRequest {
+                    .execute_prefetched(CodexExecutionRequest {
                         model: model.to_string(),
                         body: request_body.clone(),
                         stream,
@@ -1013,11 +1095,19 @@ async fn forward_with_provider_fallback(
                         proxy,
                     })
                     .await
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("Codex execution failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
+                    .map_err(|e| {
+                        let status = match &e {
+                            crate::core::executor::CodexExecutorError::ImagePrefetch(error) => {
+                                error.http_status()
+                            }
+                            _ => 500,
+                        };
+                        ProviderAttemptError {
+                            status,
+                            message: format!("Codex execution failed: {:?}", e),
+                            retry_after: None,
+                            upstream_body: None,
+                        }
                     })?;
                 Ok(KiroExecutorResponse {
                     response: result.response,
@@ -3202,8 +3292,10 @@ mod tests {
         build_dashboard_sse_response, build_proxied_response, codex_models_support_search,
         codex_web_search_context_size, codex_web_search_is_injected,
         mark_codex_web_search_injected, requests_codex_web_search, responses_stream_completed,
-        select_connection, select_connection_with_supporters, CodexWebSearchInjected,
+        select_connection, select_connection_with_supporters, should_prefetch_message_images,
+        CodexWebSearchInjected,
     };
+    use crate::core::chat::RequestPlan;
     use crate::server::codex_catalog::CodexModelMetadata;
     use crate::types::{AppDb, ProviderConnection, Settings};
 
@@ -3246,6 +3338,57 @@ mod tests {
             provider_specific_data: BTreeMap::new(),
             extra: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn native_openai_and_claude_passthrough_never_enter_image_fetching() {
+        let openai_body = json!({
+            "model": "gpt-4.1",
+            "messages": [{"role": "user", "content": [{
+                "type": "image_url",
+                "image_url": {"url": "https://example.test/image.png"}
+            }]}]
+        });
+        let openai = RequestPlan::new(
+            Some("/v1/chat/completions"),
+            &openai_body,
+            "openai",
+            "gpt-4.1",
+        );
+        assert!(openai.passthrough);
+        assert!(!should_prefetch_message_images(&openai));
+
+        let claude_body = json!({
+            "model": "claude-sonnet-4",
+            "max_tokens": 128,
+            "messages": [{"role": "user", "content": [{
+                "type": "image",
+                "source": {"type": "url", "url": "https://example.test/image.png"}
+            }]}]
+        });
+        let claude = RequestPlan::new(
+            Some("/v1/messages"),
+            &claude_body,
+            "claude",
+            "claude-sonnet-4",
+        );
+        assert!(claude.passthrough);
+        assert!(!should_prefetch_message_images(&claude));
+    }
+
+    #[test]
+    fn image_prefetch_errors_map_to_terminal_413_or_502() {
+        let size = super::image_prefetch_attempt_error(
+            crate::core::translator::helpers::image_helper::ImagePrefetchError::ImageTooLarge {
+                limit: 10,
+            },
+        );
+        assert_eq!(size.status, 413);
+
+        let validation = super::image_prefetch_attempt_error(
+            crate::core::translator::helpers::image_helper::ImagePrefetchError::InvalidMagic,
+        );
+        assert_eq!(validation.status, 502);
     }
 
     #[test]

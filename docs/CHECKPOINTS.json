@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C30A",
+  "next_checkpoint": "C30B",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c28_cargo_1.98.1",
+    "rust_verification": "passed_through_c30a_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -1574,7 +1574,7 @@
     {
       "id": "C30A",
       "title": "Ограничить необходимое разворачивание изображений",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C29"
       ],
@@ -1586,7 +1586,37 @@
       "change": "Не загружать URL, когда upstream принимает его напрямую. Когда inline необходим, проверять размер при чтении, общий decoded/encoded бюджет всех изображений и итогового запроса. Избежать лишней копии base64 при сборке data URL; не обещать отсутствие самой base64 representation.",
       "tests": "Одно огромное изображение, много разрешённых по отдельности изображений, неизвестная длина, error midstream, неправильный MIME/magic, отсутствие изображения. Не терять вложение молча и не подменять его текстом ради успеха теста.",
       "acceptance": "Невозможно сначала целиком скачать oversized image и лишь потом сравнить размер; лишние fetch не добавлены. Кэш изображений/ответов не появляется.",
-      "rollback": "Откат конкретного adapter mapping отдельно от reader limits; security проверки сохраняются."
+      "rollback": "Откат конкретного adapter mapping отдельно от reader limits; security проверки сохраняются.",
+      "result": {
+        "completed": "2026-09-18",
+        "files": [
+          "src/core/translator/helpers/image_helper.rs",
+          "src/server/api/chat.rs",
+          "src/core/executor/codex.rs",
+          "tests/lean_proxy_images_c30a.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json",
+          "docs/CHECKPOINTS.json",
+          "docs/goals/2026-09-17-lean-proxy-plan.md"
+        ],
+        "fetch_scope": "Chat fetches only when passthrough is false and the selected target format already requires inline images. Native OpenAI and Claude passthrough retain remote URLs and perform zero fetches. Codex retains only its existing image_url-part behavior and performs it once before account fallback; no new remote attachment shape was added.",
+        "budgets": "Defaults are 10 MiB decoded per image, 32 MiB aggregate decoded, 48 MiB aggregate encoded data URLs, and a conservative plus exact final serialized request check hard-capped at the existing 64 MiB prepared-request ceiling. Four positive integer environment overrides allow downward/tuned limits without disabling enforcement.",
+        "reader": "Only identity-encoded Content-Length can reject early. Actual Reqwest-yielded/decompressed chunks are counted with checked_add and try_reserve before Vec growth. Exact limits pass and +1 fails; gzip wire size cannot hide decoded expansion. The existing _pinned_ip gap is deliberately unchanged for C30B.",
+        "encoding": "Base64 output length is checked before allocation. A data URL is written directly into one pre-sized String with no intermediate base64 String; Claude reuses that allocation while restoring native type/base64, media_type, and raw data fields. Image order, MIME, bytes, existing data URLs, and Codex detail are preserved.",
+        "failure_contract": "Per-image, aggregate, encoded, capacity, and final-request budget failures are typed 413 responses. Missing/non-success/transport, malformed URL or attachment, DNS/SSRF, invalid MIME, and invalid magic are typed 502 responses. Required-inline failures abort before generation, never leave the URL in place, and never replace an image with text.",
+        "verification": [
+          "cargo test --test lean_proxy_images_c30a -- --nocapture: 10 passed",
+          "cargo test --lib image_helper --all-features -- --nocapture: 5 passed",
+          "cargo test --test lean_proxy_images_c30a --test lean_proxy_bounded_c29 --test lean_proxy_transformed_c28 --test lean_proxy_prepared_c27 --test lean_proxy_budget_c13 --test lean_proxy_passthrough_c09 --test codex_executor -- --nocapture: 53 passed",
+          "cargo test --lib --all-features -- --test-threads=1: 1182 passed",
+          "cargo clippy --all-targets --all-features: passed with exactly 3 pre-existing production style warnings",
+          "cargo fmt --all -- --check, JSON parse, and git diff --check: passed"
+        ],
+        "acceptance_evidence": "Deterministic response injection avoids weakening loopback SSRF policy while covering identity exact/+1, unknown/chunked length, gzip decoded expansion, aggregate decoded overflow across individually valid images, base64 and final-estimate exact/+1, invalid MIME/magic, non-success, midstream failure, and cancellation. Full-handler tests prove native OpenAI/Claude loopback URLs reach generation unchanged and malformed Kiro inline-required input returns 502 with zero generation requests. Codex tests preserve ordered data URLs and detail, and its typed image error prevents a direct executor generation send.",
+        "retained_security": "HTTP(S)-only scheme validation, DNS/public-IP checks on every redirect, private/reserved-IP rejection, redirect bound, rustls hostname verification, MIME hint checks, and image magic checks remain. C30B alone owns binding the validated address to connect; no pin-to-connect implementation or relaxed egress path was added.",
+        "retained_state": "No image cache, LRU, timer, worker, cross-request map, or persisted value was added.",
+        "rollback": "Revert the C30A runtime/tests/contract changes or tune the four positive limits. Do not disable limits, weaken SSRF, or retain failed remote URLs. No persisted data, credential, schema, route, model metadata, or migration requires rollback."
+      }
     },
     {
       "id": "C30B",

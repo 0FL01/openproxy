@@ -12,6 +12,9 @@ use crate::core::config::app_constants::{
     CODEX_CLIENT_VERSION, CODEX_ORIGINATOR, CODEX_USER_AGENT,
 };
 use crate::core::proxy::ProxyTarget;
+use crate::core::translator::helpers::image_helper::{
+    ensure_final_request_size, fetch_image_as_base64, ImagePrefetchBudget, ImagePrefetchError,
+};
 use crate::core::translator::request::openai_responses::chat_to_openai_responses_request;
 use crate::types::{ProviderConnection, ProviderNode};
 
@@ -350,6 +353,7 @@ pub enum CodexExecutorError {
     HyperClientInit(std::io::Error),
     Hyper(hyper_util::client::legacy::Error),
     Request(reqwest::Error),
+    ImagePrefetch(ImagePrefetchError),
     UnsupportedFormat(String),
 }
 
@@ -708,9 +712,11 @@ impl CodexExecutor {
     /// Prefetch remote `image_url` content parts into `input_image` parts with
     /// inline base64 data URIs. Mirrors JS `prefetchImages` (codex.js:241-256):
     /// `data:` URLs pass through directly; remote URLs are fetched (15s timeout).
-    async fn prefetch_images(&self, body: &mut Value) {
+    pub async fn prefetch_images_in_request(body: &mut Value) -> Result<(), ImagePrefetchError> {
+        let mut budget = ImagePrefetchBudget::new(body)?;
+        let client = reqwest::Client::new();
         let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) else {
-            return;
+            return Ok(());
         };
         for item in input.iter_mut() {
             let Some(content) = item.get_mut("content").and_then(Value::as_array_mut) else {
@@ -730,9 +736,13 @@ impl CodexExecutor {
                         Value::Object(o) => o.get("url").and_then(Value::as_str).map(String::from),
                         _ => None,
                     })
-                    .unwrap_or_default();
+                    .ok_or(ImagePrefetchError::InvalidAttachment(
+                        "Codex image_url must be a string or object with url",
+                    ))?;
                 if url.is_empty() {
-                    continue;
+                    return Err(ImagePrefetchError::InvalidAttachment(
+                        "Codex image_url cannot be empty",
+                    ));
                 }
                 let detail = obj
                     .get("image_url")
@@ -741,24 +751,20 @@ impl CodexExecutor {
                     .unwrap_or("auto")
                     .to_string();
                 let image_url = if url.starts_with("data:") {
+                    budget.account_existing_data_url(&url)?;
                     url
                 } else {
                     // Remote URL: fetch and inline as base64 data URI.
-                    let client = reqwest::Client::new();
-                    match crate::core::translator::helpers::image_helper::fetch_image_as_base64(
-                        &client, &url,
-                    )
-                    .await
-                    {
-                        Some(fetched) => fetched.data_url,
-                        None => url,
-                    }
+                    fetch_image_as_base64(&client, &url, &mut budget)
+                        .await?
+                        .data_url
                 };
                 let _ = obj.insert("type".into(), Value::String("input_image".to_string()));
                 let _ = obj.insert("image_url".into(), Value::String(image_url));
                 let _ = obj.insert("detail".into(), Value::String(detail));
             }
         }
+        budget.ensure_final_request(body)
     }
 
     /// Parse a Codex upstream error, mapping `usage_limit_reached` to a
@@ -812,7 +818,22 @@ impl CodexExecutor {
 
     pub async fn execute(
         &self,
+        request: CodexExecutionRequest,
+    ) -> Result<CodexExecutorResponse, CodexExecutorError> {
+        self.execute_inner(request, false).await
+    }
+
+    pub(crate) async fn execute_prefetched(
+        &self,
+        request: CodexExecutionRequest,
+    ) -> Result<CodexExecutorResponse, CodexExecutorError> {
+        self.execute_inner(request, true).await
+    }
+
+    async fn execute_inner(
+        &self,
         mut request: CodexExecutionRequest,
+        images_prefetched: bool,
     ) -> Result<CodexExecutorResponse, CodexExecutorError> {
         let actual_model = Self::parse_codex_model(&request.model);
         // JS codex.js:394-395 — a body-level `_compact: true` flag (set by the
@@ -856,13 +877,16 @@ impl CodexExecutor {
         }
 
         // Prefetch remote images into inline base64 data URIs (JS prefetchImages).
-        if let Some(input) = request.body.get("input") {
-            if input
-                .as_array()
-                .is_some_and(|arr| arr.iter().any(|it| it.get("content").is_some()))
-            {
-                self.prefetch_images(&mut request.body).await;
-            }
+        if !images_prefetched
+            && request
+                .body
+                .get("input")
+                .and_then(Value::as_array)
+                .is_some_and(|input| input.iter().any(|item| item.get("content").is_some()))
+        {
+            Self::prefetch_images_in_request(&mut request.body)
+                .await
+                .map_err(CodexExecutorError::ImagePrefetch)?;
         }
 
         let transformed_body = self.transform_request_body(
@@ -871,6 +895,7 @@ impl CodexExecutor {
             true,
             request.web_search_context_size.as_deref(),
         )?;
+        ensure_final_request_size(&transformed_body).map_err(CodexExecutorError::ImagePrefetch)?;
 
         let client = self.pool.get("openai", request.proxy.as_ref())?;
         let response = client
@@ -1021,6 +1046,49 @@ mod tests {
         assert_eq!(headers.get("Version").unwrap(), CODEX_CLIENT_VERSION);
         assert_eq!(headers.get(USER_AGENT).unwrap(), CODEX_USER_AGENT);
         assert_eq!(headers.get("originator").unwrap(), CODEX_ORIGINATOR);
+    }
+
+    #[tokio::test]
+    async fn codex_preserves_data_urls_detail_and_image_order_without_fetching() {
+        let first = "data:image/png;base64,iVBORw0KGgo=";
+        let second = "data:image/jpeg;base64,/9j/";
+        let mut body = json!({
+            "input": [{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": first, "detail": "high"}},
+                    {"type": "input_text", "text": "between"},
+                    {"type": "image_url", "image_url": second}
+                ]
+            }]
+        });
+
+        CodexExecutor::prefetch_images_in_request(&mut body)
+            .await
+            .unwrap();
+        let content = body["input"][0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "input_image");
+        assert_eq!(content[0]["image_url"], first);
+        assert_eq!(content[0]["detail"], "high");
+        assert_eq!(content[1]["text"], "between");
+        assert_eq!(content[2]["type"], "input_image");
+        assert_eq!(content[2]["image_url"], second);
+        assert_eq!(content[2]["detail"], "auto");
+    }
+
+    #[tokio::test]
+    async fn codex_rejects_malformed_remote_attachment_before_send() {
+        let mut body = json!({
+            "input": [{"role": "user", "content": [{
+                "type": "image_url",
+                "image_url": {"detail": "high"}
+            }]}]
+        });
+        let error = CodexExecutor::prefetch_images_in_request(&mut body)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ImagePrefetchError::InvalidAttachment(_)));
+        assert_eq!(error.http_status(), 502);
     }
 
     #[test]
