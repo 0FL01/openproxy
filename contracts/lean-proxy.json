@@ -344,6 +344,7 @@
     "cross_request_cache": false,
     "prepared_bytes_owner": "C27",
     "response_transformed_body_lifetime_owner": "C28",
+    "response_transformed_body_removed_checkpoint": "C28",
     "allocation_measurement": {
       "workload": "C02_release_equal_work_warm_concurrency_32",
       "baseline_allocated_bytes_per_request": 288453,
@@ -368,6 +369,7 @@
     "payload_limit_failures_are_terminal": true,
     "one_allocation_per_request_claimed": false,
     "response_transformed_body_lifetime_owner": "C28",
+    "response_transformed_body_present": false,
     "allocation_measurement": {
       "workload": "C02_release_equal_work_warm_concurrency_32_single_attempt",
       "c02_baseline_allocated_bytes_per_request": 288453,
@@ -376,6 +378,28 @@
       "delta_from_c26_bytes_per_request": -130,
       "note": "The benchmark uses one successful upstream attempt, so account-fallback serialization reuse is verified by focused tests rather than expected to materially change this cell."
     }
+  },
+  "executor_response_ownership": {
+    "checkpoint": "C28",
+    "full_transformed_request_json_present": false,
+    "prepared_upstream_body_contains_json_value": false,
+    "transformed_value_lifetime": "executor_local_until_upstream_send_completes",
+    "retained_response_metadata": [
+      "url",
+      "headers",
+      "transport"
+    ],
+    "server_reads_transformed_request_json_from_response": false,
+    "cli_route_json_source": "cli_local_DefaultExecutor_transform_after_successful_send",
+    "justified_full_request_json_residuals": 0,
+    "arc_value_added": false,
+    "cross_request_cache_added": false,
+    "unsafe_ownership_added": false,
+    "c13_attempt_budget_preserved": true,
+    "raw_errors_preserved": true,
+    "request_and_response_translators_preserved": true,
+    "tool_mapping_usage_and_cancellation_preserved": true,
+    "public_route_or_schema_change": false
   },
   "versions": {
     "opencode": "1.18.31",

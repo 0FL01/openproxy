@@ -376,7 +376,6 @@ impl ProviderExecutor for KimchiExecutor {
             response: UpstreamResponse::Reqwest(response),
             url,
             headers,
-            transformed_body,
             transport: TransportKind::Reqwest,
         })
     }

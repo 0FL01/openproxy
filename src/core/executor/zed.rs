@@ -35,7 +35,6 @@ pub struct ZedExecutorResponse {
     pub response: UpstreamResponse,
     pub url: String,
     pub headers: HeaderMap,
-    pub transformed_body: Value,
     pub transport: TransportKind,
 }
 
@@ -391,7 +390,6 @@ impl ZedExecutor {
             response: UpstreamResponse::Reqwest(reqwest::Response::from(http_resp)),
             url,
             headers: HeaderMap::new(),
-            transformed_body: payload,
             transport: TransportKind::Reqwest,
         })
     }

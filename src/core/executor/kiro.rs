@@ -70,7 +70,6 @@ pub struct KiroExecutorResponse {
     pub response: super::UpstreamResponse,
     pub url: String,
     pub headers: HeaderMap,
-    pub transformed_body: Value,
     pub transport: super::TransportKind,
 }
 
@@ -79,7 +78,6 @@ impl std::fmt::Debug for KiroExecutorResponse {
         f.debug_struct("KiroExecutorResponse")
             .field("url", &self.url)
             .field("headers", &self.headers)
-            .field("transformed_body", &self.transformed_body)
             .field("transport", &self.transport)
             .finish()
     }
@@ -548,7 +546,6 @@ impl KiroExecutor {
                     response: UpstreamResponse::Reqwest(response),
                     url: url.clone(),
                     headers,
-                    transformed_body: request.body.clone(),
                     transport: TransportKind::Reqwest,
                 });
             }

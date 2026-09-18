@@ -76,7 +76,6 @@ pub struct GithubExecutorResponse {
     pub response: UpstreamResponse,
     pub url: String,
     pub headers: HeaderMap,
-    pub transformed_body: Value,
     pub transport: TransportKind,
 }
 
@@ -486,7 +485,6 @@ impl GithubExecutor {
                 response: UpstreamResponse::Reqwest(response),
                 url,
                 headers,
-                transformed_body: body,
                 transport: TransportKind::Reqwest,
             });
         }
@@ -544,7 +542,6 @@ impl GithubExecutor {
             response: UpstreamResponse::Reqwest(response),
             url,
             headers,
-            transformed_body: body,
             transport: TransportKind::Reqwest,
         })
     }

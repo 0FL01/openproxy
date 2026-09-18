@@ -151,7 +151,6 @@ impl ProviderExecutor for CodeBuddyCNExecutor {
             response: UpstreamResponse::Reqwest(response),
             url,
             headers,
-            transformed_body,
             transport: TransportKind::Reqwest,
         })
     }

@@ -333,7 +333,6 @@ pub struct GrokWebExecutorResponse {
     pub response: UpstreamResponse,
     pub url: String,
     pub headers: HeaderMap,
-    pub transformed_body: Value,
     pub transport: TransportKind,
 }
 
@@ -342,7 +341,6 @@ impl std::fmt::Debug for GrokWebExecutorResponse {
         f.debug_struct("GrokWebExecutorResponse")
             .field("url", &self.url)
             .field("headers", &self.headers)
-            .field("transformed_body", &self.transformed_body)
             .field("transport", &self.transport)
             .finish()
     }
@@ -417,7 +415,6 @@ impl GrokWebExecutor {
                 response: json_error(status, msg, "upstream_error", Some(&code)),
                 url,
                 headers,
-                transformed_body,
                 transport: TransportKind::Reqwest,
             });
         }
@@ -444,7 +441,6 @@ impl GrokWebExecutor {
             response: converted,
             url,
             headers,
-            transformed_body,
             transport: TransportKind::Reqwest,
         })
     }

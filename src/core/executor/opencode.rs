@@ -108,7 +108,6 @@ pub struct OpenCodeExecutorResponse {
     pub response: UpstreamResponse,
     pub url: String,
     pub headers: HeaderMap,
-    pub transformed_body: Value,
     pub transport: TransportKind,
 }
 
@@ -325,7 +324,6 @@ impl OpenCodeExecutor {
             response: UpstreamResponse::Reqwest(response),
             url,
             headers,
-            transformed_body: request.body,
             transport: TransportKind::Reqwest,
         })
     }

@@ -265,10 +265,7 @@ fn source_has_one_bounded_prepare_and_no_per_send_serialization() {
         1
     );
     assert!(chat.contains("can_reuse_prepared_body(prepared, model)"));
-    assert!(
-        executor.contains("pub transformed_body: Value"),
-        "C28 owns response lifetime"
-    );
+    assert!(!executor.contains("pub transformed_body: Value"));
     assert!(
         !executor.contains("static PREPARED"),
         "prepared bytes must be request-scoped"

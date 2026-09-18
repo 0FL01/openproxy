@@ -85,7 +85,6 @@ pub struct QwenExecutorResponse {
     pub response: UpstreamResponse,
     pub url: String,
     pub headers: HeaderMap,
-    pub transformed_body: Value,
     pub transport: TransportKind,
 }
 
@@ -278,7 +277,6 @@ impl QwenExecutor {
             response: UpstreamResponse::Reqwest(response),
             url,
             headers,
-            transformed_body,
             transport: TransportKind::Reqwest,
         })
     }

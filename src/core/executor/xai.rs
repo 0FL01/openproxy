@@ -69,7 +69,6 @@ pub struct XaiExecutorResponse {
     pub response: UpstreamResponse,
     pub url: String,
     pub headers: HeaderMap,
-    pub transformed_body: Value,
     pub transport: TransportKind,
 }
 
@@ -143,7 +142,6 @@ impl XaiExecutor {
             response: UpstreamResponse::Reqwest(response),
             url,
             headers,
-            transformed_body,
             transport: TransportKind::Reqwest,
         })
     }

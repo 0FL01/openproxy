@@ -114,7 +114,6 @@ pub struct VertexExecutorResponse {
     pub response: UpstreamResponse,
     pub url: String,
     pub headers: HeaderMap,
-    pub transformed_body: Value,
     pub transport: TransportKind,
 }
 
@@ -151,7 +150,6 @@ impl std::fmt::Debug for VertexExecutorResponse {
         f.debug_struct("VertexExecutorResponse")
             .field("url", &self.url)
             .field("headers", &self.headers)
-            .field("transformed_body", &self.transformed_body)
             .field("transport", &self.transport)
             .finish()
     }
@@ -517,7 +515,6 @@ impl VertexExecutor {
             response: UpstreamResponse::Reqwest(response),
             url,
             headers,
-            transformed_body,
             transport: TransportKind::Reqwest,
         })
     }

@@ -49,7 +49,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Acceptance: Every checkpoint acceptance statement C26-C34 is met; native streams remain streaming and valid golden payloads remain equivalent.
   - Primary evidence: Ownership/serialization instrumentation, byte-bound edge tests, all-chunk-boundary SSE tests, translator goldens, and allocation measurements.
   - Status: pending
-  - Evidence:
+  - Evidence: C26-C28 are verified; C29-C34 remain pending, so R5 is not verified.
 
 - R6: Complete bounded logging/admission/runtime lifecycle and resolve optional product-surface checkpoints without harming the three core product surfaces (C35-C41).
   - Source: `docs/CHECKPOINTS.json` C35-C41.
@@ -93,17 +93,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R5 / C28.
-- Smallest next action: Remove full request JSON from executor response ownership where no caller reads it, retaining only explicitly proven metadata needed by a real consumer and ending request lifetime before long SSE responses.
-- Expected evidence: Large request bodies are dropped after upstream send rather than retained to EOF; response/tool/usage/fallback/cancellation semantics remain unchanged; any retained metadata has an identified reader and byte budget.
-- Stop or replan if: A real response translator requires request content; retain only that scoped branch and record the exact caller instead of deleting the public result shape indiscriminately.
+- Closes: R5 / C29.
+- Smallest next action: Add checked byte limits to collected upstream success/error bodies without converting native streaming paths into collectors.
+- Expected evidence: Chunked, absent/false Content-Length, compressed, +1-byte, Unicode-boundary, and partial-transport cases enforce separate success/error budgets while valid streams remain live.
+- Stop or replan if: A collector cannot be bounded without changing a preserved wire protocol; isolate that exact caller and document its required protocol behavior before changing the shared reader.
 
 ## Current State
 
-- Resolved: R1 / C00, R2 / C01-C02, R3 / C03-C14, R4 / C15-C25, and C26-C27 inside R5. Proxy-owned semantic/header/history replay, heuristic context policy, client-identity passthrough gating, all three executor temporal retry schedulers, successful-response legacy housekeeping, token-keyed completed refresh/quota results, generation-path remote catalog waits, both process-wide Antigravity project maps, request-scoped onboarding workers, default provider health probes, and the write-only circuit breaker are gone. C13 provides the single bounded request-scoped generation/account/auth planner; C16-C18 provide one active-only connection/generation refresh service used by every configured caller; C19-C20 publish immutable OpenCode and Codex model metadata outside generation; C21-C22 make project metadata and onboarding configured-connection lifecycle concerns; C23 makes Claude quota an uncached explicit control-plane read; C24 keeps liveness local and health diagnostics explicit/opt-in; C25 creates no quota auto-ping task without a saved matching connection opt-in and preserves proactive OAuth refresh separately. C26 moves parsed request JSON across the handler's sole-consumer boundary, and C27 uses one bounded DefaultExecutor serialization for byte-identical account attempts.
-- Last relevant evidence: Native large Unicode/tools, translated tools/reasoning, exact account fallback/auth budget, and committed-stream cancellation remained green. A focused two-account fallback sent one prepared byte representation through both account attempts while rebuilding auth/transport state. The equal-work single-attempt warm-c32 allocation cell was 269,135 bytes/request versus C26's 269,265 and the C02 baseline's 288,453; no one-allocation claim is made.
+- Resolved: R1 / C00, R2 / C01-C02, R3 / C03-C14, R4 / C15-C25, and C26-C28 inside R5. Proxy-owned semantic/header/history replay, heuristic context policy, client-identity passthrough gating, all three executor temporal retry schedulers, successful-response legacy housekeeping, token-keyed completed refresh/quota results, generation-path remote catalog waits, both process-wide Antigravity project maps, request-scoped onboarding workers, default provider health probes, and the write-only circuit breaker are gone. C13 provides the single bounded request-scoped generation/account/auth planner; C16-C18 provide one active-only connection/generation refresh service used by every configured caller; C19-C20 publish immutable OpenCode and Codex model metadata outside generation; C21-C22 make project metadata and onboarding configured-connection lifecycle concerns; C23 makes Claude quota an uncached explicit control-plane read; C24 keeps liveness local and health diagnostics explicit/opt-in; C25 creates no quota auto-ping task without a saved matching connection opt-in and preserves proactive OAuth refresh separately. C26 moves parsed request JSON across the handler's sole-consumer boundary, C27 uses one bounded DefaultExecutor serialization for byte-identical account attempts, and C28 removes transformed request JSON from executor response ownership.
+- Last relevant evidence: Source guards cover every executor module, `PreparedUpstreamBody`, server repackaging, and the CLI-local `route --json` transform. A 4 MiB held-EOF SSE request delivered tool-call and usage frames before EOF, then downstream cancellation dropped the upstream body with one attempt. C13 raw-error/fallback/auth bounds, C27 shared bytes, translator semantics, and all executor unit tests remained green.
 - Blocker: None; the prompt explicitly allows independent safe work when external harness/version evidence is unavailable.
-- Next: C28 remove unread full transformed request JSON from response ownership before long response streaming.
+- Next: C29 bound collected upstream JSON and diagnostic bodies.
 
 ## Material Decisions
 
@@ -143,6 +143,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-09-18: C25 passed. Quota auto-ping now has an AppState-owned active-only lifecycle: empty configuration creates no sleeper, runtime enable starts one shared Claude/Codex/GLM worker, final disable wakes it, shutdown drains it, and restart preserves opt-in plus ping markers. Actual pings were already opt-in before this change; proactive OAuth refresh remains independent. R4 is verified and C26 is next.
 - 2026-09-18: C26 passed. The HTTP handler now moves its parsed JSON into the sole planning/translation consumer instead of deep-cloning it there; the account planner still retains one immutable source and per-attempt clones required by C13 fallback. Native/translated/large/fallback/cancellation semantics stayed green, and the equal-work release allocator measured 19,188 fewer bytes/request at warm concurrency 32. C27 is next.
 - 2026-09-18: C27 passed. DefaultExecutor now transforms and serializes request JSON once through a checked 64 MiB writer, then shares the request-scoped bytes across identical account/auth attempts while rebuilding headers, URL, proxy, and pooled transport. Hyper and Reqwest preserve identical UTF-8 JSON, content type, Unicode, tools, and unknown fields; changed model/body rebuilds, payload-limit errors are terminal, and no cross-request cache exists. The single-attempt allocation cell stayed effectively flat at 269,135 bytes/request; C28 is next.
+- 2026-09-18: C28 passed. Removed full transformed request JSON from all executor response/result structures, debug implementations, constructors, server wrappers, and `PreparedUpstreamBody`; URL/header/transport metadata and bounded shared bytes remain. CLI `route --json` recomputes the DefaultExecutor transform locally after success. Source guards plus a 4 MiB held-EOF SSE test prove the response graph has no request `Value` while tool, usage, cancellation, one-attempt, fallback, raw-error, and translator behavior remain intact. R5 stays pending through C34; C29 is next.
 
 ## Completion
 

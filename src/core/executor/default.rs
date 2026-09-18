@@ -416,7 +416,6 @@ pub struct ExecutionResponse {
     pub response: UpstreamResponse,
     pub url: String,
     pub headers: HeaderMap,
-    pub transformed_body: Value,
     pub transport: TransportKind,
 }
 
@@ -435,7 +434,7 @@ struct PreparedBodyKey {
     model: String,
 }
 
-/// Request-scoped, fully transformed JSON and its one bounded serialization.
+/// Request-scoped, fully transformed and bounded JSON serialization.
 ///
 /// The bytes may be shared by byte-identical account attempts. URL, headers,
 /// credentials, and proxy selection are deliberately rebuilt for every
@@ -443,7 +442,6 @@ struct PreparedBodyKey {
 #[derive(Debug)]
 pub struct PreparedUpstreamBody {
     key: PreparedBodyKey,
-    transformed_body: Value,
     bytes: Bytes,
 }
 
@@ -1175,7 +1173,6 @@ impl DefaultExecutor {
         let bytes = serialize_json_bounded(&transformed_body, MAX_PREPARED_UPSTREAM_BODY_BYTES)?;
         Ok(PreparedUpstreamBody {
             key: self.prepared_body_key(model),
-            transformed_body,
             bytes,
         })
     }
@@ -1226,7 +1223,6 @@ impl DefaultExecutor {
             response: upstream,
             url,
             headers,
-            transformed_body: prepared.transformed_body.clone(),
             transport: if use_hyper {
                 TransportKind::Hyper
             } else {

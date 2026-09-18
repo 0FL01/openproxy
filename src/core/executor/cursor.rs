@@ -60,7 +60,6 @@ pub struct CursorExecutorResponse {
     pub response: UpstreamResponse,
     pub url: String,
     pub headers: HeaderMap,
-    pub transformed_body: Value,
     pub transport: TransportKind,
 }
 
@@ -69,7 +68,6 @@ impl std::fmt::Debug for CursorExecutorResponse {
         f.debug_struct("CursorExecutorResponse")
             .field("url", &self.url)
             .field("headers", &self.headers)
-            .field("transformed_body", &self.transformed_body)
             .field("transport", &self.transport)
             .finish()
     }
@@ -2063,7 +2061,6 @@ impl CursorExecutor {
                 response: UpstreamResponse::Reqwest(http_response.into()),
                 url,
                 headers,
-                transformed_body: request.body,
                 transport: TransportKind::Reqwest,
             });
         }
@@ -2100,7 +2097,6 @@ impl CursorExecutor {
             response: UpstreamResponse::Reqwest(http_response.into()),
             url,
             headers,
-            transformed_body: request.body,
             transport: TransportKind::Reqwest,
         })
     }
@@ -2201,7 +2197,6 @@ impl CursorExecutor {
                 response: UpstreamResponse::Reqwest(fake_response),
                 url: endpoint.to_string(),
                 headers,
-                transformed_body: request.body,
                 transport: TransportKind::Reqwest,
             })
         } else {
@@ -2209,7 +2204,6 @@ impl CursorExecutor {
                 response: UpstreamResponse::Reqwest(raw_response),
                 url: endpoint.to_string(),
                 headers,
-                transformed_body: request.body,
                 transport: TransportKind::Reqwest,
             })
         }

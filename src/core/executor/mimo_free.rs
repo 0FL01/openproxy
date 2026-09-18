@@ -68,7 +68,6 @@ pub struct MimoFreeExecutorResponse {
     pub response: UpstreamResponse,
     pub url: String,
     pub headers: HeaderMap,
-    pub transformed_body: Value,
     pub transport: TransportKind,
 }
 
@@ -77,7 +76,6 @@ impl std::fmt::Debug for MimoFreeExecutorResponse {
         f.debug_struct("MimoFreeExecutorResponse")
             .field("url", &self.url)
             .field("headers", &self.headers)
-            .field("transformed_body", &self.transformed_body)
             .field("transport", &self.transport)
             .finish()
     }
@@ -462,7 +460,6 @@ impl MimoFreeExecutor {
             response: UpstreamResponse::Reqwest(response),
             url,
             headers,
-            transformed_body: request.body,
             transport: TransportKind::Reqwest,
         })
     }

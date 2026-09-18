@@ -1415,7 +1415,7 @@ async fn run_direct_route(
         match result {
             Ok(response) => {
                 if json {
-                    let body = response.transformed_body;
+                    let body = executor.transform_request(&request_body, &resolved.model);
                     println!("{}", serde_json::to_string_pretty(&body)?);
                     return Ok(());
                 }

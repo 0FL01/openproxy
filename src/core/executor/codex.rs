@@ -408,7 +408,6 @@ pub struct CodexExecutorResponse {
     pub response: UpstreamResponse,
     pub url: String,
     pub headers: HeaderMap,
-    pub transformed_body: Value,
     pub transport: TransportKind,
 }
 
@@ -417,7 +416,6 @@ impl std::fmt::Debug for CodexExecutorResponse {
         f.debug_struct("CodexExecutorResponse")
             .field("url", &self.url)
             .field("headers", &self.headers)
-            .field("transformed_body", &self.transformed_body)
             .field("transport", &self.transport)
             .finish()
     }
@@ -898,7 +896,6 @@ impl CodexExecutor {
                 response: UpstreamResponse::Reqwest(response),
                 url,
                 headers,
-                transformed_body,
                 transport: TransportKind::Reqwest,
             });
         }
@@ -938,7 +935,6 @@ impl CodexExecutor {
                     response: UpstreamResponse::Reqwest(reqwest::Response::from(failed)),
                     url,
                     headers,
-                    transformed_body,
                     transport: TransportKind::Reqwest,
                 });
             }
@@ -953,7 +949,6 @@ impl CodexExecutor {
             response: UpstreamResponse::Reqwest(reqwest::Response::from(live)),
             url,
             headers,
-            transformed_body,
             transport: TransportKind::Reqwest,
         })
     }

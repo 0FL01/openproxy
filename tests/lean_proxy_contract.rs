@@ -383,6 +383,22 @@ fn contract_freezes_preservation_and_removal_lists() {
         false
     );
     assert_eq!(
+        manifest["executor_response_ownership"]["full_transformed_request_json_present"],
+        false
+    );
+    assert_eq!(
+        manifest["executor_response_ownership"]["prepared_upstream_body_contains_json_value"],
+        false
+    );
+    assert_eq!(
+        manifest["executor_response_ownership"]["justified_full_request_json_residuals"],
+        0
+    );
+    assert_eq!(
+        manifest["executor_response_ownership"]["c13_attempt_budget_preserved"],
+        true
+    );
+    assert_eq!(
         manifest["generation_retry_policy"]["client_invalid_terminal_statuses"],
         serde_json::json!([400, 413, 422])
     );

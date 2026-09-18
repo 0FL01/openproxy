@@ -80,7 +80,6 @@ impl ProviderExecutor for CodeBuddyIntlExecutor {
             response,
             url,
             headers,
-            transformed_body,
             transport,
         } = self
             .inner
@@ -99,7 +98,6 @@ impl ProviderExecutor for CodeBuddyIntlExecutor {
             response,
             url,
             headers,
-            transformed_body,
             transport,
         })
     }

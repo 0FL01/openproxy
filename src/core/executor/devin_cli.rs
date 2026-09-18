@@ -37,7 +37,6 @@ pub struct DevinExecutionRequest {
 pub struct DevinExecutorResponse {
     pub response: UpstreamResponse,
     pub url: String,
-    pub transformed_body: Value,
     pub transport: TransportKind,
 }
 
@@ -641,7 +640,6 @@ impl DevinCliExecutor {
         Ok(DevinExecutorResponse {
             response: http_sse_response(sse),
             url: DEVIN_ACP_URL.to_string(),
-            transformed_body: request.body.clone(),
             transport: TransportKind::Reqwest,
         })
     }

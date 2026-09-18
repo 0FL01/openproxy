@@ -23,7 +23,7 @@
     "C14",
     "C15"
   ],
-  "next_checkpoint": "C28",
+  "next_checkpoint": "C29",
   "measurements": {
     "baseline": {
       "artifact": "bench/lean/baseline.json",
@@ -52,7 +52,7 @@
       "proxy_warm_c32_allocated_bytes_per_request": 288453
     },
     "final": null,
-    "rust_verification": "passed_through_c27_cargo_1.98.1",
+    "rust_verification": "passed_through_c28_cargo_1.98.1",
     "node_pass": 4,
     "node_fail": 0,
     "node_skip": 1
@@ -1467,7 +1467,7 @@
     {
       "id": "C28",
       "title": "Сократить lifetime transformed_body после отправки",
-      "status": "pending",
+      "status": "done",
       "depends_on": [
         "C27"
       ],
@@ -1479,7 +1479,38 @@
       "change": "Найти всех readers поля. Удалить передачу полного request JSON обратно с ответом там, где используются только несколько metadata полей; перенести эти поля отдельно либо завершить lifetime до начала длинного SSE. Если конкретному translator тело действительно нужно, оставить только эту scoped ветку.",
       "tests": "Длинный ответ с большим request body, usage, fallback, cancellation. Проверить, что request history не живёт до EOF без обоснованной причины; инструменты ответа не теряют необходимый mapping.",
       "acceptance": "После upstream send нет ненужного полного request JSON в response ownership graph. Для оправданных остатков указаны caller и byte budget.",
-      "rollback": "Откат изменения result type; не ломать всё API ради удаления одной копии."
+      "rollback": "Откат изменения result type; не ломать всё API ради удаления одной копии.",
+      "result": {
+        "completed": "2026-09-18",
+        "files": [
+          "src/core/executor/*.rs response/result types and constructors",
+          "src/server/api/chat.rs",
+          "src/cli/mod.rs",
+          "tests/codex_executor.rs",
+          "tests/executor_pool_behavior.rs",
+          "tests/lean_proxy_prepared_c27.rs",
+          "tests/lean_proxy_transformed_c28.rs",
+          "tests/lean_proxy_contract.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json",
+          "docs/CHECKPOINTS.json",
+          "docs/goals/2026-09-17-lean-proxy-plan.md"
+        ],
+        "ownership": "All executor response/result structures, constructors, Debug implementations, and chat.rs wrappers now return only the upstream response plus existing URL/header/transport metadata. PreparedUpstreamBody contains only its compatibility key and one bounded shared Bytes representation; its transformed Value is dropped after bounded serialization. Executor-local transformed Values live only through upstream send completion and never enter the returned response graph.",
+        "real_reader": "The sole former runtime reader was CLI route --json. It now recomputes DefaultExecutor::transform_request from the CLI-owned request only after a successful send, preserving pretty-printed transformed JSON without returning Value from an executor response.",
+        "preserved": "C13 eligible-account and sole auth-recovery attempt bounds, C27 shared prepared bytes, per-attempt URL/headers/credentials/proxy/transport rebuild, raw final errors, request/response translators, tool mapping, usage capture, live SSE, and downstream cancellation are unchanged. No Arc<Value>, unsafe ownership, cache, dependency, persisted data, public route, or openproxy.v1 schema change was introduced.",
+        "verification": [
+          "cargo test --test lean_proxy_transformed_c28 --test lean_proxy_prepared_c27 --test lean_proxy_ownership_c26 --test lean_proxy_budget_c13 --test lean_proxy_retry_c10 --test lean_proxy_context_c08 --test lean_proxy_passthrough_c09 --test chat_completions --test codex_executor --test executor_pool_behavior -- --nocapture: 87 passed",
+          "cargo test --lib core::executor --all-features -- --test-threads=1: 250 passed",
+          "cargo test --lib --all-features -- --test-threads=1: 1178 passed",
+          "cargo check --all-features: passed",
+          "cargo clippy --all-targets --all-features: passed with exactly 3 pre-existing production style warnings",
+          "cargo fmt --all -- --check, jq JSON parse, git diff --check, and source ownership scan: passed"
+        ],
+        "acceptance_evidence": "A source guard scans every executor Rust module and rejects response fields, constructors, Debug fields, or Arc<Value> ownership for transformed_body; it separately proves PreparedUpstreamBody has Bytes and no Value, chat.rs has no repacking reader, and the CLI uses its local transform. A 4 MiB request with a declared tool received tool-call and usage SSE frames before held EOF; dropping the downstream body cancelled the held upstream with exactly one request. Existing focused tests prove two-account shared-byte fallback, raw status/body/Retry-After, one auth recovery, translated/native tools, and no retry after commitment.",
+        "justified_residuals": "None. Local variables named transformed_body remain only while serializing or sending an upstream request and are dropped before the response/result is returned.",
+        "rollback": "Revert the C28 response-shape and CLI-local transform changes. No persisted data, credential, route, model metadata, dependency, public schema, cache, or migration requires rollback."
+      }
     },
     {
       "id": "C29",

@@ -990,7 +990,6 @@ async fn forward_with_provider_fallback(
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
-                    transformed_body: result.transformed_body,
                     transport: result.transport,
                 })
             } else if is_codex_model {
@@ -1021,7 +1020,6 @@ async fn forward_with_provider_fallback(
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
-                    transformed_body: result.transformed_body,
                     transport: result.transport,
                 })
             } else if is_cursor_model {
@@ -1051,7 +1049,6 @@ async fn forward_with_provider_fallback(
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
-                    transformed_body: result.transformed_body,
                     transport: result.transport,
                 })
             } else if provider == "github" {
@@ -1081,7 +1078,6 @@ async fn forward_with_provider_fallback(
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
-                    transformed_body: result.transformed_body,
                     transport: result.transport,
                 })
             } else if provider == "azure" {
@@ -1111,7 +1107,6 @@ async fn forward_with_provider_fallback(
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
-                    transformed_body: result.transformed_body,
                     transport: result.transport,
                 })
             } else if provider == "qwen" {
@@ -1141,7 +1136,6 @@ async fn forward_with_provider_fallback(
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
-                    transformed_body: result.transformed_body,
                     transport: result.transport,
                 })
             } else if let Some(tier) = OpenCodeTier::from_provider(provider) {
@@ -1179,7 +1173,6 @@ async fn forward_with_provider_fallback(
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
-                    transformed_body: result.transformed_body,
                     transport: result.transport,
                 })
             } else if provider == "commandcode" {
@@ -1209,7 +1202,6 @@ async fn forward_with_provider_fallback(
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
-                    transformed_body: result.transformed_body,
                     transport: result.transport,
                 })
             } else if provider == "antigravity" {
@@ -1239,7 +1231,6 @@ async fn forward_with_provider_fallback(
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
-                    transformed_body: result.transformed_body,
                     transport: result.transport,
                 })
             } else if provider == "grok-web" {
@@ -1263,7 +1254,6 @@ async fn forward_with_provider_fallback(
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
-                    transformed_body: result.transformed_body,
                     transport: result.transport,
                 })
             } else if provider == "windsurf" || provider == "ws" {
@@ -1287,7 +1277,6 @@ async fn forward_with_provider_fallback(
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
-                    transformed_body: result.transformed_body,
                     transport: result.transport,
                 })
             } else if provider == "zed" {
@@ -1313,7 +1302,6 @@ async fn forward_with_provider_fallback(
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
-                    transformed_body: result.transformed_body,
                     transport: result.transport,
                 })
             } else if provider == "trae" {
@@ -1337,7 +1325,6 @@ async fn forward_with_provider_fallback(
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
-                    transformed_body: result.transformed_body,
                     transport: result.transport,
                 })
             } else if provider == "devin-cli" || provider == "dv" {
@@ -1369,7 +1356,6 @@ async fn forward_with_provider_fallback(
                     response: result.response,
                     url: result.url.clone(),
                     headers: HeaderMap::new(),
-                    transformed_body: result.transformed_body,
                     transport: result.transport,
                 })
             } else if provider == "kimchi" {
@@ -1396,7 +1382,6 @@ async fn forward_with_provider_fallback(
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
-                    transformed_body: result.transformed_body,
                     transport: result.transport,
                 })
             } else if provider == "codebuddy-cn" || provider == "cbcn" {
@@ -1425,7 +1410,6 @@ async fn forward_with_provider_fallback(
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
-                    transformed_body: result.transformed_body,
                     transport: result.transport,
                 })
             } else if provider == "codebuddy-intl" || provider == "cbai" {
@@ -1454,7 +1438,6 @@ async fn forward_with_provider_fallback(
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
-                    transformed_body: result.transformed_body,
                     transport: result.transport,
                 })
             } else if provider == "ollama" {
@@ -1479,7 +1462,6 @@ async fn forward_with_provider_fallback(
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
-                    transformed_body: result.transformed_body,
                     transport: result.transport,
                 })
             } else if provider == "mimo-free" || provider == "mmf" {
@@ -1504,7 +1486,6 @@ async fn forward_with_provider_fallback(
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
-                    transformed_body: result.transformed_body,
                     transport: result.transport,
                 })
             } else if provider == "grok-cli"
@@ -1539,7 +1520,6 @@ async fn forward_with_provider_fallback(
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
-                    transformed_body: result.transformed_body,
                     transport: result.transport,
                 })
             } else {
@@ -1587,7 +1567,6 @@ async fn forward_with_provider_fallback(
                     response: result.response,
                     url: result.url,
                     headers: result.headers,
-                    transformed_body: result.transformed_body,
                     transport: result.transport,
                 })
             }

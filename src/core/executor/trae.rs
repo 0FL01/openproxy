@@ -244,7 +244,6 @@ pub struct TraeExecutorResponse {
     pub response: UpstreamResponse,
     pub url: String,
     pub headers: HeaderMap,
-    pub transformed_body: Value,
     pub transport: TransportKind,
 }
 
@@ -253,7 +252,6 @@ impl std::fmt::Debug for TraeExecutorResponse {
         f.debug_struct("TraeExecutorResponse")
             .field("url", &self.url)
             .field("headers", &self.headers)
-            .field("transformed_body", &self.transformed_body)
             .field("transport", &self.transport)
             .finish()
     }
@@ -458,7 +456,6 @@ impl TraeExecutor {
                     response: err_resp,
                     url: self.base(),
                     headers,
-                    transformed_body: request.body.clone(),
                     transport: TransportKind::Reqwest,
                 });
             }
@@ -496,7 +493,6 @@ impl TraeExecutor {
                     response: err_resp,
                     url: self.base(),
                     headers,
-                    transformed_body: request.body.clone(),
                     transport: TransportKind::Reqwest,
                 });
             }
@@ -556,7 +552,6 @@ impl TraeExecutor {
                 response: UpstreamResponse::Reqwest(reqwest::Response::from(http_resp)),
                 url: self.base(),
                 headers,
-                transformed_body: request.body.clone(),
                 transport: TransportKind::Reqwest,
             })
         } else {
@@ -588,7 +583,6 @@ impl TraeExecutor {
                     response: err_resp,
                     url: self.base(),
                     headers,
-                    transformed_body: request.body.clone(),
                     transport: TransportKind::Reqwest,
                 });
             }
@@ -600,7 +594,6 @@ impl TraeExecutor {
                     response: err_resp,
                     url: self.base(),
                     headers,
-                    transformed_body: request.body.clone(),
                     transport: TransportKind::Reqwest,
                 });
             }
@@ -635,7 +628,6 @@ impl TraeExecutor {
                 response: UpstreamResponse::Reqwest(reqwest::Response::from(http_resp)),
                 url: self.base(),
                 headers,
-                transformed_body: request.body.clone(),
                 transport: TransportKind::Reqwest,
             })
         }

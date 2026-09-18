@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 use openproxy::core::executor::ClientPool;
 use openproxy::types::{ProviderConnection, ProviderNode};
-use serde_json::json;
+use serde_json::{json, Value};
+use wiremock::matchers::method;
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use openproxy::core::executor::{
     convert_openai_sse_to_standard, CodexExecutionRequest, CodexExecutor, CodexExecutorError,
@@ -69,6 +71,43 @@ fn provider_node() -> ProviderNode {
         updated_at: None,
         extra: BTreeMap::new(),
     }
+}
+
+async fn execute_and_capture_body(model: &str, body: Value) -> Value {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(
+                    "data: {\"type\":\"response.done\",\"response\":{}}\n\n",
+                    "text/event-stream",
+                ),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let mut node = provider_node();
+    node.base_url = Some(format!("{}/responses", upstream.uri()));
+    let executor = CodexExecutor::new(Arc::new(ClientPool::new()), Some(node)).unwrap();
+    executor
+        .execute(CodexExecutionRequest {
+            model: model.into(),
+            body,
+            stream: false,
+            web_search_context_size: None,
+            credentials: connection("codex"),
+            proxy: None,
+        })
+        .await
+        .expect("execute request");
+
+    let requests = upstream
+        .received_requests()
+        .await
+        .expect("captured Codex request");
+    serde_json::from_slice(&requests[0].body).expect("Codex request JSON")
 }
 
 #[test]
@@ -336,29 +375,19 @@ async fn codex_executor_execute_non_streaming_no_accept_header() {
 
 #[tokio::test]
 async fn codex_executor_execute_multiple_messages_input() {
-    let pool = Arc::new(ClientPool::new());
-    let executor = CodexExecutor::new(pool, None).unwrap();
-
-    let req = CodexExecutionRequest {
-        model: "codex/o4-mini".into(),
-        body: json!({
+    let transformed = execute_and_capture_body(
+        "codex/o4-mini",
+        json!({
             "messages": [
                 {"role": "user", "content": "Hello"},
                 {"role": "assistant", "content": "Hi"},
                 {"role": "user", "content": "There"}
             ]
         }),
-        stream: false,
-        web_search_context_size: None,
-        credentials: connection("codex"),
-        proxy: None,
-    };
-
-    let response = executor.execute(req).await.expect("execute request");
+    )
+    .await;
     // Parity: multi-message input is forwarded as typed input_text items.
-    let input_items = response.transformed_body["input"]
-        .as_array()
-        .expect("input array");
+    let input_items = transformed["input"].as_array().expect("input array");
     let texts: Vec<&str> = input_items
         .iter()
         .filter_map(|it| it.pointer("/content/0/text").and_then(|v| v.as_str()))
@@ -368,42 +397,26 @@ async fn codex_executor_execute_multiple_messages_input() {
 
 #[tokio::test]
 async fn codex_executor_execute_transforms_model_name() {
-    let pool = Arc::new(ClientPool::new());
-    let executor = CodexExecutor::new(pool, None).unwrap();
-
-    let req = CodexExecutionRequest {
-        model: "codex/o3-mini".into(),
-        body: json!({
+    let transformed = execute_and_capture_body(
+        "codex/o3-mini",
+        json!({
             "messages": [{"role": "user", "content": "Hello"}]
         }),
-        stream: false,
-        web_search_context_size: None,
-        credentials: connection("codex"),
-        proxy: None,
-    };
-
-    let response = executor.execute(req).await.expect("execute request");
-    assert_eq!(response.transformed_body["model"], "o3-mini");
+    )
+    .await;
+    assert_eq!(transformed["model"], "o3-mini");
 }
 
 #[tokio::test]
 async fn codex_executor_execute_without_codex_prefix() {
-    let pool = Arc::new(ClientPool::new());
-    let executor = CodexExecutor::new(pool, None).unwrap();
-
-    let req = CodexExecutionRequest {
-        model: "o4-mini".into(),
-        body: json!({
+    let transformed = execute_and_capture_body(
+        "o4-mini",
+        json!({
             "messages": [{"role": "user", "content": "Hello"}]
         }),
-        stream: false,
-        web_search_context_size: None,
-        credentials: connection("codex"),
-        proxy: None,
-    };
-
-    let response = executor.execute(req).await.expect("execute request");
-    assert_eq!(response.transformed_body["model"], "o4-mini");
+    )
+    .await;
+    assert_eq!(transformed["model"], "o4-mini");
 }
 
 #[tokio::test]
@@ -432,12 +445,9 @@ async fn codex_executor_execute_empty_messages_fails() {
 
 #[tokio::test]
 async fn codex_executor_execute_all_params_copied() {
-    let pool = Arc::new(ClientPool::new());
-    let executor = CodexExecutor::new(pool, None).unwrap();
-
-    let req = CodexExecutionRequest {
-        model: "codex/o4-mini".into(),
-        body: json!({
+    let transformed = execute_and_capture_body(
+        "codex/o4-mini",
+        json!({
             "messages": [{"role": "user", "content": "Hello"}],
             "stream": false,
             "temperature": 0.7,
@@ -445,47 +455,30 @@ async fn codex_executor_execute_all_params_copied() {
             "top_p": 0.9,
             "stop": ["END"]
         }),
-        stream: false,
-        web_search_context_size: None,
-        credentials: connection("codex"),
-        proxy: None,
-    };
-
-    let response = executor.execute(req).await.expect("execute request");
+    )
+    .await;
     // Parity (codex.js:462-479): unsupported sampling params are deleted —
     // temperature, top_p, max_tokens. `stop` is preserved.
     for key in ["temperature", "top_p", "max_tokens"] {
-        assert!(
-            response.transformed_body.get(key).is_none(),
-            "{key} must be stripped"
-        );
+        assert!(transformed.get(key).is_none(), "{key} must be stripped");
     }
-    assert_eq!(response.transformed_body["stop"], json!(["END"]));
+    assert_eq!(transformed["stop"], json!(["END"]));
 }
 
 #[tokio::test]
 async fn codex_executor_execute_reasoning_param_stripped() {
-    let pool = Arc::new(ClientPool::new());
-    let executor = CodexExecutor::new(pool, None).unwrap();
-
-    let req = CodexExecutionRequest {
-        model: "codex/o4-mini".into(),
-        body: json!({
+    let transformed = execute_and_capture_body(
+        "codex/o4-mini",
+        json!({
             "messages": [{"role": "user", "content": "Hello"}],
             "reasoning": {"effort": "high"}
         }),
-        stream: false,
-        web_search_context_size: None,
-        credentials: connection("codex"),
-        proxy: None,
-    };
-
-    let response = executor.execute(req).await.expect("execute request");
+    )
+    .await;
     // Parity (bead .38): the reasoning parameter is preserved — Codex
     // upstream consumes reasoning.effort for thinking effort control.
     assert_eq!(
-        response
-            .transformed_body
+        transformed
             .pointer("/reasoning/effort")
             .and_then(|v| v.as_str()),
         Some("high")

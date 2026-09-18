@@ -338,7 +338,6 @@ pub struct GrokCliExecutorResponse {
     pub response: UpstreamResponse,
     pub url: String,
     pub headers: HeaderMap,
-    pub transformed_body: Value,
     pub transport: TransportKind,
 }
 
@@ -660,7 +659,6 @@ impl GrokCliExecutor {
             response: UpstreamResponse::Reqwest(response),
             url,
             headers,
-            transformed_body: transformed,
             transport: TransportKind::Reqwest,
         })
     }

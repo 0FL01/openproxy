@@ -811,7 +811,6 @@ async fn default_executor_execute_posts_expected_request() {
         response.url,
         format!("{}/v1/chat/completions", upstream.uri())
     );
-    assert_eq!(response.transformed_body, request_body);
     assert_eq!(response.headers["authorization"], "Bearer sk-test");
     assert_eq!(response.response.status(), 200);
     assert_eq!(response.transport, TransportKind::Hyper);
