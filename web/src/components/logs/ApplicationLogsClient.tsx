@@ -7,7 +7,7 @@ import Pagination from "@/shared/components/Pagination";
 import ApplicationLogDrawer from "./ApplicationLogDrawer";
 import type { ApplicationLog, LogsPayload } from "./types";
 
-const REFRESH_MS = 10_000;
+const REFRESH_MS = 60_000;
 
 interface Filters {
   status: string;
@@ -92,7 +92,7 @@ export default function ApplicationLogsClient() {
       <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
         <div>
           <h1 className="text-2xl font-semibold text-text-main">Application Logs</h1>
-          <p className="text-sm text-text-muted">Provider attempts attributed to API keys · refreshes every 10 seconds</p>
+          <p className="text-sm text-text-muted">Provider attempts attributed to API keys · refreshes every 60 seconds</p>
         </div>
         <Button variant="outline" onClick={() => setRefresh((value) => value + 1)}>
           <span className="material-symbols-outlined text-[18px]">refresh</span> Refresh
