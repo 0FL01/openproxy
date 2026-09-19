@@ -97,6 +97,36 @@ fn opencode_config_path(home: &Path) -> PathBuf {
 }
 
 #[tokio::test]
+async fn deepseek_tui_settings_use_openproxy_key_by_default() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = tempdir().unwrap();
+    let _home = EnvVarGuard::set_path("HOME", home.path());
+
+    let app = openproxy::build_app(app_state().await);
+    let response = app
+        .oneshot(authorized_request(
+            Method::POST,
+            "/api/cli-tools/deepseek-tui-settings",
+            Body::from(
+                serde_json::to_vec(&json!({
+                    "baseUrl": "http://127.0.0.1:4623",
+                    "model": "deepseek-chat",
+                }))
+                .unwrap(),
+            ),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let config = tokio::fs::read_to_string(home.path().join(".deepseek/config.toml"))
+        .await
+        .unwrap();
+    assert!(config.contains("api_key = \"sk_openproxy\""));
+    assert!(!config.contains("sk_9router"));
+}
+
+#[tokio::test]
 async fn claude_settings_get_reports_not_installed_without_binary_or_config() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = tempdir().unwrap();

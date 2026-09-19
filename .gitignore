@@ -73,7 +73,6 @@ docs/goals/*
 !docs/lean-proxy-results.md
 test/*
 bin/*
-open-sse/test/*
 RM.vn.md
 RM.md
 cursor/*

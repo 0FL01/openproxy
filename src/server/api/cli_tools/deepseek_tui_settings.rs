@@ -237,7 +237,7 @@ async fn write_deepseek_config(body: &SaveDeepSeekSettingsRequest) -> AnyhowResu
         .api_key
         .clone()
         .filter(|k| !k.is_empty())
-        .unwrap_or_else(|| "sk_9router".to_string());
+        .unwrap_or_else(|| "sk_openproxy".to_string());
 
     let config = format!(
         "provider = \"openai\"\n\
