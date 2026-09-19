@@ -1,6 +1,6 @@
 # Goal: Codex standalone indexed search
 
-Status: active
+Status: complete
 Source: User report comparing the deployed MCP search with `mateusdcc/codex-search-opencode`, approved instruction to implement, commit, push, and deploy (2026-09-19)
 Last updated: 2026-09-19
 
@@ -45,15 +45,15 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: User instruction to test normal live searches at all three levels.
   - Acceptance: Installed OpenCode invokes `codex_web_search` once at each level, every call completes within the 30-second client timeout, returns non-empty sourced output, and does not report MCP timeout.
   - Primary evidence: Three explicit post-deploy OpenCode tool calls using current facts and official-source queries.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: Post-deploy `codex_web_search` calls at `short`, `medium`, and `long` all completed under the configured 30-second OpenCode timeout with non-empty indexed results and real source URLs for Rust releases, the MCP specification, and OpenAI GPT-5.1 documentation.
 
 - R6: The verified correction is committed, pushed, deployed, and healthy.
   - Source: User instruction to commit, push, and deploy.
   - Acceptance: Only correction-owned changes are committed, branch refs match origin, production Compose runs the corrected image, and `/health` returns `status: ok`.
   - Primary evidence: Staged diff review, Git refs, Compose status, and health response.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: Correction commits `6c8d276b` and `0e0007b1` are pushed to `origin/perf/lean-proxy-plan`; clean commit `0e0007b1` was built as image `sha256:5ff434404671`, Compose reports healthy, and `/health` returns `status: ok`.
 
 ### Constraints
 - C1: Keep `POST /v1/mcp`, server key `codex_web`, OpenCode tool `codex_web_search`, unconditional OpenProxy API-key auth, stateless transport, and the exact `query` plus optional `response_length` input surface.
@@ -83,16 +83,16 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 6. Replace the old Luna fixture with exact standalone request/fallback/output tests, run focused Rust/OpenCode/dashboard/plugin gates, then perform three real OpenCode searches, commit only correction-owned hunks, push, deploy, and health-check.
 
 ## Current Checkpoint
-- Closes: R5-R6.
-- Smallest next action: Review and commit only correction-owned hunks, push and deploy, then run live OpenCode calls at all three response lengths and health-check production.
-- Expected evidence: Matching Git refs, healthy Compose service, and three sourced tool results within the 30-second client timeout.
-- Stop or replan if: The standalone alpha endpoint rejects the existing private Codex credential/account headers or a live length still exceeds the client timeout.
+- Closes: None; objective complete.
+- Smallest next action: Stop.
+- Expected evidence: All required outcomes are verified below.
+- Stop or replan if: Not applicable.
 
 ## Current State
-- Resolved: R1-R4.
-- Last relevant evidence: 1,016 library tests and focused C11/C20/C33/C39/MCP/config suites pass; dashboard and model plugin builds pass; fmt and JSON contract checks pass; clippy reports only three pre-existing unrelated warnings.
+- Resolved: R1-R6.
+- Last relevant evidence: The clean committed image is healthy and all three live OpenCode search lengths return sourced indexed output without timeout or private citation markers.
 - Blocker: None.
-- Next: Commit the isolated correction, deploy it, and verify real `short|medium|long` tool calls.
+- Next: None.
 
 ## Material Decisions
 - 2026-09-19: Treat `model: "gpt-4o"` as the standalone search protocol selector, not an OpenProxy generation model.
@@ -102,9 +102,10 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 ## Checkpoint History
 - 2026-09-19: Goal created from completed RECON; R1-R6 frozen; implementation not started.
 - 2026-09-19: R1-R4 verified. MCP now uses bounded standalone indexed search with private account fallback; the prior Luna/Responses path and 300-second config are removed. Focused, library, dashboard, plugin, formatting, and contract gates pass.
+- 2026-09-19: Initial live calls exposed raw private citation markers in long output; focused normalization was added and redeployed. Final `short|medium|long` calls all returned sourced indexed output under the 30-second client timeout. R5-R6 verified.
 
 ## Completion
-- Resolved outcomes:
-- Commands and artifacts:
-- Constraint and diff-scope check:
-- Final status:
+- Resolved outcomes: R1-R6.
+- Commands and artifacts: Focused C11/C20/C33/C39/MCP/config tests; 1,016 library tests in the active worktree; fmt, clippy, JSON contract parsing, dashboard build, model-plugin tests; clean production Docker builds; three live MCP calls; Compose and `/health` checks.
+- Constraint and diff-scope check: No dependency, wrapper, session, research surface, model setting, schema, cache, worker, or `/v1/web/fetch` change was added. Unrelated pre-existing dirty-worktree edits were not staged; deployment images were built from clean committed worktrees.
+- Final status: complete.

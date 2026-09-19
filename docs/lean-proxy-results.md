@@ -133,13 +133,32 @@ same file for tower-http).
   suites; real OpenCode discovery; dashboard and model-plugin builds. No paid
   search was performed.
 
+## C45: Codex standalone indexed search
+
+- `codex_web_search` now calls Codex's private
+  `/backend-api/codex/alpha/search` endpoint directly; `gpt-4o` is the search
+  protocol selector, not an OpenProxy generation-model choice.
+- `short`, `medium`, and `long` pass through unchanged. No Luna/catalog lookup,
+  Responses request, native `web_search` tool, SSE collection, or model answer
+  synthesis occurs on the MCP path.
+- Active Codex accounts retain priority ordering, private bearer/account
+  headers, configured proxy and pooled transport, coordinated OAuth recovery,
+  bounded transient retries, account fallback, shared admission, and
+  metadata-only attempt logging.
+- Indexed output/results are returned in one 16 MiB all-or-error text block;
+  the server deadline is 15 seconds and generated OpenCode config uses 30
+  seconds. The undocumented alpha endpoint remains an explicit isolated risk.
+- Evidence: focused request/fallback/protocol/config suites, 1,016 active-worktree
+  library tests, clean release builds, and post-deploy OpenCode calls for all
+  three response lengths. A live long result exposed private citation markers;
+  `0e0007b1` normalized them and the final three calls completed without timeout.
+
 ## Limitations and explicitly unverified items
 
-- Production provider compatibility (real Kiro/Codex/Claude/Gemini traffic
-  with live credentials) was never exercised: no credentials exist in this
-  environment and paid calls are forbidden by the plan constraints. Wire
-  compatibility is proven against loopback mocks and translator goldens
-  only.
+- Production generation compatibility for Kiro/Codex/Claude/Gemini remains
+  unexercised. C45 exercised only the standalone Codex indexed-search endpoint
+  with the configured production credential; other provider-generation wire
+  compatibility remains proven by loopback mocks and translator goldens only.
 - The custom harness version/contract is `unknown`; end-to-end
   compatibility with it is unverified.
 - `PLAN.md` / `AUDIT-EVIDENCE.md` are absent; the executable graph was
@@ -155,7 +174,7 @@ same file for tower-http).
 ## Rollback
 
 Each checkpoint is an atomic Conventional Commit on `perf/lean-proxy-plan`
-(C00–C44); revert any single commit without data migration. Release is
+(C00–C45); revert any single commit without data migration. Release is
 blocked on any wire/security/data contract violation — none is open: all
 required checkpoints are `done`, all conditionals (`C06`, `C25`, `C37`,
 `C38`, `C39`, `C41`) are `done` with evidence, none is `not_applicable`.

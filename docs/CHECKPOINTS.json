@@ -2240,6 +2240,46 @@
         "measurements": "No paid/live search was run. Protocol and provider behavior use deterministic loopback upstreams; real OpenCode discovery performed no tool call.",
         "rollback": "Revert the C44 commit; no dependency or schema migration was added. The normalization-only exact-key cleanup is documented in the frozen contract."
       }
+    },
+    {
+      "id": "C45",
+      "title": "Использовать Codex standalone indexed search в MCP",
+      "status": "done",
+      "depends_on": [
+        "C44"
+      ],
+      "kind": "product",
+      "evidence": [
+        "user correction after live short/medium/long MCP testing 2026-09-19",
+        "mateusdcc/codex-search-opencode reference commit 545cbf5ce6bde1491ed4291c5aa9177394d5fd13"
+      ],
+      "scope": "Codex standalone search transport, account fallback, indexed response normalization, MCP adapter, OpenCode timeout, contracts and focused tests.",
+      "change": "Replace the MCP-only Luna/Responses generation path with one bounded call to /backend-api/codex/alpha/search using private Codex account credentials; preserve the stateless MCP surface and public native-search rejection.",
+      "tests": "Exact request capture for short/medium/long, first-account fallback, private headers, zero catalog/Responses calls, many-result normalization, MCP lifecycle/auth, C39 boundary, OpenCode configuration, and live post-deploy searches.",
+      "acceptance": "All three search lengths return sourced indexed output within the 30-second OpenCode timeout, with no generation-model selection or Responses request; only correction-owned changes are committed and deployed healthy.",
+      "rollback": "Revert C45 runtime/config/contracts together. The prior C44 protocol and public cutover remain documented history; no dependency or schema migration was added.",
+      "result": {
+        "completed": "2026-09-19",
+        "commits": [
+          "6c8d276b feat(codex): use standalone indexed search",
+          "0e0007b1 fix(codex): normalize standalone citations"
+        ],
+        "behavior": "MCP search calls Codex alpha/search with private account credentials, passes short/medium/long unchanged, performs no catalog or Responses generation, and returns bounded indexed text with readable ordered citations.",
+        "tests": [
+          "cargo test -p openproxy --lib --all-features: 1016 passed in the active worktree",
+          "cargo test -p openproxy --test lean_proxy_codex_c20: 6 passed",
+          "cargo test -p openproxy --test lean_proxy_codex_c11: 4 passed",
+          "cargo test -p openproxy --test lean_proxy_forced_c33: 9 passed",
+          "cargo test -p openproxy --test lean_proxy_web_tools_c39: 4 passed",
+          "cargo test -p openproxy --test codex_web_mcp_api: 3 passed, 1 ignored environment smoke",
+          "cargo test -p openproxy --test cli_tool_native_settings_api: 6 passed in the active worktree",
+          "pnpm --dir web run build: passed",
+          "node --test tests/opencode_models.test.mjs tests/opencode_models_cli.test.mjs: 4 passed, 1 skipped",
+          "live codex_web_search short/medium/long: all passed with sourced output and no timeout"
+        ],
+        "deployment": "Clean commit 0e0007b1 built as sha256:5ff434404671f93fc3f30f22b3a640321f0aaa9478a54dcdaa30e45fc1391158; Compose healthy and /health status ok.",
+        "limitations": "The upstream alpha/search endpoint is undocumented and private; rollback is the two C45 runtime commits."
+      }
     }
   ]
 }
