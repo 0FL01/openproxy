@@ -122,14 +122,13 @@ Most tools ask for an OpenAI base URL and an API key.
 
 | Tool | Setting | Value |
 |---|---|---|
-| Cursor / Cline / Continue / Roo / Kilo | OpenAI base URL | `http://127.0.0.1:4623/v1` |
+| Cursor / Cline / Continue / Roo | OpenAI base URL | `http://127.0.0.1:4623/v1` |
 | Codex CLI | `OPENAI_BASE_URL` | `http://127.0.0.1:4623` |
 | Claude Code | `~/.claude/config.json` `anthropic_api_base` | `http://127.0.0.1:4623/v1` |
-| OpenClaw | dashboard → CLI Tools → OpenClaw | one-click apply |
 
 The API key comes from the dashboard. Visit `http://127.0.0.1:4623`, create an API key, paste it into the tool's settings.
 
-Tested CLIs: **Claude Code, Codex, Cursor, Cline, Continue, Roo, Kilo, Copilot, OpenClaw, OpenCode, Antigravity, Droid**.
+Tested CLIs: **Claude Code, Codex, Cursor, Cline, Continue, Roo, OpenCode, Antigravity**.
 
 ---
 

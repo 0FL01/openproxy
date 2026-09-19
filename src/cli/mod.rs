@@ -179,7 +179,7 @@ pub enum Command {
         #[command(subcommand)]
         cmd: models::ModelsCmd,
     },
-    /// Manage CLI-tool integrations (claude, codex, copilot, ...).
+    /// Manage retained CLI-tool integrations (claude, codex, continue, opencode).
     Tool {
         #[command(subcommand)]
         cmd: tool::ToolCmd,

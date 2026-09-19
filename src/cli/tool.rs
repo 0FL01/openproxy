@@ -1,5 +1,5 @@
-//! `openproxy tool *` — manage CLI-tool integrations (claude, codex, copilot,
-//! openclaw, hermes, cowork) via `/api/cli-tools/*` (PLAN v3 mục 4.12).
+//! `openproxy tool *` — manage retained CLI-tool integrations via
+//! `/api/cli-tools/*` (PLAN v3 mục 4.12).
 //!
 //! `apply <name>` writes a tool's settings (model/api-key/base-url) by POSTing
 //! to the per-tool `/<name>-settings` endpoint. `revert <name>` resets it via
@@ -19,13 +19,13 @@ pub enum ToolCmd {
     List,
     /// Show the saved settings for a per-tool integration.
     Show {
-        /// One of `claude`, `codex`, `copilot`, `openclaw`, `hermes`, `cowork`.
+        /// One of `claude`, `codex`, `continue`, `opencode`.
         name: String,
     },
     /// Apply settings to a per-tool integration. Use `--dry-run` to preview
     /// the JSON body without sending it.
     Apply {
-        /// One of `claude`, `codex`, `copilot`, `openclaw`, `hermes`, `cowork`.
+        /// One of `claude`, `codex`, `continue`, `opencode`.
         name: String,
         /// Model id to set (passed as `model` to the server).
         #[arg(long)]
@@ -83,9 +83,7 @@ pub async fn run(cmd: ToolCmd, cfg: &ResolvedConfig, ctx: OutputCtx) -> anyhow::
 
 /// Supported per-tool integration names. The server endpoint is
 /// `/api/cli-tools/<name>-settings`.
-const SUPPORTED_TOOLS: &[&str] = &[
-    "claude", "codex", "continue", "copilot", "openclaw", "hermes", "cowork", "opencode", "droid",
-];
+const SUPPORTED_TOOLS: &[&str] = &["claude", "codex", "continue", "opencode"];
 
 fn settings_path(name: &str) -> Option<String> {
     let lowered = name.to_ascii_lowercase();
@@ -229,20 +227,12 @@ pub(crate) fn build_apply_body(
             }
             json!({"env": Value::Object(env)})
         }
-        "codex" | "opencode" | "droid" => json!({
+        "codex" | "opencode" => json!({
             "baseUrl": base_url,
             "apiKey": api_key.unwrap_or(""),
             "model": model.clone().unwrap_or_default(),
         }),
-        "copilot" => json!({
-            "baseUrl": base_url,
-            "apiKey": api_key,
-            "models": model
-                .as_ref()
-                .map(|m| vec![m.clone()])
-                .unwrap_or_default(),
-        }),
-        // hermes / cowork / openclaw — `{baseUrl, apiKey, model|models}`.
+        // continue — `{baseUrl, apiKey, model|models}`.
         _ => {
             let mut obj = Map::new();
             obj.insert("baseUrl".to_string(), Value::String(base_url.to_string()));
@@ -362,8 +352,8 @@ mod tests {
             Some("/api/cli-tools/claude-settings".to_string())
         );
         assert_eq!(
-            settings_path("hermes"),
-            Some("/api/cli-tools/hermes-settings".to_string())
+            settings_path("opencode"),
+            Some("/api/cli-tools/opencode-settings".to_string())
         );
         assert_eq!(
             settings_path("continue"),

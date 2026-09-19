@@ -7,17 +7,10 @@ import { getModelsByProviderId, PROVIDER_ID_TO_ALIAS, useEnsureCatalog } from "@
 import {
   ClaudeToolCard,
   CodexToolCard,
-  DroidToolCard,
-  OpenClawToolCard,
-  HermesToolCard,
   DefaultToolCard,
   OpenCodeToolCard,
-  CoworkToolCard,
-  CopilotToolCard,
   ClineToolCard,
-  KiloToolCard,
   DeepSeekTuiToolCard,
-  JcodeToolCard,
 } from "@/components/cli-tools";
 
 const CLOUD_URL: string | undefined = (import.meta.env as Record<string, string | undefined>)?.PUBLIC_CLOUD_URL;
@@ -25,15 +18,9 @@ const CLOUD_URL: string | undefined = (import.meta.env as Record<string, string 
 const STATUS_ENDPOINTS: Record<string, string> = {
   claude: "/api/cli-tools/claude-settings",
   cline: "/api/cli-tools/cline-settings",
-  kilo: "/api/cli-tools/kilo-settings",
   codex: "/api/cli-tools/codex-settings",
   opencode: "/api/cli-tools/opencode-settings",
-  droid: "/api/cli-tools/droid-settings",
-  openclaw: "/api/cli-tools/openclaw-settings",
-  hermes: "/api/cli-tools/hermes-settings",
-  cowork: "/api/cli-tools/cowork-settings",
   "deepseek-tui": "/api/cli-tools/deepseek-tui-settings",
-  jcode: "/api/cli-tools/jcode-settings",
 };
 
 export default function ToolDetailClient() {
@@ -165,33 +152,10 @@ export default function ToolDetailClient() {
         return <CodexToolCard {...commonProps} activeProviders={getActiveProviders()} cloudEnabled={cloudEnabled} initialStatus={toolStatus} />;
       case "opencode":
         return <OpenCodeToolCard {...commonProps} activeProviders={getActiveProviders()} cloudEnabled={cloudEnabled} initialStatus={toolStatus} />;
-      case "cowork":
-        return (
-          <CoworkToolCard
-            {...commonProps}
-            activeProviders={getActiveProviders()}
-            hasActiveProviders={hasActiveProviders}
-            cloudEnabled={cloudEnabled}
-            cloudUrl={CLOUD_URL}
-            initialStatus={toolStatus}
-          />
-        );
-      case "droid":
-        return <DroidToolCard {...commonProps} activeProviders={getActiveProviders()} hasActiveProviders={hasActiveProviders} cloudEnabled={cloudEnabled} initialStatus={toolStatus} />;
-      case "openclaw":
-        return <OpenClawToolCard {...commonProps} activeProviders={getActiveProviders()} hasActiveProviders={hasActiveProviders} cloudEnabled={cloudEnabled} initialStatus={toolStatus} />;
-      case "hermes":
-        return <HermesToolCard {...commonProps} activeProviders={getActiveProviders()} hasActiveProviders={hasActiveProviders} cloudEnabled={cloudEnabled} initialStatus={toolStatus} />;
-      case "copilot":
-        return <CopilotToolCard {...commonProps} activeProviders={getActiveProviders()} cloudEnabled={cloudEnabled} />;
       case "cline":
         return <ClineToolCard {...commonProps} activeProviders={getActiveProviders()} cloudEnabled={cloudEnabled} initialStatus={toolStatus} />;
-      case "kilo":
-        return <KiloToolCard {...commonProps} activeProviders={getActiveProviders()} cloudEnabled={cloudEnabled} initialStatus={toolStatus} />;
       case "deepseek-tui":
         return <DeepSeekTuiToolCard {...commonProps} activeProviders={getActiveProviders()} hasActiveProviders={hasActiveProviders} cloudEnabled={cloudEnabled} initialStatus={toolStatus} />;
-      case "jcode":
-        return <JcodeToolCard {...commonProps} activeProviders={getActiveProviders()} hasActiveProviders={hasActiveProviders} cloudEnabled={cloudEnabled} initialStatus={toolStatus} />;
       default:
         return <DefaultToolCard toolId={toolId} {...commonProps} activeProviders={getActiveProviders()} cloudEnabled={cloudEnabled} />;
     }

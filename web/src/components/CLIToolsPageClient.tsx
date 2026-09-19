@@ -8,15 +8,9 @@ import ToolSummaryCard from "./cli-tools/ToolSummaryCard";
 const STATUS_ENDPOINTS: Record<string, string> = {
   claude: "/api/cli-tools/claude-settings",
   cline: "/api/cli-tools/cline-settings",
-  kilo: "/api/cli-tools/kilo-settings",
   codex: "/api/cli-tools/codex-settings",
   opencode: "/api/cli-tools/opencode-settings",
-  droid: "/api/cli-tools/droid-settings",
-  openclaw: "/api/cli-tools/openclaw-settings",
-  hermes: "/api/cli-tools/hermes-settings",
-  cowork: "/api/cli-tools/cowork-settings",
   "deepseek-tui": "/api/cli-tools/deepseek-tui-settings",
-  jcode: "/api/cli-tools/jcode-settings",
 };
 
 interface CLIToolsPageClientProps {

@@ -80,14 +80,6 @@ export const CLI_TOOLS: Record<string, CLITool> = {
       { id: "haiku", name: "Claude Haiku", alias: "haiku", envKey: "ANTHROPIC_DEFAULT_HAIKU_MODEL", defaultValue: "cc/claude-haiku-4-5-20251001" },
     ],
   },
-  openclaw: {
-    id: "openclaw",
-    name: "Open Claw",
-    image: "/providers/openclaw.png",
-    color: "#FF6B35",
-    description: "Open Claw AI Assistant",
-    configType: "custom",
-  },
   codex: {
     id: "codex",
     name: "OpenAI Codex CLI / App",
@@ -104,30 +96,6 @@ export const CLI_TOOLS: Record<string, CLITool> = {
     description: "OpenCode AI Terminal Assistant",
     configType: "custom",
   },
-  cowork: {
-    id: "cowork",
-    name: "Claude Cowork",
-    image: "/providers/claude.png",
-    color: "#D97757",
-    description: "Claude Desktop Cowork (third-party inference)",
-    configType: "custom",
-  },
-  hermes: {
-    id: "hermes",
-    name: "Hermes Agent",
-    image: "/providers/hermes.png",
-    color: "#8B5CF6",
-    description: "Nous Research self-improving AI agent",
-    configType: "custom",
-  },
-  droid: {
-    id: "droid",
-    name: "Factory Droid",
-    image: "/providers/droid.png",
-    color: "#00D4FF",
-    description: "Factory Droid AI Assistant",
-    configType: "custom",
-  },
   cline: {
     id: "cline",
     name: "Cline",
@@ -137,21 +105,6 @@ export const CLI_TOOLS: Record<string, CLITool> = {
     configType: "custom",
     guideSteps: [
       { step: 1, title: "Open Settings", desc: "Go to Cline Settings panel" },
-      { step: 2, title: "Select Provider", desc: "Choose API Provider → OpenAI Compatible" },
-      { step: 3, title: "Base URL", value: "{{baseUrl}}/v1", copyable: true },
-      { step: 4, title: "API Key", type: "apiKeySelector" },
-      { step: 5, title: "Select Model", type: "modelSelector" },
-    ],
-  },
-  kilo: {
-    id: "kilo",
-    name: "Kilo Code",
-    image: "/providers/kilocode.png",
-    color: "#FF6B6B",
-    description: "Kilo Code AI Assistant",
-    configType: "custom",
-    guideSteps: [
-      { step: 1, title: "Open Settings", desc: "Go to Kilo Code Settings panel" },
       { step: 2, title: "Select Provider", desc: "Choose API Provider → OpenAI Compatible" },
       { step: 3, title: "Base URL", value: "{{baseUrl}}/v1", copyable: true },
       { step: 4, title: "API Key", type: "apiKeySelector" },
@@ -304,35 +257,6 @@ amp --model "{{model}}"
     notes: [
       { type: "info", text: "DeepSeek TUI uses ~/.deepseek/config.toml for configuration. OpenProxy will update the provider to 'openai' mode with your base_url, api_key, and model." },
       { type: "warning", text: "Config path: Linux/macOS ~/.deepseek/config.toml • Windows %USERPROFILE%\\.deepseek\\config.toml" },
-    ],
-  },
-  jcode: {
-    id: "jcode",
-    name: "jcode",
-    image: "/providers/jcode.png",
-    color: "#FF6B35",
-    description: "High-performance Rust-based coding agent harness",
-    configType: "custom",
-    docsUrl: "https://github.com/1jehuang/jcode",
-    notes: [
-      {
-        type: "info",
-        text: "jcode is a Rust-based coding agent with semantic memory, multi-agent swarms, and extreme performance (27.8 MB RAM, 14ms boot).",
-      },
-      {
-        type: "info",
-        text: "Configure openproxy as an OpenAI-compatible provider to route all jcode requests through the optimization layer.",
-      },
-      {
-        type: "warning",
-        text: "Requires jcode installed. Install via: curl -fsSL https://raw.githubusercontent.com/1jehuang/jcode/master/scripts/install.sh | bash",
-      },
-    ],
-    defaultModels: [
-      { id: "claude-opus-5", name: "Claude Opus 5", alias: "opus", defaultValue: "cc/claude-opus-5" },
-      { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", alias: "sonnet", defaultValue: "cc/claude-sonnet-4-6" },
-      { id: "gpt-5.5", name: "GPT 5.5", alias: "gpt5", defaultValue: "cx/gpt-5.5" },
-      { id: "gemini-3.1-pro", name: "Gemini 3.1 Pro", alias: "gemini", defaultValue: "gemini/gemini-3.1-pro" },
     ],
   },
 };

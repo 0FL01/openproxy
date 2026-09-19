@@ -1,6 +1,6 @@
 ---
 name: openproxy
-description: Install, initialize, and operate OpenProxy from the CLI — either guiding a human through setup or driving it fully autonomously as an agent. Use whenever the user asks to install the openproxy binary, start the local AI router on 127.0.0.1:4623, configure providers / keys, or wire an AI coding CLI (Claude Code, Codex, Cursor, Cline, OpenClaw, Copilot, …) into OpenProxy.
+description: Install, initialize, and operate OpenProxy from the CLI — either guiding a human through setup or driving it fully autonomously as an agent. Use whenever the user asks to install the openproxy binary, start the local AI router on 127.0.0.1:4623, configure providers / keys, or wire an AI coding CLI (Claude Code, Codex, Cursor, Cline, Continue, Roo, OpenCode, …) into OpenProxy.
 ---
 
 # openproxy — install & operate from the CLI
@@ -199,12 +199,11 @@ Most AI CLIs accept an OpenAI-compatible base URL and a bearer token:
 
 | Tool | Setting | Value |
 |---|---|---|
-| Cursor / Cline / Continue / Roo / Kilo | OpenAI base URL | `http://127.0.0.1:4623/v1` |
+| Cursor / Cline / Continue / Roo | OpenAI base URL | `http://127.0.0.1:4623/v1` |
 | Codex CLI | env `OPENAI_BASE_URL` | `http://127.0.0.1:4623` |
 | Claude Code | `~/.claude/config.json` → `anthropic_api_base` | `http://127.0.0.1:4623/v1` |
-| OpenClaw | dashboard → CLI Tools → OpenClaw | one-click apply |
 
-The bearer is the admin key captured in step 2, or any key minted via `openproxy key add`. OpenProxy also has a `tool` subcommand (`openproxy tool …`) that can apply these settings programmatically — run `openproxy tool --help` to see the matrix of supported tools in the installed binary.
+The bearer is the admin key captured in step 2, or any key minted via `openproxy key add`. OpenProxy also has a `tool` subcommand (`openproxy tool …`) that can apply retained settings programmatically — run `openproxy tool --help` to see the supported matrix in the installed binary.
 
 ## 6 · Verifications
 

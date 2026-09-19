@@ -51,7 +51,7 @@ export const SKILLS: Skill[] = [
   {
     id: "openproxy-cli-tools",
     name: "CLI Tools",
-    description: "Wire Claude Code, Codex, Cline, Continue, Roo, Kilo, Copilot, OpenClaw, and more into OpenProxy with one-click configuration.",
+    description: "Wire Claude Code, Codex, Cline, Continue, Roo, and more into OpenProxy with one-click configuration.",
     endpoint: null,
     icon: "terminal",
   },
