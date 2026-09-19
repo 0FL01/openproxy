@@ -1,6 +1,6 @@
 # Goal: Codex web search over MCP
 
-Status: active
+Status: complete
 Source: User-approved audited MCP migration plan and instruction to implement, commit, push, and deploy (2026-09-19)
 Last updated: 2026-09-19
 
@@ -59,8 +59,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: User instruction to commit, push, and deploy.
   - Acceptance: Current branch refs match origin, production Compose runs the built image, and `/health` returns `status: ok`.
   - Primary evidence: Git refs, Compose status, and health response.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: Runtime commit `3bd196ea` is pushed to `origin/perf/lean-proxy-plan` and deployed as image `sha256:35849359115465d69d40c702a61e1c7969576a3fa5a3dcc6b6d0b4792931bec6`; Compose reports healthy and `/health` returns `status: ok`.
 
 ### Constraints
 - C1: No new dependency, client wrapper, local MCP process, MCP OAuth, MCP session store, cache, background worker, or second Codex HTTP/routing/fallback path.
@@ -95,16 +95,16 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 10. Verify with focused protocol/auth, mapping/execution, many-result, terminal-failure, public-cutover, settings/config, contract, dashboard/plugin, library/fmt/clippy, real OpenCode discovery, then commit, push, deploy, and health-check.
 
 ## Current Checkpoint
-- Closes: R7.
-- Smallest next action: Complete the final diff check, commit, push, production Compose deploy, and health check.
-- Expected evidence: Git refs match origin; the rebuilt container is healthy and `/health` returns `status: ok`.
-- Stop or replan if: A closure check proves an R1-R6 behavior or affected constraint is no longer satisfied.
+- Closes: None; objective complete.
+- Smallest next action: Stop.
+- Expected evidence: All required outcomes are verified below.
+- Stop or replan if: Not applicable.
 
 ## Current State
-- Resolved: R1-R6.
-- Last relevant evidence: 1,026 library tests plus focused MCP, Codex C11/C20, forced-stream C33, admission C36, settings/config, C39, dashboard, plugin, JSON, fmt, clippy, and real OpenCode discovery checks pass.
+- Resolved: R1-R7.
+- Last relevant evidence: Runtime commit is pushed and deployed; Compose and `/health` are healthy.
 - Blocker: None.
-- Next: Commit, push, deploy, and health-check R7.
+- Next: None.
 
 ## Material Decisions
 - 2026-09-19: Use handwritten stateless MCP 2025-11-25 over JSON responses; no MCP or JSONC dependency.
@@ -117,9 +117,10 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-09-19: Goal created; R1-R7 frozen; implementation not started.
 - 2026-09-19: R2 foundation passed: one bounded Responses parser now feeds HTTP and MCP projections; dozens of ordered messages/citations and terminal all-or-error behavior are covered. MCP lifecycle/auth and public hard-cut tests also pass. Next is one mocked routed tool call.
 - 2026-09-19: R1-R6 verified. Mocked routing proves Luna-only selection, short→low mapping, account fallback, private credentials, and final citations; OpenCode configuration/contracts/docs are aligned and real OpenCode discovery connects without a paid call. Next is R7 commit/deploy closure.
+- 2026-09-19: R7 verified. Runtime commit `3bd196ea` was pushed and deployed as image `sha256:358493591154`; production Compose and `/health` are healthy.
 
 ## Completion
-- Resolved outcomes:
-- Commands and artifacts:
-- Constraint and diff-scope check:
-- Final status:
+- Resolved outcomes: R1-R7.
+- Commands and artifacts: 1,026 library tests; focused MCP, Codex C11/C20, forced-stream C33, admission C36, settings/config, and C39 tests; real OpenCode discovery; dashboard/plugin builds; JSON, fmt, clippy, production Docker build, and `/health`.
+- Constraint and diff-scope check: No dependency, wrapper, session, cache, worker, duplicate Codex execution path, paid CI search, `/v1/web/fetch` change, or unrelated configuration cleanup was added.
+- Final status: complete.
