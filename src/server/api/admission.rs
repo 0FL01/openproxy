@@ -67,6 +67,10 @@ struct PermitGuard {
     _permit: Arc<OwnedSemaphorePermit>,
 }
 
+pub(crate) struct GenerationPermit {
+    _permit: OwnedSemaphorePermit,
+}
+
 impl LlmAdmission {
     pub fn new(limit: usize, wait: Duration) -> Self {
         let limit = limit.max(1);
@@ -136,9 +140,15 @@ impl LlmAdmission {
             }
         }
     }
+
+    pub(crate) async fn acquire_generation(&self) -> Option<GenerationPermit> {
+        self.acquire()
+            .await
+            .map(|permit| GenerationPermit { _permit: permit })
+    }
 }
 
-fn admission_rejection() -> Response {
+pub(crate) fn admission_rejection() -> Response {
     let mut body = crate::core::utils::error::build_error_body(
         StatusCode::TOO_MANY_REQUESTS.as_u16(),
         Some("Server is at generation capacity; retry shortly"),
@@ -171,12 +181,12 @@ pub async fn admit_llm_request(
     if request.method() != axum::http::Method::POST {
         return next.run(request).await;
     }
-    let Some(permit) = state.llm_admission.acquire().await else {
+    let Some(permit) = state.llm_admission.acquire_generation().await else {
         return admission_rejection();
     };
     let mut response = next.run(request).await;
     response.extensions_mut().insert(PermitGuard {
-        _permit: Arc::new(permit),
+        _permit: Arc::new(permit._permit),
     });
     response
 }

@@ -7,9 +7,9 @@
 //! session store, temporal retry scheduler, or background task; account
 //! fallback is the only loop and it is bounded by the configured-connection
 //! count. Consumers: `tests/web_fetch_api.rs`, the public CORS contract, and
-//! the dashboard skills page. Provider-native `web_search` forwarding,
-//! `tool_result` handling, and `/responses/compact` live elsewhere and must
-//! not depend on this module.
+//! the dashboard skills page. The separate stateless Codex search MCP,
+//! `tool_result` handling, and `/responses/compact` live elsewhere and must not
+//! depend on this module.
 
 use std::collections::HashSet;
 

@@ -392,6 +392,27 @@ Health probe (no auth):
 GET /health   →   200 OK
 ```
 
+Codex hosted web search is available as one direct remote MCP server. It uses
+the same OpenProxy API key and exposes `codex_web_search` in OpenCode:
+
+```json
+{
+  "mcp": {
+    "codex_web": {
+      "type": "remote",
+      "url": "http://127.0.0.1:4623/v1/mcp",
+      "enabled": true,
+      "oauth": false,
+      "headers": { "Authorization": "Bearer <api-key>" },
+      "timeout": 300000
+    }
+  }
+}
+```
+
+The tool accepts `query` and optional `response_length` (`short`, `medium`, or
+`long`). Direct Codex `web_search` tools on chat/Responses routes are rejected.
+
 The dashboard at `/` is the same authenticated API surface in HTML form. Admin endpoints live under `/api/*` and use the dashboard session cookie.
 
 ---
@@ -406,6 +427,7 @@ The dashboard at `/` is the same authenticated API surface in HTML form. Admin e
 │               (Astro static via rust-embed)│
 │                                             │
 │  /v1/*        OpenAI-compatible API        │
+│  /v1/mcp      Codex web search MCP         │
 │  /api/*       admin / dashboard data       │
 │  /codex/*     Codex OAuth helper           │
 │                                             │

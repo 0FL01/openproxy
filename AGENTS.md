@@ -18,15 +18,18 @@ Own single-binary AI router: faster, safer Rust implementation. Critical pattern
 The frozen ownership, route/protocol, migration, and preservation contract is
 [`contracts/lean-proxy.md`](contracts/lean-proxy.md), with a machine-readable
 manifest in [`contracts/lean-proxy.json`](contracts/lean-proxy.json). The client
-harness owns history, compaction, tool execution, semantic repair, and temporal
+harness owns history, compaction, general tool execution, semantic repair, and temporal
 generation retries; OpenProxy owns private credentials/OAuth, configured
 routing, required protocol mapping, transport reuse, and bounded resources.
+Only `/v1/web/fetch` and the stateless authenticated `/v1/mcp` Codex search tool
+are proxy-owned one-shot tools; neither may grow history, sessions, or a tool loop.
 
 ## Beads
 Fork: parity with other routers is not tracked. Use beads only for own product tasks.
 
 ## Key References
 - `docs/ARCHITECTURE.md` — pipeline order, intentional behavior, executor dispatch
+- `src/server/api/codex_web_mcp.rs` — the single-tool MCP protocol/auth boundary; Codex routing remains in `chat.rs`
 
 ## Dev Workflow — backend + dashboard rebuild
 

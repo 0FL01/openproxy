@@ -1106,36 +1106,19 @@ mod tests {
     }
 
     #[test]
-    fn test_codex_preserves_native_web_search_without_injection() {
+    fn test_codex_preserves_mcp_constructed_native_web_search() {
         let executor = CodexExecutor::new(Arc::new(ClientPool::new()), None).unwrap();
-        let body = json!({
-            "messages": [{"role": "user", "content": "hi"}],
-            "tools": [{
-                "type": "function",
-                "function": {
-                    "name": "local_tool",
-                    "parameters": {"type": "object", "properties": {}}
-                }
-            }]
-        });
-
-        let transformed = executor
-            .transform_request_body(&body, "gpt-5.6-luna", true)
-            .unwrap();
-        let tools = transformed["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0]["name"], "local_tool");
-
         let existing = json!({
             "messages": [{"role": "user", "content": "hi"}],
-            "tools": [{"type": "web_search", "external_web_access": false}]
+            "tools": [{"type": "web_search", "search_context_size": "low"}],
+            "tool_choice": "required"
         });
         let transformed = executor
             .transform_request_body(&existing, "gpt-5.6-luna", true)
             .unwrap();
         assert_eq!(transformed["tools"].as_array().unwrap().len(), 1);
-        assert_eq!(transformed["tools"][0]["external_web_access"], false);
-        assert!(transformed["tools"][0].get("search_context_size").is_none());
+        assert_eq!(transformed["tools"][0]["search_context_size"], "low");
+        assert_eq!(transformed["tool_choice"], "required");
     }
 
     #[test]

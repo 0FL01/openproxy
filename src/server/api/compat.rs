@@ -2775,30 +2775,6 @@ mod tests {
         while body.next().await.is_some() {}
     }
 
-    #[tokio::test]
-    async fn client_native_web_search_events_pass_through() {
-        let fixture = concat!(
-            "event: response.output_item.added\n",
-            "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"ws_1\",\"type\":\"web_search_call\"}}\n\n",
-            "event: response.output_item.done\n",
-            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"ws_1\",\"type\":\"web_search_call\",\"action\":{\"type\":\"search\"}}}\n\n",
-            "event: response.completed\n",
-            "data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"id\":\"ws_1\",\"type\":\"web_search_call\"}]}}\n\n",
-        );
-        let upstream = (
-            [(header::CONTENT_TYPE, "text/event-stream")],
-            Body::from(fixture),
-        )
-            .into_response();
-
-        let response = convert_to_responses_api(upstream, true).await;
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        let output = String::from_utf8(body.to_vec()).unwrap();
-
-        assert_eq!(output.matches("web_search_call").count(), 3);
-        assert_eq!(output.matches("event: response.completed").count(), 1);
-    }
-
     #[test]
     fn chat_completion_to_responses_json_preserves_tool_calls() {
         let chat = json!({

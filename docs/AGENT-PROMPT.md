@@ -1,6 +1,6 @@
 # Задание coding agent: одна итерация OpenProxy lean plan
 
-**Цель:** лёгкий provider proxy с минимальной добавленной задержкой и ограниченной RAM. OpenCode/мой harness владеет agent loop, историей, compaction, tools и временными retries. Прокси владеет credentials/OAuth, приватным account routing, необходимым protocol mapping, transport и ресурсными пределами. Не создавай второй harness внутри proxy.
+**Цель:** лёгкий provider proxy с минимальной добавленной задержкой и ограниченной RAM. OpenCode/мой harness владеет agent loop, историей, compaction, общими tools и временными retries. Прокси владеет credentials/OAuth, приватным account routing, необходимым protocol mapping, transport и ресурсными пределами. Единственные one-shot tool исключения — `/v1/web/fetch` и stateless authenticated `/v1/mcp` Codex search; не добавляй им history/session/tool loop. Не создавай второй harness внутри proxy.
 
 ## Прочитать до изменений
 

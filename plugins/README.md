@@ -32,6 +32,18 @@ Keep your existing provider options, including the SDK choice:
         "chunkTimeout": 6000000
       }
     }
+  },
+  "mcp": {
+    "codex_web": {
+      "type": "remote",
+      "url": "{env:LUDKA2_API_URL}/mcp",
+      "enabled": true,
+      "oauth": false,
+      "headers": {
+        "Authorization": "Bearer {env:LUDKA2_API_KEY}"
+      },
+      "timeout": 300000
+    }
   }
 }
 ```
@@ -40,6 +52,8 @@ Set `LUDKA2_API_URL` (including `/v1`) and `LUDKA2_API_KEY` in the environment
 that launches OpenCode. The plugin uses the resolved provider options and sends
 the same API key as `Authorization: Bearer …`. Discovery has its own 10-second
 timeout, independent of inference timeouts. HTTP redirects are not followed.
+The remote MCP uses the same key directly—no local wrapper or search plugin is
+required—and OpenCode exposes its only tool as `codex_web_search`.
 
 Quit and restart OpenCode after installation. To inspect the current catalog:
 

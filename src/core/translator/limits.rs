@@ -6,6 +6,7 @@ use serde_json::Value;
 
 pub const MAX_STREAM_CHOICES: usize = 128;
 pub const MAX_STREAM_TOOL_CALLS: usize = 128;
+pub const MAX_RESPONSES_OUTPUT_ITEMS: usize = 512;
 pub const MAX_STREAM_WIRE_INDEX: u64 = 4095;
 pub const MAX_STREAM_TOOL_ARGUMENT_BYTES: usize = 1024 * 1024;
 pub const MAX_STREAM_ACCUMULATED_BYTES: usize = 16 * 1024 * 1024;

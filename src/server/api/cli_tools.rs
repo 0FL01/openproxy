@@ -631,7 +631,7 @@ async fn delete_droid_settings(State(state): State<AppState>, headers: HeaderMap
 // GET/POST/PATCH/DELETE /api/cli-tools/opencode-settings
 // ═══════════════════════════════════════════════════════════════════════════
 
-const RETIRED_CODEX_WEB_SEARCH_HEADER: &str = "x-openproxy-codex-web-search";
+const OPENPROXY_CODEX_MCP_KEY: &str = "codex_web";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -677,6 +677,32 @@ async fn get_opencode_settings(State(state): State<AppState>, headers: HeaderMap
                 .and_then(|config| config.get("provider"))
                 .and_then(|provider| provider.get("openproxy"));
             let model_map = provider_config.and_then(|provider| provider.get("models"));
+            let mcp_config = config
+                .as_ref()
+                .and_then(|config| config.get("mcp"))
+                .and_then(|mcp| mcp.get(OPENPROXY_CODEX_MCP_KEY));
+            let provider_base_url = provider_config
+                .and_then(|provider| provider.pointer("/options/baseURL"))
+                .and_then(Value::as_str);
+            let provider_api_key = provider_config
+                .and_then(|provider| provider.pointer("/options/apiKey"))
+                .and_then(Value::as_str);
+            let mcp_configured = mcp_config.is_some_and(|mcp| {
+                mcp.get("type").and_then(Value::as_str) == Some("remote")
+                    && mcp.get("enabled").and_then(Value::as_bool) == Some(true)
+                    && mcp.get("oauth").and_then(Value::as_bool) == Some(false)
+                    && mcp.get("url").and_then(Value::as_str)
+                        == provider_base_url
+                            .map(|base_url| format!("{base_url}/mcp"))
+                            .as_deref()
+                    && mcp
+                        .pointer("/headers/Authorization")
+                        .and_then(Value::as_str)
+                        == provider_api_key
+                            .map(|api_key| format!("Bearer {api_key}"))
+                            .as_deref()
+                    && mcp.get("timeout").and_then(Value::as_u64) == Some(300_000)
+            });
             let models = model_map
                 .and_then(Value::as_object)
                 .map(|models| {
@@ -703,7 +729,7 @@ async fn get_opencode_settings(State(state): State<AppState>, headers: HeaderMap
                         .and_then(|provider| provider.get("options"))
                         .and_then(|options| options.get("baseURL"))
                         .and_then(Value::as_str),
-                    "codexWebSearch": false,
+                    "mcpConfigured": mcp_configured,
                 },
             }))
             .into_response()
@@ -731,10 +757,16 @@ async fn save_opencode_settings(
             .map(|model| vec![model])
             .unwrap_or_default()
     });
-    if req.base_url.trim().is_empty() || models.is_empty() {
+    if req.base_url.trim().is_empty()
+        || models.is_empty()
+        || req
+            .api_key
+            .as_deref()
+            .is_none_or(|value| value.trim().is_empty())
+    {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "baseUrl and at least one model are required" })),
+            Json(json!({ "error": "baseUrl, apiKey, and at least one model are required" })),
         )
             .into_response();
     }
@@ -1416,11 +1448,12 @@ async fn write_opencode_settings(
     };
 
     let normalized_base_url = normalize_v1_base_url(&req.base_url);
+    let mcp_url = format!("{normalized_base_url}/mcp");
     let api_key = req
         .api_key
         .clone()
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "sk_openproxy".to_string());
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("apiKey is required"))?;
     let effective_subagent_model = req
         .subagent_model
         .clone()
@@ -1467,24 +1500,7 @@ async fn write_opencode_settings(
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("provider.openproxy.options must be an object"))?;
     options_map.insert("baseURL".to_string(), Value::String(normalized_base_url));
-    options_map.insert("apiKey".to_string(), Value::String(api_key));
-
-    let remove_empty_headers = options_map
-        .get_mut("headers")
-        .and_then(Value::as_object_mut)
-        .is_some_and(|headers| {
-            let key = headers
-                .keys()
-                .find(|name| name.eq_ignore_ascii_case(RETIRED_CODEX_WEB_SEARCH_HEADER))
-                .cloned();
-            if let Some(key) = key {
-                headers.remove(&key);
-            }
-            headers.is_empty()
-        });
-    if remove_empty_headers {
-        options_map.remove("headers");
-    }
+    options_map.insert("apiKey".to_string(), Value::String(api_key.clone()));
 
     let existing_models = existing_provider_map
         .entry("models".to_string())
@@ -1538,6 +1554,28 @@ async fn write_opencode_settings(
             "model": format!("openproxy/{effective_subagent_model}"),
         }),
     );
+
+    let mcp = config
+        .entry("mcp".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !mcp.is_object() {
+        *mcp = Value::Object(serde_json::Map::new());
+    }
+    mcp.as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("mcp must be an object"))?
+        .insert(
+            OPENPROXY_CODEX_MCP_KEY.to_string(),
+            json!({
+                "type": "remote",
+                "url": mcp_url,
+                "enabled": true,
+                "oauth": false,
+                "headers": {
+                    "Authorization": format!("Bearer {api_key}")
+                },
+                "timeout": 300000
+            }),
+        );
 
     fs::write(
         &config_path,
@@ -1619,6 +1657,7 @@ async fn reset_opencode_settings(model_to_remove: Option<String>) -> anyhow::Res
             if let Some(provider) = config.get_mut("provider").and_then(Value::as_object_mut) {
                 provider.remove("openproxy");
             }
+            remove_opencode_mcp(&mut config);
             if config
                 .get("model")
                 .and_then(Value::as_str)
@@ -1636,6 +1675,7 @@ async fn reset_opencode_settings(model_to_remove: Option<String>) -> anyhow::Res
         if let Some(provider) = config.get_mut("provider").and_then(Value::as_object_mut) {
             provider.remove("openproxy");
         }
+        remove_opencode_mcp(&mut config);
         if config
             .get("model")
             .and_then(Value::as_str)
@@ -1673,6 +1713,19 @@ async fn reset_opencode_settings(model_to_remove: Option<String>) -> anyhow::Res
             .map(|model| Value::String(format!("Model \"{model}\" removed")))
             .unwrap_or_else(|| Value::String("OpenProxy settings removed from OpenCode".to_string())),
     }))
+}
+
+fn remove_opencode_mcp(config: &mut serde_json::Map<String, Value>) {
+    let remove_mcp_root = config
+        .get_mut("mcp")
+        .and_then(Value::as_object_mut)
+        .is_some_and(|mcp| {
+            mcp.remove(OPENPROXY_CODEX_MCP_KEY);
+            mcp.is_empty()
+        });
+    if remove_mcp_root {
+        config.remove("mcp");
+    }
 }
 
 async fn write_openclaw_settings(req: &OpenClawSettingsRequest) -> anyhow::Result<String> {

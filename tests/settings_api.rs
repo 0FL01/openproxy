@@ -101,7 +101,6 @@ async fn patch_settings_updates_values_and_rejects_password_fields() {
                     json!({
                         "requireLogin": false,
                         "requireApiKey": false,
-                        "codexWebSearchContextSize": "low",
                         "glmAutoPing": {
                             "enabled": true,
                             "connections": {"glm-1": true}
@@ -127,29 +126,12 @@ async fn patch_settings_updates_values_and_rejects_password_fields() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["requireLogin"], false);
     assert_eq!(json["requireApiKey"], false);
-    assert_eq!(json["codexWebSearchContextSize"], "low");
+    assert!(json.get("codexWebSearchContextSize").is_none());
     assert_eq!(json["glmAutoPing"]["enabled"], true);
     assert_eq!(json["glmAutoPing"]["connections"]["glm-1"], true);
     assert_eq!(json["providerContextLimits"]["opencode-zen"], 450000);
     assert_eq!(json["providerContextLimits"]["glm"], 200000);
     assert_eq!(json["hasPassword"], true);
-
-    let rejected_depth = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri("/api/settings")
-                .header("authorization", format!("Bearer {TEST_KEY}"))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({"codexWebSearchContextSize": "ultra"}).to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(rejected_depth.status(), StatusCode::BAD_REQUEST);
 
     let rejected_context_limit = app
         .clone()
@@ -183,7 +165,7 @@ async fn patch_settings_updates_values_and_rejects_password_fields() {
         .await
         .unwrap();
     let unchanged: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(unchanged["codexWebSearchContextSize"], "low");
+    assert!(unchanged.get("codexWebSearchContextSize").is_none());
 
     let rejected = app
         .oneshot(

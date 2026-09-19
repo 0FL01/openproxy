@@ -1,5 +1,7 @@
 # Goal: Configurable Codex search depth
 
+> Superseded 2026-09-19 by [`2026-09-19-codex-web-mcp.md`](2026-09-19-codex-web-mcp.md): depth moved to per-call `response_length` on the MCP tool.
+
 Status: complete
 Source: User-approved provider-panel search-depth plan (2026-09-14)
 Last updated: 2026-09-14

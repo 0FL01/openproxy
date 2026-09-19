@@ -37,6 +37,7 @@ interface OpenCodeStatus {
   opencode?: {
     models?: string[];
     activeModel?: string;
+    mcpConfigured?: boolean;
   };
 }
 
@@ -56,7 +57,7 @@ interface OpenCodeToolCardProps {
   initialStatus?: OpenCodeStatus | null;
 }
 
-export default function OpenCodeToolCard({ tool, isExpanded, onToggle, baseUrl, apiKeys, activeProviders, cloudEnabled, initialStatus }: OpenCodeToolCardProps): React.ReactNode {
+export default function OpenCodeToolCard({ tool, isExpanded, onToggle, baseUrl, apiKeys, activeProviders, initialStatus }: OpenCodeToolCardProps): React.ReactNode {
   const [status, setStatus] = useState<OpenCodeStatus | null>(initialStatus || null);
   const [checking, setChecking] = useState<boolean>(false);
   const [applying, setApplying] = useState<boolean>(false);
@@ -121,7 +122,7 @@ export default function OpenCodeToolCard({ tool, isExpanded, onToggle, baseUrl, 
     if (!status.config) return "not_configured";
     const url = status.config?.provider?.["openproxy"]?.options?.baseURL || "";
     const isLocal = url.includes("localhost") || url.includes("127.0.0.1");
-    return status.hasOpenProxy && (isLocal || url.includes(baseUrl)) ? "configured" : status.hasOpenProxy ? "other" : "not_configured";
+    return status.hasOpenProxy && status.opencode?.mcpConfigured && (isLocal || url.includes(baseUrl)) ? "configured" : status.hasOpenProxy ? "other" : "not_configured";
   };
 
   const configStatus = getConfigStatus();
@@ -151,9 +152,7 @@ export default function OpenCodeToolCard({ tool, isExpanded, onToggle, baseUrl, 
     setApplying(true);
     setMessage(null);
     try {
-      const keyToUse = (selectedApiKey && selectedApiKey.trim())
-        ? selectedApiKey
-        : (!cloudEnabled ? "sk_openproxy" : selectedApiKey);
+      const keyToUse = selectedApiKey.trim();
 
       const res = await fetch("/api/cli-tools/opencode-settings", {
         method: "POST",
@@ -192,7 +191,6 @@ export default function OpenCodeToolCard({ tool, isExpanded, onToggle, baseUrl, 
         setSubagentModel("");
         setSelectedModels([]);
         setActiveModel("");
-        setCodexWebSearch(false);
         checkStatus();
       } else {
         setMessage({ type: "error", text: data.error || "Failed to reset settings" });
@@ -205,9 +203,7 @@ export default function OpenCodeToolCard({ tool, isExpanded, onToggle, baseUrl, 
   };
 
   const getManualConfigs = (): Array<{ filename: string; content: string }> => {
-    const keyToUse = (selectedApiKey && selectedApiKey.trim())
-      ? selectedApiKey
-      : (!cloudEnabled ? "sk_openproxy" : "<API_KEY_FROM_DASHBOARD>");
+    const keyToUse = selectedApiKey.trim() || "<OPENPROXY_API_KEY>";
 
     const modelsToShow = selectedModels.length > 0 ? selectedModels : ["provider/model-id"];
     const activeModelToShow = activeModel || selectedModels[0] || modelsToShow[0];
@@ -229,6 +225,18 @@ export default function OpenCodeToolCard({ tool, isExpanded, onToggle, baseUrl, 
               apiKey: keyToUse,
             },
             models: modelsObj,
+          },
+        },
+        mcp: {
+          codex_web: {
+            type: "remote",
+            url: `${getEffectiveBaseUrl()}/mcp`,
+            enabled: true,
+            oauth: false,
+            headers: {
+              Authorization: `Bearer ${keyToUse}`,
+            },
+            timeout: 300000,
           },
         },
         model: `openproxy/${activeModelToShow}`,
@@ -358,7 +366,7 @@ export default function OpenCodeToolCard({ tool, isExpanded, onToggle, baseUrl, 
                     </select>
                   ) : (
                     <span className="min-w-0 rounded bg-surface/40 px-2 py-2 text-xs text-text-muted sm:py-1.5">
-                      {cloudEnabled ? "No API keys - Create one in Keys page" : "sk_openproxy (default)"}
+                      No API keys — create one on the Keys page
                     </span>
                   )}
                 </div>
@@ -481,7 +489,7 @@ export default function OpenCodeToolCard({ tool, isExpanded, onToggle, baseUrl, 
               )}
 
               <div className="grid grid-cols-1 gap-2 sm:flex sm:items-center">
-                <Button variant="primary" size="sm" onClick={handleApply} disabled={selectedModels.length === 0} loading={applying}>
+                <Button variant="primary" size="sm" onClick={handleApply} disabled={selectedModels.length === 0 || !selectedApiKey.trim()} loading={applying}>
                   <span className="material-symbols-outlined text-[14px] mr-1">save</span>Apply
                 </Button>
                 <Button variant="outline" size="sm" onClick={handleReset} disabled={!status.hasOpenProxy} loading={restoring}>

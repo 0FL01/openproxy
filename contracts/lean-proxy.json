@@ -6,7 +6,7 @@
     "harness": [
       "conversation_history",
       "context_compaction",
-      "tool_execution",
+      "general_tool_execution",
       "semantic_repair",
       "temporal_generation_retries"
     ],
@@ -15,7 +15,8 @@
       "configured_account_and_model_routing",
       "required_protocol_translation",
       "http_transport_and_connection_reuse",
-      "resource_and_security_limits"
+      "resource_and_security_limits",
+      "stateless_web_fetch_and_codex_mcp_search"
     ]
   },
   "public_generation_routes": [
@@ -37,6 +38,10 @@
     "POST /v1/responses/compact",
     "POST /v1/v1/responses/compact",
     "POST /v1beta/models/{*path}"
+  ],
+  "public_tool_routes": [
+    "POST /v1/web/fetch",
+    "POST /v1/mcp"
   ],
   "public_model_routes": [
     "GET /v1/models",
@@ -157,6 +162,9 @@
   "legacy_data_policy": {
     "preserve_unknown_fields": true,
     "preserve_deprecated_values_on_round_trip": true,
+    "declared_exact_key_migrations": [
+      "settings.extra.codexWebSearchContextSize"
+    ],
     "destructive_read_migration": false,
     "silent_reinterpretation": false,
     "rollback_may_reenable_preserved_reader": true
@@ -526,6 +534,7 @@
     "maximum_wire_index": 4095,
     "maximum_choices": 128,
     "maximum_tool_calls": 128,
+    "maximum_responses_output_items": 512,
     "maximum_arguments_bytes_per_tool": 1048576,
     "maximum_retained_state_bytes": 16777216,
     "wire_index_conversion": "validated_non_negative_u64_before_allocation",
@@ -631,7 +640,8 @@
     "collected_nonstream_translation_flushes_eof": true,
     "collected_responses_validated_without_marker_sniff": true,
     "native_compat_bypass_uses_route_plan_formats": true,
-    "native_compat_bypass_preserves_required_search_sanitization": true,
+    "native_compat_bypass_has_search_sanitizer": false,
+    "external_codex_native_web_search_rejected_before_upstream": true,
     "native_responses_and_messages_wire_identity": true,
     "native_same_format_bytes_changed_by_observer": false,
     "native_same_format_delivery_delayed_for_frame_completion": false,
@@ -717,6 +727,8 @@
     "overload_retry_after_secs": 1,
     "overload_body_read": false,
     "health_admin_take_permit": false,
+    "mcp_metadata_takes_permit": false,
+    "mcp_tools_call_shares_generation_permit": true,
     "non_post_takes_permit": false,
     "total_duration_timeout_on_streams": false,
     "request_body_limit_bytes": 33554432,
@@ -758,7 +770,8 @@
     "checkpoint": "C39",
     "disposition": "retained_with_boundary",
     "inventory": [
-      "src/server/api/web_fetch.rs: POST /v1/web/fetch single provider-routed extraction"
+      "src/server/api/web_fetch.rs: POST /v1/web/fetch single provider-routed extraction",
+      "src/server/api/codex_web_mcp.rs: POST /v1/mcp one authenticated stateless Codex search tool"
     ],
     "execution_helpers": [
       "handle_web_fetch",
@@ -770,15 +783,29 @@
       "normalize_fetch_response",
       "check_private_ip/is_private_ip"
     ],
-    "loops": "per-account fallback bounded by configured-connection count only",
+    "loops": "per-account fallback bounded by configured-connection count only; no agent tool loop",
     "agent_runner_markers_present": false,
     "confirmed_consumers": [
       "tests/web_fetch_api.rs (8)",
       "tests/v1_public_cors_api.rs",
       "web skills page",
-      "v1 endpoint index"
+      "v1 endpoint index",
+      "tests/codex_web_mcp_api.rs",
+      "tests/lean_proxy_codex_c20.rs MCP fixture",
+      "OpenCode mcp.codex_web configuration"
     ],
-    "provider_native_web_search_forwarding_removed": false,
+    "provider_native_web_search_forwarding_removed": true,
+    "external_codex_search_error_code": "codex_web_search_requires_mcp",
+    "mcp_protocol": "2025-11-25",
+    "mcp_sessions": false,
+    "mcp_sse_transport": false,
+    "mcp_tool_count": 1,
+    "mcp_tool_name": "search",
+    "opencode_tool_name": "codex_web_search",
+    "mcp_auth": "existing OpenProxy API key",
+    "mcp_model_policy": "prefer gpt-5.6-luna else highest published search-capable Luna with active supporters; never non-Luna",
+    "mcp_server_deadline_seconds": 240,
+    "mcp_result_limit_bytes": 16777216,
     "tool_result_removed": false,
     "responses_compact_removed": false,
     "native_paths_depend_on_web_fetch": false,

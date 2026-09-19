@@ -115,7 +115,23 @@ same file for tower-http).
   outside generation (C19/C20), quota is an explicit uncached read (C23),
   lean logging only enqueues (C35, durable stays default).
 - No agent tool runner in the core: `/v1/web/fetch` is a pinned single
-  extraction call with confirmed consumers (C39).
+  extraction call, and `/v1/mcp` is one authenticated stateless Codex search
+  call. Neither owns history, sessions, or a tool loop (C39/C44).
+
+## C44: Codex web search MCP
+
+- OpenCode 1.18.31 discovers `codex_web_search` directly over authenticated
+  MCP 2025-11-25; there is no wrapper, session, SSE transport, or MCP SDK.
+- `tools/call` reuses the Codex catalog, account fallback, OAuth recovery,
+  pooled transport, admission, and one bounded native Responses accumulator.
+- Model policy prefers `gpt-5.6-luna`, otherwise the highest published
+  search-capable Luna with supporters; non-Luna is never selected.
+- Ordered messages and citations are returned in one all-or-error text block.
+  Public Codex native search is rejected before upstream, and the retired
+  header/depth/OpenCode config surfaces are removed.
+- Evidence: 1,026 library tests; focused MCP/Codex/forced-stream/settings/C39
+  suites; real OpenCode discovery; dashboard and model-plugin builds. No paid
+  search was performed.
 
 ## Limitations and explicitly unverified items
 
@@ -139,7 +155,7 @@ same file for tower-http).
 ## Rollback
 
 Each checkpoint is an atomic Conventional Commit on `perf/lean-proxy-plan`
-(C00–C42); revert any single commit without data migration. Release is
+(C00–C44); revert any single commit without data migration. Release is
 blocked on any wire/security/data contract violation — none is open: all
 required checkpoints are `done`, all conditionals (`C06`, `C25`, `C37`,
 `C38`, `C39`, `C41`) are `done` with evidence, none is `not_applicable`.

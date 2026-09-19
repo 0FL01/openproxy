@@ -1,5 +1,7 @@
 # Goal: Codex Responses stream errors
 
+> Search-path ownership was superseded later on 2026-09-19 by [`2026-09-19-codex-web-mcp.md`](2026-09-19-codex-web-mcp.md); the completed Responses stream-error fix remains historical evidence.
+
 Status: complete
 Source: User-approved audited implementation plan and instruction to implement, commit, push, and deploy (2026-09-19)
 Last updated: 2026-09-19

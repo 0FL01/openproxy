@@ -99,19 +99,12 @@ async fn post_codex(app: &axum::Router, model: &str) -> axum::response::Response
         .expect("C20 response")
 }
 
-async fn post_codex_responses(
-    app: &axum::Router,
-    model: &str,
-    legacy_search_header: bool,
-) -> axum::response::Response {
-    let mut request = Request::builder()
+async fn post_codex_responses(app: &axum::Router, model: &str) -> axum::response::Response {
+    let request = Request::builder()
         .method("POST")
         .uri("/v1/responses")
         .header("authorization", "Bearer test-key")
         .header("content-type", "application/json");
-    if legacy_search_header {
-        request = request.header("X-OpenProxy-Codex-Web-Search", "true");
-    }
     app.clone()
         .oneshot(
             request
@@ -127,6 +120,37 @@ async fn post_codex_responses(
         )
         .await
         .expect("C20 Responses response")
+}
+
+async fn post_mcp_search(app: &axum::Router, response_length: &str) -> axum::response::Response {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/mcp")
+                .header("authorization", "Bearer test-key")
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .header("mcp-protocol-version", "2025-11-25")
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0",
+                        "id":"search-1",
+                        "method":"tools/call",
+                        "params":{
+                            "name":"search",
+                            "arguments":{
+                                "query":"current Rust release",
+                                "response_length":response_length
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .expect("MCP search request"),
+        )
+        .await
+        .expect("MCP search response")
 }
 
 #[tokio::test]
@@ -243,6 +267,91 @@ async fn failed_refresh_keeps_prior_publication_and_unknown_model_never_routes()
 }
 
 #[tokio::test]
+async fn mcp_search_uses_luna_mapping_account_fallback_and_native_projection() {
+    let catalog = MockUpstream::start([
+        ScriptedResponse::json(
+            StatusCode::OK,
+            catalog_payload(&[("gpt-5.5", true), ("gpt-5.6-luna", true)]),
+        ),
+        ScriptedResponse::json(
+            StatusCode::OK,
+            catalog_payload(&[("gpt-5.5", true), ("gpt-5.6-luna", true)]),
+        ),
+    ])
+    .await;
+    let generation = MockUpstream::start([
+        ScriptedResponse::json(
+            StatusCode::TOO_MANY_REQUESTS,
+            json!({"error":{"message":"first account limited"}}).to_string(),
+        ),
+        ScriptedResponse::sse([concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_mcp\"}}\n\n",
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"web_search_call\",\"id\":\"search_1\"}}\n\n",
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Rust is current.\",\"annotations\":[{\"type\":\"url_citation\",\"url\":\"https://www.rust-lang.org/\",\"title\":\"Rust\"}]}]}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_mcp\",\"status\":\"completed\",\"usage\":{}}}\n\n"
+        )]),
+    ])
+    .await;
+    let mut first = codex_connection("codex-mcp-a", 1);
+    first.default_model = Some("gpt-5.5".into());
+    let mut second = codex_connection("codex-mcp-b", 2);
+    second.default_model = Some("gpt-5.5".into());
+    let (_db, state) = state_with_catalog(
+        catalog.url("/backend-api/codex/models"),
+        generation.url("/backend-api/codex/responses"),
+        vec![first.clone(), second.clone()],
+        Vec::new(),
+    )
+    .await;
+    state
+        .codex_models
+        .refresh_connection(&state, &first, true)
+        .await
+        .unwrap();
+    state
+        .codex_models
+        .refresh_connection(&state, &second, true)
+        .await
+        .unwrap();
+
+    let response = post_mcp_search(&openproxy::build_app(state), "short").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap())
+            .unwrap();
+    assert_eq!(body["id"], "search-1");
+    assert_eq!(
+        body["result"]["content"][0]["text"],
+        "Rust is current.\n\nSources:\n1. Rust: https://www.rust-lang.org/"
+    );
+    assert!(body["result"].get("structuredContent").is_none());
+
+    let requests = generation.requests().await;
+    assert_eq!(requests.len(), 2);
+    for request in &requests {
+        let upstream: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        assert_eq!(upstream["model"], "gpt-5.6-luna");
+        assert_eq!(upstream["tool_choice"], "required");
+        assert_eq!(upstream["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(upstream["tools"][0]["type"], "web_search");
+        assert_eq!(upstream["tools"][0]["search_context_size"], "low");
+        let authorization = request
+            .headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        assert_ne!(authorization, "Bearer test-key");
+        assert!(authorization.starts_with("Bearer fixture-codex-mcp-"));
+    }
+    catalog.shutdown().await;
+    generation.shutdown().await;
+}
+
+#[tokio::test]
 async fn configuration_reconciliation_removes_inactive_and_tracks_explicit_custom_models() {
     let catalog = MockUpstream::start([]).await;
     let generation = MockUpstream::start([]).await;
@@ -342,7 +451,7 @@ async fn post_commit_transport_failure_emits_sequenced_responses_error_once() {
         .await
         .expect("seed Codex inventory");
 
-    let response = post_codex_responses(&openproxy::build_app(state), "gpt-known", false).await;
+    let response = post_codex_responses(&openproxy::build_app(state), "gpt-known").await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = to_bytes(response.into_body(), 64 * 1024)
         .await
@@ -365,49 +474,6 @@ async fn post_commit_transport_failure_emits_sequenced_responses_error_once() {
     assert!(!output.contains("response.completed"), "{output}");
     assert!(!output.contains("data: [DONE]"), "{output}");
     assert_eq!(generation.request_count().await, 1);
-    catalog.shutdown().await;
-    generation.shutdown().await;
-}
-
-#[tokio::test]
-async fn legacy_search_header_does_not_inject_a_codex_tool() {
-    let catalog = MockUpstream::start([ScriptedResponse::json(
-        StatusCode::OK,
-        catalog_payload(&[("gpt-search", true)]),
-    )])
-    .await;
-    let generation = MockUpstream::start([ScriptedResponse::sse([concat!(
-        "event: response.completed\n",
-        "data: {\"type\":\"response.completed\",\"sequence_number\":1,",
-        "\"response\":{\"id\":\"resp_search\",\"output\":[]}}\n\n"
-    )])])
-    .await;
-    let connection = codex_connection("codex-no-injection", 1);
-    let (_db, state) = state_with_catalog(
-        catalog.url("/backend-api/codex/models"),
-        generation.url("/backend-api/codex/responses"),
-        vec![connection.clone()],
-        Vec::new(),
-    )
-    .await;
-    state
-        .codex_models
-        .refresh_connection(&state, &connection, true)
-        .await
-        .expect("seed search-capable Codex inventory");
-
-    let response = post_codex_responses(&openproxy::build_app(state), "gpt-search", true).await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let _ = to_bytes(response.into_body(), 64 * 1024)
-        .await
-        .expect("bounded Responses SSE");
-    let requests = generation.requests().await;
-    assert_eq!(requests.len(), 1);
-    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
-    assert!(body
-        .get("tools")
-        .and_then(serde_json::Value::as_array)
-        .is_none_or(|tools| tools.iter().all(|tool| tool["type"] != "web_search")));
     catalog.shutdown().await;
     generation.shutdown().await;
 }

@@ -290,8 +290,8 @@ fn source_guards_prove_no_retained_raw_sse_history_on_forced_path() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let chat = std::fs::read_to_string(root.join("src/server/api/chat.rs")).unwrap();
     let forced_start = chat
-        .find("async fn proxy_sse_to_json_response")
-        .expect("forced converter must exist");
+        .find("struct ForcedSseCollection")
+        .expect("shared forced collector must exist");
     let forced_end = chat[forced_start..]
         .find("\nasync fn proxy_response(")
         .map(|offset| forced_start + offset)
@@ -319,6 +319,7 @@ fn source_guards_prove_no_retained_raw_sse_history_on_forced_path() {
         "ForcedSseAccumulator::new()",
         "SseFramer::new()",
         "accumulator.ingest(&event)",
+        "accumulator.is_terminal()",
         "accumulator.finish(Some(model))",
         "wire_seen",
         "prefix_raw",

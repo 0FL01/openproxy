@@ -1,5 +1,7 @@
 # Goal: Reliable Codex search over Responses
 
+> Superseded 2026-09-19 by [`2026-09-19-codex-web-mcp.md`](2026-09-19-codex-web-mcp.md): hosted search now uses the direct authenticated MCP tool.
+
 Status: complete
 Source: User-reported OpenCode `invalid web_search` and buffered streaming,
 followed by approved implementation instruction (2026-09-14)

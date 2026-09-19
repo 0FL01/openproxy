@@ -420,6 +420,7 @@ impl Settings {
             "provider_strategies",
             "mitmRouterBaseUrl",
             "mitmPort",
+            "codexWebSearchContextSize",
         ] {
             self.extra.remove(key);
         }
@@ -533,4 +534,24 @@ where
         .remove(key)
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Settings;
+    use serde_json::json;
+
+    #[test]
+    fn settings_normalize_removes_only_retired_codex_search_depth() {
+        let mut settings = Settings::default();
+        settings
+            .extra
+            .insert("codexWebSearchContextSize".into(), json!("high"));
+        settings.extra.insert("unrelatedSetting".into(), json!(42));
+
+        settings.normalize();
+
+        assert!(!settings.extra.contains_key("codexWebSearchContextSize"));
+        assert_eq!(settings.extra.get("unrelatedSetting"), Some(&json!(42)));
+    }
 }

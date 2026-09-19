@@ -14,7 +14,9 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 
 use crate::core::account_fallback::{GenerationAttemptBudget, ProviderAttemptError};
-use crate::core::chat::stream_to_json::ForcedSseAccumulator;
+use crate::core::chat::stream_to_json::{
+    ForcedSseAccumulator, ResponsesSearchError, ResponsesSearchOutput,
+};
 use crate::core::chat::RequestPlan;
 use crate::core::executor::{
     diagnostic_body_limit, read_upstream_body, read_upstream_diagnostic, success_body_limit,
@@ -40,7 +42,7 @@ use crate::oauth::token_refresh::{
 use crate::server::application_logs::{error_kind, AttemptLog, RequestLogContext};
 use crate::server::auth::{extract_api_key, require_api_key, require_api_key_with_reload};
 use crate::server::state::AppState;
-use crate::types::{AppDb, ProviderConnection, TokenUsage};
+use crate::types::{ApiKey, AppDb, ProviderConnection, TokenUsage};
 
 use super::auth_error_response;
 
@@ -108,6 +110,17 @@ pub(super) struct RoutedResponseFormats {
     pub native_passthrough: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GenerationProvenance {
+    External,
+    InternalMcp,
+}
+
+enum GenerationResult {
+    Http(Response),
+    McpSearch(Result<ResponsesSearchOutput, ResponsesSearchError>),
+}
+
 fn mark_routed_response_formats(mut response: Response, plan: &RequestPlan) -> Response {
     response.extensions_mut().insert(RoutedResponseFormats {
         client: plan.source_format,
@@ -127,12 +140,20 @@ fn has_native_codex_web_search(body: &Value) -> bool {
         })
 }
 
-fn requests_codex_web_search(body: &Value) -> bool {
-    if body.get("tool_choice").and_then(Value::as_str) == Some("none") {
-        return false;
+fn codex_web_search_requires_mcp_error() -> ProviderAttemptError {
+    ProviderAttemptError {
+        status: StatusCode::BAD_REQUEST.as_u16(),
+        message: "Codex web search is available only through /v1/mcp".to_string(),
+        retry_after: None,
+        upstream_body: serde_json::to_vec(&json!({
+            "error": {
+                "message": "Codex web search is available only through /v1/mcp",
+                "type": "invalid_request_error",
+                "code": "codex_web_search_requires_mcp"
+            }
+        }))
+        .ok(),
     }
-
-    has_native_codex_web_search(body)
 }
 
 fn codex_models_support_search(
@@ -148,6 +169,91 @@ fn codex_models_support_search(
                         || model == format!("{}({effort})", candidate.id)
                 }))
     })
+}
+
+fn select_search_luna_model(
+    models: &[crate::server::codex_catalog::CodexModelMetadata],
+    mut has_active_supporters: impl FnMut(&str) -> bool,
+) -> Option<String> {
+    let eligible = models
+        .iter()
+        .filter(|model| {
+            model.capabilities.iter().any(|value| value == "search")
+                && luna_version(&model.id).is_some()
+                && has_active_supporters(&model.id)
+        })
+        .collect::<Vec<_>>();
+    if eligible.iter().any(|model| model.id == "gpt-5.6-luna") {
+        return Some("gpt-5.6-luna".to_string());
+    }
+    eligible
+        .into_iter()
+        .max_by_key(|model| luna_version(&model.id).unwrap_or_default())
+        .map(|model| model.id.clone())
+}
+
+fn luna_version(model: &str) -> Option<Vec<u64>> {
+    let version = model.strip_prefix("gpt-")?.strip_suffix("-luna")?;
+    let parsed = version
+        .split('.')
+        .map(str::parse::<u64>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    (!parsed.is_empty()).then_some(parsed)
+}
+
+pub(super) async fn run_codex_web_search(
+    state: &AppState,
+    api_key: &ApiKey,
+    query: &str,
+    search_context_size: &str,
+) -> Result<ResponsesSearchOutput, ResponsesSearchError> {
+    let snapshot = state.db.snapshot();
+    let inventory = state.codex_models.union_active(&snapshot);
+    let model = select_search_luna_model(&inventory.models, |model| {
+        !state.codex_models.cached_supporters(model, &snapshot).is_empty()
+    })
+    .ok_or_else(|| ResponsesSearchError {
+        code: "codex_search_luna_unavailable".to_string(),
+        message: "No active Codex account publishes a search-capable Luna model; refresh the Codex catalog or add a Luna-capable account".to_string(),
+    })?;
+    let body = json!({
+        "model": model,
+        "input": query,
+        "tools": [{
+            "type": "web_search",
+            "search_context_size": search_context_size
+        }],
+        "tool_choice": "required",
+        "stream": false
+    });
+    let mut plan = RequestPlan::new(Some("/v1/responses"), &body, "codex", &model);
+    apply_stream_plan(&mut plan, &body, Some("application/json"), None);
+    let log_context = RequestLogContext::new(state.db.clone(), api_key, "/v1/mcp#codex_web_search");
+    match execute_single_model(
+        state,
+        body,
+        &model,
+        Some(&api_key.key),
+        Some(&log_context),
+        Some("/v1/mcp"),
+        &plan,
+        None,
+        None,
+        GenerationProvenance::InternalMcp,
+    )
+    .await
+    {
+        Ok(GenerationResult::McpSearch(result)) => result,
+        Ok(GenerationResult::Http(_)) => Err(ResponsesSearchError {
+            code: "internal_generation_result".to_string(),
+            message: "Codex web search returned an unexpected response type".to_string(),
+        }),
+        Err(error) => Err(ResponsesSearchError {
+            code: "codex_search_failed".to_string(),
+            message: error.message,
+        }),
+    }
 }
 
 pub async fn cors_options() -> Response {
@@ -411,9 +517,13 @@ async fn chat_completions_impl(
             "Combo routes are no longer supported",
         );
     }
-    let request_log_context = authenticated_api_key
-        .as_ref()
-        .map(|api_key| RequestLogContext::new(state.db.clone(), api_key, model_str));
+    let request_log_context = authenticated_api_key.as_ref().map(|api_key| {
+        RequestLogContext::new(
+            state.db.clone(),
+            api_key,
+            endpoint.unwrap_or("/v1/chat/completions"),
+        )
+    });
 
     let snapshot = state.db.snapshot();
     let resolved = get_model_info(model_str, &snapshot);
@@ -453,8 +563,6 @@ async fn chat_completions_impl(
         .collect();
 
     let client_tool = detect_client_tool(&headers_map, &body);
-    let codex_web_search_requested = requests_codex_web_search(&body);
-
     // Accept/stream preference is applied via resolve_stream_flags on the plan
     // (does NOT mutate body.stream when client set stream:true — 9router parity).
     let accept_header = headers
@@ -469,7 +577,7 @@ async fn chat_completions_impl(
         &resolved.model,
     );
     apply_stream_plan(&mut plan, &body, accept_header.as_deref(), client_tool);
-    let response = match execute_single_model(
+    match execute_single_model(
         &state,
         body,
         model_str,
@@ -479,15 +587,17 @@ async fn chat_completions_impl(
         &plan,
         client_tool,
         Some(&headers_map),
-        codex_web_search_requested,
+        GenerationProvenance::External,
     )
     .await
     {
-        Ok(response) => response,
+        Ok(GenerationResult::Http(response)) => response,
+        Ok(GenerationResult::McpSearch(_)) => json_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Invalid generation result",
+        ),
         Err(error) => attempt_error_response(error),
-    };
-
-    response
+    }
 }
 
 /// Prefetch remote images in OpenAI/Claude message content arrays.
@@ -640,8 +750,8 @@ async fn execute_single_model(
     base_plan: &RequestPlan,
     client_tool: Option<ClientTool>,
     client_headers: Option<&std::collections::HashMap<String, String>>,
-    codex_web_search_requested: bool,
-) -> Result<Response, ProviderAttemptError> {
+    provenance: GenerationProvenance,
+) -> Result<GenerationResult, ProviderAttemptError> {
     let snapshot = state.db.snapshot();
     let mut plan = base_plan.clone();
     if crate::core::model::models_dev::is_opencode_provider(&plan.provider) {
@@ -676,6 +786,20 @@ async fn execute_single_model(
             retry_after: None,
             upstream_body: None,
         });
+    }
+
+    let native_codex_search = plan.provider == "codex" && has_native_codex_web_search(&body);
+    match provenance {
+        GenerationProvenance::External if native_codex_search => {
+            return Err(codex_web_search_requires_mcp_error());
+        }
+        GenerationProvenance::InternalMcp if !native_codex_search || plan.provider != "codex" => {
+            return Err(ProviderAttemptError::new(
+                400,
+                "Internal MCP search must target Codex with one native web_search tool",
+            ));
+        }
+        _ => {}
     }
 
     // Catalog stripList (image/audio) before modality strip — 9router translateRequest stripList
@@ -832,7 +956,7 @@ async fn execute_single_model(
         &plan,
         client_tool,
         client_headers,
-        codex_web_search_requested,
+        provenance,
     )
     .await
 }
@@ -848,8 +972,8 @@ async fn forward_with_provider_fallback(
     plan: &RequestPlan,
     client_tool: Option<ClientTool>,
     client_headers: Option<&std::collections::HashMap<String, String>>,
-    codex_web_search_requested: bool,
-) -> Result<Response, ProviderAttemptError> {
+    provenance: GenerationProvenance,
+) -> Result<GenerationResult, ProviderAttemptError> {
     let mut excluded = HashSet::new();
     let mut last_error: Option<ProviderAttemptError> = None;
     let mut reloaded = false;
@@ -943,7 +1067,7 @@ async fn forward_with_provider_fallback(
             });
         };
 
-        if codex_web_search_requested && provider == "codex" {
+        if provenance == GenerationProvenance::InternalMcp && provider == "codex" {
             match state
                 .codex_models
                 .published_for_connection(&snapshot, &connection)
@@ -1554,7 +1678,7 @@ async fn forward_with_provider_fallback(
                 if status.is_success() {
                     if dashboard_stream {
                         let response = proxy_dashboard_sse(result.response, attempt_log).await;
-                        return Ok(response);
+                        return Ok(GenerationResult::Http(response));
                     }
                     // forceStream + client non-stream → collect SSE → JSON (9router)
                     if plan.sse_to_json {
@@ -1564,16 +1688,21 @@ async fn forward_with_provider_fallback(
                             provider,
                             model
                         );
+                        if provenance == GenerationProvenance::InternalMcp {
+                            let result =
+                                collect_codex_search_output(result.response, attempt_log).await;
+                            return Ok(GenerationResult::McpSearch(result));
+                        }
                         let response =
                             proxy_sse_to_json_response(result.response, model, plan, attempt_log)
                                 .await;
-                        return Ok(response);
+                        return Ok(GenerationResult::Http(response));
                     }
                     if !stream {
                         let response =
                             proxy_response(result.response, provider, plan, attempt_log).await;
                         let response = mark_routed_response_formats(response, plan);
-                        return Ok(response);
+                        return Ok(GenerationResult::Http(response));
                     }
                     let normalize_for_dashboard =
                         endpoint == Some("/api/dashboard/chat/completions");
@@ -1588,7 +1717,7 @@ async fn forward_with_provider_fallback(
                     )
                     .await;
                     let response = mark_routed_response_formats(response, plan);
-                    return Ok(response);
+                    return Ok(GenerationResult::Http(response));
                 }
 
                 // 9router parity: retryAfter may come from the Retry-After header
@@ -1786,9 +1915,10 @@ fn select_connection_with_supporters(
                 && connection.is_active()
                 && connection_has_credentials(connection)
                 && !excluded.contains(&connection.id)
-                && connection_supports_model(connection, model)
-                && discovered_supporters
-                    .is_none_or(|supporters| supporters.contains(&connection.id))
+                && discovered_supporters.map_or_else(
+                    || connection_supports_model(connection, model),
+                    |supporters| supporters.contains(&connection.id),
+                )
         })
         .cloned()
         .collect();
@@ -1822,9 +1952,10 @@ fn eligible_connection_count_with_supporters(
             connection.provider == provider
                 && connection.is_active()
                 && connection_has_credentials(connection)
-                && connection_supports_model(connection, model)
-                && discovered_supporters
-                    .is_none_or(|supporters| supporters.contains(&connection.id))
+                && discovered_supporters.map_or_else(
+                    || connection_supports_model(connection, model),
+                    |supporters| supporters.contains(&connection.id),
+                )
         })
         .count();
     if count == 0 && is_no_auth_provider(provider) {
@@ -1898,6 +2029,234 @@ fn model_ids_match(advertised: &str, requested: &str) -> bool {
     advertised == requested || advertised.ends_with(&format!("/{requested}"))
 }
 
+struct ForcedSseCollection {
+    status: StatusCode,
+    accumulator: ForcedSseAccumulator,
+    prefix_raw: Vec<u8>,
+}
+
+enum ForcedSseCollectionError {
+    Body(BoundedBodyError),
+    Stream(StreamLimitError),
+}
+
+fn feed_forced_sse_chunk(
+    framer: &mut SseFramer,
+    accumulator: &mut ForcedSseAccumulator,
+    prefix_raw: &mut Vec<u8>,
+    chunk: &[u8],
+    wire_seen: &mut usize,
+    wire_limit: usize,
+) -> Result<(), ForcedSseCollectionError> {
+    *wire_seen = wire_seen
+        .checked_add(chunk.len())
+        .filter(|next| *next <= wire_limit)
+        .ok_or(ForcedSseCollectionError::Body(BoundedBodyError::TooLarge {
+            limit: wire_limit,
+        }))?;
+    if !accumulator.saw_any_event() {
+        prefix_raw.try_reserve(chunk.len()).map_err(|_| {
+            ForcedSseCollectionError::Body(BoundedBodyError::Capacity { limit: wire_limit })
+        })?;
+        prefix_raw.extend_from_slice(chunk);
+    }
+    let mut ingest_error = None;
+    framer
+        .feed(chunk, |event| {
+            if ingest_error.is_none() {
+                ingest_error = accumulator.ingest(&event).err();
+            }
+        })
+        .map_err(|error| ForcedSseCollectionError::Stream(frame_error_to_stream(error)))?;
+    if let Some(error) = ingest_error {
+        return Err(ForcedSseCollectionError::Stream(error));
+    }
+    if accumulator.saw_any_event() && !prefix_raw.is_empty() {
+        prefix_raw.clear();
+        prefix_raw.shrink_to_fit();
+    }
+    Ok(())
+}
+
+async fn collect_forced_sse(
+    response: UpstreamResponse,
+) -> Result<ForcedSseCollection, ForcedSseCollectionError> {
+    let status = response.status();
+    let headers = response.headers().clone();
+    let wire_limit = success_body_limit();
+    if is_identity_encoded(&headers) {
+        if let Some(declared) = declared_content_length(&headers) {
+            if declared > wire_limit as u64 {
+                return Err(ForcedSseCollectionError::Body(
+                    BoundedBodyError::DeclaredTooLarge {
+                        declared,
+                        limit: wire_limit,
+                    },
+                ));
+            }
+        }
+    }
+
+    let mut framer = SseFramer::new();
+    let mut accumulator = ForcedSseAccumulator::new();
+    let mut prefix_raw = Vec::new();
+    let mut wire_seen = 0;
+
+    match response {
+        UpstreamResponse::Reqwest(response) => {
+            let mut stream = response.bytes_stream();
+            loop {
+                let chunk = tokio::time::timeout(
+                    SSE_STALL_TIMEOUT,
+                    futures_util::TryStreamExt::try_next(&mut stream),
+                )
+                .await
+                .map_err(|_| {
+                    ForcedSseCollectionError::Body(BoundedBodyError::Transport(
+                        "upstream SSE stream stalled".to_string(),
+                    ))
+                })?
+                .map_err(|error| {
+                    ForcedSseCollectionError::Body(BoundedBodyError::Transport(error.to_string()))
+                })?;
+                let Some(chunk) = chunk else {
+                    break;
+                };
+                feed_forced_sse_chunk(
+                    &mut framer,
+                    &mut accumulator,
+                    &mut prefix_raw,
+                    &chunk,
+                    &mut wire_seen,
+                    wire_limit,
+                )?;
+                if accumulator.is_terminal() {
+                    break;
+                }
+            }
+        }
+        UpstreamResponse::Hyper(response) => {
+            let mut body = response.into_body();
+            loop {
+                let frame = tokio::time::timeout(SSE_STALL_TIMEOUT, body.frame())
+                    .await
+                    .map_err(|_| {
+                        ForcedSseCollectionError::Body(BoundedBodyError::Transport(
+                            "upstream SSE stream stalled".to_string(),
+                        ))
+                    })?;
+                let Some(frame) = frame else {
+                    break;
+                };
+                let frame = frame.map_err(|error| {
+                    ForcedSseCollectionError::Body(BoundedBodyError::Transport(error.to_string()))
+                })?;
+                let Ok(data) = frame.into_data() else {
+                    continue;
+                };
+                feed_forced_sse_chunk(
+                    &mut framer,
+                    &mut accumulator,
+                    &mut prefix_raw,
+                    &data,
+                    &mut wire_seen,
+                    wire_limit,
+                )?;
+                if accumulator.is_terminal() {
+                    break;
+                }
+            }
+        }
+    }
+
+    if !accumulator.is_terminal() {
+        let mut finish_error = None;
+        framer
+            .finish(|event| {
+                if finish_error.is_none() {
+                    finish_error = accumulator.ingest(&event).err();
+                }
+            })
+            .map_err(|error| ForcedSseCollectionError::Stream(frame_error_to_stream(error)))?;
+        if let Some(error) = finish_error {
+            return Err(ForcedSseCollectionError::Stream(error));
+        }
+    }
+
+    Ok(ForcedSseCollection {
+        status,
+        accumulator,
+        prefix_raw,
+    })
+}
+
+async fn collect_codex_search_output(
+    response: UpstreamResponse,
+    attempt_log: Option<AttemptLog>,
+) -> Result<ResponsesSearchOutput, ResponsesSearchError> {
+    let collected = match collect_forced_sse(response).await {
+        Ok(collected) => collected,
+        Err(ForcedSseCollectionError::Body(error)) => {
+            if let Some(attempt_log) = attempt_log {
+                attempt_log
+                    .finish("error", Some(502), None, Some(error_kind::UPSTREAM_FAILURE))
+                    .await;
+            }
+            return Err(ResponsesSearchError {
+                code: "upstream_transport_error".to_string(),
+                message: error.to_string(),
+            });
+        }
+        Err(ForcedSseCollectionError::Stream(error)) => {
+            if let Some(attempt_log) = attempt_log {
+                attempt_log
+                    .finish("error", Some(502), None, Some(error_kind::UPSTREAM_FAILURE))
+                    .await;
+            }
+            return Err(ResponsesSearchError {
+                code: error.code.to_string(),
+                message: error.message,
+            });
+        }
+    };
+    let status = collected.status;
+    let mut accumulator = collected.accumulator;
+    let result = if accumulator.saw_any_event() {
+        accumulator.finish_responses_search()
+    } else {
+        match serde_json::from_slice::<Value>(&collected.prefix_raw) {
+            Ok(value) => match accumulator.ingest_responses_json(&value) {
+                Ok(()) => accumulator.finish_responses_search(),
+                Err(error) => Err(ResponsesSearchError {
+                    code: error.code.to_string(),
+                    message: error.message,
+                }),
+            },
+            Err(_) => Err(ResponsesSearchError {
+                code: "upstream_response_invalid".to_string(),
+                message: "Codex returned malformed non-streaming JSON".to_string(),
+            }),
+        }
+    };
+    if let Some(attempt_log) = attempt_log {
+        if result.is_ok() {
+            attempt_log
+                .finish("success", Some(status.as_u16()), None, None)
+                .await;
+        } else {
+            attempt_log
+                .finish(
+                    "error",
+                    Some(status.as_u16()),
+                    None,
+                    Some(error_kind::UPSTREAM_FAILURE),
+                )
+                .await;
+        }
+    }
+    result
+}
+
 /// forceStream SSE→JSON: collect upstream SSE and collapse to chat.completion JSON.
 async fn proxy_sse_to_json_response(
     response: UpstreamResponse,
@@ -1905,168 +2264,24 @@ async fn proxy_sse_to_json_response(
     plan: &RequestPlan,
     attempt_log: Option<AttemptLog>,
 ) -> Response {
-    // C33: feed completed C32 SSE frames incrementally into a request-local
-    // C31-bounded accumulator. No full raw SSE history is retained: peak is
-    // ≤1 MiB incomplete framer tail + ≤16 MiB accumulator + final JSON.
-    // Wire bytes are still counted against the C29 success-body limit.
-    let status = response.status();
-    let headers = response.headers().clone();
-    let wire_limit = success_body_limit();
-    if is_identity_encoded(&headers) {
-        if let Some(declared) = declared_content_length(&headers) {
-            if declared > wire_limit as u64 {
-                return collected_body_failure_response(
-                    BoundedBodyError::DeclaredTooLarge {
-                        declared,
-                        limit: wire_limit,
-                    },
-                    attempt_log,
-                )
-                .await;
-            }
+    let collected = match collect_forced_sse(response).await {
+        Ok(collected) => collected,
+        Err(ForcedSseCollectionError::Body(error)) => {
+            return collected_body_failure_response(error, attempt_log).await;
         }
-    }
-    let mut framer = SseFramer::new();
-    let mut accumulator = ForcedSseAccumulator::new();
-    let mut wire_seen: usize = 0;
-    // Prefix retained only until the first SSE frame proves the wire is SSE.
-    // Bare non-SSE JSON (forced upstream ignored `stream=true`) falls back to
-    // direct JSON parse from this prefix. Once SSE is confirmed the prefix is
-    // dropped so SSE bytes and final JSON are never retained together.
-    let mut prefix_raw: Vec<u8> = Vec::new();
-
-    macro_rules! account_wire {
-        ($len:expr) => {{
-            let next = match wire_seen.checked_add($len) {
-                Some(next) => next,
-                None => {
-                    return collected_body_failure_response(
-                        BoundedBodyError::TooLarge { limit: wire_limit },
-                        attempt_log,
-                    )
-                    .await;
-                }
-            };
-            if next > wire_limit {
-                return collected_body_failure_response(
-                    BoundedBodyError::TooLarge { limit: wire_limit },
-                    attempt_log,
-                )
-                .await;
-            }
-            wire_seen = next;
-        }};
-    }
-
-    macro_rules! retain_prefix {
-        ($chunk:expr) => {{
-            if !accumulator.saw_any_event() {
-                if prefix_raw.try_reserve($chunk.len()).is_err() {
-                    return collected_body_failure_response(
-                        BoundedBodyError::Capacity { limit: wire_limit },
-                        attempt_log,
-                    )
-                    .await;
-                }
-                prefix_raw.extend_from_slice($chunk);
-            }
-        }};
-    }
-
-    macro_rules! feed_chunk {
-        ($chunk:expr) => {{
-            let mut ingest_error: Option<StreamLimitError> = None;
-            let feed_result = framer.feed($chunk, |event| {
-                if ingest_error.is_some() {
-                    return;
-                }
-                if let Err(error) = accumulator.ingest(&event) {
-                    ingest_error = Some(error);
-                }
-            });
-            if let Some(error) = ingest_error {
-                return stream_limit_failure_response(error, attempt_log).await;
-            }
-            if let Err(frame) = feed_result {
-                return stream_limit_failure_response(frame_error_to_stream(frame), attempt_log)
-                    .await;
-            }
-            if accumulator.saw_any_event() && !prefix_raw.is_empty() {
-                prefix_raw = Vec::new();
-            }
-        }};
-    }
-
-    match response {
-        UpstreamResponse::Reqwest(resp) => {
-            let mut stream = resp.bytes_stream();
-            loop {
-                let chunk = match futures_util::TryStreamExt::try_next(&mut stream).await {
-                    Ok(Some(chunk)) => chunk,
-                    Ok(None) => break,
-                    Err(error) => {
-                        return collected_body_failure_response(
-                            BoundedBodyError::Transport(error.to_string()),
-                            attempt_log,
-                        )
-                        .await;
-                    }
-                };
-                account_wire!(chunk.len());
-                retain_prefix!(&chunk);
-                feed_chunk!(&chunk);
-            }
-        }
-        UpstreamResponse::Hyper(resp) => {
-            let mut body = resp.into_body();
-            loop {
-                let frame = match body.frame().await {
-                    Some(Ok(frame)) => frame,
-                    Some(Err(error)) => {
-                        return collected_body_failure_response(
-                            BoundedBodyError::Transport(error.to_string()),
-                            attempt_log,
-                        )
-                        .await;
-                    }
-                    None => break,
-                };
-                let Ok(data) = frame.into_data() else {
-                    continue;
-                };
-                account_wire!(data.len());
-                retain_prefix!(&data);
-                feed_chunk!(&data);
-            }
-        }
-    }
-
-    {
-        let mut finish_error: Option<StreamLimitError> = None;
-        let finish_result = framer.finish(|event| {
-            if finish_error.is_some() {
-                return;
-            }
-            if let Err(error) = accumulator.ingest(&event) {
-                finish_error = Some(error);
-            }
-        });
-        if let Some(error) = finish_error {
+        Err(ForcedSseCollectionError::Stream(error)) => {
             return stream_limit_failure_response(error, attempt_log).await;
         }
-        if let Err(frame) = finish_result {
-            return stream_limit_failure_response(frame_error_to_stream(frame), attempt_log).await;
-        }
-    }
-
-    let saw_sse = accumulator.saw_any_event();
-    let json_body = match accumulator.finish(Some(model)) {
+    };
+    let status = collected.status;
+    let saw_sse = collected.accumulator.saw_any_event();
+    let json_body = match collected.accumulator.finish(Some(model)) {
         Ok(Some(value)) => value,
         Ok(None) => {
-            if !saw_sse && !prefix_raw.is_empty() {
+            if !saw_sse && !collected.prefix_raw.is_empty() {
                 // Bare non-SSE JSON fallback (forced upstream ignored stream).
                 // Single representation: prefix holds the complete JSON body.
-                serde_json::from_slice(&prefix_raw).unwrap_or_else(|_| {
+                serde_json::from_slice(&collected.prefix_raw).unwrap_or_else(|_| {
                     json!({
                         "error": {
                             "message": "Failed to convert forced SSE stream to JSON",
@@ -3629,8 +3844,9 @@ mod tests {
 
     use super::{
         attempt_error_response, build_dashboard_sse_response, build_proxied_response,
-        codex_models_support_search, requests_codex_web_search, select_connection,
-        select_connection_with_supporters, should_prefetch_message_images, StreamDispatch,
+        codex_models_support_search, has_native_codex_web_search, select_connection,
+        select_connection_with_supporters, select_search_luna_model,
+        should_prefetch_message_images, StreamDispatch,
     };
     use crate::core::account_fallback::ProviderAttemptError;
     use crate::core::chat::RequestPlan;
@@ -3732,12 +3948,12 @@ mod tests {
     }
 
     #[test]
-    fn codex_web_search_intent_requires_a_native_tool_and_respects_none() {
-        assert!(!requests_codex_web_search(&json!({"messages": []})));
-        assert!(requests_codex_web_search(
+    fn codex_web_search_boundary_detects_native_tool_even_when_choice_is_none() {
+        assert!(!has_native_codex_web_search(&json!({"messages": []})));
+        assert!(has_native_codex_web_search(
             &json!({"tools": [{"type": "web_search"}]})
         ));
-        assert!(!requests_codex_web_search(
+        assert!(has_native_codex_web_search(
             &json!({"tools": [{"type": "web_search"}], "tool_choice": "none"})
         ));
     }
@@ -3761,6 +3977,43 @@ mod tests {
             .capabilities
             .retain(|value| value != "search");
         assert!(!codex_models_support_search(&unsupported, "gpt-5.6-luna"));
+    }
+
+    #[test]
+    fn codex_web_search_prefers_5_6_then_highest_supported_luna_only() {
+        let model = |id: &str, search: bool| CodexModelMetadata {
+            id: id.into(),
+            name: id.into(),
+            context_window: None,
+            capabilities: if search {
+                vec!["search".into()]
+            } else {
+                vec![]
+            },
+            reasoning_efforts: vec![],
+        };
+        let models = vec![
+            model("gpt-5.5", true),
+            model("gpt-5.7-luna", true),
+            model("gpt-5.6-luna", true),
+            model("gpt-6.0-luna", false),
+        ];
+        assert_eq!(
+            select_search_luna_model(&models, |_| true).as_deref(),
+            Some("gpt-5.6-luna")
+        );
+
+        let without_preferred = vec![
+            model("gpt-5.5", true),
+            model("gpt-5.4-luna", true),
+            model("gpt-5.7-luna", true),
+        ];
+        assert_eq!(
+            select_search_luna_model(&without_preferred, |model| model != "gpt-5.4-luna")
+                .as_deref(),
+            Some("gpt-5.7-luna")
+        );
+        assert!(select_search_luna_model(&[model("gpt-5.5", true)], |_| true).is_none());
     }
 
     #[test]

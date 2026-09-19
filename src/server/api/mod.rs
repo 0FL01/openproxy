@@ -5,6 +5,7 @@ pub mod chat;
 pub mod cli_tools;
 pub mod cloud_credentials;
 pub mod cloud_sync;
+pub mod codex_web_mcp;
 pub mod compat;
 pub mod cors;
 pub mod db_backups;
@@ -260,7 +261,11 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .merge(provider_validate::routes());
 
     // ── Assemble ──
-    public.merge(protected).merge(admin).merge(remaining)
+    public
+        .merge(protected)
+        .merge(codex_web_mcp::routes(state))
+        .merge(admin)
+        .merge(remaining)
 }
 
 async fn v1_root() -> Response {
@@ -272,6 +277,7 @@ async fn v1_root() -> Response {
             "/v1/messages/count_tokens",
             "/v1/responses",
             "/v1/responses/compact",
+            "/v1/mcp",
             "/v1/web/fetch",
             "/v1/models",
         ]
@@ -1818,8 +1824,6 @@ struct UpdateSettingsRequest {
     codex_auto_ping: Option<Value>,
     /// Stored in settings.extra so provider-detail UI can PATCH it.
     glm_auto_ping: Option<Value>,
-    /// Depth for header-driven Codex hosted search, stored in settings.extra.
-    codex_web_search_context_size: Option<String>,
 }
 
 async fn update_settings_api(
@@ -1836,19 +1840,6 @@ async fn update_settings_api(
             StatusCode::NOT_IMPLEMENTED,
             Json(json!({
                 "error": "Password changes must use a dedicated endpoint, not PATCH /api/settings"
-            })),
-        )
-            .into_response();
-    }
-    if req
-        .codex_web_search_context_size
-        .as_deref()
-        .is_some_and(|value| !matches!(value, "off" | "low" | "medium" | "high"))
-    {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": "codexWebSearchContextSize must be one of: off, low, medium, high"
             })),
         )
             .into_response();
@@ -1918,11 +1909,6 @@ async fn update_settings_api(
             }
             if let Some(v) = req.glm_auto_ping {
                 db.settings.extra.insert("glmAutoPing".into(), v);
-            }
-            if let Some(v) = req.codex_web_search_context_size {
-                db.settings
-                    .extra
-                    .insert("codexWebSearchContextSize".into(), Value::String(v));
             }
             db.settings.normalize();
         })

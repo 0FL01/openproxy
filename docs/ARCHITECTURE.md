@@ -25,10 +25,12 @@ protocol-pair inventory is machine-readable in
 - Secrets encrypted in SQLite WAL.
 - No token-saver passes (PXPIPE/RTK/Headroom/Caveman/Ponytail
   removed) — the proxy forwards bodies unmutated.
-- The client harness owns history, compaction, tool execution, semantic repair,
+- The client harness owns history, compaction, general tool execution, semantic repair,
   and temporal generation retries. The proxy owns credentials/OAuth,
   configured routing, required wire translation, transport, and resource
-  limits; it does not become a second harness.
+  limits; it does not become a second harness. Two one-shot exceptions are
+  proxy-owned: `/v1/web/fetch` URL extraction and authenticated `/v1/mcp`
+  `codex_web_search`. Neither owns history, sessions, or a tool loop.
 
 ## Smoke
 

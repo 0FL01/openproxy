@@ -2191,6 +2191,55 @@
         ],
         "rollback": "Revert single commits; no migration. Release blocked on wire/security/data violations: none open."
       }
+    },
+    {
+      "id": "C44",
+      "title": "Перенести Codex hosted search в stateless MCP",
+      "status": "done",
+      "depends_on": [
+        "C20",
+        "C31",
+        "C33",
+        "C36",
+        "C39"
+      ],
+      "kind": "product",
+      "evidence": [
+        "user-approved audited plan 2026-09-19"
+      ],
+      "scope": "POST /v1/mcp, Codex foreground routing, bounded Responses projection, OpenCode configuration, retired Codex search settings and contracts.",
+      "change": "Replace public Codex native web_search with one authenticated stateless MCP tool, reuse the existing supporter/OAuth/account fallback owner, select only published search-capable Luna models, preserve ordered answer text and citations, and remove owned legacy header/depth/config surfaces without a compatibility alias.",
+      "tests": "MCP lifecycle/auth/discovery, mocked Luna request mapping and account fallback, many-item/citation projection, terminal all-or-error behavior, public hard cut, exact settings migration, OpenCode apply/reset preservation, C39 boundary, dashboard and model-discovery regressions.",
+      "acceptance": "OpenCode discovers codex_web_search directly over remote MCP with the same API key; only tools/call consumes generation admission; external Codex web_search reaches no upstream; no history/session/tool loop/client wrapper/new dependency is added.",
+      "rollback": "Revert C44 runtime/config/contracts together. The exact retired settings key cannot regain meaning without a new explicit migration.",
+      "result": {
+        "completed": "2026-09-19",
+        "files": [
+          "src/server/api/codex_web_mcp.rs",
+          "src/server/api/chat.rs",
+          "src/core/chat/stream_to_json.rs",
+          "src/server/api/cli_tools.rs",
+          "web/src/components/cli-tools/OpenCodeToolCard.tsx",
+          "tests/codex_web_mcp_api.rs",
+          "tests/lean_proxy_codex_c20.rs",
+          "contracts/lean-proxy.md",
+          "contracts/lean-proxy.json"
+        ],
+        "behavior": "MCP 2025-11-25 JSON transport exposes one search tool. short/medium/long map to low/medium/high; gpt-5.6-luna is preferred and fallback stays in Luna. One native bounded accumulator returns all ordered messages and exact-URL-deduplicated citations or a tool error with no partial answer. Public Codex native search returns codex_web_search_requires_mcp before account work.",
+        "tests": [
+          "cargo test -p openproxy --lib --all-features: 1026 passed",
+          "cargo test --test codex_web_mcp_api: 3 passed, 1 environment smoke ignored by default",
+          "cargo test --test codex_web_mcp_api opencode_discovers_direct_remote_codex_web_tool -- --ignored: passed with OpenCode 1.18.31",
+          "cargo test --test lean_proxy_codex_c20: 6 passed",
+          "cargo test --test lean_proxy_forced_c33: 9 passed",
+          "cargo test --test lean_proxy_web_tools_c39: 4 passed",
+          "cargo test --test cli_tool_native_settings_api: 14 passed",
+          "pnpm --dir web run build: 81 pages",
+          "node --test tests/opencode_models.test.mjs tests/opencode_models_cli.test.mjs: 4 passed, 1 skipped"
+        ],
+        "measurements": "No paid/live search was run. Protocol and provider behavior use deterministic loopback upstreams; real OpenCode discovery performed no tool call.",
+        "rollback": "Revert the C44 commit; no dependency or schema migration was added. The normalization-only exact-key cleanup is documented in the frozen contract."
+      }
     }
   ]
 }

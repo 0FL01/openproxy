@@ -897,8 +897,7 @@ async fn opencode_settings_post_patch_and_delete_match_openproxy_file_behavior()
                         "baseURL": "https://old.example.com/v1",
                         "apiKey": "old-key",
                         "headers": {
-                            "X-Keep": "yes",
-                            "X-OpenProxy-Codex-Web-Search": "true"
+                            "X-Keep": "yes"
                         }
                     },
                     "models": {
@@ -911,6 +910,10 @@ async fn opencode_settings_post_patch_and_delete_match_openproxy_file_behavior()
                 }
             },
             "model": "other/model",
+            "mcp": {
+                "other": {"keep": true},
+                "codex_web": {"type": "remote", "url": "https://old.example/mcp"}
+            },
             "agent": {
                 "keep": { "still": true },
                 "explorer": {
@@ -925,13 +928,24 @@ async fn opencode_settings_post_patch_and_delete_match_openproxy_file_behavior()
     .unwrap();
 
     let app = openproxy::build_app(app_state().await);
+    let missing_key = app
+        .clone()
+        .oneshot(authorized_request(
+            Method::POST,
+            "/api/cli-tools/opencode-settings",
+            Body::from(r#"{"baseUrl":"https://proxy.example.com","models":["oa/gpt-4.1"]}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(missing_key.status(), StatusCode::BAD_REQUEST);
+
     let post = app
         .clone()
         .oneshot(authorized_request(
             Method::POST,
             "/api/cli-tools/opencode-settings",
             Body::from(
-                r#"{"baseUrl":"https://proxy.example.com","apiKey":"sk-openproxy","models":["oa/gpt-4.1","oa/gpt-4.1-mini"],"activeModel":"oa/gpt-4.1-mini","subagentModel":"oa/gpt-4.1-nano","codexWebSearch":true}"#,
+                r#"{"baseUrl":"https://proxy.example.com","apiKey":"sk-openproxy","models":["oa/gpt-4.1","oa/gpt-4.1-mini"],"activeModel":"oa/gpt-4.1-mini","subagentModel":"oa/gpt-4.1-nano"}"#,
             ),
         ))
         .await
@@ -967,9 +981,19 @@ async fn opencode_settings_post_patch_and_delete_match_openproxy_file_behavior()
         saved["provider"]["openproxy"]["options"]["headers"]["X-Keep"],
         "yes"
     );
-    assert!(saved["provider"]["openproxy"]["options"]["headers"]
-        .get("X-OpenProxy-Codex-Web-Search")
-        .is_none());
+    assert_eq!(saved["mcp"]["other"]["keep"], true);
+    assert_eq!(saved["mcp"]["codex_web"]["type"], "remote");
+    assert_eq!(
+        saved["mcp"]["codex_web"]["url"],
+        "https://proxy.example.com/v1/mcp"
+    );
+    assert_eq!(saved["mcp"]["codex_web"]["enabled"], true);
+    assert_eq!(saved["mcp"]["codex_web"]["oauth"], false);
+    assert_eq!(saved["mcp"]["codex_web"]["timeout"], 300000);
+    assert_eq!(
+        saved["mcp"]["codex_web"]["headers"]["Authorization"],
+        "Bearer sk-openproxy"
+    );
     assert_eq!(
         saved["provider"]["openproxy"]["models"]["old/model"]["name"],
         "old/model"
@@ -1018,7 +1042,7 @@ async fn opencode_settings_post_patch_and_delete_match_openproxy_file_behavior()
     assert!(models.contains(&json!("oa/gpt-4.1-mini")));
     assert_eq!(json["opencode"]["activeModel"], "oa/gpt-4.1-mini");
     assert_eq!(json["opencode"]["baseURL"], "https://proxy.example.com/v1");
-    assert_eq!(json["opencode"]["codexWebSearch"], false);
+    assert_eq!(json["opencode"]["mcpConfigured"], true);
 
     let patch = app
         .clone()
@@ -1076,6 +1100,10 @@ async fn opencode_settings_post_patch_and_delete_match_openproxy_file_behavior()
     assert!(deleted_one["agent"].get("explorer").is_none());
     assert_eq!(deleted_one["agent"]["keep"]["still"], true);
     assert_eq!(deleted_one["model"], "");
+    assert_eq!(
+        deleted_one["mcp"]["codex_web"]["url"],
+        "https://proxy.example.com/v1/mcp"
+    );
 
     let delete_all = app
         .clone()
@@ -1102,6 +1130,8 @@ async fn opencode_settings_post_patch_and_delete_match_openproxy_file_behavior()
     assert_eq!(reset["provider"]["other"]["keep"], true);
     assert_eq!(reset["agent"]["keep"]["still"], true);
     assert_eq!(reset["model"], "");
+    assert!(reset["mcp"].get("codex_web").is_none());
+    assert_eq!(reset["mcp"]["other"]["keep"], true);
 }
 
 #[tokio::test]

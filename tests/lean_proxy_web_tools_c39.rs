@@ -1,15 +1,9 @@
-//! C39: standalone web tools stay outside the proxy's agent boundary.
+//! C39: the two one-shot web tools stay outside the proxy's agent boundary.
 //!
-//! Inventory result: the only standalone execution family in the core is
-//! `src/server/api/web_fetch.rs` (`/v1/web/fetch`). It has confirmed
-//! consumers (integration tests, the public CORS contract, the dashboard
-//! skills page), so breaking it with a removal or an undeclared 404 is
-//! forbidden: retention is the evidence-backed disposition. The guard below
-//! pins the exact execution inventory and forbids agent-runner capabilities
-//! (tool loops, history/session stores, retry schedulers, background tasks)
-//! from appearing in the module. Provider-native `web_search` forwarding,
-//! `tool_result`, and `/responses/compact` are transport APIs that must not
-//! depend on the convenience route.
+//! `/v1/web/fetch` remains provider-routed extraction. `/v1/mcp` adds exactly
+//! one authenticated stateless Codex search tool. Neither owns tool loops,
+//! history/session stores, retry schedulers, or background tasks; external
+//! Codex native search is rejected before upstream.
 
 use std::path::PathBuf;
 
@@ -85,30 +79,30 @@ fn standalone_execution_inventory_is_exact() {
 }
 
 #[test]
-fn no_agent_runner_capabilities_in_web_fetch() {
-    let module = read_src("server/api/web_fetch.rs");
-    let code: Vec<&str> = code_lines(&module).collect();
-    for forbidden in [
-        "tokio::spawn",
-        "spawn_blocking",
-        ".sleep(",
-        "sleep(",
-        "history",
-        "History",
-        "session",
-        "Session",
-        "tool_calls",
-        "conversation",
-        "max_retries",
-        "retry_after",
-        "Retry-After",
-        "interval(",
-    ] {
-        assert!(
-            !code.iter().any(|line| line.contains(forbidden)),
-            "agent-runner marker must not appear in web_fetch: {forbidden}"
-        );
+fn no_agent_runner_capabilities_in_proxy_owned_web_tools() {
+    for module_path in ["server/api/web_fetch.rs", "server/api/codex_web_mcp.rs"] {
+        let module = read_src(module_path);
+        let code: Vec<&str> = code_lines(&module).collect();
+        for forbidden in [
+            "tokio::spawn",
+            "spawn_blocking",
+            ".sleep(",
+            "sleep(",
+            "history",
+            "History",
+            "session_store",
+            "tool_calls",
+            "conversation",
+            "max_retries",
+            "interval(",
+        ] {
+            assert!(
+                !code.iter().any(|line| line.contains(forbidden)),
+                "agent-runner marker must not appear in {module_path}: {forbidden}"
+            );
+        }
     }
+    let module = read_src("server/api/web_fetch.rs");
     // The only loop is the bounded per-account fallback over configured
     // connections; it must stay free of sleeps/backoff (see above) and of
     // unbounded growth.
@@ -119,14 +113,11 @@ fn no_agent_runner_capabilities_in_web_fetch() {
 }
 
 #[test]
-fn native_tool_paths_do_not_depend_on_web_fetch() {
-    // Provider-native web_search forwarding, tool_result handling, and the
-    // compact transport API must resolve without the convenience route.
+fn tool_routes_keep_narrow_owners_and_no_loopback() {
     for rel in [
         "core/translator/request/openai_responses.rs",
         "core/translator/request/claude_format.rs",
         "core/executor/codex.rs",
-        "core/executor/grok_cli.rs",
         "server/api/compat.rs",
         "server/api/chat.rs",
     ] {
@@ -141,6 +132,17 @@ fn native_tool_paths_do_not_depend_on_web_fetch() {
         .matches("web_fetch::routes()")
         .count();
     assert_eq!(mounts, 1, "web_fetch routes must be mounted exactly once");
+    let api = read_src("server/api/mod.rs");
+    assert_eq!(
+        api.matches("codex_web_mcp::routes(state)").count(),
+        1,
+        "Codex MCP routes must be mounted exactly once"
+    );
+    let mcp = read_src("server/api/codex_web_mcp.rs");
+    assert!(!mcp.contains("CodexExecutor"));
+    assert!(!mcp.contains("127.0.0.1"));
+    let chat = read_src("server/api/chat.rs");
+    assert!(chat.contains("codex_web_search_requires_mcp"));
 }
 
 #[test]
@@ -176,4 +178,13 @@ fn convenience_route_consumers_are_real() {
         v1_root.contains("\"/v1/web/fetch\""),
         "v1 endpoint index must keep listing the route"
     );
+    assert!(
+        v1_root.contains("\"/v1/mcp\""),
+        "v1 endpoint index must list the Codex MCP route"
+    );
+    let mcp = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/codex_web_mcp_api.rs"),
+    )
+    .expect("MCP integration tests must exist");
+    assert!(mcp.contains("mcp_protocol_initializes_notifies_and_lists_one_search_tool"));
 }

@@ -1,5 +1,7 @@
 # Goal: Provider-scoped Codex web search
 
+> Superseded 2026-09-19 by [`2026-09-19-codex-web-mcp.md`](2026-09-19-codex-web-mcp.md): public native search and its header were replaced by direct authenticated MCP.
+
 Status: complete
 Source: User-approved audited implementation plan (2026-09-14)
 Last updated: 2026-09-19

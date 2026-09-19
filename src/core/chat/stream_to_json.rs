@@ -16,8 +16,8 @@ use std::collections::BTreeMap;
 use crate::core::stream_framing::{SseEvent, SseFramer};
 use crate::core::translator::limits::{
     checked_add_u64, checked_append, checked_retain, wire_index, StreamLimitError,
-    MAX_STREAM_ACCUMULATED_BYTES, MAX_STREAM_CHOICES, MAX_STREAM_TOOL_ARGUMENT_BYTES,
-    MAX_STREAM_TOOL_CALLS,
+    MAX_RESPONSES_OUTPUT_ITEMS, MAX_STREAM_ACCUMULATED_BYTES, MAX_STREAM_CHOICES,
+    MAX_STREAM_TOOL_ARGUMENT_BYTES, MAX_STREAM_TOOL_CALLS,
 };
 
 /// Quick check whether raw bytes look like SSE data (start with `data:` or
@@ -104,6 +104,17 @@ struct ResponsesForcedState {
     summary: ResponsesStreamSummary,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResponsesSearchOutput {
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResponsesSearchError {
+    pub code: String,
+    pub message: String,
+}
+
 impl Default for ResponsesForcedState {
     fn default() -> Self {
         Self {
@@ -114,6 +125,7 @@ impl Default for ResponsesForcedState {
                 output: BTreeMap::new(),
                 usage: json!({"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}),
                 retained_bytes: 0,
+                error: None,
             },
         }
     }
@@ -170,6 +182,52 @@ impl ForcedSseAccumulator {
             Some(ForcedKind::Chat) => self.chat.finish(fallback_model),
             Some(ForcedKind::Responses) => self.responses.finish(fallback_model),
         }
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        self.kind == Some(ForcedKind::Responses) && self.responses.summary.status != "in_progress"
+    }
+
+    pub fn finish_responses_search(self) -> Result<ResponsesSearchOutput, ResponsesSearchError> {
+        if self.kind != Some(ForcedKind::Responses) {
+            return Err(ResponsesSearchError {
+                code: "upstream_response_invalid".to_string(),
+                message: "Codex returned a non-Responses stream".to_string(),
+            });
+        }
+        project_responses_search(self.responses.summary)
+    }
+
+    pub fn ingest_responses_json(&mut self, value: &Value) -> Result<(), StreamLimitError> {
+        self.kind = Some(ForcedKind::Responses);
+        let response = if value.get("type").and_then(Value::as_str) == Some("response.completed") {
+            value.get("response")
+        } else {
+            Some(value)
+        }
+        .ok_or_else(|| StreamLimitError {
+            code: "upstream_response_invalid",
+            message: "Codex response JSON omitted response".to_string(),
+        })?;
+        let status = response
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("completed");
+        self.responses.summary.status = status.to_string();
+        let event = json!({"response": response});
+        self.responses.summary.capture_response_metadata(&event)?;
+        self.responses.summary.capture_usage(response.get("usage"));
+        if status != "completed" {
+            self.responses.summary.error = Some(response_event_error(
+                &event,
+                if status == "incomplete" {
+                    "response_incomplete"
+                } else {
+                    "response_failed"
+                },
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -424,8 +482,24 @@ impl ResponsesForcedState {
         if data_str == "[DONE]" {
             return Ok(());
         }
-        let Ok(parsed) = serde_json::from_str::<Value>(data_str) else {
-            return Ok(());
+        let recognized = matches!(
+            event,
+            "response.created"
+                | "response.output_item.done"
+                | "response.completed"
+                | "response.failed"
+                | "response.incomplete"
+                | "error"
+        );
+        let parsed = match serde_json::from_str::<Value>(data_str) {
+            Ok(parsed) => parsed,
+            Err(_) if !recognized => return Ok(()),
+            Err(_) => {
+                return Err(StreamLimitError {
+                    code: "upstream_stream_invalid_event",
+                    message: format!("Codex returned malformed {event} event data"),
+                });
+            }
         };
         match event {
             "response.created" => {
@@ -447,54 +521,27 @@ impl ResponsesForcedState {
             "response.output_item.done" => {
                 if let Some(item) = parsed.get("item") {
                     let idx = wire_index(parsed.get("output_index"), "output_index")?;
-                    if !self.summary.output.contains_key(&idx)
-                        && self.summary.output.len() >= MAX_STREAM_TOOL_CALLS
-                    {
-                        return Err(StreamLimitError::too_many(
-                            "response output items",
-                            MAX_STREAM_TOOL_CALLS,
-                        ));
-                    }
-                    let old_charge = self.summary.output.get(&idx).map_or(0, |(_, bytes)| *bytes);
-                    let charge = data_str.len();
-                    let next = self
-                        .summary
-                        .retained_bytes
-                        .checked_sub(old_charge)
-                        .and_then(|bytes| bytes.checked_add(charge))
-                        .ok_or_else(|| StreamLimitError::arithmetic("response output state"))?;
-                    if next > MAX_STREAM_ACCUMULATED_BYTES {
-                        return Err(StreamLimitError::bytes(
-                            "response output state",
-                            MAX_STREAM_ACCUMULATED_BYTES,
-                        ));
-                    }
-                    self.summary.output.insert(idx, (item.clone(), charge));
-                    self.summary.retained_bytes = next;
+                    self.summary
+                        .insert_output(idx, item.clone(), data_str.len())?;
                 }
             }
             "response.completed" => {
                 self.summary.status = "completed".to_string();
-                if let Some(usage) = parsed.pointer("/response/usage") {
-                    let mut map = serde_json::Map::new();
-                    for key in &[
-                        "input_tokens",
-                        "output_tokens",
-                        "total_tokens",
-                        "cache_read_input_tokens",
-                        "cached_tokens",
-                        "cache_creation_input_tokens",
-                    ] {
-                        map.insert(
-                            key.to_string(),
-                            usage.get(*key).cloned().unwrap_or(json!(0)),
-                        );
-                    }
-                    self.summary.usage = Value::Object(map);
-                }
+                self.summary.capture_response_metadata(&parsed)?;
+                self.summary
+                    .capture_usage(parsed.pointer("/response/usage"));
             }
             "response.failed" => {
                 self.summary.status = "failed".to_string();
+                self.summary.error = Some(response_event_error(&parsed, "response_failed"));
+            }
+            "response.incomplete" => {
+                self.summary.status = "incomplete".to_string();
+                self.summary.error = Some(response_event_error(&parsed, "response_incomplete"));
+            }
+            "error" => {
+                self.summary.status = "error".to_string();
+                self.summary.error = Some(response_event_error(&parsed, "upstream_error"));
             }
             _ => {}
         }
@@ -516,7 +563,11 @@ pub fn accumulate_sse_bytes(
     input: &[u8],
     fallback_model: Option<&str>,
 ) -> Result<Option<Value>, StreamLimitError> {
-    let mut framer = SseFramer::new();
+    // This helper already receives a fully buffered body. Live streaming uses
+    // the normal 1 MiB frame cap before reaching the accumulator; allow the
+    // retained-state bound here so the in-memory converter keeps its existing
+    // tool-argument contract without a second Responses parser.
+    let mut framer = SseFramer::with_max_frame_bytes(MAX_STREAM_ACCUMULATED_BYTES);
     let mut accumulator = ForcedSseAccumulator::new();
     let mut ingest_error: Option<StreamLimitError> = None;
     let feed_result = framer.feed(input, |event| {
@@ -937,134 +988,116 @@ struct ResponsesStreamSummary {
     output: BTreeMap<u64, (Value, usize)>,
     usage: Value,
     retained_bytes: usize,
+    error: Option<ResponsesSearchError>,
 }
 
-/// Parse a Responses API SSE stream (pairs of `event:` / `data:` lines) into
-/// a summary struct.
-fn parse_responses_api_stream(
-    sse: &str,
-) -> Result<Option<ResponsesStreamSummary>, StreamLimitError> {
-    let mut summary = ResponsesStreamSummary {
-        response_id: String::new(),
-        created: None,
-        status: "in_progress".to_string(),
-        output: BTreeMap::new(),
-        usage: json!({"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}),
-        retained_bytes: 0,
-    };
-
-    for frame in sse.split("\n\n") {
-        let frame = frame.trim();
-        if frame.is_empty() {
-            continue;
+impl ResponsesStreamSummary {
+    fn insert_output(
+        &mut self,
+        index: u64,
+        item: Value,
+        charge: usize,
+    ) -> Result<(), StreamLimitError> {
+        if !self.output.contains_key(&index) && self.output.len() >= MAX_RESPONSES_OUTPUT_ITEMS {
+            return Err(StreamLimitError::too_many(
+                "response output items",
+                MAX_RESPONSES_OUTPUT_ITEMS,
+            ));
         }
-
-        let mut event_name = None::<String>;
-        let mut data_str = String::new();
-
-        for line in frame.lines() {
-            let trimmed = line.trim();
-            if let Some(rest) = trimmed.strip_prefix("event:") {
-                event_name = Some(rest.trim().to_string());
-            } else if let Some(rest) = trimmed.strip_prefix("data:") {
-                if !data_str.is_empty() {
-                    data_str.push('\n');
-                }
-                data_str.push_str(rest.trim_start());
-            }
+        let old_charge = self.output.get(&index).map_or(0, |(_, bytes)| *bytes);
+        let next = self
+            .retained_bytes
+            .checked_sub(old_charge)
+            .and_then(|bytes| bytes.checked_add(charge))
+            .ok_or_else(|| StreamLimitError::arithmetic("response output state"))?;
+        if next > MAX_STREAM_ACCUMULATED_BYTES {
+            return Err(StreamLimitError::bytes(
+                "response output state",
+                MAX_STREAM_ACCUMULATED_BYTES,
+            ));
         }
-
-        let Some(event) = event_name else {
-            continue;
-        };
-
-        if data_str == "[DONE]" {
-            continue;
-        }
-
-        let Ok(parsed) = serde_json::from_str::<Value>(&data_str) else {
-            continue;
-        };
-
-        match event.as_str() {
-            "response.created" => {
-                if let Some(id_val) = parsed.pointer("/response/id").and_then(|v| v.as_str()) {
-                    replace_bounded_plain_string(
-                        &mut summary.response_id,
-                        id_val,
-                        &mut summary.retained_bytes,
-                        "response id",
-                    )?;
-                }
-                if let Some(t) = parsed
-                    .pointer("/response/created_at")
-                    .and_then(|v| v.as_i64())
-                {
-                    summary.created = Some(t);
-                }
-            }
-            "response.output_item.done" => {
-                if let Some(item) = parsed.get("item") {
-                    let idx = wire_index(parsed.get("output_index"), "output_index")?;
-                    if !summary.output.contains_key(&idx)
-                        && summary.output.len() >= MAX_STREAM_TOOL_CALLS
-                    {
-                        return Err(StreamLimitError::too_many(
-                            "response output items",
-                            MAX_STREAM_TOOL_CALLS,
-                        ));
-                    }
-                    let old_charge = summary.output.get(&idx).map_or(0, |(_, bytes)| *bytes);
-                    let charge = data_str.len();
-                    let next = summary
-                        .retained_bytes
-                        .checked_sub(old_charge)
-                        .and_then(|bytes| bytes.checked_add(charge))
-                        .ok_or_else(|| StreamLimitError::arithmetic("response output state"))?;
-                    if next > MAX_STREAM_ACCUMULATED_BYTES {
-                        return Err(StreamLimitError::bytes(
-                            "response output state",
-                            MAX_STREAM_ACCUMULATED_BYTES,
-                        ));
-                    }
-                    summary.output.insert(idx, (item.clone(), charge));
-                    summary.retained_bytes = next;
-                }
-            }
-            "response.completed" => {
-                summary.status = "completed".to_string();
-                if let Some(usage) = parsed.pointer("/response/usage") {
-                    let mut map = serde_json::Map::new();
-                    // Keep the cache counters so the aggregation below can fold
-                    // them into prompt_tokens + prompt_tokens_details (P1-F6).
-                    for key in &[
-                        "input_tokens",
-                        "output_tokens",
-                        "total_tokens",
-                        "cache_read_input_tokens",
-                        "cached_tokens",
-                        "cache_creation_input_tokens",
-                    ] {
-                        map.insert(
-                            key.to_string(),
-                            usage.get(*key).cloned().unwrap_or(json!(0)),
-                        );
-                    }
-                    summary.usage = Value::Object(map);
-                }
-            }
-            "response.failed" => {
-                summary.status = "failed".to_string();
-            }
-            _ => {}
-        }
+        self.output.insert(index, (item, charge));
+        self.retained_bytes = next;
+        Ok(())
     }
 
-    if summary.response_id.is_empty() {
-        return Ok(None);
+    fn capture_response_metadata(&mut self, event: &Value) -> Result<(), StreamLimitError> {
+        let Some(response) = event.get("response") else {
+            return Err(StreamLimitError {
+                code: "upstream_stream_invalid_event",
+                message: "Codex response.completed event omitted response".to_string(),
+            });
+        };
+        if let Some(id) = response.get("id").and_then(Value::as_str) {
+            replace_bounded_plain_string(
+                &mut self.response_id,
+                id,
+                &mut self.retained_bytes,
+                "response id",
+            )?;
+        }
+        if let Some(created) = response.get("created_at").and_then(Value::as_i64) {
+            self.created = Some(created);
+        }
+        if let Some(output) = response.get("output").and_then(Value::as_array) {
+            for (index, item) in output.iter().enumerate() {
+                let index = u64::try_from(index)
+                    .map_err(|_| StreamLimitError::arithmetic("response output index"))?;
+                if self.output.contains_key(&index) {
+                    continue;
+                }
+                let charge = serde_json::to_vec(item)
+                    .map_err(|_| StreamLimitError {
+                        code: "upstream_stream_invalid_event",
+                        message: "Codex returned an invalid completed output item".to_string(),
+                    })?
+                    .len();
+                self.insert_output(index, item.clone(), charge)?;
+            }
+        }
+        Ok(())
     }
 
-    Ok(Some(summary))
+    fn capture_usage(&mut self, usage: Option<&Value>) {
+        let Some(usage) = usage else {
+            return;
+        };
+        let mut map = serde_json::Map::new();
+        for key in &[
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "cache_read_input_tokens",
+            "cached_tokens",
+            "cache_creation_input_tokens",
+        ] {
+            map.insert(
+                key.to_string(),
+                usage.get(*key).cloned().unwrap_or(json!(0)),
+            );
+        }
+        self.usage = Value::Object(map);
+    }
+}
+
+fn response_event_error(event: &Value, fallback_code: &str) -> ResponsesSearchError {
+    let error = event
+        .pointer("/response/error")
+        .or_else(|| event.get("error"));
+    let code = error
+        .and_then(|value| value.get("code"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback_code)
+        .to_string();
+    let message = error
+        .and_then(|value| value.get("message"))
+        .and_then(Value::as_str)
+        .or_else(|| event.get("message").and_then(Value::as_str))
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Codex web search did not complete")
+        .to_string();
+    ResponsesSearchError { code, message }
 }
 
 /// Convert an OpenAI Responses API SSE stream to a single `chat.completion`
@@ -1085,11 +1118,123 @@ fn convert_responses_api_stream(
     sse: &str,
     fallback_model: Option<&str>,
 ) -> Result<Option<Value>, StreamLimitError> {
-    let summary = match parse_responses_api_stream(sse)? {
-        Some(summary) => summary,
-        None => return Ok(None),
-    };
-    assemble_responses_summary(summary, fallback_model)
+    accumulate_sse_bytes(sse.as_bytes(), fallback_model)
+}
+
+fn project_responses_search(
+    summary: ResponsesStreamSummary,
+) -> Result<ResponsesSearchOutput, ResponsesSearchError> {
+    if summary.status != "completed" {
+        return Err(summary.error.unwrap_or_else(|| ResponsesSearchError {
+            code: "upstream_response_incomplete".to_string(),
+            message: "Codex web search ended before response.completed".to_string(),
+        }));
+    }
+
+    let mut messages = Vec::new();
+    let mut sources: Vec<(String, String)> = Vec::new();
+    for (item, _) in summary.output.values() {
+        if item.get("type").and_then(Value::as_str) != Some("message") {
+            continue;
+        }
+        let Some(parts) = item.get("content").and_then(Value::as_array) else {
+            continue;
+        };
+        let mut message = String::new();
+        for part in parts {
+            if part.get("type").and_then(Value::as_str) != Some("output_text") {
+                continue;
+            }
+            if let Some(text) = part.get("text").and_then(Value::as_str) {
+                append_search_output(&mut message, text)?;
+            }
+            let Some(annotations) = part.get("annotations").and_then(Value::as_array) else {
+                continue;
+            };
+            for annotation in annotations {
+                if annotation.get("type").and_then(Value::as_str) != Some("url_citation") {
+                    continue;
+                }
+                let Some(url) = annotation
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .filter(|url| url.starts_with("https://") || url.starts_with("http://"))
+                else {
+                    continue;
+                };
+                let title = annotation
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .map(normalize_source_title)
+                    .unwrap_or_default();
+                if let Some((_, existing_title)) =
+                    sources.iter_mut().find(|(existing, _)| existing == url)
+                {
+                    if existing_title.is_empty() && !title.is_empty() {
+                        *existing_title = title;
+                    }
+                } else {
+                    sources.push((url.to_string(), title));
+                }
+            }
+        }
+        if !message.is_empty() {
+            messages.push(message);
+        }
+    }
+
+    if messages.is_empty() {
+        return Err(ResponsesSearchError {
+            code: "upstream_response_empty".to_string(),
+            message: "Codex web search completed without answer text".to_string(),
+        });
+    }
+
+    let mut text = String::new();
+    for (index, message) in messages.iter().enumerate() {
+        if index > 0 {
+            append_search_output(&mut text, "\n\n")?;
+        }
+        append_search_output(&mut text, message)?;
+    }
+    if !sources.is_empty() {
+        append_search_output(&mut text, "\n\nSources:")?;
+        for (index, (url, title)) in sources.iter().enumerate() {
+            append_search_output(&mut text, "\n")?;
+            append_search_output(&mut text, &(index + 1).to_string())?;
+            append_search_output(&mut text, ". ")?;
+            if !title.is_empty() {
+                append_search_output(&mut text, title)?;
+                append_search_output(&mut text, ": ")?;
+            }
+            append_search_output(&mut text, url)?;
+        }
+    }
+
+    Ok(ResponsesSearchOutput { text })
+}
+
+fn append_search_output(target: &mut String, value: &str) -> Result<(), ResponsesSearchError> {
+    let next = target
+        .len()
+        .checked_add(value.len())
+        .ok_or_else(search_output_limit_error)?;
+    if next > MAX_STREAM_ACCUMULATED_BYTES {
+        return Err(search_output_limit_error());
+    }
+    target.push_str(value);
+    Ok(())
+}
+
+fn search_output_limit_error() -> ResponsesSearchError {
+    ResponsesSearchError {
+        code: "mcp_result_too_large".to_string(),
+        message: "Codex web search result exceeds the 16 MiB MCP limit".to_string(),
+    }
+}
+
+fn normalize_source_title(title: &str) -> String {
+    title.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn assemble_responses_summary(
@@ -1738,5 +1883,138 @@ mod tests {
                 .code,
             "upstream_stream_state_limit"
         );
+    }
+
+    fn project_search_sse(sse: &str) -> Result<ResponsesSearchOutput, ResponsesSearchError> {
+        let mut framer = SseFramer::new();
+        let mut accumulator = ForcedSseAccumulator::new();
+        let mut ingest_error = None;
+        framer
+            .feed(sse.as_bytes(), |event| {
+                if ingest_error.is_none() {
+                    ingest_error = accumulator.ingest(&event).err();
+                }
+            })
+            .unwrap();
+        if let Some(error) = ingest_error {
+            return Err(ResponsesSearchError {
+                code: error.code.to_string(),
+                message: error.message,
+            });
+        }
+        accumulator.finish_responses_search()
+    }
+
+    #[test]
+    fn responses_search_many_items_preserve_order_messages_and_sources() {
+        let mut sse = format!(
+            "event: response.created\ndata: {}\n\n",
+            json!({"type":"response.created","response":{"id":"resp_many"}})
+        );
+        for index in (0..120).rev() {
+            let item = match index % 3 {
+                0 => json!({"type":"web_search_call","id":format!("search_{index}")}),
+                1 => json!({"type":"reasoning","summary":[{"text":"private reasoning"}]}),
+                _ => {
+                    let message = index / 3;
+                    json!({
+                        "type":"message",
+                        "content":[
+                            {
+                                "type":"output_text",
+                                "text":format!("Answer {message} café 雪"),
+                                "annotations":[{
+                                    "type":"url_citation",
+                                    "url":format!("https://example.test/{message}"),
+                                    "title":format!(" Source   {message} ")
+                                }]
+                            },
+                            {
+                                "type":"output_text",
+                                "text":" ✅",
+                                "annotations":[{
+                                    "type":"url_citation",
+                                    "url":format!("https://example.test/{message}"),
+                                    "title":"duplicate"
+                                }]
+                            }
+                        ]
+                    })
+                }
+            };
+            sse.push_str(&format!(
+                "event: response.output_item.done\ndata: {}\n\n",
+                json!({
+                    "type":"response.output_item.done",
+                    "output_index":index,
+                    "item":item
+                })
+            ));
+        }
+        sse.push_str(&format!(
+            "event: response.completed\ndata: {}\n\n",
+            json!({"type":"response.completed","response":{"id":"resp_many","status":"completed","output":[],"usage":{}}})
+        ));
+
+        let result = project_search_sse(&sse).unwrap().text;
+        for index in 0..40 {
+            let answer = format!("Answer {index} café 雪 ✅");
+            let source = format!(
+                "{}. Source {}: https://example.test/{}",
+                index + 1,
+                index,
+                index
+            );
+            assert_eq!(result.matches(&answer).count(), 1);
+            assert_eq!(result.matches(&source).count(), 1);
+        }
+        assert!(result.find("Answer 0").unwrap() < result.find("Answer 39").unwrap());
+        assert_eq!(result.matches("\n\nSources:\n").count(), 1);
+        assert!(!result.contains("private reasoning"));
+        assert!(!result.contains("search_"));
+        assert!(!result.contains("event:"));
+    }
+
+    #[test]
+    fn responses_search_terminal_failures_never_return_partial_answer() {
+        let partial = format!(
+            "event: response.created\ndata: {}\n\nevent: response.output_item.done\ndata: {}\n\n",
+            json!({"type":"response.created","response":{"id":"resp_failed"}}),
+            json!({
+                "type":"response.output_item.done",
+                "output_index":0,
+                "item":{"type":"message","content":[{"type":"output_text","text":"partial secret"}]}
+            })
+        );
+        let cases = vec![
+            (String::new(), "upstream_response_incomplete"),
+            (
+                format!(
+                    "event: response.failed\ndata: {}\n\n",
+                    json!({"type":"response.failed","response":{"error":{"code":"failed_code","message":"failed safely"}}})
+                ),
+                "failed_code",
+            ),
+            (
+                format!(
+                    "event: response.incomplete\ndata: {}\n\n",
+                    json!({"type":"response.incomplete","response":{"error":{"code":"incomplete_code","message":"incomplete safely"}}})
+                ),
+                "incomplete_code",
+            ),
+            (
+                format!(
+                    "event: error\ndata: {}\n\n",
+                    json!({"type":"error","error":{"code":"error_code","message":"errored safely"}})
+                ),
+                "error_code",
+            ),
+        ];
+
+        for (terminal, expected_code) in cases {
+            let error = project_search_sse(&(partial.clone() + &terminal)).unwrap_err();
+            assert_eq!(error.code, expected_code);
+            assert!(!error.message.contains("partial secret"));
+        }
     }
 }
