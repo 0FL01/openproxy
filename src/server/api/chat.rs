@@ -3506,11 +3506,12 @@ fn attempt_error_response(error: ProviderAttemptError) -> Response {
     if let Some(body_bytes) = error.upstream_body {
         let status_code = StatusCode::from_u16(error.status).unwrap_or(StatusCode::BAD_GATEWAY);
         // Usage-limit reset timer (429-only carve-out, see C13): when the
-        // upstream error declares a reset instant, append "(resets in …)" to
-        // error.message so clients rendering the message verbatim show the
-        // timer. Status, error type/code and the Retry-After synthesis below
-        // are untouched; Retry-After stays driven solely by retry_after,
-        // never by the display instant.
+        // upstream error declares a reset instant, normalize error.message
+        // to a concise "(resets in …)" display so clients rendering it
+        // verbatim do not misread Z.AI's China-local timestamp. Status, error
+        // type/code and the Retry-After synthesis below are untouched;
+        // Retry-After stays driven solely by retry_after, never by the display
+        // instant.
         let body_bytes = if error.status == 429 {
             crate::core::utils::error::maybe_add_reset_suffix(&body_bytes, Utc::now())
                 .unwrap_or(body_bytes)

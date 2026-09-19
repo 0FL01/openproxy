@@ -5,7 +5,7 @@
 //! provider response.
 
 use crate::core::config::error_config::{default_error_message, error_type_for};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeZone, Utc};
 use serde_json::{json, Value};
 
 /// Build the OpenAI-shaped error body for a given HTTP status.
@@ -298,6 +298,10 @@ fn strip_html_tags(input: &str) -> String {
 /// verbatim by external TUIs.
 const RESET_SUFFIX_MARKER: &str = "(resets in ";
 
+/// Z.AI returns its reset timestamp without an offset, in China Standard Time.
+const GLM_RESET_MARKER: &str = "Your limit will reset at ";
+const GLM_RESET_OFFSET_SECS: i32 = 8 * 60 * 60;
+
 /// Display-timer cap: a reset further out than this renders no suffix
 /// (garbage guard, not a quota statement).
 const MAX_RESET_SUFFIX_SECS: i64 = 30 * 24 * 3600;
@@ -356,6 +360,39 @@ fn codex_resets_at(error: &Value, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
         .filter(|instant| *instant > now)
 }
 
+/// Replace Z.AI's China-local absolute reset timestamp with the relative
+/// display suffix used for Codex. The upstream timestamp is intentionally not
+/// shown: clients may render it as if it were local time.
+fn glm_reset_message(message: &str, now: DateTime<Utc>) -> Option<String> {
+    let marker_start = message.find(GLM_RESET_MARKER)?;
+    let timestamp_start = marker_start + GLM_RESET_MARKER.len();
+    let timestamp = message.get(timestamp_start..timestamp_start + 19)?;
+    let naive = NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%d %H:%M:%S").ok()?;
+    let china_offset = FixedOffset::east_opt(GLM_RESET_OFFSET_SECS)?;
+    let resets_at = china_offset
+        .from_local_datetime(&naive)
+        .single()?
+        .with_timezone(&Utc);
+    let suffix = format_reset_suffix(now, resets_at)?;
+
+    let mut rewritten = message[..marker_start]
+        .trim_end()
+        .trim_end_matches('.')
+        .trim_end()
+        .to_string();
+    rewritten.push(' ');
+    rewritten.push_str(&suffix);
+
+    // Preserve any provider metadata that follows the timestamp, while
+    // dropping only the China-local absolute-time fragment.
+    let trailing = message[timestamp_start + 19..].trim();
+    if !trailing.is_empty() {
+        rewritten.push(' ');
+        rewritten.push_str(trailing);
+    }
+    Some(rewritten)
+}
+
 /// Join the `data:` payload lines of a single SSE event frame, mirroring the
 /// Codex first-event preflight framing.
 fn sse_data_payload(text: &str) -> Option<String> {
@@ -375,10 +412,11 @@ fn sse_data_payload(text: &str) -> Option<String> {
     }
 }
 
-/// Append a reset-timer suffix to `error.message` of a JSON upstream error
-/// body carrying a Codex-style reset signal (`error.resets_at` unix seconds
-/// or `error.resets_in_seconds`). Accepts SSE-wrapped bodies: Codex
-/// synthesizes 429s with the raw `event:`/`data:` framing intact.
+/// Add a reset-timer suffix to `error.message` of a JSON upstream error body
+/// carrying a Codex-style reset signal (`error.resets_at` unix seconds or
+/// `error.resets_in_seconds`) or a Z.AI/GLM China-local timestamp. Accepts
+/// SSE-wrapped bodies: Codex synthesizes 429s with the raw `event:`/`data:`
+/// framing intact.
 ///
 /// Returns the rewritten body, or `None` when there is no usable reset
 /// signal (unknown shape, non-string message, past instant, already
@@ -394,9 +432,12 @@ pub fn maybe_add_reset_suffix(body: &[u8], now: DateTime<Utc>) -> Option<Vec<u8>
     if message.contains(RESET_SUFFIX_MARKER) {
         return None;
     }
-    let resets_at = codex_resets_at(error, now)?;
-    let suffix = format_reset_suffix(now, resets_at)?;
-    let suffixed = format!("{message} {suffix}");
+    let suffixed = if let Some(resets_at) = codex_resets_at(error, now) {
+        let suffix = format_reset_suffix(now, resets_at)?;
+        format!("{message} {suffix}")
+    } else {
+        glm_reset_message(message, now)?
+    };
     *error.get_mut("message")? = Value::String(suffixed);
     serde_json::to_vec(&value).ok()
 }
@@ -570,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_suffix_rewrites_codex_bodies_only() {
+    fn reset_suffix_rewrites_codex_and_glm_bodies() {
         use chrono::Duration;
         // Whole-second clock: timestamp() truncation must not flip minutes.
         let now =
@@ -588,6 +629,22 @@ mod tests {
             "The usage limit has been reached (resets in 2h 14m)"
         );
         assert_eq!(val["error"]["type"], "usage_limit_reached");
+
+        // GLM/Z.AI body: the source timestamp is China-local and must not be
+        // rendered as if it were the proxy's local time.
+        let glm_body = br#"{"error":{"code":"1308","message":"Usage limit reached for 5 hour. Your limit will reset at 2026-09-19 21:14:32"}}"#;
+        let glm_now = DateTime::from_timestamp(1_789_812_000, 0).expect("valid test timestamp");
+        let out = maybe_add_reset_suffix(glm_body, glm_now).expect("GLM suffix applies");
+        let val: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(
+            val["error"]["message"],
+            "Usage limit reached for 5 hour (resets in 3h 14m)"
+        );
+        assert_eq!(val["error"]["code"], "1308");
+        assert!(!val["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("2026-09-19 21:14:32"));
 
         // SSE-wrapped Codex 429 (synthetic preflight body).
         let sse = format!("event: error\ndata: {body}\n\n");
