@@ -27,6 +27,8 @@ product
 # misc
 .DS_Store
 *.pem
+/.astro/
+/libopenproxy_test.rlib
 
 # debug
 npm-debug.log*
@@ -64,7 +66,6 @@ docs/*
 !docs/AGENT-PROMPT.md
 !docs/ARCHITECTURE.md
 !docs/CHECKPOINTS.json
-!docs/git-conventions.md
 !docs/integrations/
 !docs/goals/
 docs/goals/*

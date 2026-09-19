@@ -12,7 +12,7 @@ labels: ["enhancement"]
 <!-- Who pays / who benefits, and what measurable problem it solves (follow AGENTS.md money-flow reasoning). -->
 
 ## Proposed solution
-<!-- Provider / API / dashboard change. Link to OmniRoute or 9router reference if applicable: `/tmp/omniroute_v3850/src/managed/...` -->
+<!-- Provider / API / dashboard change. Link to a relevant upstream or API reference if applicable. -->
 
 ## Alternatives considered
 <!-- What you tried, existing workarounds, why they fall short. -->
@@ -21,4 +21,4 @@ labels: ["enhancement"]
 <!-- How you'd verify it: `cargo test`, `curl /v1/chat/completions`, dashboard screenshot. -->
 
 ## Additional context
-<!-- Bead epic, docs/parity-9router.md divergence, or schema stability impact (openproxy.v1.* additive only). -->
+<!-- Bead epic or schema stability impact (openproxy.v1.* is additive-only). -->

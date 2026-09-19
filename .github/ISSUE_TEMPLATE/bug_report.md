@@ -9,7 +9,7 @@ labels: ["bug"]
 <!-- What happened, what you expected. -->
 
 ## Repro steps
-<!-- Minimal steps. Include provider, model, and whether OmniRoute differs (see docs/OMNIROUTE_PROVIDER_PARITY.md). -->
+<!-- Minimal steps. Include provider and model. -->
 1.
 2.
 3.
@@ -21,7 +21,7 @@ labels: ["bug"]
 ## Environment
 - `openproxy --version`:
 - OS / arch:
-- `./scripts/dev.sh --full` reproduces? [ ] yes / [ ] no
+- `cargo test --lib --all-features` reproduces? [ ] yes / [ ] no
 - Provider / model (e.g. `cc/claude-opus-4.6`, `kilocode/kc-xxx`):
 
 ## Logs / evidence
@@ -30,4 +30,4 @@ labels: ["bug"]
 ```
 
 ## Additional context
-<!-- Bead id, parity doc link, screenshots if UI. -->
+<!-- Bead id, contract impact, screenshots if UI. -->

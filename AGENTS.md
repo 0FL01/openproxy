@@ -63,12 +63,15 @@ open http://127.0.0.1:4625/dashboard/providers
 
 ## Contributing & Git Hygiene
 
-Systematic, not arbitrary — all contributions follow two documents linked from the intelligence brief:
+Use Conventional Commits and keep each commit a single, independently buildable
+change. Stage only intended files. Before committing, inspect `git status`, the
+staged diff, and secret handling; run Rust formatting, clippy, and relevant
+tests. Run `pnpm --dir web run build` when changing the dashboard.
 
-- **Workflow & expectations:** [`CONTRIBUTING.md`](CONTRIBUTING.md) — prerequisites, `scripts/dev.sh` quick/full, project layout, coding standards, testing matrix, secrets policy, releases.
-- **Enforceable git rules:** [`docs/git-conventions.md`](docs/git-conventions.md) — Conventional Commits (`<type>(<scope>): <subject>`), atomic bisectable commits, verification before each commit (`cargo fmt --check` + `cargo clippy --all-targets --all-features`), history hygiene (rebase, no `git add .`), PR hygiene (template, ≤400 lines, CI `web` → `rust` must be green), issue/beads discipline, tagging.
-
-PRs use [`.github/pull_request_template.md`](.github/pull_request_template.md); bugs/features use [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/). CI (`.github/workflows/ci.yml`) enforces `web: astro check + build → rust: fmt + clippy + tests` on `ubuntu` + `macos`. The checklist in `docs/git-conventions.md` §9 is the gate — all green means systematic.
+PRs use [`.github/pull_request_template.md`](.github/pull_request_template.md);
+bugs and feature requests use [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/).
+CI builds the dashboard, runs Rust formatting/clippy on Ubuntu and macOS, and
+runs Rust library tests on Ubuntu. `astro check` is currently advisory in CI.
 
 ## Core Product Surfaces (TOP PRIORITY)
 

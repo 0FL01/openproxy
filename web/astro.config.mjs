@@ -45,7 +45,7 @@ export default defineConfig({
       },
     },
     optimizeDeps: {
-      include: ['react', 'react-dom', 'react-is'],
+      include: ['react', 'react-dom'],
     },
     build: {
       // Optimize bundle size
@@ -53,11 +53,11 @@ export default defineConfig({
         output: {
           manualChunks: {
             // Split React libraries
-            'react-vendor': ['react', 'react-dom', 'react-is'],
+            'react-vendor': ['react', 'react-dom'],
             // Split UI libraries
-            'ui-vendor': ['recharts', '@xyflow/react', '@monaco-editor/react'],
+            'ui-vendor': ['@monaco-editor/react'],
             // Split utility libraries
-            'utils-vendor': ['zustand', 'lowdb', 'marked'],
+            'utils-vendor': ['zustand', 'marked'],
           },
         },
       },

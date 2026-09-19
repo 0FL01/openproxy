@@ -62,7 +62,7 @@
 - Full `parity-smoke.sh` harness green
 
 ### Docs
-- `docs/parity-9router.md`: pipeline, dispatch matrix, intentional divergences
+- `contracts/lean-proxy.md`: pipeline ownership, supported routes, and intentional boundaries
 
 ---
 
