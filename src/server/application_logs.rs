@@ -644,6 +644,7 @@ struct RequestLogsQuery {
     provider: Option<String>,
     model: Option<String>,
     status: Option<String>,
+    api_key_id: Option<String>,
     start_date: Option<String>,
     end_date: Option<String>,
 }
@@ -713,6 +714,7 @@ async fn get_request_logs(
     let provider = clean(query.provider);
     let model = clean(query.model);
     let status = clean(query.status);
+    let api_key_id = clean(query.api_key_id);
     let start_date = query.start_date.as_deref().and_then(parse_timestamp);
     let end_date = query.end_date.as_deref().and_then(parse_timestamp);
     let offset = (page - 1) * page_size;
@@ -723,6 +725,7 @@ async fn get_request_logs(
                 provider: provider.as_deref(),
                 model: model.as_deref(),
                 status: status.as_deref(),
+                api_key_id: api_key_id.as_deref(),
                 start_date: start_date.as_deref(),
                 end_date: end_date.as_deref(),
                 ..Default::default()

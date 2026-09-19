@@ -10,9 +10,15 @@ import type { ApplicationLog, LogsPayload } from "./types";
 const REFRESH_MS = 60_000;
 
 interface Filters {
+  apiKeyId: string;
   status: string;
   provider: string;
   model: string;
+}
+
+interface ApiKeyOption {
+  id: string;
+  name: string;
 }
 
 function statusClass(status: string) {
@@ -24,6 +30,7 @@ function statusClass(status: string) {
 
 export default function ApplicationLogsClient() {
   const [logs, setLogs] = useState<ApplicationLog[]>([]);
+  const [keys, setKeys] = useState<ApiKeyOption[]>([]);
   const [selected, setSelected] = useState<ApplicationLog | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -31,7 +38,22 @@ export default function ApplicationLogsClient() {
   const [pageSize, setPageSize] = useState(20);
   const [totalItems, setTotalItems] = useState(0);
   const [refresh, setRefresh] = useState(0);
-  const [filters, setFilters] = useState<Filters>({ status: "", provider: "", model: "" });
+  const [filters, setFilters] = useState<Filters>({ apiKeyId: "", status: "", provider: "", model: "" });
+
+  useEffect(() => {
+    let disposed = false;
+    fetch("/api/keys", { cache: "no-store" })
+      .then(async (response) => (response.ok ? response.json() : { keys: [] }))
+      .then((data: { keys?: ApiKeyOption[] }) => {
+        if (!disposed) setKeys((data.keys ?? []).map(({ id, name }) => ({ id, name })));
+      })
+      .catch(() => {
+        if (!disposed) setKeys([]);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -100,7 +122,11 @@ export default function ApplicationLogsClient() {
       </div>
 
       <Card padding="md">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
+          <select value={filters.apiKeyId} onChange={(event) => updateFilter("apiKeyId", event.target.value)} className="h-10 rounded-lg border border-border bg-surface px-3 text-sm text-text-main">
+            <option value="">All API keys</option>
+            {keys.map((key) => <option key={key.id} value={key.id}>{key.name}</option>)}
+          </select>
           <select value={filters.status} onChange={(event) => updateFilter("status", event.target.value)} className="h-10 rounded-lg border border-border bg-surface px-3 text-sm text-text-main">
             <option value="">All statuses</option>
             <option value="pending">Live</option><option value="success">Success</option>

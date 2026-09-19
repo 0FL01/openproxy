@@ -53,10 +53,31 @@ async fn request_logs_return_only_structured_metadata() {
                     }),
                 },
             )
+            .and_then(|_| {
+                request_repo::insert(
+                    conn,
+                    &NewRequestDetail {
+                        id: "request-2",
+                        timestamp: "2026-09-15T11:00:00Z",
+                        provider: Some("openai"),
+                        model: Some("gpt-5"),
+                        connection_id: Some("private-connection"),
+                        status: "error",
+                        api_key_id: Some("other-key-id"),
+                        api_key_name: Some("Other"),
+                        correlation_id: Some("private-correlation"),
+                        data: &json!({
+                            "route": "work",
+                            "statusCode": 500,
+                            "durationMs": 42
+                        }),
+                    },
+                )
+            })
         })
         .unwrap();
 
-    let response = openproxy::build_app(AppState::new(db))
+    let response = openproxy::build_app(AppState::new(db.clone()))
         .oneshot(
             Request::builder()
                 .method("GET")
@@ -82,4 +103,24 @@ async fn request_logs_return_only_structured_metadata() {
     assert!(!serialized.contains(TEST_KEY));
     assert!(!serialized.contains("secret"));
     assert!(!serialized.contains("private"));
+
+    let response = openproxy::build_app(AppState::new(db))
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/request-logs?page=1&pageSize=20&apiKeyId=consumer-key-id")
+                .header("authorization", format!("Bearer {TEST_KEY}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(payload["pagination"]["totalItems"], 1);
+    assert_eq!(payload["requests"][0]["requestId"], "request-1");
 }
