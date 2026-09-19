@@ -5,6 +5,7 @@
 //! provider response.
 
 use crate::core::config::error_config::{default_error_message, error_type_for};
+use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 
 /// Build the OpenAI-shaped error body for a given HTTP status.
@@ -292,6 +293,114 @@ fn strip_html_tags(input: &str) -> String {
     out
 }
 
+/// Marker fragment identifying a reset-timer suffix already appended to an
+/// error message. ASCII-only on purpose: suffixed messages are rendered
+/// verbatim by external TUIs.
+const RESET_SUFFIX_MARKER: &str = "(resets in ";
+
+/// Display-timer cap: a reset further out than this renders no suffix
+/// (garbage guard, not a quota statement).
+const MAX_RESET_SUFFIX_SECS: i64 = 30 * 24 * 3600;
+
+/// Format a provider-declared quota-reset instant as a concise relative
+/// suffix, e.g. `(resets in 45s)`, `(resets in 2h 14m)`, `(resets in 3d 4h)`.
+/// Returns `None` for past/current instants and absurdly far ones.
+pub fn format_reset_suffix(now: DateTime<Utc>, resets_at: DateTime<Utc>) -> Option<String> {
+    let secs = (resets_at - now).num_seconds();
+    if secs <= 0 || secs > MAX_RESET_SUFFIX_SECS {
+        return None;
+    }
+    let span = if secs < 90 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 48 * 3600 {
+        let hours = secs / 3600;
+        let mins = (secs % 3600) / 60;
+        if mins == 0 {
+            format!("{hours}h")
+        } else {
+            format!("{hours}h {mins}m")
+        }
+    } else {
+        let days = secs / 86400;
+        let hours = (secs % 86400) / 3600;
+        if hours == 0 {
+            format!("{days}d")
+        } else {
+            format!("{days}d {hours}h")
+        }
+    };
+    Some(format!("{RESET_SUFFIX_MARKER}{span})"))
+}
+
+/// Resolve a Codex-style reset signal under an `error` object to an absolute
+/// instant: `resets_at` (unix seconds; millisecond magnitudes tolerated) or,
+/// failing that, `now + resets_in_seconds`. Past instants yield `None`.
+fn codex_resets_at(error: &Value, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    if let Some(resets_at) = error.get("resets_at").and_then(Value::as_f64) {
+        // Tolerate millisecond epochs from sloppy upstreams.
+        let secs = if resets_at > 1e12 {
+            resets_at / 1000.0
+        } else {
+            resets_at
+        };
+        let resets_at = DateTime::from_timestamp(secs as i64, 0)?;
+        return (resets_at > now).then_some(resets_at);
+    }
+    let in_secs = error.get("resets_in_seconds")?.as_f64()?;
+    if !in_secs.is_finite() || in_secs <= 0.0 {
+        return None;
+    }
+    now.checked_add_signed(chrono::Duration::seconds(in_secs as i64))
+        .filter(|instant| *instant > now)
+}
+
+/// Join the `data:` payload lines of a single SSE event frame, mirroring the
+/// Codex first-event preflight framing.
+fn sse_data_payload(text: &str) -> Option<String> {
+    let mut data = String::new();
+    for line in text.lines() {
+        if let Some(value) = line.strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(value.trim_start());
+        }
+    }
+    if data.is_empty() {
+        None
+    } else {
+        Some(data)
+    }
+}
+
+/// Append a reset-timer suffix to `error.message` of a JSON upstream error
+/// body carrying a Codex-style reset signal (`error.resets_at` unix seconds
+/// or `error.resets_in_seconds`). Accepts SSE-wrapped bodies: Codex
+/// synthesizes 429s with the raw `event:`/`data:` framing intact.
+///
+/// Returns the rewritten body, or `None` when there is no usable reset
+/// signal (unknown shape, non-string message, past instant, already
+/// suffixed). Display-only: status, error type/code and all other fields
+/// stay semantically identical.
+pub fn maybe_add_reset_suffix(body: &[u8], now: DateTime<Utc>) -> Option<Vec<u8>> {
+    let text = std::str::from_utf8(body).ok()?;
+    let mut value: Value = serde_json::from_str(text)
+        .ok()
+        .or_else(|| sse_data_payload(text).and_then(|data| serde_json::from_str(&data).ok()))?;
+    let error = value.get_mut("error")?;
+    let message = error.get("message")?.as_str()?;
+    if message.contains(RESET_SUFFIX_MARKER) {
+        return None;
+    }
+    let resets_at = codex_resets_at(error, now)?;
+    let suffix = format_reset_suffix(now, resets_at)?;
+    let suffixed = format!("{message} {suffix}");
+    *error.get_mut("message")? = Value::String(suffixed);
+    serde_json::to_vec(&value).ok()
+}
+
 /// Parse an upstream provider error body into [`UpstreamError`]. Walks the
 /// usual `{error: {message: ...}}` shape, then `{message}`, then `{error}`,
 /// then falls back to the raw body string.
@@ -443,6 +552,77 @@ mod tests {
                 || msg.to_ascii_lowercase().contains("upstream"),
             "got: {msg}"
         );
+    }
+
+    #[test]
+    fn reset_suffix_formats_relative_durations() {
+        use chrono::Duration;
+        let now = Utc::now();
+        let case = |secs: i64| format_reset_suffix(now, now + Duration::seconds(secs)).unwrap();
+        assert_eq!(case(45), "(resets in 45s)");
+        assert_eq!(case(100), "(resets in 1m)");
+        assert_eq!(case(2 * 3600 + 14 * 60), "(resets in 2h 14m)");
+        assert_eq!(case(2 * 3600), "(resets in 2h)");
+        assert_eq!(case(3 * 86400 + 4 * 3600), "(resets in 3d 4h)");
+        assert!(format_reset_suffix(now, now).is_none());
+        assert!(format_reset_suffix(now, now - Duration::seconds(1)).is_none());
+        assert!(format_reset_suffix(now, now + Duration::days(31)).is_none());
+    }
+
+    #[test]
+    fn reset_suffix_rewrites_codex_bodies_only() {
+        use chrono::Duration;
+        // Whole-second clock: timestamp() truncation must not flip minutes.
+        let now =
+            DateTime::from_timestamp(Utc::now().timestamp(), 0).expect("valid test timestamp");
+        let resets_at = (now + Duration::seconds(2 * 3600 + 14 * 60)).timestamp();
+
+        // Plain Codex JSON error.
+        let body = format!(
+            r#"{{"error":{{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_at":{resets_at}}}}}"#
+        );
+        let out = maybe_add_reset_suffix(body.as_bytes(), now).expect("suffix applies");
+        let val: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(
+            val["error"]["message"],
+            "The usage limit has been reached (resets in 2h 14m)"
+        );
+        assert_eq!(val["error"]["type"], "usage_limit_reached");
+
+        // SSE-wrapped Codex 429 (synthetic preflight body).
+        let sse = format!("event: error\ndata: {body}\n\n");
+        let out = maybe_add_reset_suffix(sse.as_bytes(), now).expect("SSE unwrap applies");
+        let val: Value = serde_json::from_slice(&out).unwrap();
+        assert!(val["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("(resets in 2h 14m)"));
+
+        // resets_in_seconds fallback.
+        let body = br#"{"error":{"type":"usage_limit_reached","message":"Slow down","resets_in_seconds":100}}"#;
+        let out = maybe_add_reset_suffix(body, now).expect("resets_in_seconds applies");
+        let val: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(val["error"]["message"], "Slow down (resets in 1m)");
+
+        // No signal / past / already suffixed / non-JSON: untouched.
+        assert!(maybe_add_reset_suffix(br#"{"error":{"message":"Slow down"}}"#, now).is_none());
+        let past = (now - Duration::seconds(10)).timestamp();
+        assert!(maybe_add_reset_suffix(
+            format!(r#"{{"error":{{"message":"Slow down","resets_at":{past}}}}}"#).as_bytes(),
+            now
+        )
+        .is_none());
+        assert!(maybe_add_reset_suffix(
+            b"{\"error\":{\"message\":\"Slow down (resets in 1m)\",\"resets_at\":4100000000}}",
+            now
+        )
+        .is_none());
+        assert!(maybe_add_reset_suffix(b"<html>nope</html>", now).is_none());
+        assert!(maybe_add_reset_suffix(
+            br#"{"error":{"message":{"nested":true},"resets_at":4100000000}}"#,
+            now
+        )
+        .is_none());
     }
 
     #[test]

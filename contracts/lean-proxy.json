@@ -202,6 +202,7 @@
     "cross_request_cooldown_routing": false,
     "retries_after_downstream_commitment": false,
     "raw_error_status_body_and_retry_after_preserved": true,
+    "error_message_reset_suffix_429_carve_out": "on_429_with_provider_declared_reset_instant_only",
     "distinct_configured_url_fallback_preserved": true,
     "pooled_transport_reuse_preserved": true,
     "transitional_401_403_credential_recovery": "replaced_by_C13_request_scoped_planner"

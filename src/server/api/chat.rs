@@ -3501,6 +3501,18 @@ fn attempt_error_response(error: ProviderAttemptError) -> Response {
     // of constructing a new error body.
     if let Some(body_bytes) = error.upstream_body {
         let status_code = StatusCode::from_u16(error.status).unwrap_or(StatusCode::BAD_GATEWAY);
+        // Usage-limit reset timer (429-only carve-out, see C13): when the
+        // upstream error declares a reset instant, append "(resets in …)" to
+        // error.message so clients rendering the message verbatim show the
+        // timer. Status, error type/code and the Retry-After synthesis below
+        // are untouched; Retry-After stays driven solely by retry_after,
+        // never by the display instant.
+        let body_bytes = if error.status == 429 {
+            crate::core::utils::error::maybe_add_reset_suffix(&body_bytes, Utc::now())
+                .unwrap_or(body_bytes)
+        } else {
+            body_bytes
+        };
         let mut response = (status_code, Body::from(body_bytes)).into_response();
         if let Some(retry_after) = error.retry_after {
             let seconds = (retry_after - Utc::now()).num_seconds().max(1).to_string();
@@ -3618,17 +3630,18 @@ mod tests {
         response::Response,
     };
     use bytes::Bytes;
-    use chrono::{Duration as ChronoDuration, Utc};
+    use chrono::{DateTime, Duration as ChronoDuration, Utc};
     use http_body_util::BodyExt;
     use serde_json::{json, Value};
 
     use super::{
-        build_dashboard_sse_response, build_proxied_response, codex_models_support_search,
-        codex_web_search_context_size, codex_web_search_is_injected,
+        attempt_error_response, build_dashboard_sse_response, build_proxied_response,
+        codex_models_support_search, codex_web_search_context_size, codex_web_search_is_injected,
         mark_codex_web_search_injected, requests_codex_web_search, select_connection,
         select_connection_with_supporters, should_prefetch_message_images, CodexWebSearchInjected,
         StreamDispatch,
     };
+    use crate::core::account_fallback::ProviderAttemptError;
     use crate::core::chat::RequestPlan;
     use crate::core::translator::registry::Format;
     use crate::core::translator::response_transform::OpenAiTransformer;
@@ -3970,6 +3983,82 @@ mod tests {
             selected.is_none(),
             "should return None when no connections exist"
         );
+    }
+
+    #[tokio::test]
+    async fn attempt_error_response_appends_reset_timer_on_429() {
+        async fn body_text(response: Response) -> (StatusCode, Value, bool) {
+            let status = response.status();
+            let has_retry_after = response.headers().contains_key("retry-after");
+            let collected = response
+                .into_body()
+                .collect()
+                .await
+                .expect("error body should collect");
+            let raw = collected.to_bytes();
+            let parsed: Value = serde_json::from_slice(&raw).expect("suffixed body stays JSON");
+            (status, parsed, has_retry_after)
+        }
+
+        fn attempt(status: u16, body: &[u8]) -> ProviderAttemptError {
+            ProviderAttemptError {
+                status,
+                message: "upstream failure".to_string(),
+                retry_after: None,
+                upstream_body: Some(body.to_vec()),
+            }
+        }
+
+        let now =
+            DateTime::from_timestamp(Utc::now().timestamp(), 0).expect("valid test timestamp");
+        // Mid-minute reset: renderer-side clock truncation must not flip minutes.
+        let resets_at = (now + ChronoDuration::seconds(2 * 3600 + 14 * 60 + 30)).timestamp();
+        let codex_body = format!(
+            r#"{{"error":{{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_at":{resets_at}}}}}"#
+        );
+
+        // Codex JSON 429: message gains the timer, type/code/status kept, no Retry-After.
+        let (status, parsed, has_retry_after) =
+            body_text(attempt_error_response(attempt(429, codex_body.as_bytes()))).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            parsed["error"]["message"],
+            "The usage limit has been reached (resets in 2h 14m)"
+        );
+        assert_eq!(parsed["error"]["type"], "usage_limit_reached");
+        assert!(
+            !has_retry_after,
+            "display reset must not synthesize Retry-After"
+        );
+
+        // SSE-wrapped Codex 429 (synthetic preflight body): same suffix.
+        let sse_body = format!("event: error\ndata: {codex_body}\n\n");
+        let (_, parsed, _) =
+            body_text(attempt_error_response(attempt(429, sse_body.as_bytes()))).await;
+        assert!(parsed["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("(resets in 2h 14m)"));
+
+        // Non-429 with a reset signal: untouched.
+        let (status, parsed, _) =
+            body_text(attempt_error_response(attempt(500, codex_body.as_bytes()))).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            parsed["error"]["message"],
+            "The usage limit has been reached"
+        );
+
+        // 429 without a reset signal: byte-identical passthrough.
+        let plain = br#"{"error":{"type":"rate_limit_exceeded","message":"Slow down"}}"#;
+        let response = attempt_error_response(attempt(429, plain));
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let collected = response
+            .into_body()
+            .collect()
+            .await
+            .expect("error body should collect");
+        assert_eq!(collected.to_bytes().as_ref(), plain);
     }
 
     #[tokio::test]
