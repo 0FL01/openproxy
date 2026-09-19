@@ -1123,6 +1123,7 @@ async fn forward_with_provider_fallback(
                             crate::core::executor::CodexExecutorError::ImagePrefetch(error) => {
                                 error.http_status()
                             }
+                            crate::core::executor::CodexExecutorError::UnsupportedFormat(_) => 400,
                             _ => 500,
                         };
                         ProviderAttemptError {

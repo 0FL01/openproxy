@@ -616,6 +616,19 @@ impl CodexExecutor {
             .or_else(|| body.get("reasoning_effort").and_then(Value::as_str))
             .or(model_effort);
 
+        // Swarm-only `ultra` is not supported by the plain proxy router.
+        if effort.is_some_and(|value| value.trim().eq_ignore_ascii_case("ultra")) {
+            return Err(CodexExecutorError::UnsupportedFormat(
+                "reasoning effort 'ultra' is not supported for codex".to_string(),
+            ));
+        }
+        let model_lower = actual_model.trim().to_lowercase();
+        if model_lower.ends_with("-ultra") || model_lower.contains("(ultra)") {
+            return Err(CodexExecutorError::UnsupportedFormat(
+                "reasoning effort 'ultra' is not supported for codex".to_string(),
+            ));
+        }
+
         let mut request_body = json!({
             "model": model_id,
             "input": input_items,
@@ -1449,6 +1462,30 @@ data: {"type":"response.output_text.delta","delta":"server_is_overloaded"}
             out.get("include").is_none(),
             "no include when effort is none"
         );
+    }
+
+    #[test]
+    fn test_codex_rejects_swarm_only_ultra_effort() {
+        let executor = CodexExecutor::new(Arc::new(ClientPool::new()), None).unwrap();
+        let body = json!({
+            "messages": [{ "role": "user", "content": "hi" }],
+            "reasoning": { "effort": "ultra" },
+            "model": "codex/o4-mini"
+        });
+
+        assert!(matches!(
+            executor.transform_request_body(&body, "o4-mini", false, None),
+            Err(CodexExecutorError::UnsupportedFormat(_))
+        ));
+
+        let body = json!({
+            "messages": [{ "role": "user", "content": "hi" }],
+            "model": "codex/o4-mini"
+        });
+        assert!(matches!(
+            executor.transform_request_body(&body, "o4-mini-ultra", false, None),
+            Err(CodexExecutorError::UnsupportedFormat(_))
+        ));
     }
 
     #[test]

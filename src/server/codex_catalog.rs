@@ -668,8 +668,15 @@ fn parse_codex_models(payload: Value) -> Result<Vec<CodexModelMetadata>, String>
             .map(|id| id.trim().to_string())
             .filter(|id| !id.is_empty());
         let Some(id) = id else { continue };
+        // Swarm-only `ultra` effort is dropped for the plain proxy router.
+        let reasoning_efforts: Vec<String> = model
+            .supported_reasoning_levels
+            .into_iter()
+            .map(|level| level.effort.trim().to_string())
+            .filter(|effort| !effort.is_empty() && effort != "ultra")
+            .collect();
         let mut capabilities = vec!["tools".to_string()];
-        if !model.supported_reasoning_levels.is_empty() {
+        if !reasoning_efforts.is_empty() {
             capabilities.push("reasoning".to_string());
         }
         if model.input_modalities.iter().any(|value| value == "image") {
@@ -678,12 +685,6 @@ fn parse_codex_models(payload: Value) -> Result<Vec<CodexModelMetadata>, String>
         if model.supports_search_tool {
             capabilities.push("search".to_string());
         }
-        let reasoning_efforts = model
-            .supported_reasoning_levels
-            .into_iter()
-            .map(|level| level.effort)
-            .filter(|effort| !effort.trim().is_empty())
-            .collect();
         let name = model
             .display_name
             .map(|name| name.trim().to_string())
@@ -752,6 +753,26 @@ mod tests {
         let output = models[0].catalog_json();
         assert!(output.get("base_instructions").is_none());
         assert_eq!(output["targetFormat"], "openai-responses");
+    }
+
+    #[test]
+    fn parser_drops_swarm_only_ultra_effort() {
+        let models = parse_codex_models(json!({"models": [
+            {"slug":"gpt-mixed","supported_reasoning_levels":[{"effort":"low"},{"effort":"ultra"},{"effort":"high"}]},
+            {"slug":"gpt-ultra-only","supported_reasoning_levels":[{"effort":"ultra"}]},
+        ]}))
+        .unwrap();
+
+        let mixed = models.iter().find(|model| model.id == "gpt-mixed").unwrap();
+        assert_eq!(mixed.reasoning_efforts, ["low", "high"]);
+        assert!(mixed.capabilities.contains(&"reasoning".to_string()));
+
+        let ultra_only = models
+            .iter()
+            .find(|model| model.id == "gpt-ultra-only")
+            .unwrap();
+        assert!(ultra_only.reasoning_efforts.is_empty());
+        assert!(!ultra_only.capabilities.contains(&"reasoning".to_string()));
     }
 
     #[test]
