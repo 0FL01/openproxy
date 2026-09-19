@@ -300,7 +300,6 @@ pub(super) fn supports_models_discovery(provider: &str) -> bool {
             "claude"
                 | "anthropic"
                 | "gemini"
-                | "qwen"
                 | "codex"
                 | "glm"
                 | "antigravity"
@@ -406,16 +405,6 @@ async fn fetch_provider_models_response(
             let token = primary_token(connection)
                 .ok_or_else(|| RouteError::unauthorized("No valid token found"))?;
             fetch_gemini_api_models(connection, &token).await
-        }
-        "qwen" => {
-            let token = primary_token(connection)
-                .ok_or_else(|| RouteError::unauthorized("No valid token found"))?;
-            fetch_openai_style_models_with_bearer(
-                connection,
-                &resolve_qwen_models_url(connection),
-                &token,
-            )
-            .await
         }
         "glm" => fetch_glm_models(connection).await,
         "codex" => {
@@ -1319,19 +1308,6 @@ fn normalize_anthropic_models_base_url(base_url: &str) -> String {
     format!("{normalized}/models")
 }
 
-fn resolve_qwen_models_url(connection: &ProviderConnection) -> String {
-    let fallback = "https://portal.qwen.ai/v1/models";
-    let Some(raw) = provider_specific_string(connection, "resourceUrl") else {
-        return fallback.to_string();
-    };
-
-    if raw.starts_with("http://") || raw.starts_with("https://") {
-        return format!("{}/models", raw.trim_end_matches('/'));
-    }
-
-    format!("https://{}/v1/models", raw.trim_end_matches('/'))
-}
-
 fn response_with_models(
     connection: &ProviderConnection,
     models: Vec<ProviderModel>,
@@ -1746,28 +1722,6 @@ mod tests {
         assert_eq!(
             crate::core::executor::provider_config_base_url("openrouter").as_deref(),
             Some("https://openrouter.ai/api/v1/chat/completions")
-        );
-    }
-
-    #[test]
-    fn resolve_qwen_models_url_uses_resource_url_variants() {
-        let mut connection = connection("qwen");
-        connection.provider_specific_data.insert(
-            "resourceUrl".to_string(),
-            Value::String("tenant.qwen.ai".to_string()),
-        );
-        assert_eq!(
-            resolve_qwen_models_url(&connection),
-            "https://tenant.qwen.ai/v1/models"
-        );
-
-        connection.provider_specific_data.insert(
-            "resourceUrl".to_string(),
-            Value::String("https://tenant.qwen.ai/base".to_string()),
-        );
-        assert_eq!(
-            resolve_qwen_models_url(&connection),
-            "https://tenant.qwen.ai/base/models"
         );
     }
 

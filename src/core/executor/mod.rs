@@ -16,7 +16,6 @@ mod mimo_free;
 mod ollama;
 mod opencode;
 mod provider;
-mod qwen;
 mod strip_unsupported;
 mod trae;
 mod vertex;
@@ -79,7 +78,6 @@ pub use provider::{
     LogEntry, LogLevel, ProviderExecutionRequest, ProviderExecutionResponse, ProviderExecutor,
     ProviderExecutorConfig, ProviderExecutorError, ProviderFormat, ProxyOptions, UnifiedExecutor,
 };
-pub use qwen::{QwenExecutionRequest, QwenExecutor, QwenExecutorError, QwenExecutorResponse};
 pub use trae::{TraeExecutionRequest, TraeExecutor, TraeExecutorError, TraeExecutorResponse};
 pub use vertex::{
     VertexExecutionRequest, VertexExecutor, VertexExecutorError, VertexExecutorResponse,

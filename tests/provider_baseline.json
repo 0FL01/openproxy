@@ -1,23 +1,5 @@
 [
   {
-    "id": "qwen",
-    "alias": "qw",
-    "serviceKinds": [
-      "llm",
-      "tts",
-      "stt"
-    ],
-    "models": [
-      "coder-model",
-      "qwen3-coder-flash",
-      "qwen3-coder-next",
-      "qwen3-coder-plus",
-      "vision-model"
-    ],
-    "hasSearch": false,
-    "hasFetch": false
-  },
-  {
     "id": "opencode",
     "alias": "oc",
     "serviceKinds": [

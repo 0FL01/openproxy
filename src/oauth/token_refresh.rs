@@ -517,7 +517,6 @@ pub async fn refresh_provider_connection_credentials(
 pub const REFRESH_LEAD_CODEX_MS: u64 = 5 * 24 * 60 * 60 * 1000; // 5 days
 pub const REFRESH_LEAD_OPENAI_MS: u64 = 5 * 24 * 60 * 60 * 1000; // 5 days
 pub const REFRESH_LEAD_CLAUDE_MS: u64 = 4 * 60 * 60 * 1000; // 4 hours
-pub const REFRESH_LEAD_QWEN_MS: u64 = 20 * 60 * 1000; // 20 minutes
 pub const REFRESH_LEAD_KIMI_CODING_MS: u64 = 5 * 60 * 1000; // 5 minutes
 pub const REFRESH_LEAD_ANTIGRAVITY_MS: u64 = 5 * 60 * 1000; // 5 minutes
 pub const REFRESH_LEAD_XAI_MS: u64 = 5 * 60 * 1000; // 5 minutes
@@ -536,9 +535,6 @@ const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 
 const ANTIGRAVITY_CLIENT_ID: &str =
     "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
-
-const QWEN_CLIENT_ID: &str = "f0304373b74a44d2b584a3fb70ca9e56";
-const QWEN_TOKEN_URL: &str = "https://chat.qwen.ai/api/v1/oauth2/token";
 
 const XAI_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
 
@@ -676,19 +672,6 @@ pub async fn refresh_google_token(
             ("refresh_token", refresh_token),
             ("client_id", client_id),
             ("client_secret", client_secret),
-        ],
-    )
-    .await
-}
-
-/// Refresh a Qwen access token.
-pub async fn refresh_qwen_token(refresh_token: &str) -> Result<RefreshResult, String> {
-    refresh_form_token(
-        QWEN_TOKEN_URL,
-        vec![
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token),
-            ("client_id", QWEN_CLIENT_ID),
         ],
     )
     .await
@@ -1167,7 +1150,6 @@ pub async fn dispatch_oauth_refresh(
             })
             .await
         }
-        "qwen" => refresh_with_retry(|| refresh_qwen_token(refresh_token)).await,
         "xai" => refresh_with_retry(|| refresh_xai_token(refresh_token)).await,
         "kimi" | "kimi-coding" => {
             let device_id = provider_specific_data

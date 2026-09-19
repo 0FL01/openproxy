@@ -3,7 +3,6 @@
   "claude": "cc",
   "gemini": "gemini",
   "codex": "cx",
-  "qwen": "qw",
   "antigravity": "ag",
   "openrouter": "openrouter",
   "openai": "openai",
@@ -176,36 +175,6 @@
      }
     ]
    },
-  {
-   "alias": "qw",
-   "models": [
-    {
-     "id": "qwen3-coder-plus",
-     "name": "Qwen3 Coder Plus",
-     "kind": "llm"
-    },
-    {
-     "id": "qwen3-coder-flash",
-     "name": "Qwen3 Coder Flash",
-     "kind": "llm"
-    },
-    {
-     "id": "vision-model",
-     "name": "Qwen3 Vision Model",
-     "kind": "llm"
-    },
-    {
-     "id": "coder-model",
-     "name": "Qwen3.6 Coder Model",
-     "kind": "llm"
-    },
-    {
-     "id": "qwen3-coder-next",
-     "name": "Qwen3 Coder Next",
-     "kind": "llm"
-    }
-   ]
-  },
   {
    "alias": "if",
    "models": [
@@ -4263,21 +4232,6 @@
   }
  ],
  "providers": [
-  {
-   "id": "qwen",
-   "alias": "qw",
-   "serviceKinds": [
-    "llm",
-    "tts",
-    "stt"
-   ],
-   "ttsModels": [
-    "qwen3-tts"
-   ],
-   "embeddingModels": [],
-   "hasSearch": false,
-   "hasFetch": false
-  },
   {
    "id": "opencode",
    "alias": "oc",

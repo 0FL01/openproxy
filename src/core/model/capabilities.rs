@@ -263,14 +263,6 @@ static MODEL_CAPABILITIES: LazyLock<HashMap<&'static str, Value>> = LazyLock::ne
             serde_json::json!({ "vision": true, "reasoning": true, "thinkingFormat": "zai", "contextWindow": 128000 }),
         ),
         (
-            "vision-model",
-            serde_json::json!({ "vision": true, "reasoning": true, "thinkingFormat": "qwen", "contextWindow": 1000000 }),
-        ),
-        (
-            "coder-model",
-            serde_json::json!({ "reasoning": true, "thinkingFormat": "qwen", "contextWindow": 1000000 }),
-        ),
-        (
             "kimi-k3",
             serde_json::json!({ "vision": true, "videoInput": true, "reasoning": true, "thinkingFormat": "kimi", "thinkingCanDisable": false, "contextWindow": 1048576, "maxOutput": 131072 }),
         ),

@@ -33,8 +33,6 @@ const CODEX_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const ANTIGRAVITY_CLIENT_ID: &str =
     "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
 const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
-const QWEN_CLIENT_ID: &str = "f0304373b74a44d2b584a3fb70ca9e56";
-const QWEN_TOKEN_URL: &str = "https://chat.qwen.ai/api/v1/oauth2/token";
 const CLINE_REFRESH_URL: &str = "https://api.cline.bot/api/v1/auth/refresh";
 const CLINE_USERS_ME_URL: &str = "https://api.cline.bot/api/v1/users/me";
 
@@ -1117,18 +1115,6 @@ async fn refresh_oauth_token(
             )
             .await
         }
-        "qwen" => {
-            refresh_form_token(
-                QWEN_TOKEN_URL,
-                vec![
-                    ("grant_type".to_string(), "refresh_token".to_string()),
-                    ("refresh_token".to_string(), refresh_token.to_string()),
-                    ("client_id".to_string(), QWEN_CLIENT_ID.to_string()),
-                ],
-                effective_proxy,
-            )
-            .await
-        }
         "cline" => refresh_cline_token(refresh_token, effective_proxy).await,
         _ => Err("Provider refresh not supported".to_string()),
     }
@@ -1621,14 +1607,11 @@ fn is_token_expired(connection: &ProviderConnection) -> bool {
 }
 
 fn is_refreshable_provider(provider: &str) -> bool {
-    matches!(
-        provider,
-        "claude" | "codex" | "antigravity" | "qwen" | "cline"
-    )
+    matches!(provider, "claude" | "codex" | "antigravity" | "cline")
 }
 
 fn is_check_expiry_provider(provider: &str) -> bool {
-    matches!(provider, "claude" | "qwen" | "kimi-coding" | "kimi")
+    matches!(provider, "claude" | "kimi-coding" | "kimi")
 }
 
 fn cline_headers(token: &str, extra_headers: Vec<(String, String)>) -> Vec<(String, String)> {

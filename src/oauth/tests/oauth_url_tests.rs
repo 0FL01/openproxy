@@ -103,7 +103,6 @@ const ALL_PROVIDERS: &[&str] = &[
     "kimi-coding",
     "kilocode",
     "codebuddy",
-    "qwen",
     "cline",
 ];
 

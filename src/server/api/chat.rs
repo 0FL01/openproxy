@@ -996,8 +996,7 @@ async fn forward_with_provider_fallback(
             DefaultExecutor, DevinCliExecutor, DevinExecutionRequest, GithubExecutionRequest,
             GithubExecutor, KimchiExecutor, OpenCodeExecutionRequest, OpenCodeExecutor,
             OpenCodeTier, ProviderExecutionRequest, ProviderExecutionResponse, ProviderExecutor,
-            QwenExecutionRequest, QwenExecutor, TraeExecutionRequest, TraeExecutor,
-            VertexExecutionRequest, VertexExecutor,
+            TraeExecutionRequest, TraeExecutor, VertexExecutionRequest, VertexExecutor,
         };
 
         let is_codex_model = provider == "codex";
@@ -1118,35 +1117,6 @@ async fn forward_with_provider_fallback(
                     .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("Azure execution failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                Ok(ProviderExecutionResponse {
-                    response: result.response,
-                    url: result.url,
-                    headers: result.headers,
-                    transport: result.transport,
-                })
-            } else if provider == "qwen" {
-                let executor = QwenExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("Qwen executor creation failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                let result = executor
-                    .execute_request(QwenExecutionRequest {
-                        model: model.to_string(),
-                        body: request_body.clone(),
-                        stream,
-                        credentials: connection.clone(),
-                        proxy,
-                    })
-                    .await
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("Qwen execution failed: {:?}", e),
                         retry_after: None,
                         upstream_body: None,
                     })?;

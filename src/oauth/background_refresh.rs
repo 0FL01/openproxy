@@ -32,7 +32,6 @@ fn provider_lead_ms(provider: &str) -> Option<u64> {
         "codex" | "opencode" | "cx" => tr::REFRESH_LEAD_CODEX_MS,
         "openai" => tr::REFRESH_LEAD_OPENAI_MS,
         "claude" | "anthropic" => tr::REFRESH_LEAD_CLAUDE_MS,
-        "qwen" => tr::REFRESH_LEAD_QWEN_MS,
         "kimi-coding" | "kimi" => tr::REFRESH_LEAD_KIMI_CODING_MS,
         "antigravity" | "gemini" => tr::REFRESH_LEAD_ANTIGRAVITY_MS,
         "xai" => tr::REFRESH_LEAD_XAI_MS,

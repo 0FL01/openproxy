@@ -187,7 +187,6 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       // Must match backend device-code providers (oauth.rs is_device_code_provider)
       const deviceCodeProviders = [
         "github",
-        "qwen",
         "kimi",
         "kimi-coding",
         "kilocode",

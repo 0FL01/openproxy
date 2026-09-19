@@ -9,7 +9,6 @@ import type {
 
 // Free Providers
 export const FREE_PROVIDERS: Record<string, Provider> = {
-  qwen: { id: "qwen", alias: "qw", name: "Qwen Code", icon: "psychology", color: "#10B981", deprecated: true, deprecationNotice: "Qwen OAuth free tier was discontinued by Alibaba on 2026-04-15. New connections will not work.", website: "https://chat.qwen.ai", notice: { signupUrl: "https://chat.qwen.ai" }, serviceKinds: ["llm"] },
   // gitlab: { id: "gitlab", alias: "gl", name: "GitLab Duo", icon: "code", color: "#FC6D26" },
   // codebuddy: { id: "codebuddy", alias: "cb", name: "CodeBuddy", icon: "smart_toy", color: "#006EFF" },
   "opencode-zen": { id: "opencode-zen", alias: "opencode-zen", name: "OpenCode Zen", icon: "terminal", color: "#E87040", textIcon: "OC", noAuth: true, passthroughModels: true },
@@ -495,7 +494,6 @@ export const SUPPORTS_MODELS_DISCOVERY: string[] = [
   "codex",
   "antigravity",
   "github",
-  "qwen",
   "alicode",
   "alicode-intl",
   "nanobanana",

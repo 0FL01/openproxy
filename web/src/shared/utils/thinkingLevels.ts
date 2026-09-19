@@ -104,8 +104,6 @@ const MODEL_CAPS: Record<string, Partial<ThinkingCaps>> = {
   "claude-sonnet-5-agentic": { reasoning: true, thinkingFormat: "claude-adaptive" },
   "claude-sonnet-5-thinking-agentic": { reasoning: true, thinkingFormat: "claude-adaptive" },
   "glm-4.6v": { reasoning: true, thinkingFormat: "zai" },
-  "vision-model": { reasoning: true, thinkingFormat: "qwen" },
-  "coder-model": { reasoning: true, thinkingFormat: "qwen" },
 };
 
 /** Provider-specific exact model overrides. */

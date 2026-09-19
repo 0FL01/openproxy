@@ -141,20 +141,6 @@ pub fn github() -> OAuthProviderConfig {
     }
 }
 
-/// Qwen — device-code flow (authorize_url is the device-code endpoint).
-pub fn qwen() -> OAuthProviderConfig {
-    OAuthProviderConfig {
-        id: "qwen",
-        client_id: "f0304373b74a44d2b584a3fb70ca9e56",
-        authorize_url: "https://chat.qwen.ai/api/v1/oauth2/device/code",
-        token_url: "https://chat.qwen.ai/api/v1/oauth2/token",
-        scopes: &["openid", "profile", "email", "model.completion"],
-        uses_pkce: false,
-        extra_params: &[],
-        refresh_lead_ms: 0,
-    }
-}
-
 /// Kimi Coding — device-code flow (dual-auth provider merged in 68566f5).
 pub fn kimi_coding() -> OAuthProviderConfig {
     OAuthProviderConfig {
@@ -441,7 +427,6 @@ pub fn get_config(provider: &str) -> Option<OAuthProviderConfig> {
         "claude" => Some(claude()),
         "codex" => Some(codex()),
         "github" => Some(github()),
-        "qwen" => Some(qwen()),
         "kimi" => Some(kimi()),
         "kimi-coding" => Some(kimi_coding()),
         "kilocode" => Some(kilocode()),

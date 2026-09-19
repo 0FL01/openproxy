@@ -553,13 +553,7 @@ fn is_pkce_provider(provider: &str) -> bool {
 fn is_device_code_provider(provider: &str) -> bool {
     matches!(
         provider,
-        "github"
-            | "kimi-coding"
-            | "kilocode"
-            | "codebuddy"
-            | "codebuddy-cn"
-            | "codebuddy-intl"
-            | "qwen"
+        "github" | "kimi-coding" | "kilocode" | "codebuddy" | "codebuddy-cn" | "codebuddy-intl"
     )
 }
 

@@ -45,12 +45,6 @@ fn test_refresh_lead_claude_is_4_hours() {
 }
 
 #[test]
-fn test_refresh_lead_qwen_is_20_minutes() {
-    let lead = crate::core::config::app_constants::refresh_lead("qwen");
-    assert_eq!(lead, Some(Duration::from_secs(20 * 60)));
-}
-
-#[test]
 fn test_refresh_lead_kimi_coding_is_5_minutes() {
     let lead = crate::core::config::app_constants::refresh_lead("kimi-coding");
     assert_eq!(lead, Some(Duration::from_secs(5 * 60)));
