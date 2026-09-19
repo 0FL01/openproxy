@@ -29,7 +29,7 @@ Fork: parity with other routers is not tracked. Use beads only for own product t
 
 ## Key References
 - `docs/ARCHITECTURE.md` — pipeline order, intentional behavior, executor dispatch
-- `src/server/api/codex_web_mcp.rs` — the single-tool MCP protocol/auth boundary; Codex routing remains in `chat.rs`
+- `src/server/api/codex_web_mcp.rs` — the single-tool MCP protocol/auth boundary; `src/server/codex_search.rs` owns standalone indexed-search account routing
 
 ## Dev Workflow — backend + dashboard rebuild
 

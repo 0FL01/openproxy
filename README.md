@@ -392,8 +392,9 @@ Health probe (no auth):
 GET /health   →   200 OK
 ```
 
-Codex hosted web search is available as one direct remote MCP server. It uses
-the same OpenProxy API key and exposes `codex_web_search` in OpenCode:
+Codex indexed web search is available as one direct remote MCP server. It uses
+the same OpenProxy API key, private configured Codex credentials upstream, and
+exposes `codex_web_search` in OpenCode:
 
 ```json
 {
@@ -404,14 +405,15 @@ the same OpenProxy API key and exposes `codex_web_search` in OpenCode:
       "enabled": true,
       "oauth": false,
       "headers": { "Authorization": "Bearer <api-key>" },
-      "timeout": 300000
+      "timeout": 30000
     }
   }
 }
 ```
 
 The tool accepts `query` and optional `response_length` (`short`, `medium`, or
-`long`). Direct Codex `web_search` tools on chat/Responses routes are rejected.
+`long`). It calls Codex's standalone search index, not a Responses generation
+model. Direct Codex `web_search` tools on chat/Responses routes are rejected.
 
 The dashboard at `/` is the same authenticated API surface in HTML form. Admin endpoints live under `/api/*` and use the dashboard session cookie.
 

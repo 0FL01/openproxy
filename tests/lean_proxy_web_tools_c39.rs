@@ -2,8 +2,9 @@
 //!
 //! `/v1/web/fetch` remains provider-routed extraction. `/v1/mcp` adds exactly
 //! one authenticated stateless Codex search tool. Neither owns tool loops,
-//! history/session stores, retry schedulers, or background tasks; external
-//! Codex native search is rejected before upstream.
+//! history/session stores or background tasks; external Codex native search
+//! is rejected before upstream. Search execution is isolated in one bounded
+//! provider-private standalone-index owner.
 
 use std::path::PathBuf;
 
@@ -141,6 +142,14 @@ fn tool_routes_keep_narrow_owners_and_no_loopback() {
     let mcp = read_src("server/api/codex_web_mcp.rs");
     assert!(!mcp.contains("CodexExecutor"));
     assert!(!mcp.contains("127.0.0.1"));
+    assert!(mcp.contains("run_codex_standalone_search"));
+    let search = read_src("server/codex_search.rs");
+    let executor = read_src("core/executor/codex_search.rs");
+    assert!(executor.contains("/backend-api/codex/alpha/search"));
+    assert!(executor.contains("\"model\": CODEX_SEARCH_MODEL"));
+    assert!(!search.contains("ForcedSseAccumulator"));
+    assert!(!search.contains("codex_models"));
+    assert!(!search.contains("/codex/responses"));
     let chat = read_src("server/api/chat.rs");
     assert!(chat.contains("codex_web_search_requires_mcp"));
 }

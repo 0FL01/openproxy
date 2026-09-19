@@ -989,7 +989,7 @@ async fn opencode_settings_post_patch_and_delete_match_openproxy_file_behavior()
     );
     assert_eq!(saved["mcp"]["codex_web"]["enabled"], true);
     assert_eq!(saved["mcp"]["codex_web"]["oauth"], false);
-    assert_eq!(saved["mcp"]["codex_web"]["timeout"], 300000);
+    assert_eq!(saved["mcp"]["codex_web"]["timeout"], 30000);
     assert_eq!(
         saved["mcp"]["codex_web"]["headers"]["Authorization"],
         "Bearer sk-openproxy"

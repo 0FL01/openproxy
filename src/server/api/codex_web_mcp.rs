@@ -12,15 +12,14 @@ use serde_json::{json, Value};
 
 use crate::core::translator::limits::MAX_STREAM_ACCUMULATED_BYTES;
 use crate::server::auth::require_api_key_with_reload;
+use crate::server::codex_search::run_codex_standalone_search;
 use crate::server::state::AppState;
 use crate::types::ApiKey;
-
-use super::chat::run_codex_web_search;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 const MCP_BODY_LIMIT_BYTES: usize = 64 * 1024;
 const MCP_QUERY_LIMIT_BYTES: usize = 8_000;
-const MCP_SEARCH_TIMEOUT: Duration = Duration::from_secs(240);
+const MCP_SEARCH_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub fn routes(state: AppState) -> Router<AppState> {
     Router::new()
@@ -102,7 +101,7 @@ async fn handle_mcp(
             json!({
                 "tools": [{
                     "name": "search",
-                    "description": "Search the live web with a configured Codex Luna account.",
+                    "description": "Search the live web through the Codex standalone indexed-search service.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -190,24 +189,21 @@ async fn tools_call(
         .get("response_length")
         .and_then(Value::as_str)
         .unwrap_or("medium");
-    let search_context_size = match search_context_size(response_length) {
-        Some(value) => value,
-        None => {
-            return Json(json_rpc_error(
-                id,
-                -32602,
-                "response_length must be short, medium, or long",
-            ))
-            .into_response()
-        }
-    };
+    if !matches!(response_length, "short" | "medium" | "long") {
+        return Json(json_rpc_error(
+            id,
+            -32602,
+            "response_length must be short, medium, or long",
+        ))
+        .into_response();
+    }
 
     let Some(_permit) = state.llm_admission.acquire_generation().await else {
         return super::admission::admission_rejection();
     };
     let result = match tokio::time::timeout(
         MCP_SEARCH_TIMEOUT,
-        run_codex_web_search(state, api_key, query, search_context_size),
+        run_codex_standalone_search(state, api_key, query, response_length),
     )
     .await
     {
@@ -215,7 +211,7 @@ async fn tools_call(
         Ok(Err(error)) => tool_error(&error.code, &error.message),
         Err(_) => tool_error(
             "codex_search_timeout",
-            "Codex web search exceeded the 240 second server deadline",
+            "Codex standalone search exceeded the 15 second server deadline",
         ),
     };
     let mut response = json_rpc_result(id, result);
@@ -231,15 +227,6 @@ async fn tools_call(
         );
     }
     Json(response).into_response()
-}
-
-fn search_context_size(response_length: &str) -> Option<&'static str> {
-    match response_length {
-        "short" => Some("low"),
-        "medium" => Some("medium"),
-        "long" => Some("high"),
-        _ => None,
-    }
 }
 
 fn tool_error(code: &str, message: &str) -> Value {
@@ -266,17 +253,4 @@ fn json_rpc_error(id: Value, code: i64, message: &str) -> Value {
 
 fn transport_error(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({"error": message}))).into_response()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::search_context_size;
-
-    #[test]
-    fn response_lengths_map_to_codex_search_context() {
-        assert_eq!(search_context_size("short"), Some("low"));
-        assert_eq!(search_context_size("medium"), Some("medium"));
-        assert_eq!(search_context_size("long"), Some("high"));
-        assert_eq!(search_context_size("low"), None);
-    }
 }

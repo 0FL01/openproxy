@@ -2,6 +2,7 @@ pub mod api;
 pub mod application_logs;
 pub mod auth;
 pub mod codex_catalog;
+pub(crate) mod codex_search;
 pub mod console_logs;
 pub mod dashboard;
 pub mod request_logger;

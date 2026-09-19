@@ -236,7 +236,7 @@ export default function OpenCodeToolCard({ tool, isExpanded, onToggle, baseUrl, 
             headers: {
               Authorization: `Bearer ${keyToUse}`,
             },
-            timeout: 300000,
+            timeout: 30000,
           },
         },
         model: `openproxy/${activeModelToShow}`,

@@ -200,7 +200,7 @@ async fn opencode_discovers_direct_remote_codex_web_tool() {
                     "enabled": true,
                     "oauth": false,
                     "headers": {"Authorization": format!("Bearer {KEY}")},
-                    "timeout": 300000
+                    "timeout": 30000
                 }
             }
         }))

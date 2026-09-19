@@ -14,9 +14,7 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 
 use crate::core::account_fallback::{GenerationAttemptBudget, ProviderAttemptError};
-use crate::core::chat::stream_to_json::{
-    ForcedSseAccumulator, ResponsesSearchError, ResponsesSearchOutput,
-};
+use crate::core::chat::stream_to_json::ForcedSseAccumulator;
 use crate::core::chat::RequestPlan;
 use crate::core::executor::{
     diagnostic_body_limit, read_upstream_body, read_upstream_diagnostic, success_body_limit,
@@ -110,17 +108,6 @@ pub(super) struct RoutedResponseFormats {
     pub native_passthrough: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum GenerationProvenance {
-    External,
-    InternalMcp,
-}
-
-enum GenerationResult {
-    Http(Response),
-    McpSearch(Result<ResponsesSearchOutput, ResponsesSearchError>),
-}
-
 fn mark_routed_response_formats(mut response: Response, plan: &RequestPlan) -> Response {
     response.extensions_mut().insert(RoutedResponseFormats {
         client: plan.source_format,
@@ -153,106 +140,6 @@ fn codex_web_search_requires_mcp_error() -> ProviderAttemptError {
             }
         }))
         .ok(),
-    }
-}
-
-fn codex_models_support_search(
-    models: &[crate::server::codex_catalog::CodexModelMetadata],
-    model: &str,
-) -> bool {
-    let model = model.strip_prefix("codex/").unwrap_or(model);
-    models.iter().any(|candidate| {
-        candidate.capabilities.iter().any(|value| value == "search")
-            && (candidate.id == model
-                || candidate.reasoning_efforts.iter().any(|effort| {
-                    model == format!("{}-{effort}", candidate.id)
-                        || model == format!("{}({effort})", candidate.id)
-                }))
-    })
-}
-
-fn select_search_luna_model(
-    models: &[crate::server::codex_catalog::CodexModelMetadata],
-    mut has_active_supporters: impl FnMut(&str) -> bool,
-) -> Option<String> {
-    let eligible = models
-        .iter()
-        .filter(|model| {
-            model.capabilities.iter().any(|value| value == "search")
-                && luna_version(&model.id).is_some()
-                && has_active_supporters(&model.id)
-        })
-        .collect::<Vec<_>>();
-    if eligible.iter().any(|model| model.id == "gpt-5.6-luna") {
-        return Some("gpt-5.6-luna".to_string());
-    }
-    eligible
-        .into_iter()
-        .max_by_key(|model| luna_version(&model.id).unwrap_or_default())
-        .map(|model| model.id.clone())
-}
-
-fn luna_version(model: &str) -> Option<Vec<u64>> {
-    let version = model.strip_prefix("gpt-")?.strip_suffix("-luna")?;
-    let parsed = version
-        .split('.')
-        .map(str::parse::<u64>)
-        .collect::<Result<Vec<_>, _>>()
-        .ok()?;
-    (!parsed.is_empty()).then_some(parsed)
-}
-
-pub(super) async fn run_codex_web_search(
-    state: &AppState,
-    api_key: &ApiKey,
-    query: &str,
-    search_context_size: &str,
-) -> Result<ResponsesSearchOutput, ResponsesSearchError> {
-    let snapshot = state.db.snapshot();
-    let inventory = state.codex_models.union_active(&snapshot);
-    let model = select_search_luna_model(&inventory.models, |model| {
-        !state.codex_models.cached_supporters(model, &snapshot).is_empty()
-    })
-    .ok_or_else(|| ResponsesSearchError {
-        code: "codex_search_luna_unavailable".to_string(),
-        message: "No active Codex account publishes a search-capable Luna model; refresh the Codex catalog or add a Luna-capable account".to_string(),
-    })?;
-    let body = json!({
-        "model": model,
-        "input": query,
-        "tools": [{
-            "type": "web_search",
-            "search_context_size": search_context_size
-        }],
-        "tool_choice": "required",
-        "stream": false
-    });
-    let mut plan = RequestPlan::new(Some("/v1/responses"), &body, "codex", &model);
-    apply_stream_plan(&mut plan, &body, Some("application/json"), None);
-    let log_context = RequestLogContext::new(state.db.clone(), api_key, "/v1/mcp#codex_web_search");
-    match execute_single_model(
-        state,
-        body,
-        &model,
-        Some(&api_key.key),
-        Some(&log_context),
-        Some("/v1/mcp"),
-        &plan,
-        None,
-        None,
-        GenerationProvenance::InternalMcp,
-    )
-    .await
-    {
-        Ok(GenerationResult::McpSearch(result)) => result,
-        Ok(GenerationResult::Http(_)) => Err(ResponsesSearchError {
-            code: "internal_generation_result".to_string(),
-            message: "Codex web search returned an unexpected response type".to_string(),
-        }),
-        Err(error) => Err(ResponsesSearchError {
-            code: "codex_search_failed".to_string(),
-            message: error.message,
-        }),
     }
 }
 
@@ -587,15 +474,10 @@ async fn chat_completions_impl(
         &plan,
         client_tool,
         Some(&headers_map),
-        GenerationProvenance::External,
     )
     .await
     {
-        Ok(GenerationResult::Http(response)) => response,
-        Ok(GenerationResult::McpSearch(_)) => json_error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Invalid generation result",
-        ),
+        Ok(response) => response,
         Err(error) => attempt_error_response(error),
     }
 }
@@ -750,8 +632,7 @@ async fn execute_single_model(
     base_plan: &RequestPlan,
     client_tool: Option<ClientTool>,
     client_headers: Option<&std::collections::HashMap<String, String>>,
-    provenance: GenerationProvenance,
-) -> Result<GenerationResult, ProviderAttemptError> {
+) -> Result<Response, ProviderAttemptError> {
     let snapshot = state.db.snapshot();
     let mut plan = base_plan.clone();
     if crate::core::model::models_dev::is_opencode_provider(&plan.provider) {
@@ -788,18 +669,8 @@ async fn execute_single_model(
         });
     }
 
-    let native_codex_search = plan.provider == "codex" && has_native_codex_web_search(&body);
-    match provenance {
-        GenerationProvenance::External if native_codex_search => {
-            return Err(codex_web_search_requires_mcp_error());
-        }
-        GenerationProvenance::InternalMcp if !native_codex_search || plan.provider != "codex" => {
-            return Err(ProviderAttemptError::new(
-                400,
-                "Internal MCP search must target Codex with one native web_search tool",
-            ));
-        }
-        _ => {}
+    if plan.provider == "codex" && has_native_codex_web_search(&body) {
+        return Err(codex_web_search_requires_mcp_error());
     }
 
     // Catalog stripList (image/audio) before modality strip — 9router translateRequest stripList
@@ -956,7 +827,6 @@ async fn execute_single_model(
         &plan,
         client_tool,
         client_headers,
-        provenance,
     )
     .await
 }
@@ -972,8 +842,7 @@ async fn forward_with_provider_fallback(
     plan: &RequestPlan,
     client_tool: Option<ClientTool>,
     client_headers: Option<&std::collections::HashMap<String, String>>,
-    provenance: GenerationProvenance,
-) -> Result<GenerationResult, ProviderAttemptError> {
+) -> Result<Response, ProviderAttemptError> {
     let mut excluded = HashSet::new();
     let mut last_error: Option<ProviderAttemptError> = None;
     let mut reloaded = false;
@@ -1067,34 +936,6 @@ async fn forward_with_provider_fallback(
             });
         };
 
-        if provenance == GenerationProvenance::InternalMcp && provider == "codex" {
-            match state
-                .codex_models
-                .published_for_connection(&snapshot, &connection)
-            {
-                Some(inventory) if codex_models_support_search(&inventory.models, model) => {}
-                Some(_) => {
-                    last_error = Some(ProviderAttemptError::new(
-                        400,
-                        format!(
-                            "Codex web search is not supported for model {model} on this account"
-                        ),
-                    ));
-                    excluded.insert(connection.id.clone());
-                    continue;
-                }
-                None => {
-                    last_error = Some(ProviderAttemptError::new(
-                        400,
-                        format!(
-                            "Unable to verify Codex web search support for {model} from the published catalog"
-                        ),
-                    ));
-                    excluded.insert(connection.id.clone());
-                    continue;
-                }
-            }
-        }
         // 9router resolveTransport: pin multi-endpoint base URL for this request
         if let Some(ref base) = plan.transport_base_url {
             connection.runtime_transport = Some(crate::types::RuntimeTransport {
@@ -1678,7 +1519,7 @@ async fn forward_with_provider_fallback(
                 if status.is_success() {
                     if dashboard_stream {
                         let response = proxy_dashboard_sse(result.response, attempt_log).await;
-                        return Ok(GenerationResult::Http(response));
+                        return Ok(response);
                     }
                     // forceStream + client non-stream → collect SSE → JSON (9router)
                     if plan.sse_to_json {
@@ -1688,21 +1529,16 @@ async fn forward_with_provider_fallback(
                             provider,
                             model
                         );
-                        if provenance == GenerationProvenance::InternalMcp {
-                            let result =
-                                collect_codex_search_output(result.response, attempt_log).await;
-                            return Ok(GenerationResult::McpSearch(result));
-                        }
                         let response =
                             proxy_sse_to_json_response(result.response, model, plan, attempt_log)
                                 .await;
-                        return Ok(GenerationResult::Http(response));
+                        return Ok(response);
                     }
                     if !stream {
                         let response =
                             proxy_response(result.response, provider, plan, attempt_log).await;
                         let response = mark_routed_response_formats(response, plan);
-                        return Ok(GenerationResult::Http(response));
+                        return Ok(response);
                     }
                     let normalize_for_dashboard =
                         endpoint == Some("/api/dashboard/chat/completions");
@@ -1717,7 +1553,7 @@ async fn forward_with_provider_fallback(
                     )
                     .await;
                     let response = mark_routed_response_formats(response, plan);
-                    return Ok(GenerationResult::Http(response));
+                    return Ok(response);
                 }
 
                 // 9router parity: retryAfter may come from the Retry-After header
@@ -2188,73 +2024,6 @@ async fn collect_forced_sse(
         accumulator,
         prefix_raw,
     })
-}
-
-async fn collect_codex_search_output(
-    response: UpstreamResponse,
-    attempt_log: Option<AttemptLog>,
-) -> Result<ResponsesSearchOutput, ResponsesSearchError> {
-    let collected = match collect_forced_sse(response).await {
-        Ok(collected) => collected,
-        Err(ForcedSseCollectionError::Body(error)) => {
-            if let Some(attempt_log) = attempt_log {
-                attempt_log
-                    .finish("error", Some(502), None, Some(error_kind::UPSTREAM_FAILURE))
-                    .await;
-            }
-            return Err(ResponsesSearchError {
-                code: "upstream_transport_error".to_string(),
-                message: error.to_string(),
-            });
-        }
-        Err(ForcedSseCollectionError::Stream(error)) => {
-            if let Some(attempt_log) = attempt_log {
-                attempt_log
-                    .finish("error", Some(502), None, Some(error_kind::UPSTREAM_FAILURE))
-                    .await;
-            }
-            return Err(ResponsesSearchError {
-                code: error.code.to_string(),
-                message: error.message,
-            });
-        }
-    };
-    let status = collected.status;
-    let mut accumulator = collected.accumulator;
-    let result = if accumulator.saw_any_event() {
-        accumulator.finish_responses_search()
-    } else {
-        match serde_json::from_slice::<Value>(&collected.prefix_raw) {
-            Ok(value) => match accumulator.ingest_responses_json(&value) {
-                Ok(()) => accumulator.finish_responses_search(),
-                Err(error) => Err(ResponsesSearchError {
-                    code: error.code.to_string(),
-                    message: error.message,
-                }),
-            },
-            Err(_) => Err(ResponsesSearchError {
-                code: "upstream_response_invalid".to_string(),
-                message: "Codex returned malformed non-streaming JSON".to_string(),
-            }),
-        }
-    };
-    if let Some(attempt_log) = attempt_log {
-        if result.is_ok() {
-            attempt_log
-                .finish("success", Some(status.as_u16()), None, None)
-                .await;
-        } else {
-            attempt_log
-                .finish(
-                    "error",
-                    Some(status.as_u16()),
-                    None,
-                    Some(error_kind::UPSTREAM_FAILURE),
-                )
-                .await;
-        }
-    }
-    result
 }
 
 /// forceStream SSE→JSON: collect upstream SSE and collapse to chat.completion JSON.
@@ -3844,15 +3613,13 @@ mod tests {
 
     use super::{
         attempt_error_response, build_dashboard_sse_response, build_proxied_response,
-        codex_models_support_search, has_native_codex_web_search, select_connection,
-        select_connection_with_supporters, select_search_luna_model,
+        has_native_codex_web_search, select_connection, select_connection_with_supporters,
         should_prefetch_message_images, StreamDispatch,
     };
     use crate::core::account_fallback::ProviderAttemptError;
     use crate::core::chat::RequestPlan;
     use crate::core::translator::registry::Format;
     use crate::core::translator::response_transform::OpenAiTransformer;
-    use crate::server::codex_catalog::CodexModelMetadata;
     use crate::types::{AppDb, ProviderConnection};
 
     fn connection(id: &str, priority: u32) -> ProviderConnection {
@@ -3956,64 +3723,6 @@ mod tests {
         assert!(has_native_codex_web_search(
             &json!({"tools": [{"type": "web_search"}], "tool_choice": "none"})
         ));
-    }
-
-    #[test]
-    fn codex_web_search_capability_matches_exact_model_and_reasoning_variant() {
-        let models = vec![CodexModelMetadata {
-            id: "gpt-5.6-luna".into(),
-            name: "Luna".into(),
-            context_window: None,
-            capabilities: vec!["tools".into(), "search".into()],
-            reasoning_efforts: vec!["low".into(), "high".into()],
-        }];
-
-        assert!(codex_models_support_search(&models, "gpt-5.6-luna"));
-        assert!(codex_models_support_search(&models, "gpt-5.6-luna-high"));
-        assert!(!codex_models_support_search(&models, "gpt-other"));
-
-        let mut unsupported = models;
-        unsupported[0]
-            .capabilities
-            .retain(|value| value != "search");
-        assert!(!codex_models_support_search(&unsupported, "gpt-5.6-luna"));
-    }
-
-    #[test]
-    fn codex_web_search_prefers_5_6_then_highest_supported_luna_only() {
-        let model = |id: &str, search: bool| CodexModelMetadata {
-            id: id.into(),
-            name: id.into(),
-            context_window: None,
-            capabilities: if search {
-                vec!["search".into()]
-            } else {
-                vec![]
-            },
-            reasoning_efforts: vec![],
-        };
-        let models = vec![
-            model("gpt-5.5", true),
-            model("gpt-5.7-luna", true),
-            model("gpt-5.6-luna", true),
-            model("gpt-6.0-luna", false),
-        ];
-        assert_eq!(
-            select_search_luna_model(&models, |_| true).as_deref(),
-            Some("gpt-5.6-luna")
-        );
-
-        let without_preferred = vec![
-            model("gpt-5.5", true),
-            model("gpt-5.4-luna", true),
-            model("gpt-5.7-luna", true),
-        ];
-        assert_eq!(
-            select_search_luna_model(&without_preferred, |model| model != "gpt-5.4-luna")
-                .as_deref(),
-            Some("gpt-5.7-luna")
-        );
-        assert!(select_search_luna_model(&[model("gpt-5.5", true)], |_| true).is_none());
     }
 
     #[test]

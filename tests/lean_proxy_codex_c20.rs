@@ -267,58 +267,57 @@ async fn failed_refresh_keeps_prior_publication_and_unknown_model_never_routes()
 }
 
 #[tokio::test]
-async fn mcp_search_uses_luna_mapping_account_fallback_and_native_projection() {
-    let catalog = MockUpstream::start([
-        ScriptedResponse::json(
-            StatusCode::OK,
-            catalog_payload(&[("gpt-5.5", true), ("gpt-5.6-luna", true)]),
-        ),
-        ScriptedResponse::json(
-            StatusCode::OK,
-            catalog_payload(&[("gpt-5.5", true), ("gpt-5.6-luna", true)]),
-        ),
-    ])
-    .await;
-    let generation = MockUpstream::start([
+async fn mcp_search_uses_standalone_index_account_fallback_and_all_lengths() {
+    let catalog = MockUpstream::start([]).await;
+    let search = MockUpstream::start([
         ScriptedResponse::json(
             StatusCode::TOO_MANY_REQUESTS,
             json!({"error":{"message":"first account limited"}}).to_string(),
         ),
-        ScriptedResponse::sse([concat!(
-            "event: response.created\n",
-            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_mcp\"}}\n\n",
-            "event: response.output_item.done\n",
-            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"web_search_call\",\"id\":\"search_1\"}}\n\n",
-            "event: response.output_item.done\n",
-            "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Rust is current.\",\"annotations\":[{\"type\":\"url_citation\",\"url\":\"https://www.rust-lang.org/\",\"title\":\"Rust\"}]}]}}\n\n",
-            "event: response.completed\n",
-            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_mcp\",\"status\":\"completed\",\"usage\":{}}}\n\n"
-        )]),
+        ScriptedResponse::json(
+            StatusCode::OK,
+            json!({
+                "output":"Rust is current. \u{e200}cite\u{e202}turn0search0\u{e201}",
+                "results":[{"ref_id":"turn0search0","title":"Rust","url":"https://www.rust-lang.org/","snippet":"Rust language"}]
+            })
+            .to_string(),
+        ),
+        ScriptedResponse::json(
+            StatusCode::OK,
+            json!({
+                "results":[{"title":"MCP","url":"https://modelcontextprotocol.io/","snippet":"Protocol documentation"}]
+            })
+            .to_string(),
+        ),
+        ScriptedResponse::json(
+            StatusCode::OK,
+            json!({
+                "results":[{"title":"OpenAI models","url":"https://developers.openai.com/api/docs/models","snippet":"Official model catalog"}]
+            })
+            .to_string(),
+        ),
     ])
     .await;
     let mut first = codex_connection("codex-mcp-a", 1);
     first.default_model = Some("gpt-5.5".into());
+    first
+        .provider_specific_data
+        .insert("chatgptAccountId".into(), json!("account-mcp-a"));
     let mut second = codex_connection("codex-mcp-b", 2);
     second.default_model = Some("gpt-5.5".into());
+    second
+        .provider_specific_data
+        .insert("chatgptAccountId".into(), json!("account-mcp-b"));
     let (_db, state) = state_with_catalog(
         catalog.url("/backend-api/codex/models"),
-        generation.url("/backend-api/codex/responses"),
-        vec![first.clone(), second.clone()],
+        search.url("/backend-api/codex/responses"),
+        vec![first, second],
         Vec::new(),
     )
     .await;
-    state
-        .codex_models
-        .refresh_connection(&state, &first, true)
-        .await
-        .unwrap();
-    state
-        .codex_models
-        .refresh_connection(&state, &second, true)
-        .await
-        .unwrap();
 
-    let response = post_mcp_search(&openproxy::build_app(state), "short").await;
+    let app = openproxy::build_app(state);
+    let response = post_mcp_search(&app, "short").await;
     assert_eq!(response.status(), StatusCode::OK);
     let body: serde_json::Value =
         serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap())
@@ -326,29 +325,79 @@ async fn mcp_search_uses_luna_mapping_account_fallback_and_native_projection() {
     assert_eq!(body["id"], "search-1");
     assert_eq!(
         body["result"]["content"][0]["text"],
-        "Rust is current.\n\nSources:\n1. Rust: https://www.rust-lang.org/"
+        "Rust is current. [1]\n\nSources:\n1. Rust: https://www.rust-lang.org/"
     );
     assert!(body["result"].get("structuredContent").is_none());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(
+            &to_bytes(
+                post_mcp_search(&app, "medium").await.into_body(),
+                1024 * 1024,
+            )
+            .await
+            .unwrap()
+        )
+        .unwrap()["result"]["content"][0]["text"],
+        "1. MCP\n   URL: https://modelcontextprotocol.io/\n   Protocol documentation"
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(
+            &to_bytes(
+                post_mcp_search(&app, "long").await.into_body(),
+                1024 * 1024,
+            )
+            .await
+            .unwrap()
+        )
+        .unwrap()["result"]["content"][0]["text"],
+        "1. OpenAI models\n   URL: https://developers.openai.com/api/docs/models\n   Official model catalog"
+    );
 
-    let requests = generation.requests().await;
-    assert_eq!(requests.len(), 2);
-    for request in &requests {
+    assert_eq!(catalog.request_count().await, 0);
+    let requests = search.requests().await;
+    assert_eq!(requests.len(), 4);
+    let expected_lengths = ["short", "short", "medium", "long"];
+    let expected_accounts = ["a", "b", "a", "a"];
+    for ((request, expected_length), expected_account) in
+        requests.iter().zip(expected_lengths).zip(expected_accounts)
+    {
+        assert_eq!(request.path, "/backend-api/codex/alpha/search");
         let upstream: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
-        assert_eq!(upstream["model"], "gpt-5.6-luna");
-        assert_eq!(upstream["tool_choice"], "required");
-        assert_eq!(upstream["tools"].as_array().unwrap().len(), 1);
-        assert_eq!(upstream["tools"][0]["type"], "web_search");
-        assert_eq!(upstream["tools"][0]["search_context_size"], "low");
+        assert_eq!(upstream["model"], "gpt-4o");
+        assert_eq!(
+            upstream["commands"]["search_query"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            upstream["commands"]["search_query"][0]["q"],
+            "current Rust release"
+        );
+        assert_eq!(upstream["commands"]["response_length"], expected_length);
+        assert!(upstream.get("tools").is_none());
+        assert!(upstream.get("tool_choice").is_none());
         let authorization = request
             .headers
             .get("authorization")
             .and_then(|value| value.to_str().ok())
             .unwrap_or_default();
         assert_ne!(authorization, "Bearer test-key");
-        assert!(authorization.starts_with("Bearer fixture-codex-mcp-"));
+        assert_eq!(
+            authorization,
+            format!("Bearer fixture-codex-mcp-{expected_account}-access")
+        );
+        assert_eq!(
+            request
+                .headers
+                .get("chatgpt-account-id")
+                .and_then(|value| value.to_str().ok()),
+            Some(format!("account-mcp-{expected_account}").as_str())
+        );
     }
     catalog.shutdown().await;
-    generation.shutdown().await;
+    search.shutdown().await;
 }
 
 #[tokio::test]
@@ -495,7 +544,6 @@ fn generation_paths_have_no_codex_catalog_refresh_wait_or_discovery_fallback() {
         .and_then(|tail| tail.split("fn select_connection(").next())
         .expect("chat generation source");
     assert!(!generation.contains("models_for_connection"));
-    assert!(generation.contains("published_for_connection"));
     assert!(generation.contains("cached_supporters"));
     assert!(v1_models.contains("provider_id != \"codex\""));
     assert!(main.contains("spawn_codex_catalog_refresh"));

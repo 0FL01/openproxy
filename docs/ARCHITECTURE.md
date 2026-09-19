@@ -30,7 +30,8 @@ protocol-pair inventory is machine-readable in
   configured routing, required wire translation, transport, and resource
   limits; it does not become a second harness. Two one-shot exceptions are
   proxy-owned: `/v1/web/fetch` URL extraction and authenticated `/v1/mcp`
-  `codex_web_search`. Neither owns history, sessions, or a tool loop.
+  `codex_web_search`, which calls Codex's standalone index rather than a
+  Responses generation model. Neither owns history, sessions, or a tool loop.
 
 ## Smoke
 

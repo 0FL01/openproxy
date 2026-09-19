@@ -104,17 +104,6 @@ struct ResponsesForcedState {
     summary: ResponsesStreamSummary,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResponsesSearchOutput {
-    pub text: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResponsesSearchError {
-    pub code: String,
-    pub message: String,
-}
-
 impl Default for ResponsesForcedState {
     fn default() -> Self {
         Self {
@@ -125,7 +114,6 @@ impl Default for ResponsesForcedState {
                 output: BTreeMap::new(),
                 usage: json!({"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}),
                 retained_bytes: 0,
-                error: None,
             },
         }
     }
@@ -188,16 +176,6 @@ impl ForcedSseAccumulator {
         self.kind == Some(ForcedKind::Responses) && self.responses.summary.status != "in_progress"
     }
 
-    pub fn finish_responses_search(self) -> Result<ResponsesSearchOutput, ResponsesSearchError> {
-        if self.kind != Some(ForcedKind::Responses) {
-            return Err(ResponsesSearchError {
-                code: "upstream_response_invalid".to_string(),
-                message: "Codex returned a non-Responses stream".to_string(),
-            });
-        }
-        project_responses_search(self.responses.summary)
-    }
-
     pub fn ingest_responses_json(&mut self, value: &Value) -> Result<(), StreamLimitError> {
         self.kind = Some(ForcedKind::Responses);
         let response = if value.get("type").and_then(Value::as_str) == Some("response.completed") {
@@ -217,16 +195,6 @@ impl ForcedSseAccumulator {
         let event = json!({"response": response});
         self.responses.summary.capture_response_metadata(&event)?;
         self.responses.summary.capture_usage(response.get("usage"));
-        if status != "completed" {
-            self.responses.summary.error = Some(response_event_error(
-                &event,
-                if status == "incomplete" {
-                    "response_incomplete"
-                } else {
-                    "response_failed"
-                },
-            ));
-        }
         Ok(())
     }
 }
@@ -533,15 +501,12 @@ impl ResponsesForcedState {
             }
             "response.failed" => {
                 self.summary.status = "failed".to_string();
-                self.summary.error = Some(response_event_error(&parsed, "response_failed"));
             }
             "response.incomplete" => {
                 self.summary.status = "incomplete".to_string();
-                self.summary.error = Some(response_event_error(&parsed, "response_incomplete"));
             }
             "error" => {
                 self.summary.status = "error".to_string();
-                self.summary.error = Some(response_event_error(&parsed, "upstream_error"));
             }
             _ => {}
         }
@@ -988,7 +953,6 @@ struct ResponsesStreamSummary {
     output: BTreeMap<u64, (Value, usize)>,
     usage: Value,
     retained_bytes: usize,
-    error: Option<ResponsesSearchError>,
 }
 
 impl ResponsesStreamSummary {
@@ -1080,26 +1044,6 @@ impl ResponsesStreamSummary {
     }
 }
 
-fn response_event_error(event: &Value, fallback_code: &str) -> ResponsesSearchError {
-    let error = event
-        .pointer("/response/error")
-        .or_else(|| event.get("error"));
-    let code = error
-        .and_then(|value| value.get("code"))
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(fallback_code)
-        .to_string();
-    let message = error
-        .and_then(|value| value.get("message"))
-        .and_then(Value::as_str)
-        .or_else(|| event.get("message").and_then(Value::as_str))
-        .filter(|value| !value.is_empty())
-        .unwrap_or("Codex web search did not complete")
-        .to_string();
-    ResponsesSearchError { code, message }
-}
-
 /// Convert an OpenAI Responses API SSE stream to a single `chat.completion`
 /// JSON response.
 ///
@@ -1119,122 +1063,6 @@ fn convert_responses_api_stream(
     fallback_model: Option<&str>,
 ) -> Result<Option<Value>, StreamLimitError> {
     accumulate_sse_bytes(sse.as_bytes(), fallback_model)
-}
-
-fn project_responses_search(
-    summary: ResponsesStreamSummary,
-) -> Result<ResponsesSearchOutput, ResponsesSearchError> {
-    if summary.status != "completed" {
-        return Err(summary.error.unwrap_or_else(|| ResponsesSearchError {
-            code: "upstream_response_incomplete".to_string(),
-            message: "Codex web search ended before response.completed".to_string(),
-        }));
-    }
-
-    let mut messages = Vec::new();
-    let mut sources: Vec<(String, String)> = Vec::new();
-    for (item, _) in summary.output.values() {
-        if item.get("type").and_then(Value::as_str) != Some("message") {
-            continue;
-        }
-        let Some(parts) = item.get("content").and_then(Value::as_array) else {
-            continue;
-        };
-        let mut message = String::new();
-        for part in parts {
-            if part.get("type").and_then(Value::as_str) != Some("output_text") {
-                continue;
-            }
-            if let Some(text) = part.get("text").and_then(Value::as_str) {
-                append_search_output(&mut message, text)?;
-            }
-            let Some(annotations) = part.get("annotations").and_then(Value::as_array) else {
-                continue;
-            };
-            for annotation in annotations {
-                if annotation.get("type").and_then(Value::as_str) != Some("url_citation") {
-                    continue;
-                }
-                let Some(url) = annotation
-                    .get("url")
-                    .and_then(Value::as_str)
-                    .filter(|url| url.starts_with("https://") || url.starts_with("http://"))
-                else {
-                    continue;
-                };
-                let title = annotation
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .map(normalize_source_title)
-                    .unwrap_or_default();
-                if let Some((_, existing_title)) =
-                    sources.iter_mut().find(|(existing, _)| existing == url)
-                {
-                    if existing_title.is_empty() && !title.is_empty() {
-                        *existing_title = title;
-                    }
-                } else {
-                    sources.push((url.to_string(), title));
-                }
-            }
-        }
-        if !message.is_empty() {
-            messages.push(message);
-        }
-    }
-
-    if messages.is_empty() {
-        return Err(ResponsesSearchError {
-            code: "upstream_response_empty".to_string(),
-            message: "Codex web search completed without answer text".to_string(),
-        });
-    }
-
-    let mut text = String::new();
-    for (index, message) in messages.iter().enumerate() {
-        if index > 0 {
-            append_search_output(&mut text, "\n\n")?;
-        }
-        append_search_output(&mut text, message)?;
-    }
-    if !sources.is_empty() {
-        append_search_output(&mut text, "\n\nSources:")?;
-        for (index, (url, title)) in sources.iter().enumerate() {
-            append_search_output(&mut text, "\n")?;
-            append_search_output(&mut text, &(index + 1).to_string())?;
-            append_search_output(&mut text, ". ")?;
-            if !title.is_empty() {
-                append_search_output(&mut text, title)?;
-                append_search_output(&mut text, ": ")?;
-            }
-            append_search_output(&mut text, url)?;
-        }
-    }
-
-    Ok(ResponsesSearchOutput { text })
-}
-
-fn append_search_output(target: &mut String, value: &str) -> Result<(), ResponsesSearchError> {
-    let next = target
-        .len()
-        .checked_add(value.len())
-        .ok_or_else(search_output_limit_error)?;
-    if next > MAX_STREAM_ACCUMULATED_BYTES {
-        return Err(search_output_limit_error());
-    }
-    target.push_str(value);
-    Ok(())
-}
-
-fn search_output_limit_error() -> ResponsesSearchError {
-    ResponsesSearchError {
-        code: "mcp_result_too_large".to_string(),
-        message: "Codex web search result exceeds the 16 MiB MCP limit".to_string(),
-    }
-}
-
-fn normalize_source_title(title: &str) -> String {
-    title.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn assemble_responses_summary(
@@ -1883,138 +1711,5 @@ mod tests {
                 .code,
             "upstream_stream_state_limit"
         );
-    }
-
-    fn project_search_sse(sse: &str) -> Result<ResponsesSearchOutput, ResponsesSearchError> {
-        let mut framer = SseFramer::new();
-        let mut accumulator = ForcedSseAccumulator::new();
-        let mut ingest_error = None;
-        framer
-            .feed(sse.as_bytes(), |event| {
-                if ingest_error.is_none() {
-                    ingest_error = accumulator.ingest(&event).err();
-                }
-            })
-            .unwrap();
-        if let Some(error) = ingest_error {
-            return Err(ResponsesSearchError {
-                code: error.code.to_string(),
-                message: error.message,
-            });
-        }
-        accumulator.finish_responses_search()
-    }
-
-    #[test]
-    fn responses_search_many_items_preserve_order_messages_and_sources() {
-        let mut sse = format!(
-            "event: response.created\ndata: {}\n\n",
-            json!({"type":"response.created","response":{"id":"resp_many"}})
-        );
-        for index in (0..120).rev() {
-            let item = match index % 3 {
-                0 => json!({"type":"web_search_call","id":format!("search_{index}")}),
-                1 => json!({"type":"reasoning","summary":[{"text":"private reasoning"}]}),
-                _ => {
-                    let message = index / 3;
-                    json!({
-                        "type":"message",
-                        "content":[
-                            {
-                                "type":"output_text",
-                                "text":format!("Answer {message} café 雪"),
-                                "annotations":[{
-                                    "type":"url_citation",
-                                    "url":format!("https://example.test/{message}"),
-                                    "title":format!(" Source   {message} ")
-                                }]
-                            },
-                            {
-                                "type":"output_text",
-                                "text":" ✅",
-                                "annotations":[{
-                                    "type":"url_citation",
-                                    "url":format!("https://example.test/{message}"),
-                                    "title":"duplicate"
-                                }]
-                            }
-                        ]
-                    })
-                }
-            };
-            sse.push_str(&format!(
-                "event: response.output_item.done\ndata: {}\n\n",
-                json!({
-                    "type":"response.output_item.done",
-                    "output_index":index,
-                    "item":item
-                })
-            ));
-        }
-        sse.push_str(&format!(
-            "event: response.completed\ndata: {}\n\n",
-            json!({"type":"response.completed","response":{"id":"resp_many","status":"completed","output":[],"usage":{}}})
-        ));
-
-        let result = project_search_sse(&sse).unwrap().text;
-        for index in 0..40 {
-            let answer = format!("Answer {index} café 雪 ✅");
-            let source = format!(
-                "{}. Source {}: https://example.test/{}",
-                index + 1,
-                index,
-                index
-            );
-            assert_eq!(result.matches(&answer).count(), 1);
-            assert_eq!(result.matches(&source).count(), 1);
-        }
-        assert!(result.find("Answer 0").unwrap() < result.find("Answer 39").unwrap());
-        assert_eq!(result.matches("\n\nSources:\n").count(), 1);
-        assert!(!result.contains("private reasoning"));
-        assert!(!result.contains("search_"));
-        assert!(!result.contains("event:"));
-    }
-
-    #[test]
-    fn responses_search_terminal_failures_never_return_partial_answer() {
-        let partial = format!(
-            "event: response.created\ndata: {}\n\nevent: response.output_item.done\ndata: {}\n\n",
-            json!({"type":"response.created","response":{"id":"resp_failed"}}),
-            json!({
-                "type":"response.output_item.done",
-                "output_index":0,
-                "item":{"type":"message","content":[{"type":"output_text","text":"partial secret"}]}
-            })
-        );
-        let cases = vec![
-            (String::new(), "upstream_response_incomplete"),
-            (
-                format!(
-                    "event: response.failed\ndata: {}\n\n",
-                    json!({"type":"response.failed","response":{"error":{"code":"failed_code","message":"failed safely"}}})
-                ),
-                "failed_code",
-            ),
-            (
-                format!(
-                    "event: response.incomplete\ndata: {}\n\n",
-                    json!({"type":"response.incomplete","response":{"error":{"code":"incomplete_code","message":"incomplete safely"}}})
-                ),
-                "incomplete_code",
-            ),
-            (
-                format!(
-                    "event: error\ndata: {}\n\n",
-                    json!({"type":"error","error":{"code":"error_code","message":"errored safely"}})
-                ),
-                "error_code",
-            ),
-        ];
-
-        for (terminal, expected_code) in cases {
-            let error = project_search_sse(&(partial.clone() + &terminal)).unwrap_err();
-            assert_eq!(error.code, expected_code);
-            assert!(!error.message.contains("partial secret"));
-        }
     }
 }

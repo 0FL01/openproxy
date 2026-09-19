@@ -701,7 +701,7 @@ async fn get_opencode_settings(State(state): State<AppState>, headers: HeaderMap
                         == provider_api_key
                             .map(|api_key| format!("Bearer {api_key}"))
                             .as_deref()
-                    && mcp.get("timeout").and_then(Value::as_u64) == Some(300_000)
+                    && mcp.get("timeout").and_then(Value::as_u64) == Some(30_000)
             });
             let models = model_map
                 .and_then(Value::as_object)
@@ -1573,7 +1573,7 @@ async fn write_opencode_settings(
                 "headers": {
                     "Authorization": format!("Bearer {api_key}")
                 },
-                "timeout": 300000
+                "timeout": 30000
             }),
         );
 

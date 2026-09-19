@@ -1,5 +1,10 @@
 # Goal: Codex web search over MCP
 
+> **Superseded 2026-09-19:** The MCP protocol, authentication, configuration,
+> and public-search cutover remain current. The Luna/Responses execution path
+> is replaced by the standalone indexed-search correction in
+> `2026-09-19-codex-standalone-search.md`.
+
 Status: complete
 Source: User-approved audited MCP migration plan and instruction to implement, commit, push, and deploy (2026-09-19)
 Last updated: 2026-09-19
