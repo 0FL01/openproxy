@@ -1,6 +1,8 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 use std::time::Duration;
 
+use regex::{Captures, Regex};
 use reqwest::StatusCode;
 use serde_json::Value;
 
@@ -396,16 +398,74 @@ fn format_structured_results(results: &[IndexedResult]) -> Result<String, CodexS
 }
 
 fn replace_citation_markers(output: &str, results: &[IndexedResult]) -> String {
-    let mut text = output.to_string();
+    let references = results
+        .iter()
+        .enumerate()
+        .filter_map(|(index, result)| result.ref_id.as_deref().map(|ref_id| (ref_id, index + 1)))
+        .collect::<HashMap<_, _>>();
+    let text = private_citation_pattern()
+        .replace_all(output, |captures: &Captures<'_>| {
+            let inner = captures
+                .get(1)
+                .map(|value| value.as_str().trim())
+                .unwrap_or_default();
+            if let Some((_, label)) = inner.split_once('†') {
+                let label = label.trim();
+                return (!label.is_empty())
+                    .then(|| format!("[{label}]"))
+                    .unwrap_or_default();
+            }
+            references
+                .get(inner)
+                .map(|number| format!("[{number}]"))
+                .unwrap_or_else(|| format!("[{inner}]"))
+        })
+        .into_owned();
+    let mut text = raw_turn_citation_pattern()
+        .replace_all(&text, |captures: &Captures<'_>| {
+            captures
+                .get(1)
+                .map(|value| {
+                    value
+                        .as_str()
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(|ref_id| {
+                            references
+                                .get(ref_id)
+                                .map(|number| format!("[{number}]"))
+                                .unwrap_or_else(|| format!("[{ref_id}]"))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .unwrap_or_default()
+        })
+        .into_owned();
     for (index, result) in results.iter().enumerate() {
         let Some(ref_id) = result.ref_id.as_deref() else {
             continue;
         };
         let label = format!("[{}]", index + 1);
-        text = text.replace(&format!("\u{e200}cite\u{e202}{ref_id}\u{e201}"), &label);
         text = text.replace(&format!("[{ref_id}]"), &label);
     }
     text
+}
+
+fn private_citation_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| {
+        Regex::new(r"(?is)\u{e200}cite\u{e202}([^\u{e000}-\u{e2ff}]+)\u{e201}")
+            .expect("valid Codex private citation pattern")
+    })
+}
+
+fn raw_turn_citation_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| {
+        Regex::new(r"(?i)\[(turn\d+[a-z0-9_,\s]*)\]").expect("valid Codex raw citation pattern")
+    })
 }
 
 fn indexed_sources(results: &[IndexedResult]) -> Vec<(String, String)> {
@@ -502,11 +562,17 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let body = json!({
-            "output": "First \u{e200}cite\u{e202}turn0search0\u{e201}; last [turn0search39] 😀",
+            "output": "First \u{e200}cite\u{e202}turn0search0, turn0search1\u{e201}; last [turn0search39] 😀; label \u{e200}cite\u{e202}40†Official docs\u{e201}",
             "results": results
         });
         let output = normalize_search_response(&serde_json::to_vec(&body).unwrap()).unwrap();
-        assert!(output.text.contains("First [1]; last [40] 😀"));
+        assert!(output
+            .text
+            .contains("First [1] [2]; last [40] 😀; label [Official docs]"));
+        assert!(!output
+            .text
+            .chars()
+            .any(|value| ('\u{e000}'..='\u{e2ff}').contains(&value)));
         assert!(output
             .text
             .contains("1. Source 0 雪: https://sources.example/0"));
