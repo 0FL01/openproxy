@@ -1,6 +1,6 @@
 # Goal: Codex Responses stream errors
 
-Status: active
+Status: complete
 Source: User-approved audited implementation plan and instruction to implement, commit, push, and deploy (2026-09-19)
 Last updated: 2026-09-19
 
@@ -38,8 +38,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: User instruction to commit, push, and deploy.
   - Acceptance: The current branch is pushed and the deployed service reports healthy.
   - Primary evidence: Git refs plus deployment and health output.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: Runtime commit `3280e2ba` is pushed to `origin/perf/lean-proxy-plan` and deployed as image `sha256:d916b82822ab`; Compose reports healthy and `/health` returns `status: ok`.
 
 ### Constraints
 - C1: Explicit caller-owned native `web_search` remains provider-native; MCP conversion is deferred.
@@ -59,16 +59,16 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - User or harness budget: Minimum direct regression evidence; commit, push, deploy, and health-check after verification.
 
 ## Current Checkpoint
-- Closes: R4 after the closure gates pass.
-- Smallest next action: Run the final affected-surface gates and inspect the complete diff.
-- Expected evidence: Rust tests, fmt, clippy, dashboard/plugin evidence, and an in-scope diff.
-- Stop or replan if: A gate proves an approved outcome or affected contract remains unsatisfied.
+- Closes: None; objective complete.
+- Smallest next action: Stop.
+- Expected evidence: All required outcomes are verified below.
+- Stop or replan if: Not applicable.
 
 ## Current State
-- Resolved: R1-R3.
-- Last relevant evidence: OpenCode settings cleanup, dashboard build, and both model plugin checks pass.
+- Resolved: R1-R4.
+- Last relevant evidence: Runtime commit is pushed and deployed; Compose and `/health` are healthy.
 - Blocker: None.
-- Next: Implement R2, then R1 and R3.
+- Next: None.
 
 ## Material Decisions
 - 2026-09-19: Responses error selection is owned by downstream format, not provider identity.
@@ -80,9 +80,10 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-09-19: R2 verified; legacy injection/sanitization removed while explicit native search remains unchanged.
 - 2026-09-19: R1 verified; terminal Responses errors are format-owned, sequenced, and do not trigger completion or retry.
 - 2026-09-19: R3 verified; OpenCode config/UI/docs no longer advertise the retired header and stale config is cleaned safely.
+- 2026-09-19: Closure passed: 1,022 library tests, Codex C11/C20 and OpenCode settings regressions, fmt, clippy, dashboard build, model plugin tests, production Docker build, and health check succeeded. Runtime commit `3280e2ba` was pushed and deployed.
 
 ## Completion
-- Resolved outcomes:
-- Commands and artifacts:
-- Constraint and diff-scope check:
-- Final status:
+- Resolved outcomes: R1-R4.
+- Commands and artifacts: Focused regressions; 1,022 library tests; Codex C11/C20 suites; fmt; clippy; dashboard build; both OpenCode plugin tests; Docker Compose production build/deploy; `/health`.
+- Constraint and diff-scope check: Explicit native search remains intact; no MCP, retry, buffering, dependency, migration, service, persistent-state deletion, or secret/config file was added.
+- Final status: complete.
