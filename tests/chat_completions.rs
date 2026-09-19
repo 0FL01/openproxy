@@ -191,6 +191,81 @@ async fn chat_completions_streams_openai_compatible_response() {
 }
 
 #[tokio::test]
+async fn glm_translated_stream_records_usage_only_terminal_chunk() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(header("x-api-key", "upstream-key"))
+        .and(body_partial_json(json!({
+            "model": "glm-5.3-flash",
+            "stream": true,
+            "stream_options": {"include_usage": true},
+        })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"},\"index\":0}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":16,\"completion_tokens\":25,\"total_tokens\":41}}\n\ndata: [DONE]\n\n",
+                "text/event-stream",
+            ),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let mut glm = connection("conn-glm", "glm", 1, "upstream-key");
+    glm.default_model = Some("glm-5.3-flash".into());
+    let state = seeded_state(
+        vec![provider_node(
+            "glm",
+            "glm",
+            &format!("{}/v1", upstream.uri()),
+        )],
+        vec![glm],
+    )
+    .await;
+
+    let app = openproxy::build_app(state.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("authorization", "Bearer valid-bearer")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "glm/glm-5.3-flash",
+                        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+                        "stream": true,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let response_status = response.status();
+    let response_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        response_status,
+        StatusCode::OK,
+        "unexpected response: {}",
+        String::from_utf8_lossy(&response_body)
+    );
+
+    let logs = state
+        .db
+        .sqlite
+        .with_conn(|conn| request_repo::list(conn, &RequestDetailFilter::default(), 10, 0))
+        .unwrap();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].data["inputTokens"], 16);
+    assert_eq!(logs[0].data["outputTokens"], 25);
+}
+
+#[tokio::test]
 async fn chat_completions_reports_oversized_json_as_payload_too_large() {
     let app = openproxy::build_app(seeded_state(Vec::new(), Vec::new()).await);
     let oversized_prompt = "x".repeat(32 * 1024 * 1024);

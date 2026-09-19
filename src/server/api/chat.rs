@@ -338,6 +338,21 @@ fn strip_message_control_chars(body: &mut Value) {
     }
 }
 
+fn inject_glm_stream_usage(body: &mut Value) {
+    let Some(obj) = body.as_object_mut() else {
+        return;
+    };
+    if obj.get("stream").and_then(Value::as_bool) != Some(true)
+        || obj.contains_key("stream_options")
+    {
+        return;
+    }
+    obj.insert(
+        "stream_options".to_string(),
+        serde_json::json!({"include_usage": true}),
+    );
+}
+
 pub async fn chat_completions_for_endpoint(
     state: AppState,
     headers: HeaderMap,
@@ -804,6 +819,14 @@ async fn execute_single_model(
     // Sync stream flag onto body for executors that read body.stream
     if let Some(obj) = body.as_object_mut() {
         obj.insert("stream".into(), Value::Bool(plan.stream));
+    }
+
+    // Z.ai's OpenAI-compatible streaming endpoint reports the final token
+    // usage chunk when `stream_options.include_usage` is enabled. The target
+    // format is known here, so the flag cannot leak onto GLM's Claude
+    // transport, which does not accept this field.
+    if plan.target_format == Format::OpenAi && matches!(plan.provider.as_str(), "glm" | "glm-cn") {
+        inject_glm_stream_usage(&mut body);
     }
 
     // Codex has one additional existing remote-image shape under `input`.
@@ -2874,6 +2897,14 @@ impl StreamDispatch {
                 batch.response_completed = true;
             }
         }
+        if !parse_source {
+            if let Some(usage) = frame
+                .payload()
+                .and_then(|payload| extract_token_usage_from_bytes(payload.as_bytes()))
+            {
+                self.usage = Some(usage);
+            }
+        }
 
         let output_start = batch.output.len();
         if let Some(transformer) = self.dashboard_transformer.as_mut() {
@@ -4216,6 +4247,37 @@ mod tests {
             assert!(output.contains("id: 4"));
             assert!(output.contains("retry: 250"));
         }
+    }
+
+    #[test]
+    fn translated_stream_observes_usage_only_frame() {
+        let mut dispatch = StreamDispatch::new(
+            Format::OpenAi,
+            Format::Gemini,
+            "text/event-stream",
+            None,
+            None,
+            false,
+        );
+        dispatch.feed(b"data: {\"choices\":[{\"delta\":{\"content\":\"hello\"},\"index\":0}]}\n\n");
+        dispatch.feed(b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n");
+        dispatch.feed(
+            b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":16,\"completion_tokens\":25,\"total_tokens\":41}}\n\n",
+        );
+        assert_eq!(
+            dispatch
+                .usage
+                .as_ref()
+                .and_then(|value| value.prompt_tokens),
+            Some(16)
+        );
+        assert_eq!(
+            dispatch
+                .usage
+                .as_ref()
+                .and_then(|value| value.completion_tokens),
+            Some(25)
+        );
     }
 
     #[test]
