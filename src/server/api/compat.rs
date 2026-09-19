@@ -155,16 +155,7 @@ async fn forward_compat(
         CompatMode::Messages => Format::Claude,
         CompatMode::Responses { .. } => Format::OpenAiResponses,
     };
-    let sanitize_injected_search = response
-        .extensions()
-        .get::<chat::CodexWebSearchInjected>()
-        .is_some();
-    if should_bypass_compat_conversion(
-        stream_request,
-        native_format,
-        expected_format,
-        sanitize_injected_search,
-    ) {
+    if should_bypass_compat_conversion(stream_request, native_format, expected_format) {
         return with_cors_response(response);
     }
 
@@ -180,10 +171,8 @@ fn should_bypass_compat_conversion(
     stream_request: bool,
     routed: Option<chat::RoutedResponseFormats>,
     expected_format: Format,
-    sanitize_injected_search: bool,
 ) -> bool {
     stream_request
-        && !sanitize_injected_search
         && routed.is_some_and(|formats| {
             formats.native_passthrough
                 && formats.client == expected_format
@@ -203,10 +192,6 @@ fn should_bypass_compat_conversion(
 /// Responses API SSE events for a non-streaming request, we collect them
 /// and reconstruct the final JSON.
 async fn convert_to_responses_api(response: Response, stream_request: bool) -> Response {
-    let sanitize_injected_search = response
-        .extensions()
-        .get::<chat::CodexWebSearchInjected>()
-        .is_some();
     let status = response.status();
     if !status.is_success() {
         return response;
@@ -232,9 +217,6 @@ async fn convert_to_responses_api(response: Response, stream_request: bool) -> R
         };
 
         if body_value.get("object").and_then(Value::as_str) == Some("response") {
-            if sanitize_injected_search {
-                remove_injected_web_search_items(&mut body_value);
-            }
             return Json(body_value).into_response();
         }
 
@@ -250,7 +232,7 @@ async fn convert_to_responses_api(response: Response, stream_request: bool) -> R
     }
 
     if stream_request {
-        return stream_to_responses_api(response, sanitize_injected_search);
+        return stream_to_responses_api(response);
     }
 
     // Streaming or pseudo-streaming — wrap the body through the SSE converter.
@@ -313,19 +295,13 @@ async fn convert_to_responses_api(response: Response, stream_request: bool) -> R
     // A non-streaming client may still receive forced SSE from an upstream.
     // Prefer the final native Responses object when present; otherwise reuse
     // the incremental converter over the already-collected body.
-    if let Some(mut responses_json) = inspection.and_then(|value| value.completed_response) {
-        if sanitize_injected_search {
-            remove_injected_web_search_items(&mut responses_json);
-        }
+    if let Some(responses_json) = inspection.and_then(|value| value.completed_response) {
         return Json(responses_json).into_response();
     }
-    stream_to_responses_api(
-        Response::from_parts(parts, Body::from(body_bytes)),
-        sanitize_injected_search,
-    )
+    stream_to_responses_api(Response::from_parts(parts, Body::from(body_bytes)))
 }
 
-fn stream_to_responses_api(response: Response, sanitize_injected_search: bool) -> Response {
+fn stream_to_responses_api(response: Response) -> Response {
     let status = response.status();
     let (parts, body) = response.into_parts();
     let mut upstream = body.into_data_stream();
@@ -351,7 +327,6 @@ fn stream_to_responses_api(response: Response, sanitize_injected_search: bool) -
                     &mut conv_state,
                     &mut claude_xform,
                     &mut native_responses_stream,
-                    sanitize_injected_search,
                 ) {
                     Ok(outputs) => converted_frames.extend(outputs),
                     Err(error) => conversion_error = Some(error),
@@ -361,14 +336,19 @@ fn stream_to_responses_api(response: Response, sanitize_injected_search: bool) -
                 yield Ok::<Bytes, std::io::Error>(output);
             }
             if let Some(error) = conversion_error {
-                yield Ok::<Bytes, std::io::Error>(Bytes::from(format_sse_event(
-                    "error",
-                    &json!({"type": "error", "error": {"message": error.message, "code": error.code}}),
-                )));
+                yield Ok::<Bytes, std::io::Error>(responses_stream_error_event(
+                    &mut conv_state,
+                    error.code,
+                    &error.message,
+                ));
                 return;
             }
             if let Err(error) = frame_result {
-                yield Ok::<Bytes, std::io::Error>(compat_framing_error_event(&error));
+                yield Ok::<Bytes, std::io::Error>(responses_stream_error_event(
+                    &mut conv_state,
+                    error.code(),
+                    &error.to_string(),
+                ));
                 return;
             }
         }
@@ -384,7 +364,6 @@ fn stream_to_responses_api(response: Response, sanitize_injected_search: bool) -
                 &mut conv_state,
                 &mut claude_xform,
                 &mut native_responses_stream,
-                sanitize_injected_search,
             ) {
                 Ok(outputs) => converted_frames.extend(outputs),
                 Err(error) => conversion_error = Some(error),
@@ -394,14 +373,19 @@ fn stream_to_responses_api(response: Response, sanitize_injected_search: bool) -
             yield Ok::<Bytes, std::io::Error>(output);
         }
         if let Some(error) = conversion_error {
-            yield Ok::<Bytes, std::io::Error>(Bytes::from(format_sse_event(
-                "error",
-                &json!({"type": "error", "error": {"message": error.message, "code": error.code}}),
-            )));
+            yield Ok::<Bytes, std::io::Error>(responses_stream_error_event(
+                &mut conv_state,
+                error.code,
+                &error.message,
+            ));
             return;
         }
         if let Err(error) = frame_result {
-            yield Ok::<Bytes, std::io::Error>(compat_framing_error_event(&error));
+            yield Ok::<Bytes, std::io::Error>(responses_stream_error_event(
+                &mut conv_state,
+                error.code(),
+                &error.to_string(),
+            ));
             return;
         }
 
@@ -409,10 +393,11 @@ fn stream_to_responses_api(response: Response, sanitize_injected_search: bool) -
             let flushed = match conv_state.flush_frames() {
                 Ok(flushed) => flushed,
                 Err(error) => {
-                    yield Ok::<Bytes, std::io::Error>(Bytes::from(format_sse_event(
-                        "error",
-                        &json!({"type": "error", "error": {"message": error.message, "code": error.code}}),
-                    )));
+                    yield Ok::<Bytes, std::io::Error>(responses_stream_error_event(
+                        &mut conv_state,
+                        error.code,
+                        &error.message,
+                    ));
                     return;
                 }
             };
@@ -456,7 +441,6 @@ fn convert_responses_sse_event(
     conv_state: &mut ResponsesSseState,
     claude_xform: &mut AnthropicToOpenAiTransformer,
     native_responses_stream: &mut bool,
-    sanitize_injected_search: bool,
 ) -> Result<Vec<Bytes>, crate::core::translator::limits::StreamLimitError> {
     let frame = event.raw().trim();
     if frame.is_empty() {
@@ -471,7 +455,7 @@ fn convert_responses_sse_event(
     if json_str == "[DONE]" {
         return Ok(Vec::new());
     }
-    let Ok(mut value) = serde_json::from_str::<Value>(json_str) else {
+    let Ok(value) = serde_json::from_str::<Value>(json_str) else {
         return Ok(Vec::new());
     };
     let event_type = value
@@ -480,15 +464,9 @@ fn convert_responses_sse_event(
         .unwrap_or("")
         .to_string();
 
-    if event_type.starts_with("response.") {
+    if event_type.starts_with("response.") || event_type == "error" {
         *native_responses_stream = true;
-        if sanitize_injected_search && should_drop_injected_web_search_event(&value) {
-            return Ok(Vec::new());
-        }
-        if sanitize_injected_search && event_type == "response.completed" {
-            remove_injected_web_search_items(&mut value);
-            return Ok(vec![Bytes::from(format_sse_event(&event_type, &value))]);
-        }
+        conv_state.observe_sequence(&value);
         return Ok(vec![Bytes::from(format!("{frame}\n\n"))]);
     }
 
@@ -538,32 +516,6 @@ fn convert_responses_sse_event(
         .collect())
 }
 
-fn should_drop_injected_web_search_event(value: &Value) -> bool {
-    let event_type = value.get("type").and_then(Value::as_str).unwrap_or("");
-    event_type.starts_with("response.web_search_call.")
-        || (matches!(
-            event_type,
-            "response.output_item.added" | "response.output_item.done"
-        ) && value
-            .get("item")
-            .and_then(|item| item.get("type"))
-            .and_then(Value::as_str)
-            == Some("web_search_call"))
-}
-
-fn remove_injected_web_search_items(response: &mut Value) {
-    let output = if response.get("response").is_some() {
-        response
-            .get_mut("response")
-            .and_then(|response| response.get_mut("output"))
-    } else {
-        response.get_mut("output")
-    };
-    if let Some(output) = output.and_then(Value::as_array_mut) {
-        output.retain(|item| item.get("type").and_then(Value::as_str) != Some("web_search_call"));
-    }
-}
-
 /// Extract the final Responses API JSON from a series of Responses API SSE events.
 /// Finds the `response.completed` event and returns its `response` payload.
 struct CollectedSseInspection {
@@ -595,6 +547,16 @@ fn inspect_collected_responses_sse(body: &[u8]) -> Result<CollectedSseInspection
     framer.feed(body, &mut inspect)?;
     framer.finish(inspect)?;
     Ok(inspection)
+}
+
+fn responses_stream_error_event(state: &mut ResponsesSseState, code: &str, message: &str) -> Bytes {
+    Bytes::from(
+        crate::core::translator::response::openai_responses::format_error_event(
+            state.next_sequence_number(),
+            code,
+            message,
+        ),
+    )
 }
 
 fn compat_framing_error_event(error: &FrameError) -> Bytes {
@@ -822,6 +784,17 @@ impl ResponsesSseState {
         }
         self.choice_indices.insert(index);
         Ok(index)
+    }
+
+    fn observe_sequence(&mut self, value: &Value) {
+        if let Some(sequence_number) = value.get("sequence_number").and_then(Value::as_u64) {
+            self.seq = self.seq.max(sequence_number);
+        }
+    }
+
+    fn next_sequence_number(&mut self) -> u64 {
+        self.seq = self.seq.saturating_add(1);
+        self.seq
     }
 }
 
@@ -2440,7 +2413,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_stream_bypass_never_skips_injected_search_sanitization() {
+    fn native_stream_bypasses_compat_conversion() {
         let routed = Some(chat::RoutedResponseFormats {
             client: Format::OpenAiResponses,
             upstream: Format::OpenAiResponses,
@@ -2450,13 +2423,6 @@ mod tests {
             true,
             routed,
             Format::OpenAiResponses,
-            false,
-        ));
-        assert!(!should_bypass_compat_conversion(
-            true,
-            routed,
-            Format::OpenAiResponses,
-            true,
         ));
     }
 
@@ -2726,44 +2692,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn proxy_injected_web_search_is_removed_from_non_streaming_response() {
-        let native = json!({
-            "id": "resp_native",
-            "object": "response",
-            "status": "completed",
-            "output": [
-                {"id": "ws_1", "type": "web_search_call"},
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{
-                        "type": "output_text",
-                        "text": "grounded",
-                        "annotations": [{"type": "url_citation", "url": "https://example.com"}]
-                    }]
-                }
-            ],
-            "usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
-        });
-        let mut upstream = Json(native).into_response();
-        upstream
-            .extensions_mut()
-            .insert(chat::CodexWebSearchInjected);
-
-        let response = convert_to_responses_api(upstream, false).await;
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        let converted: Value = serde_json::from_slice(&body).unwrap();
-
-        assert_eq!(converted["output"].as_array().unwrap().len(), 1);
-        assert_eq!(converted["output"][0]["type"], "message");
-        assert_eq!(
-            converted["output"][0]["content"][0]["annotations"][0]["url"],
-            "https://example.com"
-        );
-        assert_eq!(converted["usage"]["total_tokens"], 3);
-    }
-
-    #[tokio::test]
     async fn native_responses_sse_does_not_get_a_second_completion() {
         let completed = json!({
             "type": "response.completed",
@@ -2790,6 +2718,27 @@ mod tests {
         let output = String::from_utf8(body.to_vec()).unwrap();
 
         assert_eq!(output.matches("event: response.completed").count(), 1);
+        assert!(!output.contains("data: [DONE]"));
+    }
+
+    #[tokio::test]
+    async fn native_responses_error_passes_through_without_synthetic_completion() {
+        let fixture = concat!(
+            "event: error\n",
+            "data: {\"type\":\"error\",\"sequence_number\":3,\"code\":\"upstream_stream_error\",\"message\":\"failed\",\"param\":null}\n\n",
+        );
+        let upstream = (
+            [(header::CONTENT_TYPE, "text/event-stream")],
+            Body::from(fixture),
+        )
+            .into_response();
+
+        let response = convert_to_responses_api(upstream, true).await;
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let output = String::from_utf8(body.to_vec()).unwrap();
+
+        assert_eq!(output, fixture);
+        assert!(!output.contains("response.completed"));
         assert!(!output.contains("data: [DONE]"));
     }
 
@@ -2824,56 +2773,6 @@ mod tests {
         assert!(String::from_utf8_lossy(&first).contains("response.created"));
         release.notify_one();
         while body.next().await.is_some() {}
-    }
-
-    #[tokio::test]
-    async fn proxy_injected_web_search_is_hidden_without_losing_response_events() {
-        let fixture = concat!(
-            "event: response.created\n",
-            "data: {\"type\":\"response.created\"}\n\n",
-            "event: response.reasoning_summary_text.delta\n",
-            "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"thinking\"}\n\n",
-            "event: response.output_item.added\n",
-            "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"ws_1\",\"type\":\"web_search_call\"}}\n\n",
-            "event: response.web_search_call.searching\n",
-            "data: {\"type\":\"response.web_search_call.searching\",\"item_id\":\"ws_1\"}\n\n",
-            "event: response.output_item.done\n",
-            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"ws_1\",\"type\":\"web_search_call\",\"action\":{\"type\":\"search\"}}}\n\n",
-            "event: response.output_text.annotation.added\n",
-            "data: {\"type\":\"response.output_text.annotation.added\",\"annotation\":{\"type\":\"url_citation\",\"url\":\"https://example.com\"}}\n\n",
-            "event: response.output_text.delta\n",
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"grounded\"}\n\n",
-            "event: response.completed\n",
-            "data: {\"type\":\"response.completed\",\"response\":{\"object\":\"response\",\"output\":[{\"id\":\"ws_1\",\"type\":\"web_search_call\"},{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"grounded\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}\n\n",
-        );
-        let split = fixture.len() / 3;
-        let chunks = vec![
-            Ok::<Bytes, std::io::Error>(Bytes::copy_from_slice(&fixture.as_bytes()[..split])),
-            Ok(Bytes::copy_from_slice(
-                &fixture.as_bytes()[split..split * 2],
-            )),
-            Ok(Bytes::copy_from_slice(&fixture.as_bytes()[split * 2..])),
-        ];
-        let mut upstream = (
-            [(header::CONTENT_TYPE, "text/event-stream")],
-            Body::from_stream(futures_util::stream::iter(chunks)),
-        )
-            .into_response();
-        upstream
-            .extensions_mut()
-            .insert(chat::CodexWebSearchInjected);
-
-        let response = convert_to_responses_api(upstream, true).await;
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        let output = String::from_utf8(body.to_vec()).unwrap();
-
-        assert!(!output.contains("web_search_call"));
-        assert!(output.contains("response.reasoning_summary_text.delta"));
-        assert!(output.contains("response.output_text.annotation.added"));
-        assert!(output.contains("https://example.com"));
-        assert!(output.contains("grounded"));
-        assert!(output.contains("\"total_tokens\":3"));
-        assert_eq!(output.matches("event: response.completed").count(), 1);
     }
 
     #[tokio::test]

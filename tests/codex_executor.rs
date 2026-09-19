@@ -96,7 +96,6 @@ async fn execute_and_capture_body(model: &str, body: Value) -> Value {
             model: model.into(),
             body,
             stream: false,
-            web_search_context_size: None,
             credentials: connection("codex"),
             proxy: None,
         })
@@ -206,7 +205,6 @@ async fn codex_executor_execute_missing_credentials_fails() {
             "messages": [{"role": "user", "content": "Hello"}]
         }),
         stream: false,
-        web_search_context_size: None,
         credentials: ProviderConnection {
             id: "test".into(),
             provider: "codex".into(),
@@ -267,7 +265,6 @@ async fn codex_executor_execute_returns_correct_url() {
             "messages": [{"role": "user", "content": "Hello"}]
         }),
         stream: false,
-        web_search_context_size: None,
         credentials: connection("codex"),
         proxy: None,
     };
@@ -290,7 +287,6 @@ async fn codex_executor_execute_returns_correct_headers() {
             "messages": [{"role": "user", "content": "Hello"}]
         }),
         stream: true,
-        web_search_context_size: None,
         credentials: connection("codex"),
         proxy: None,
     };
@@ -331,7 +327,6 @@ async fn codex_executor_execute_access_token_preferred() {
             "messages": [{"role": "user", "content": "Hello"}]
         }),
         stream: false,
-        web_search_context_size: None,
         credentials: connection_with_access_token("codex", "oauth-token-preferred"),
         proxy: None,
     };
@@ -359,7 +354,6 @@ async fn codex_executor_execute_non_streaming_no_accept_header() {
             "messages": [{"role": "user", "content": "Hello"}]
         }),
         stream: false,
-        web_search_context_size: None,
         credentials: connection("codex"),
         proxy: None,
     };
@@ -430,7 +424,6 @@ async fn codex_executor_execute_empty_messages_fails() {
             "messages": []
         }),
         stream: false,
-        web_search_context_size: None,
         credentials: connection("codex"),
         proxy: None,
     };

@@ -546,7 +546,6 @@ async fn codex_typed_prefetch_failure_prevents_generation_send() {
                 }]}]
             }),
             stream: true,
-            web_search_context_size: None,
             credentials: ProviderConnection {
                 id: "codex-c30a".into(),
                 provider: "codex".into(),

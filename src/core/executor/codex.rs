@@ -403,7 +403,6 @@ pub struct CodexExecutionRequest {
     pub model: String,
     pub body: Value,
     pub stream: bool,
-    pub web_search_context_size: Option<String>,
     pub credentials: ProviderConnection,
     pub proxy: Option<ProxyTarget>,
 }
@@ -560,7 +559,6 @@ impl CodexExecutor {
         body: &Value,
         actual_model: &str,
         _stream: bool,
-        web_search_context_size: Option<&str>,
     ) -> Result<Value, CodexExecutorError> {
         let mut normalized_body = body.clone();
         if normalized_body.get("input").is_none() {
@@ -645,7 +643,7 @@ impl CodexExecutor {
         // property escapes (\p{...}) with HTTP 400 — valid ECMA regex but not
         // supported by Codex's schema validator (#3922). Strip patterns before
         // dispatch; 9router applies the same strip in normalizeCodexTools.
-        let mut tools = normalized_body
+        let tools = normalized_body
             .get("tools")
             .and_then(Value::as_array)
             .map(|tools| {
@@ -655,21 +653,6 @@ impl CodexExecutor {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let tool_choice_none = body.get("tool_choice").and_then(Value::as_str) == Some("none");
-        if !tool_choice_none {
-            if let Some(context_size) = web_search_context_size {
-                if !tools
-                    .iter()
-                    .any(|tool| tool.get("type").and_then(Value::as_str) == Some("web_search"))
-                {
-                    tools.push(json!({
-                        "type": "web_search",
-                        "external_web_access": true,
-                        "search_context_size": context_size,
-                    }));
-                }
-            }
-        }
         if !tools.is_empty() {
             request_body["tools"] = Value::Array(tools);
         }
@@ -902,12 +885,7 @@ impl CodexExecutor {
                 .map_err(CodexExecutorError::ImagePrefetch)?;
         }
 
-        let transformed_body = self.transform_request_body(
-            &request.body,
-            &actual_model,
-            true,
-            request.web_search_context_size.as_deref(),
-        )?;
+        let transformed_body = self.transform_request_body(&request.body, &actual_model, true)?;
         ensure_final_request_size(&transformed_body).map_err(CodexExecutorError::ImagePrefetch)?;
 
         let client = self.pool.get("openai", request.proxy.as_ref())?;
@@ -1120,7 +1098,7 @@ mod tests {
         });
 
         let transformed = executor
-            .transform_request_body(&body, "gpt-5.6-luna", false, None)
+            .transform_request_body(&body, "gpt-5.6-luna", false)
             .unwrap();
         assert_eq!(transformed["tools"][0]["name"], "test_tool");
         assert_eq!(transformed["tools"][0]["description"], "Test tool");
@@ -1128,7 +1106,7 @@ mod tests {
     }
 
     #[test]
-    fn test_codex_web_search_injection_is_additive_and_idempotent() {
+    fn test_codex_preserves_native_web_search_without_injection() {
         let executor = CodexExecutor::new(Arc::new(ClientPool::new()), None).unwrap();
         let body = json!({
             "messages": [{"role": "user", "content": "hi"}],
@@ -1142,45 +1120,22 @@ mod tests {
         });
 
         let transformed = executor
-            .transform_request_body(&body, "gpt-5.6-luna", true, Some("low"))
+            .transform_request_body(&body, "gpt-5.6-luna", true)
             .unwrap();
         let tools = transformed["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 2);
+        assert_eq!(tools.len(), 1);
         assert_eq!(tools[0]["name"], "local_tool");
-        assert_eq!(tools[1]["type"], "web_search");
-        assert_eq!(tools[1]["external_web_access"], true);
-        assert_eq!(tools[1]["search_context_size"], "low");
 
         let existing = json!({
             "messages": [{"role": "user", "content": "hi"}],
             "tools": [{"type": "web_search", "external_web_access": false}]
         });
         let transformed = executor
-            .transform_request_body(&existing, "gpt-5.6-luna", true, Some("high"))
+            .transform_request_body(&existing, "gpt-5.6-luna", true)
             .unwrap();
         assert_eq!(transformed["tools"].as_array().unwrap().len(), 1);
         assert_eq!(transformed["tools"][0]["external_web_access"], false);
         assert!(transformed["tools"][0].get("search_context_size").is_none());
-
-        let disabled = executor
-            .transform_request_body(&body, "gpt-5.6-luna", true, None)
-            .unwrap();
-        assert_eq!(disabled["tools"].as_array().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn test_codex_web_search_respects_tool_choice_none() {
-        let executor = CodexExecutor::new(Arc::new(ClientPool::new()), None).unwrap();
-        let body = json!({
-            "messages": [{"role": "user", "content": "hi"}],
-            "tool_choice": "none"
-        });
-
-        let transformed = executor
-            .transform_request_body(&body, "gpt-5.6-luna", true, Some("medium"))
-            .unwrap();
-        assert!(transformed.get("tools").is_none());
-        assert_eq!(transformed["tool_choice"], "none");
     }
 
     #[test]
@@ -1194,7 +1149,7 @@ mod tests {
         });
 
         let transformed = executor
-            .transform_request_body(&body, "gpt-5.6-luna", false, None)
+            .transform_request_body(&body, "gpt-5.6-luna", false)
             .unwrap();
         assert_eq!(transformed["input"][1]["content"][0]["type"], "output_text");
         assert!(transformed["input"][1]["content"][0]
@@ -1218,7 +1173,7 @@ mod tests {
         });
 
         let transformed = executor
-            .transform_request_body(&body, "gpt-5.6-luna", false, None)
+            .transform_request_body(&body, "gpt-5.6-luna", false)
             .unwrap();
         assert_eq!(transformed["input"][0]["type"], "function_call");
         assert_eq!(transformed["input"][0]["call_id"], "call_1");
@@ -1240,7 +1195,7 @@ mod tests {
         let body = json!({"input": "Hello"});
 
         let transformed = executor
-            .transform_request_body(&body, "gpt-5.6-luna", false, None)
+            .transform_request_body(&body, "gpt-5.6-luna", false)
             .unwrap();
 
         assert_eq!(transformed["input"][0]["role"], "user");
@@ -1261,7 +1216,7 @@ mod tests {
         });
 
         let result = executor
-            .transform_request_body(&chat_body, "o4-mini-high", false, None)
+            .transform_request_body(&chat_body, "o4-mini-high", false)
             .unwrap();
 
         assert_eq!(result["model"], "o4-mini"); // suffix stripped
@@ -1300,7 +1255,7 @@ mod tests {
         });
 
         let result = executor
-            .transform_request_body(&chat_body, "o4-mini", true, None)
+            .transform_request_body(&chat_body, "o4-mini", true)
             .unwrap();
 
         let input = result["input"].as_array().unwrap();
@@ -1326,7 +1281,7 @@ mod tests {
         });
 
         let result = executor
-            .transform_request_body(&chat_body, "o4-mini", true, None)
+            .transform_request_body(&chat_body, "o4-mini", true)
             .unwrap();
 
         let input = result["input"].as_array().unwrap();
@@ -1426,7 +1381,7 @@ data: {"type":"response.output_text.delta","delta":"server_is_overloaded"}
         });
 
         let out = executor
-            .transform_request_body(&body, "o4-mini", false, None)
+            .transform_request_body(&body, "o4-mini", false)
             .unwrap();
 
         assert_eq!(out["instructions"], "");
@@ -1445,7 +1400,7 @@ data: {"type":"response.output_text.delta","delta":"server_is_overloaded"}
             "model": "codex/o4-mini"
         });
         let out = executor
-            .transform_request_body(&body, "o4-mini", false, None)
+            .transform_request_body(&body, "o4-mini", false)
             .unwrap();
         assert_eq!(out["include"], json!(["reasoning.encrypted_content"]));
 
@@ -1456,7 +1411,7 @@ data: {"type":"response.output_text.delta","delta":"server_is_overloaded"}
             "model": "codex/o4-mini"
         });
         let out = executor
-            .transform_request_body(&body, "o4-mini", false, None)
+            .transform_request_body(&body, "o4-mini", false)
             .unwrap();
         assert!(
             out.get("include").is_none(),
@@ -1474,7 +1429,7 @@ data: {"type":"response.output_text.delta","delta":"server_is_overloaded"}
         });
 
         assert!(matches!(
-            executor.transform_request_body(&body, "o4-mini", false, None),
+            executor.transform_request_body(&body, "o4-mini", false),
             Err(CodexExecutorError::UnsupportedFormat(_))
         ));
 
@@ -1483,7 +1438,7 @@ data: {"type":"response.output_text.delta","delta":"server_is_overloaded"}
             "model": "codex/o4-mini"
         });
         assert!(matches!(
-            executor.transform_request_body(&body, "o4-mini-ultra", false, None),
+            executor.transform_request_body(&body, "o4-mini-ultra", false),
             Err(CodexExecutorError::UnsupportedFormat(_))
         ));
     }
@@ -1499,7 +1454,7 @@ data: {"type":"response.output_text.delta","delta":"server_is_overloaded"}
             "model": "codex/o4-mini"
         });
         let out = executor
-            .transform_request_body(&body, "o4-mini", false, None)
+            .transform_request_body(&body, "o4-mini", false)
             .unwrap();
         assert_eq!(out["service_tier"], "priority");
 
@@ -1510,7 +1465,7 @@ data: {"type":"response.output_text.delta","delta":"server_is_overloaded"}
             "model": "codex/o4-mini"
         });
         let out = executor
-            .transform_request_body(&body, "o4-mini", false, None)
+            .transform_request_body(&body, "o4-mini", false)
             .unwrap();
         assert!(out.get("service_tier").is_none());
     }

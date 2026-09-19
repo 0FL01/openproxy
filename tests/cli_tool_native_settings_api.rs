@@ -896,7 +896,10 @@ async fn opencode_settings_post_patch_and_delete_match_openproxy_file_behavior()
                         "region": "keep",
                         "baseURL": "https://old.example.com/v1",
                         "apiKey": "old-key",
-                        "headers": {"X-Keep": "yes"}
+                        "headers": {
+                            "X-Keep": "yes",
+                            "X-OpenProxy-Codex-Web-Search": "true"
+                        }
                     },
                     "models": {
                         "old/model": { "name": "old/model" },
@@ -964,10 +967,9 @@ async fn opencode_settings_post_patch_and_delete_match_openproxy_file_behavior()
         saved["provider"]["openproxy"]["options"]["headers"]["X-Keep"],
         "yes"
     );
-    assert_eq!(
-        saved["provider"]["openproxy"]["options"]["headers"]["x-openproxy-codex-web-search"],
-        "true"
-    );
+    assert!(saved["provider"]["openproxy"]["options"]["headers"]
+        .get("X-OpenProxy-Codex-Web-Search")
+        .is_none());
     assert_eq!(
         saved["provider"]["openproxy"]["models"]["old/model"]["name"],
         "old/model"
@@ -1016,31 +1018,7 @@ async fn opencode_settings_post_patch_and_delete_match_openproxy_file_behavior()
     assert!(models.contains(&json!("oa/gpt-4.1-mini")));
     assert_eq!(json["opencode"]["activeModel"], "oa/gpt-4.1-mini");
     assert_eq!(json["opencode"]["baseURL"], "https://proxy.example.com/v1");
-    assert_eq!(json["opencode"]["codexWebSearch"], true);
-
-    let disable_search = app
-        .clone()
-        .oneshot(authorized_request(
-            Method::POST,
-            "/api/cli-tools/opencode-settings",
-            Body::from(
-                r#"{"baseUrl":"https://proxy.example.com","apiKey":"sk-openproxy","models":["oa/gpt-4.1","oa/gpt-4.1-mini"],"activeModel":"oa/gpt-4.1-mini","subagentModel":"oa/gpt-4.1-nano","codexWebSearch":false}"#,
-            ),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(disable_search.status(), StatusCode::OK);
-    let search_disabled: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-    assert_eq!(
-        search_disabled["provider"]["openproxy"]["options"]["headers"]["X-Keep"],
-        "yes"
-    );
-    assert!(
-        search_disabled["provider"]["openproxy"]["options"]["headers"]
-            .get("x-openproxy-codex-web-search")
-            .is_none()
-    );
+    assert_eq!(json["opencode"]["codexWebSearch"], false);
 
     let patch = app
         .clone()

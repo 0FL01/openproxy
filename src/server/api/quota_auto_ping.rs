@@ -1420,7 +1420,6 @@ async fn send_codex_ping(
         model: model.id.clone(),
         body,
         stream: true,
-        web_search_context_size: None,
         credentials: connection.clone(),
         proxy,
     };

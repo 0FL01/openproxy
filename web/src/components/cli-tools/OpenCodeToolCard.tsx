@@ -37,7 +37,6 @@ interface OpenCodeStatus {
   opencode?: {
     models?: string[];
     activeModel?: string;
-    codexWebSearch?: boolean;
   };
 }
 
@@ -74,7 +73,6 @@ export default function OpenCodeToolCard({ tool, isExpanded, onToggle, baseUrl, 
   const [customBaseUrl, setCustomBaseUrl] = useState<string>("");
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [activeModel, setActiveModel] = useState<string>("");
-  const [codexWebSearch, setCodexWebSearch] = useState<boolean>(false);
 
   useEffect(() => {
     if (apiKeys?.length > 0 && !selectedApiKey) {
@@ -102,8 +100,6 @@ export default function OpenCodeToolCard({ tool, isExpanded, onToggle, baseUrl, 
     if (status?.opencode?.activeModel) {
       setActiveModel(status.opencode.activeModel);
     }
-    setCodexWebSearch(status?.opencode?.codexWebSearch === true);
-
     // Parse subagent settings from agent.explorer if exists
     if (status?.config?.agent?.explorer?.model?.startsWith("openproxy/")) {
       setSubagentModel(status.config.agent.explorer.model.replace("openproxy/", ""));
@@ -167,8 +163,7 @@ export default function OpenCodeToolCard({ tool, isExpanded, onToggle, baseUrl, 
           apiKey: keyToUse,
           models: selectedModels,
           activeModel: activeModel === "" ? "" : (activeModel || selectedModels[0]),
-          subagentModel: subagentModel,
-          codexWebSearch
+          subagentModel: subagentModel
         }),
       });
       const data = await res.json();
@@ -232,7 +227,6 @@ export default function OpenCodeToolCard({ tool, isExpanded, onToggle, baseUrl, 
             options: {
               baseURL: getEffectiveBaseUrl(),
               apiKey: keyToUse,
-              ...(codexWebSearch ? { headers: { "X-OpenProxy-Codex-Web-Search": "true" } } : {}),
             },
             models: modelsObj,
           },
@@ -447,21 +441,6 @@ export default function OpenCodeToolCard({ tool, isExpanded, onToggle, baseUrl, 
                       </span>
                     </div>
                   </div>
-                </div>
-
-                {/* Codex Web Search */}
-                <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[8rem_auto_1fr] sm:items-center sm:gap-2">
-                  <span className="text-xs font-semibold text-text-main sm:text-right sm:text-sm">Codex Web Search</span>
-                  <span className="material-symbols-outlined hidden text-text-muted text-[14px] sm:inline">arrow_forward</span>
-                  <label className="flex items-center gap-2 text-xs text-text-muted">
-                    <input
-                      type="checkbox"
-                      checked={codexWebSearch}
-                      onChange={(event: ChangeEvent<HTMLInputElement>) => setCodexWebSearch(event.target.checked)}
-                      className="size-4 rounded border-border"
-                    />
-                    Enable hosted search only when OpenProxy routes the request to a supported Codex model
-                  </label>
                 </div>
 
                 {/* Subagent Model */}

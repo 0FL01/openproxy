@@ -84,8 +84,6 @@ export default function ProviderDetailPageClient() {
   const [bulkProxyPoolId, setBulkProxyPoolId] = useState("__none__");
   const [bulkUpdatingProxy, setBulkUpdatingProxy] = useState(false);
   const [thinkingMode, setThinkingMode] = useState("auto");
-  const [webSearchContextSize, setWebSearchContextSize] = useState("medium");
-  const [webSearchDepthSaving, setWebSearchDepthSaving] = useState(false);
   const [contextLimit, setContextLimit] = useState(String(DEFAULT_CONTEXT_LIMIT));
   const [savedContextLimit, setSavedContextLimit] = useState(String(DEFAULT_CONTEXT_LIMIT));
   const [contextLimitSaving, setContextLimitSaving] = useState(false);
@@ -256,8 +254,6 @@ export default function ProviderDetailPageClient() {
       if (proxyPoolsRes.ok) {
         setProxyPools(proxyPoolsData.proxyPools || []);
       }
-      const searchDepth = settingsData.codexWebSearchContextSize;
-      setWebSearchContextSize(["off", "low", "medium", "high"].includes(searchDepth) ? searchDepth : "medium");
       const loadedContextLimit = String(
         (settingsData.providerContextLimits || {})[providerId] || DEFAULT_CONTEXT_LIMIT,
       );
@@ -311,25 +307,6 @@ export default function ProviderDetailPageClient() {
 
   const handleThinkingModeChange = (mode) => {
     setThinkingMode(mode);
-  };
-
-  const handleWebSearchContextSizeChange = async (value) => {
-    const previous = webSearchContextSize;
-    setWebSearchContextSize(value);
-    setWebSearchDepthSaving(true);
-    try {
-      const res = await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ codexWebSearchContextSize: value }),
-      });
-      if (!res.ok) throw new Error("Failed to save Codex web search depth");
-    } catch (error) {
-      setWebSearchContextSize(previous);
-      notify.error(error instanceof Error ? error.message : "Failed to save Codex web search depth");
-    } finally {
-      setWebSearchDepthSaving(false);
-    }
   };
 
   const saveContextLimit = async () => {
@@ -1376,23 +1353,6 @@ export default function ProviderDetailPageClient() {
                         {opt === "auto" ? "Auto" : opt.charAt(0).toUpperCase() + opt.slice(1)}
                       </option>
                     ))}
-                  </select>
-                </div>
-              )}
-              {providerId === "codex" && (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-text-muted font-medium">Web Search</span>
-                  <select
-                    value={webSearchContextSize}
-                    onChange={(e) => handleWebSearchContextSizeChange(e.target.value)}
-                    disabled={webSearchDepthSaving}
-                    title="Controls context depth for header-enabled Codex web search"
-                    className="text-xs px-2 py-1 border border-border rounded-md bg-background focus:outline-none focus:border-primary disabled:opacity-60"
-                  >
-                    <option value="off">Off</option>
-                    <option value="low">Low</option>
-                    <option value="medium">Medium</option>
-                    <option value="high">High</option>
                   </select>
                 </div>
               )}

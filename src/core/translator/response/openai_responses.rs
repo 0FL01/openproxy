@@ -2,6 +2,17 @@
 
 use serde_json::Value;
 
+pub(crate) fn format_error_event(sequence_number: u64, code: &str, message: &str) -> String {
+    let data = serde_json::json!({
+        "type": "error",
+        "sequence_number": sequence_number,
+        "code": code,
+        "message": message,
+        "param": null,
+    });
+    format!("event: error\ndata: {data}\n\n")
+}
+
 /// Increment the running `seq` counter in the SSE state map and return the new value.
 fn next_seq(state: &mut serde_json::Map<String, Value>) -> u64 {
     let current = state.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);

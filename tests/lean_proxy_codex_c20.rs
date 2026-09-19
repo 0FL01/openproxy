@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::body::Body;
+use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use common::lean_harness::{MockUpstream, ScriptedResponse, TempTestDb};
 use common::test_api_key;
@@ -97,6 +97,36 @@ async fn post_codex(app: &axum::Router, model: &str) -> axum::response::Response
         )
         .await
         .expect("C20 response")
+}
+
+async fn post_codex_responses(
+    app: &axum::Router,
+    model: &str,
+    legacy_search_header: bool,
+) -> axum::response::Response {
+    let mut request = Request::builder()
+        .method("POST")
+        .uri("/v1/responses")
+        .header("authorization", "Bearer test-key")
+        .header("content-type", "application/json");
+    if legacy_search_header {
+        request = request.header("X-OpenProxy-Codex-Web-Search", "true");
+    }
+    app.clone()
+        .oneshot(
+            request
+                .body(Body::from(
+                    json!({
+                        "model": format!("codex/{model}"),
+                        "input": "stream failure",
+                        "stream": true
+                    })
+                    .to_string(),
+                ))
+                .expect("C20 Responses request"),
+        )
+        .await
+        .expect("C20 Responses response")
 }
 
 #[tokio::test]
@@ -280,6 +310,104 @@ async fn configuration_reconciliation_removes_inactive_and_tracks_explicit_custo
     assert!(state.codex_models.union_active(&deleted).models.is_empty());
     assert_eq!(catalog.request_count().await, 0);
     assert_eq!(generation.request_count().await, 0);
+    catalog.shutdown().await;
+    generation.shutdown().await;
+}
+
+#[tokio::test]
+async fn post_commit_transport_failure_emits_sequenced_responses_error_once() {
+    let catalog = MockUpstream::start([ScriptedResponse::json(
+        StatusCode::OK,
+        catalog_payload(&[("gpt-known", false)]),
+    )])
+    .await;
+    let generation = MockUpstream::start([ScriptedResponse::sse([concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"sequence_number\":4,",
+        "\"response\":{\"id\":\"resp_c20\",\"created_at\":1,\"model\":\"gpt-known\"}}\n\n"
+    )])
+    .failing_after_chunks()])
+    .await;
+    let connection = codex_connection("codex-stream-error", 1);
+    let (_db, state) = state_with_catalog(
+        catalog.url("/backend-api/codex/models"),
+        generation.url("/backend-api/codex/responses"),
+        vec![connection.clone()],
+        Vec::new(),
+    )
+    .await;
+    state
+        .codex_models
+        .refresh_connection(&state, &connection, true)
+        .await
+        .expect("seed Codex inventory");
+
+    let response = post_codex_responses(&openproxy::build_app(state), "gpt-known", false).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("bounded Responses SSE");
+    let output = String::from_utf8(body.to_vec()).expect("Responses SSE is UTF-8");
+
+    assert!(output.contains("event: response.created"), "{output}");
+    assert_eq!(output.matches("event: error").count(), 1, "{output}");
+    let error_data = output
+        .split("event: error\n")
+        .nth(1)
+        .and_then(|tail| tail.lines().find_map(|line| line.strip_prefix("data: ")))
+        .and_then(|data| serde_json::from_str::<serde_json::Value>(data).ok())
+        .expect("valid Responses error data");
+    assert_eq!(error_data["type"], "error");
+    assert_eq!(error_data["sequence_number"], 5);
+    assert!(error_data["code"].is_string());
+    assert!(error_data["message"].is_string());
+    assert_eq!(error_data["param"], serde_json::Value::Null);
+    assert!(!output.contains("response.completed"), "{output}");
+    assert!(!output.contains("data: [DONE]"), "{output}");
+    assert_eq!(generation.request_count().await, 1);
+    catalog.shutdown().await;
+    generation.shutdown().await;
+}
+
+#[tokio::test]
+async fn legacy_search_header_does_not_inject_a_codex_tool() {
+    let catalog = MockUpstream::start([ScriptedResponse::json(
+        StatusCode::OK,
+        catalog_payload(&[("gpt-search", true)]),
+    )])
+    .await;
+    let generation = MockUpstream::start([ScriptedResponse::sse([concat!(
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"sequence_number\":1,",
+        "\"response\":{\"id\":\"resp_search\",\"output\":[]}}\n\n"
+    )])])
+    .await;
+    let connection = codex_connection("codex-no-injection", 1);
+    let (_db, state) = state_with_catalog(
+        catalog.url("/backend-api/codex/models"),
+        generation.url("/backend-api/codex/responses"),
+        vec![connection.clone()],
+        Vec::new(),
+    )
+    .await;
+    state
+        .codex_models
+        .refresh_connection(&state, &connection, true)
+        .await
+        .expect("seed search-capable Codex inventory");
+
+    let response = post_codex_responses(&openproxy::build_app(state), "gpt-search", true).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("bounded Responses SSE");
+    let requests = generation.requests().await;
+    assert_eq!(requests.len(), 1);
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert!(body
+        .get("tools")
+        .and_then(serde_json::Value::as_array)
+        .is_none_or(|tools| tools.iter().all(|tool| tool["type"] != "web_search")));
     catalog.shutdown().await;
     generation.shutdown().await;
 }

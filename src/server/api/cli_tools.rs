@@ -631,6 +631,8 @@ async fn delete_droid_settings(State(state): State<AppState>, headers: HeaderMap
 // GET/POST/PATCH/DELETE /api/cli-tools/opencode-settings
 // ═══════════════════════════════════════════════════════════════════════════
 
+const RETIRED_CODEX_WEB_SEARCH_HEADER: &str = "x-openproxy-codex-web-search";
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OpenCodeSettingsRequest {
@@ -640,8 +642,6 @@ struct OpenCodeSettingsRequest {
     pub models: Option<Vec<String>>,
     pub active_model: Option<String>,
     pub subagent_model: Option<String>,
-    #[serde(default)]
-    pub codex_web_search: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -703,15 +703,7 @@ async fn get_opencode_settings(State(state): State<AppState>, headers: HeaderMap
                         .and_then(|provider| provider.get("options"))
                         .and_then(|options| options.get("baseURL"))
                         .and_then(Value::as_str),
-                    "codexWebSearch": provider_config
-                        .and_then(|provider| provider.get("options"))
-                        .and_then(|options| options.get("headers"))
-                        .and_then(Value::as_object)
-                        .and_then(|headers| headers.iter().find(|(name, _)| {
-                            name.eq_ignore_ascii_case(super::chat::CODEX_WEB_SEARCH_HEADER)
-                        }))
-                        .and_then(|(_, value)| value.as_str())
-                        .is_some_and(|value| value.eq_ignore_ascii_case("true")),
+                    "codexWebSearch": false,
                 },
             }))
             .into_response()
@@ -1477,37 +1469,21 @@ async fn write_opencode_settings(
     options_map.insert("baseURL".to_string(), Value::String(normalized_base_url));
     options_map.insert("apiKey".to_string(), Value::String(api_key));
 
-    if req.codex_web_search {
-        let headers = options_map
-            .entry("headers".to_string())
-            .or_insert_with(|| Value::Object(serde_json::Map::new()));
-        if !headers.is_object() {
-            *headers = Value::Object(serde_json::Map::new());
-        }
-        headers
-            .as_object_mut()
-            .expect("headers is an object")
-            .insert(
-                super::chat::CODEX_WEB_SEARCH_HEADER.to_string(),
-                Value::String("true".to_string()),
-            );
-    } else {
-        let remove_empty_headers = options_map
-            .get_mut("headers")
-            .and_then(Value::as_object_mut)
-            .is_some_and(|headers| {
-                let key = headers
-                    .keys()
-                    .find(|name| name.eq_ignore_ascii_case(super::chat::CODEX_WEB_SEARCH_HEADER))
-                    .cloned();
-                if let Some(key) = key {
-                    headers.remove(&key);
-                }
-                headers.is_empty()
-            });
-        if remove_empty_headers {
-            options_map.remove("headers");
-        }
+    let remove_empty_headers = options_map
+        .get_mut("headers")
+        .and_then(Value::as_object_mut)
+        .is_some_and(|headers| {
+            let key = headers
+                .keys()
+                .find(|name| name.eq_ignore_ascii_case(RETIRED_CODEX_WEB_SEARCH_HEADER))
+                .cloned();
+            if let Some(key) = key {
+                headers.remove(&key);
+            }
+            headers.is_empty()
+        });
+    if remove_empty_headers {
+        options_map.remove("headers");
     }
 
     let existing_models = existing_provider_map

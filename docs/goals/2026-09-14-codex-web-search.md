@@ -2,7 +2,11 @@
 
 Status: complete
 Source: User-approved audited implementation plan (2026-09-14)
-Last updated: 2026-09-14
+Last updated: 2026-09-19
+
+> Superseded on 2026-09-19: the generic header-driven injection and OpenCode
+> controls were retired by `2026-09-19-codex-responses-stream-errors.md`.
+> Explicit caller-owned native `web_search` remains supported.
 
 ## Objective
 Allow agent harnesses to opt into native Codex web search through OpenProxy,

@@ -101,12 +101,6 @@ fn strip_forwarding_headers(headers: &mut HeaderMap) {
 /// Anthropic every ~60s, Gemini every ~30s — 180s is well past any of them).
 const SSE_STALL_TIMEOUT: Duration = Duration::from_secs(180);
 
-pub(super) const CODEX_WEB_SEARCH_HEADER: &str = "x-openproxy-codex-web-search";
-const CODEX_WEB_SEARCH_CONTEXT_SIZE_KEY: &str = "codexWebSearchContextSize";
-
-#[derive(Clone, Debug)]
-pub(super) struct CodexWebSearchInjected;
-
 #[derive(Clone, Copy, Debug)]
 pub(super) struct RoutedResponseFormats {
     pub client: Format,
@@ -133,41 +127,12 @@ fn has_native_codex_web_search(body: &Value) -> bool {
         })
 }
 
-fn codex_web_search_context_size(settings: &crate::types::Settings) -> Option<&'static str> {
-    match settings
-        .extra
-        .get(CODEX_WEB_SEARCH_CONTEXT_SIZE_KEY)
-        .and_then(Value::as_str)
-    {
-        Some("off") => None,
-        Some("low") => Some("low"),
-        Some("high") => Some("high"),
-        Some("medium") | None => Some("medium"),
-        Some(_) => Some("medium"),
-    }
-}
-
-fn requests_codex_web_search(headers: &HeaderMap, body: &Value) -> bool {
+fn requests_codex_web_search(body: &Value) -> bool {
     if body.get("tool_choice").and_then(Value::as_str) == Some("none") {
         return false;
     }
 
-    let header_enabled = headers
-        .get(CODEX_WEB_SEARCH_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.trim().eq_ignore_ascii_case("true"));
-    header_enabled || has_native_codex_web_search(body)
-}
-
-fn mark_codex_web_search_injected(mut response: Response, injected: bool) -> Response {
-    if injected {
-        response.extensions_mut().insert(CodexWebSearchInjected);
-    }
-    response
-}
-
-fn codex_web_search_is_injected(context_size: Option<&str>, body: &Value) -> bool {
-    context_size.is_some() && !has_native_codex_web_search(body)
+    has_native_codex_web_search(body)
 }
 
 fn codex_models_support_search(
@@ -488,7 +453,7 @@ async fn chat_completions_impl(
         .collect();
 
     let client_tool = detect_client_tool(&headers_map, &body);
-    let codex_web_search_requested = requests_codex_web_search(&headers, &body);
+    let codex_web_search_requested = requests_codex_web_search(&body);
 
     // Accept/stream preference is applied via resolve_stream_flags on the plan
     // (does NOT mutate body.stream when client set stream:true — 9router parity).
@@ -978,24 +943,12 @@ async fn forward_with_provider_fallback(
             });
         };
 
-        let native_codex_web_search_requested =
-            codex_web_search_requested && has_native_codex_web_search(&request_body);
-        let injected_codex_web_search_context =
-            if codex_web_search_requested && !native_codex_web_search_requested {
-                codex_web_search_context_size(&snapshot.settings)
-            } else {
-                None
-            };
-        let effective_codex_web_search_requested =
-            native_codex_web_search_requested || injected_codex_web_search_context.is_some();
-
-        let enable_codex_web_search = if effective_codex_web_search_requested && provider == "codex"
-        {
+        if codex_web_search_requested && provider == "codex" {
             match state
                 .codex_models
                 .published_for_connection(&snapshot, &connection)
             {
-                Some(inventory) if codex_models_support_search(&inventory.models, model) => true,
+                Some(inventory) if codex_models_support_search(&inventory.models, model) => {}
                 Some(_) => {
                     last_error = Some(ProviderAttemptError::new(
                         400,
@@ -1017,17 +970,7 @@ async fn forward_with_provider_fallback(
                     continue;
                 }
             }
-        } else {
-            false
-        };
-        let web_search_context_size = if enable_codex_web_search {
-            injected_codex_web_search_context.map(str::to_string)
-        } else {
-            None
-        };
-        let codex_web_search_injected =
-            codex_web_search_is_injected(web_search_context_size.as_deref(), &request_body);
-
+        }
         // 9router resolveTransport: pin multi-endpoint base URL for this request
         if let Some(ref base) = plan.transport_base_url {
             connection.runtime_transport = Some(crate::types::RuntimeTransport {
@@ -1136,7 +1079,6 @@ async fn forward_with_provider_fallback(
                         model: model.to_string(),
                         body: request_body.clone(),
                         stream,
-                        web_search_context_size: web_search_context_size.clone(),
                         credentials: connection.clone(),
                         proxy,
                     })
@@ -1631,8 +1573,6 @@ async fn forward_with_provider_fallback(
                         let response =
                             proxy_response(result.response, provider, plan, attempt_log).await;
                         let response = mark_routed_response_formats(response, plan);
-                        let response =
-                            mark_codex_web_search_injected(response, codex_web_search_injected);
                         return Ok(response);
                     }
                     let normalize_for_dashboard =
@@ -1648,8 +1588,6 @@ async fn forward_with_provider_fallback(
                     )
                     .await;
                     let response = mark_routed_response_formats(response, plan);
-                    let response =
-                        mark_codex_web_search_injected(response, codex_web_search_injected);
                     return Ok(response);
                 }
 
@@ -2538,9 +2476,10 @@ async fn proxy_response_with_pending_tracking(
                             if let Some(log) = attempt_log.take() {
                                 log.finish("error", Some(502), usage.as_ref(), Some(error_kind::UPSTREAM_FAILURE)).await;
                             }
-                            yield Ok::<Bytes, std::io::Error>(Bytes::from(write_streaming_error(
+                            yield Ok::<Bytes, std::io::Error>(Bytes::from(dispatch.streaming_error(
                                 "Upstream SSE stream stalled",
                                 "server_error",
+                                None,
                             )));
                             return;
                         }
@@ -2559,7 +2498,7 @@ async fn proxy_response_with_pending_tracking(
                                 if let Some(log) = attempt_log.take() {
                                     log.finish("error", Some(502), usage.as_ref(), Some(error_kind::LOCAL_FAILURE)).await;
                                 }
-                                yield Ok::<Bytes, std::io::Error>(Bytes::from(write_streaming_error_with_code(
+                                yield Ok::<Bytes, std::io::Error>(Bytes::from(dispatch.streaming_error(
                                     &error.message, "upstream_error", Some(error.code),
                                 )));
                                 return;
@@ -2581,9 +2520,10 @@ async fn proxy_response_with_pending_tracking(
                             if let Some(log) = attempt_log.take() {
                                 log.finish("error", Some(502), usage.as_ref(), Some(error_kind::UPSTREAM_FAILURE)).await;
                             }
-                            yield Ok::<Bytes, std::io::Error>(Bytes::from(write_streaming_error(
+                            yield Ok::<Bytes, std::io::Error>(Bytes::from(dispatch.streaming_error(
                                 "Upstream stream error",
                                 "server_error",
+                                None,
                             )));
                             return;
                         }
@@ -2598,7 +2538,7 @@ async fn proxy_response_with_pending_tracking(
                     if let Some(log) = attempt_log.take() {
                         log.finish("error", Some(502), usage.as_ref(), Some(error_kind::LOCAL_FAILURE)).await;
                     }
-                    yield Ok::<Bytes, std::io::Error>(Bytes::from(write_streaming_error_with_code(
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from(dispatch.streaming_error(
                         &error.message, "upstream_error", Some(error.code),
                     )));
                     return;
@@ -2639,9 +2579,10 @@ async fn proxy_response_with_pending_tracking(
                             if let Some(log) = attempt_log.take() {
                                 log.finish("error", Some(502), usage.as_ref(), Some(error_kind::UPSTREAM_FAILURE)).await;
                             }
-                            yield Ok::<Bytes, std::io::Error>(Bytes::from(write_streaming_error(
+                            yield Ok::<Bytes, std::io::Error>(Bytes::from(dispatch.streaming_error(
                                 "Upstream SSE stream stalled",
                                 "server_error",
+                                None,
                             )));
                             return;
                         }
@@ -2663,7 +2604,7 @@ async fn proxy_response_with_pending_tracking(
                                     if let Some(log) = attempt_log.take() {
                                         log.finish("error", Some(502), usage.as_ref(), Some(error_kind::LOCAL_FAILURE)).await;
                                     }
-                                    yield Ok::<Bytes, std::io::Error>(Bytes::from(write_streaming_error_with_code(
+                                    yield Ok::<Bytes, std::io::Error>(Bytes::from(dispatch.streaming_error(
                                         &error.message, "upstream_error", Some(error.code),
                                     )));
                                     return;
@@ -2685,9 +2626,10 @@ async fn proxy_response_with_pending_tracking(
                             if let Some(log) = attempt_log.take() {
                                 log.finish("error", Some(502), usage.as_ref(), Some(error_kind::UPSTREAM_FAILURE)).await;
                             }
-                            yield Ok::<Bytes, std::io::Error>(Bytes::from(write_streaming_error(
+                            yield Ok::<Bytes, std::io::Error>(Bytes::from(dispatch.streaming_error(
                                 "Upstream stream error",
                                 "server_error",
+                                None,
                             )));
                             return;
                         }
@@ -2702,7 +2644,7 @@ async fn proxy_response_with_pending_tracking(
                     if let Some(log) = attempt_log.take() {
                         log.finish("error", Some(502), usage.as_ref(), Some(error_kind::LOCAL_FAILURE)).await;
                     }
-                    yield Ok::<Bytes, std::io::Error>(Bytes::from(write_streaming_error_with_code(
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from(dispatch.streaming_error(
                         &error.message, "upstream_error", Some(error.code),
                     )));
                     return;
@@ -2743,6 +2685,7 @@ struct StreamDispatch {
     translation_state: Option<crate::core::translator::registry::ResponseTransformState>,
     source: Format,
     target: Format,
+    next_response_sequence_number: u64,
 }
 
 #[derive(Default)]
@@ -2783,6 +2726,7 @@ impl StreamDispatch {
             translation_state,
             source,
             target,
+            next_response_sequence_number: 0,
         }
     }
 
@@ -2888,6 +2832,7 @@ impl StreamDispatch {
             .flatten()
             .and_then(|payload| serde_json::from_str::<Value>(payload).ok());
         if let Some(value) = parsed.as_ref() {
+            self.observe_response_sequence(value);
             if let Some(usage) = extract_token_usage_from_value(value) {
                 self.usage = Some(usage);
             }
@@ -2936,6 +2881,49 @@ impl StreamDispatch {
             }
         }
         Ok(())
+    }
+
+    fn observe_response_sequence(&mut self, value: &Value) {
+        if self.target != Format::OpenAiResponses {
+            return;
+        }
+        if let Some(sequence_number) = value.get("sequence_number").and_then(Value::as_u64) {
+            self.next_response_sequence_number = self
+                .next_response_sequence_number
+                .max(sequence_number.saturating_add(1));
+        }
+    }
+
+    fn next_responses_sequence_number(&self) -> u64 {
+        let translated = self
+            .translation_state
+            .as_ref()
+            .and_then(|state| state.responses.state.get("seq"))
+            .and_then(Value::as_u64)
+            .map_or(0, |sequence_number| sequence_number.saturating_add(1));
+        self.next_response_sequence_number.max(translated)
+    }
+
+    fn streaming_error(&self, error_msg: &str, error_type: &str, code: Option<&str>) -> String {
+        let friendly = crate::core::utils::error::friendly_error_message(502, error_msg);
+        if self.target == Format::OpenAiResponses {
+            return crate::core::translator::response::openai_responses::format_error_event(
+                self.next_responses_sequence_number(),
+                code.unwrap_or("upstream_stream_error"),
+                &friendly,
+            );
+        }
+        let msg = serde_json::json!({
+            "error": {
+                "message": friendly,
+                "type": error_type,
+                "code": code
+            }
+        });
+        format!(
+            "data: {}\n\n",
+            serde_json::to_string(&msg).unwrap_or_default()
+        )
     }
 }
 
@@ -3625,40 +3613,13 @@ fn cors_preflight_response(methods: &str) -> Response {
     response
 }
 
-/// Produce an OpenAI-compatible SSE error chunk for mid-stream errors.
-/// Clients (Claude Code, Gemini CLI, etc.) parse error chunks and surface
-/// the message, so writing one before closing the stream lets them show
-/// a useful error instead of a generic "connection closed" message.
-fn write_streaming_error(error_msg: &str, error_type: &str) -> String {
-    write_streaming_error_with_code(error_msg, error_type, None)
-}
-
-fn write_streaming_error_with_code(
-    error_msg: &str,
-    error_type: &str,
-    code: Option<&str>,
-) -> String {
-    let friendly = crate::core::utils::error::friendly_error_message(502, error_msg);
-    let msg = serde_json::json!({
-        "error": {
-            "message": friendly,
-            "type": error_type,
-            "code": code
-        }
-    });
-    format!(
-        "data: {}\n\n",
-        serde_json::to_string(&msg).unwrap_or_default()
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashSet};
 
     use axum::{
         body::Body,
-        http::{HeaderMap, HeaderValue, StatusCode},
+        http::{HeaderMap, StatusCode},
         response::Response,
     };
     use bytes::Bytes;
@@ -3668,17 +3629,15 @@ mod tests {
 
     use super::{
         attempt_error_response, build_dashboard_sse_response, build_proxied_response,
-        codex_models_support_search, codex_web_search_context_size, codex_web_search_is_injected,
-        mark_codex_web_search_injected, requests_codex_web_search, select_connection,
-        select_connection_with_supporters, should_prefetch_message_images, CodexWebSearchInjected,
-        StreamDispatch,
+        codex_models_support_search, requests_codex_web_search, select_connection,
+        select_connection_with_supporters, should_prefetch_message_images, StreamDispatch,
     };
     use crate::core::account_fallback::ProviderAttemptError;
     use crate::core::chat::RequestPlan;
     use crate::core::translator::registry::Format;
     use crate::core::translator::response_transform::OpenAiTransformer;
     use crate::server::codex_catalog::CodexModelMetadata;
-    use crate::types::{AppDb, ProviderConnection, Settings};
+    use crate::types::{AppDb, ProviderConnection};
 
     fn connection(id: &str, priority: u32) -> ProviderConnection {
         ProviderConnection {
@@ -3773,65 +3732,14 @@ mod tests {
     }
 
     #[test]
-    fn codex_web_search_intent_is_client_independent_and_respects_none() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "x-openproxy-codex-web-search",
-            HeaderValue::from_static("true"),
-        );
+    fn codex_web_search_intent_requires_a_native_tool_and_respects_none() {
+        assert!(!requests_codex_web_search(&json!({"messages": []})));
         assert!(requests_codex_web_search(
-            &headers,
-            &json!({"messages": []})
-        ));
-        assert!(requests_codex_web_search(
-            &HeaderMap::new(),
             &json!({"tools": [{"type": "web_search"}]})
         ));
         assert!(!requests_codex_web_search(
-            &headers,
             &json!({"tools": [{"type": "web_search"}], "tool_choice": "none"})
         ));
-        assert!(codex_web_search_is_injected(Some("low"), &json!({})));
-        assert!(!codex_web_search_is_injected(
-            Some("high"),
-            &json!({"tools": [{"type": "web_search"}]})
-        ));
-        assert!(!codex_web_search_is_injected(None, &json!({})));
-
-        let injected = mark_codex_web_search_injected(Response::new(Body::empty()), true);
-        assert!(injected
-            .extensions()
-            .get::<CodexWebSearchInjected>()
-            .is_some());
-        let native = mark_codex_web_search_injected(Response::new(Body::empty()), false);
-        assert!(native
-            .extensions()
-            .get::<CodexWebSearchInjected>()
-            .is_none());
-    }
-
-    #[test]
-    fn codex_web_search_context_defaults_to_medium_and_supports_off() {
-        let mut settings = Settings::default();
-        assert_eq!(codex_web_search_context_size(&settings), Some("medium"));
-
-        for value in ["low", "medium", "high"] {
-            settings.extra.insert(
-                "codexWebSearchContextSize".into(),
-                Value::String(value.into()),
-            );
-            let context_size = codex_web_search_context_size(&settings);
-            assert_eq!(context_size, Some(value));
-            assert!(codex_web_search_is_injected(context_size, &json!({})));
-        }
-
-        settings.extra.insert(
-            "codexWebSearchContextSize".into(),
-            Value::String("off".into()),
-        );
-        let context_size = codex_web_search_context_size(&settings);
-        assert_eq!(context_size, None);
-        assert!(!codex_web_search_is_injected(context_size, &json!({})));
     }
 
     #[test]

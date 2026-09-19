@@ -27,7 +27,7 @@ test("discovery authenticates, refreshes inventory, preserves options and valida
     requests++
     assert.equal(req.url, "/v1/models")
     assert.equal(req.headers.authorization, "Bearer fixture-key")
-    assert.equal(req.headers["x-openproxy-codex-web-search"], "true")
+    assert.equal(req.headers["x-openproxy-fixture"], "keep")
     res.writeHead(status, { "Content-Type": "application/json" })
     res.end(JSON.stringify(body))
   }).listen(0, "127.0.0.1")
@@ -41,7 +41,7 @@ test("discovery authenticates, refreshes inventory, preserves options and valida
     timeout: false,
     chunkTimeout: 6000000,
     setCacheKey: true,
-    headers: { "X-OpenProxy-Codex-Web-Search": "true" },
+    headers: { "X-OpenProxy-Fixture": "keep" },
   }
   const config = { provider: {
     ludka2: { npm: "@ai-sdk/openai", options, models: {

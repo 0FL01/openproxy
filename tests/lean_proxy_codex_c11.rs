@@ -45,7 +45,6 @@ fn codex_request() -> CodexExecutionRequest {
             "stream": true
         }),
         stream: true,
-        web_search_context_size: None,
         credentials: codex_connection(),
         proxy: None,
     }

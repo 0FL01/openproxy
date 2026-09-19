@@ -29,8 +29,7 @@ Keep your existing provider options, including the SDK choice:
         "apiKey": "{env:LUDKA2_API_KEY}",
         "timeout": false,
         "setCacheKey": true,
-        "chunkTimeout": 6000000,
-        "headers": { "X-OpenProxy-Codex-Web-Search": "true" }
+        "chunkTimeout": 6000000
       }
     }
   }
