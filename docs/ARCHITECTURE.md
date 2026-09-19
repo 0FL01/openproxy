@@ -36,6 +36,5 @@ protocol-pair inventory is machine-readable in
 ## Smoke
 
 ```bash
-./scripts/parity-smoke.sh
 cargo test -p openproxy --lib parity_tests stream_flags
 ```

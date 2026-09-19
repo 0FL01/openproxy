@@ -2,6 +2,7 @@
 
 ## Breaking
 - remove kiro provider (retired)
+- retire the fork-only `openproxy sync` command, sister-router catalog snapshots, and `openproxy.v1.sync.apply`; live provider API discovery remains supported
 
 ---
 

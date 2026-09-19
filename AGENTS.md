@@ -25,7 +25,7 @@ Only `/v1/web/fetch` and the stateless authenticated `/v1/mcp` Codex search tool
 are proxy-owned one-shot tools; neither may grow history, sessions, or a tool loop.
 
 ## Beads
-Fork: parity with other routers is not tracked. Use beads only for own product tasks.
+Fork: this is an independent product path; parity with 9router, OmniRoute, or other upstream routers is not a product requirement and is not tracked. Use beads only for own product tasks.
 
 ## Key References
 - `docs/ARCHITECTURE.md` — pipeline order, intentional behavior, executor dispatch

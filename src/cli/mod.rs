@@ -31,7 +31,6 @@ pub mod runtime;
 pub mod schema;
 pub mod server;
 pub mod settings;
-pub mod sync;
 pub mod tool;
 pub mod translator;
 
@@ -244,12 +243,6 @@ pub enum Command {
     Db {
         #[command(subcommand)]
         cmd: db::DbCmd,
-    },
-    /// Sync provider catalogs from upstream open-source AI routers
-    /// (9router, OmniRoute) into the local DB.
-    Sync {
-        #[command(subcommand)]
-        cmd: sync::SyncCmd,
     },
 }
 
@@ -720,12 +713,6 @@ impl Cli {
                         std::process::exit(exit);
                     }
                     Ok(())
-                }
-                Command::Sync { cmd } => {
-                    let db = rt.block_on(Db::load())?;
-                    let db = std::sync::Arc::new(db);
-                    let rt = tokio::runtime::Runtime::new()?;
-                    rt.block_on(sync::run(cmd, &db, ctx))
                 }
             }
         } else {
