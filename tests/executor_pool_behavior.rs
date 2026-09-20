@@ -1,3 +1,5 @@
+mod common;
+
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -7,9 +9,10 @@ use std::sync::Barrier;
 use std::thread;
 use std::time::Duration;
 
+use common::lean_harness::{MockUpstream, ScriptedResponse};
 use openproxy::core::executor::{
-    provider_config_base_url, ClientPool, DefaultExecutor, ExecutionRequest, ExecutorError,
-    TransportKind, CLIENT_POOL_IDLE_TIMEOUT, CLIENT_POOL_MAX_IDLE_PER_HOST,
+    provider_config_base_url, ClientPool, ClientTimeout, DefaultExecutor, ExecutionRequest,
+    ExecutorError, TransportKind, CLIENT_POOL_IDLE_TIMEOUT, CLIENT_POOL_MAX_IDLE_PER_HOST,
     CLIENT_POOL_TCP_KEEPALIVE,
 };
 use openproxy::core::proxy::{normalize, resolve_proxy_target, ProxyTarget};
@@ -1280,6 +1283,46 @@ fn client_pool_keeps_proxied_providers_isolated_even_with_same_proxy() {
 
     assert!(!Arc::ptr_eq(&openai, &groq));
     assert_eq!(pool.len(), 2);
+}
+
+#[tokio::test]
+async fn reqwest_client_allows_active_response_past_read_timeout() {
+    let chunks = [
+        "data: one\n\n",
+        "data: two\n\n",
+        "data: three\n\n",
+        "data: four\n\n",
+        "data: five\n\n",
+        "data: six\n\n",
+    ];
+    let expected = chunks.concat();
+    let upstream =
+        MockUpstream::start([ScriptedResponse::sse(chunks)
+            .with_chunk_timing(Duration::ZERO, Duration::from_millis(50))])
+        .await;
+    let pool = ClientPool::with_timeout(ClientTimeout {
+        connect: Duration::from_secs(1),
+        stream: Duration::from_millis(200),
+    });
+    let client = pool
+        .get("timeout-regression", None)
+        .expect("reqwest client");
+
+    let body = tokio::time::timeout(Duration::from_secs(2), async {
+        client
+            .get(upstream.url("/stream"))
+            .send()
+            .await
+            .expect("response")
+            .text()
+            .await
+            .expect("response body")
+    })
+    .await
+    .expect("active response should finish before the test deadline");
+
+    assert_eq!(body, expected);
+    assert_eq!(upstream.request_count().await, 1);
 }
 
 #[tokio::test]

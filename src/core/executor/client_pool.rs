@@ -29,7 +29,10 @@ const CLEANUP_MAX_IDLE: Duration = Duration::from_secs(600); // 10 minutes
 pub struct ClientTimeout {
     /// Timeout for establishing a TCP/TLS connection.
     pub connect: Duration,
-    /// Timeout for the full request/response lifecycle.
+    /// Timeout between successful response reads for Reqwest clients.
+    ///
+    /// This timeout is reset after each successful read and does not limit the
+    /// total response duration. Hyper clients do not use this field.
     pub stream: Duration,
 }
 
@@ -187,7 +190,7 @@ fn build_reqwest_client(
         .pool_max_idle_per_host(CLIENT_POOL_MAX_IDLE_PER_HOST)
         .tcp_keepalive(CLIENT_POOL_TCP_KEEPALIVE)
         .connect_timeout(timeout.connect)
-        .timeout(timeout.stream);
+        .read_timeout(timeout.stream);
 
     if let Some(proxy) = proxy {
         if !proxy.url.is_empty() {
