@@ -71,8 +71,6 @@ RUN pnpm run build
 # ──────────────────────────────────────────────────────────────────────────
 FROM rust:1-trixie AS chef
 WORKDIR /src
-ARG CARGO_BUILD_JOBS=1
-ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
 
 # Install build deps for crates that need them at compile time.
 # rusqlite/bundled handles its own SQLite. reqwest/rustls handles its own TLS.
