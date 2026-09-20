@@ -1,4 +1,3 @@
-"use client";
 
 import { Card, Badge } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";

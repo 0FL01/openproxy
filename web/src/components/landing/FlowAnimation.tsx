@@ -1,4 +1,3 @@
-"use client";
 import { useEffect, useState } from "react";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 

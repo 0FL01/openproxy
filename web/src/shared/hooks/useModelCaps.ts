@@ -1,4 +1,3 @@
-"use client";
 
 import { useState, useEffect, useCallback } from "react";
 import type { ModelCaps } from "@/shared/constants/models";

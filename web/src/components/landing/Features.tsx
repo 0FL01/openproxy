@@ -1,4 +1,3 @@
-"use client";
 
 interface FeatureColors {
   border: string;

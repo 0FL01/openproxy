@@ -1,4 +1,3 @@
-"use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Card, Badge, Button, Modal, Select, Toggle, EditConnectionModal } from "@/shared/components";

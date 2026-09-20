@@ -1,4 +1,3 @@
-"use client";
 
 import { useState } from "react";
 import { Button, Modal } from "@/shared/components";

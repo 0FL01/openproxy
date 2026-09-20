@@ -1,4 +1,3 @@
-"use client";
 
 import { cn } from "@/shared/utils/cn";
 import { formatResetTime } from "./utils";

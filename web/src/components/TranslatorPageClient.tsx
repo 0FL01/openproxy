@@ -1,4 +1,3 @@
-"use client";
 
 import { useState, lazy, Suspense } from "react";
 import { Card, Button } from "@/shared/components";

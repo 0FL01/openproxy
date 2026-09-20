@@ -1,4 +1,3 @@
-"use client";
 
 import ThemeToggle from "../ThemeToggle";
 import React from "react";

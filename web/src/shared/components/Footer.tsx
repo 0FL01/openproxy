@@ -1,4 +1,3 @@
-"use client";
 
 import { APP_CONFIG } from "@/shared/constants/config";
 

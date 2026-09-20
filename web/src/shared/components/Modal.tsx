@@ -1,4 +1,3 @@
-"use client";
 
 import { useEffect } from "react";
 import { cn } from "@/shared/utils/cn";

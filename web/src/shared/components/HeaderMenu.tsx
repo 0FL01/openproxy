@@ -1,4 +1,3 @@
-"use client";
 
 import { useState, useEffect, useRef } from "react";
 import { LOCALE_COOKIE, normalizeLocale } from "@/i18n/config";

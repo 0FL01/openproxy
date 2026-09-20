@@ -1,4 +1,3 @@
-"use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Card, Button, Toggle, Input, LanguageSwitcher } from "@/shared/components";

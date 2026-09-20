@@ -1,4 +1,3 @@
-"use client";
 
 import { CAPACITY_META, type CapacityKey, type ModelCaps } from "@/shared/constants/models";
 import Tooltip from "./Tooltip";

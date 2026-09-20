@@ -1,4 +1,3 @@
-"use client";
 
 import { DEFAULT_LOCALE, LOCALE_COOKIE, normalizeLocale } from "./config";
 

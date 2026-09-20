@@ -1,4 +1,3 @@
-"use client";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 
 export default function GetStarted() {

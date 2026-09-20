@@ -1,4 +1,3 @@
-"use client";
 
 export default function AnimatedBackground() {
   return (
@@ -54,4 +53,3 @@ export default function AnimatedBackground() {
     </>
   );
 }
-
