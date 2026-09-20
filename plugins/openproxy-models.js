@@ -1,6 +1,9 @@
 // Auto-loaded from ~/.config/opencode/plugins/. The key stays in provider.options.
 const PROVIDER_ID = "ludka2"
-const DISCOVERY_TIMEOUT_MS = 10000
+// Stay above OpenProxy's ~10-second upstream discovery timeout on cold starts.
+const DISCOVERY_ATTEMPT_TIMEOUT_MS = 15000
+const DISCOVERY_TOTAL_TIMEOUT_MS = 30000
+const DISCOVERY_RETRY_DELAYS_MS = [250, 750, 1500]
 const MAX_CONTEXT_TOKENS = 500000
 const STANDARD_REASONING_VARIANTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 
@@ -10,6 +13,10 @@ function record(value) {
 
 function positiveInteger(value) {
   return Number.isSafeInteger(value) && value > 0
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function prettyModelName(id) {
@@ -37,8 +44,14 @@ function explicitModelName(name, id) {
 }
 
 function sourceModelName(name, source) {
+  if (!source) return normalizeModelName(name)
   const suffix = ` · ${source}`
-  return name.endsWith(suffix) ? name : `${name}${suffix}`
+  // Repeated config hooks can receive previously decorated names. Strip only
+  // this source's trailing suffixes before normalizing the model name itself.
+  while (name.slice(-suffix.length).toLowerCase() === suffix.toLowerCase()) {
+    name = name.slice(0, -suffix.length)
+  }
+  return `${normalizeModelName(name)}${suffix}`
 }
 
 // Only accept model metadata, never remote SDK/URL/header/options overrides.
@@ -61,7 +74,7 @@ function modelConfig(row) {
   }
   if (metadata.name !== undefined) {
     if (typeof metadata.name !== "string") throw new Error()
-    result.name = normalizeModelName(explicitModelName(metadata.name, row.id) ?? result.name)
+    result.name = explicitModelName(metadata.name, row.id) ?? result.name
   }
   if (metadata.limit !== undefined) {
     if (!record(metadata.limit)) throw new Error()
@@ -110,6 +123,81 @@ function modelConfig(row) {
   return { config: result, source }
 }
 
+function shouldRetryStatus(status) {
+  return status === 408 || status === 425 || status === 429 || status >= 500
+}
+
+function remainingBudget(deadline) {
+  return Math.max(0, deadline - Date.now())
+}
+
+async function fetchModels(url, headers) {
+  const deadline = Date.now() + DISCOVERY_TOTAL_TIMEOUT_MS
+  let lastFailure = "network error or discovery timeout"
+
+  for (let attempt = 0; ; attempt++) {
+    const remaining = remainingBudget(deadline)
+    if (remaining <= 0) throw new Error(lastFailure)
+    const timeout = Math.min(DISCOVERY_ATTEMPT_TIMEOUT_MS, remaining)
+
+    try {
+      const response = await fetch(url, {
+        headers,
+        signal: AbortSignal.timeout(timeout),
+        redirect: "error",
+      })
+
+      if (!response.ok) {
+        lastFailure = `HTTP ${response.status}`
+        if (!shouldRetryStatus(response.status)) throw new Error(lastFailure)
+        if (attempt >= DISCOVERY_RETRY_DELAYS_MS.length) throw new Error(lastFailure)
+        const delay = Math.min(DISCOVERY_RETRY_DELAYS_MS[attempt], remainingBudget(deadline))
+        if (delay > 0) await sleep(delay)
+        continue
+      }
+
+      let body
+      try {
+        body = await response.json()
+      } catch {
+        lastFailure = "invalid models response"
+        if (attempt >= DISCOVERY_RETRY_DELAYS_MS.length) throw new Error(lastFailure)
+        const delay = Math.min(DISCOVERY_RETRY_DELAYS_MS[attempt], remainingBudget(deadline))
+        if (delay > 0) await sleep(delay)
+        continue
+      }
+
+      if (!record(body) || body.object !== "list" || !Array.isArray(body.data)) {
+        throw new Error("invalid models response")
+      }
+
+      // A cold proxy can return an empty catalog while discovery warms up.
+      // Retry before replacing models, and retain the fallback if it stays empty.
+      if (body.data.length === 0) {
+        lastFailure = "empty models response"
+        if (attempt >= DISCOVERY_RETRY_DELAYS_MS.length) throw new Error(lastFailure)
+        const delay = Math.min(DISCOVERY_RETRY_DELAYS_MS[attempt], remainingBudget(deadline))
+        if (delay > 0) await sleep(delay)
+        continue
+      }
+
+      return body
+    } catch (error) {
+      if (error instanceof Error && (
+        error.message.startsWith("HTTP ") ||
+        error.message === "invalid models response" ||
+        error.message === "empty models response"
+      )) {
+        throw error
+      }
+      lastFailure = "network error or discovery timeout"
+      if (attempt >= DISCOVERY_RETRY_DELAYS_MS.length) throw new Error(lastFailure)
+      const delay = Math.min(DISCOVERY_RETRY_DELAYS_MS[attempt], remainingBudget(deadline))
+      if (delay > 0) await sleep(delay)
+    }
+  }
+}
+
 export default async function OpenProxyModels() {
   return {
     async config(config) {
@@ -117,6 +205,9 @@ export default async function OpenProxyModels() {
       if (!provider || config.disabled_providers?.includes(PROVIDER_ID)) return
       if (config.enabled_providers && !config.enabled_providers.includes(PROVIDER_ID)) return
 
+      // Snapshot this invocation's overrides before awaiting discovery. A later
+      // hook invocation can still receive names generated by an earlier one.
+      const configuredModels = { ...(provider.models ?? {}) }
       let failure = "invalid provider URL or credentials"
       try {
         const { baseURL, apiKey, headers: configuredHeaders } = provider.options ?? {}
@@ -130,22 +221,19 @@ export default async function OpenProxyModels() {
         headers.set("Authorization", `Bearer ${apiKey}`)
         headers.set("Accept", "application/json")
         failure = "network error or discovery timeout"
-        const response = await fetch(url, {
-          headers,
-          signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
-          redirect: "error",
-        })
-        failure = `HTTP ${response.status}`
-        if (!response.ok) throw new Error()
+        let body
+        try {
+          body = await fetchModels(url, headers)
+        } catch (error) {
+          if (error instanceof Error && error.message) failure = error.message
+          throw error
+        }
         failure = "invalid models response"
-        const body = await response.json()
-        if (!record(body) || body.object !== "list" || !Array.isArray(body.data)) throw new Error()
         const entries = body.data.map((row) => {
           const { config: remote, source } = modelConfig(row)
-          const local = Object.hasOwn(provider.models ?? {}, row.id) ? provider.models[row.id] : {}
+          const local = Object.hasOwn(configuredModels, row.id) ? configuredModels[row.id] : {}
           const merged = { ...remote, ...local }
-          if (typeof merged.name === "string") merged.name = normalizeModelName(merged.name)
-          if (source && typeof merged.name === "string") merged.name = sourceModelName(merged.name, source)
+          if (typeof merged.name === "string") merged.name = sourceModelName(merged.name, source)
           if (remote.limit || local.limit) merged.limit = { ...remote.limit, ...local.limit }
           if (positiveInteger(merged.limit?.context)) {
             merged.limit.context = Math.min(merged.limit.context, MAX_CONTEXT_TOKENS)

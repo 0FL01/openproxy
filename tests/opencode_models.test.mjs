@@ -120,7 +120,8 @@ test("authoritative empty effort list disables SDK reasoning variants", async (t
 
 test("discovery has its own timeout and preserves local models on network failure", async (t) => {
   t.mock.method(console, "warn", () => {})
-  t.mock.method(globalThis, "fetch", async (_url, options) => {
+  const timeout = t.mock.method(AbortSignal, "timeout")
+  const fetch = t.mock.method(globalThis, "fetch", async (_url, options) => {
     assert.ok(options.signal instanceof AbortSignal)
     assert.equal(options.redirect, "error")
     throw new DOMException("fixture-key", "TimeoutError")
@@ -129,6 +130,39 @@ test("discovery has its own timeout and preserves local models on network failur
   const config = { provider: { ludka2: { options: { baseURL: "https://example.invalid/v1", apiKey: "fixture-key", timeout: false }, models } } }
   await (await OpenProxyModels()).config(config)
   assert.strictEqual(config.provider.ludka2.models, models)
+  assert.equal(fetch.mock.callCount(), 4)
+  assert.deepEqual(timeout.mock.calls.map((call) => call.arguments[0]), [15000, 15000, 15000, 15000])
+})
+
+test("cold discovery retries empty catalogs and retains models until a nonempty catalog validates", async (t) => {
+  const warnings = []
+  t.mock.method(console, "warn", (message) => warnings.push(message))
+  const models = { "glm/glm-5.3": { name: "My GLM" }, removed: { name: "Removed" } }
+  const config = { provider: { ludka2: {
+    options: { baseURL: "https://example.invalid/v1", apiKey: "fixture-key" }, models,
+  } } }
+  let requests = 0
+  let staysEmpty = false
+  let fallback = models
+  t.mock.method(globalThis, "fetch", async () => {
+    assert.strictEqual(config.provider.ludka2.models, fallback)
+    requests++
+    return new Response(JSON.stringify({ object: "list", data: staysEmpty || requests === 1 ? [] : [
+      { id: "glm/glm-5.3", opencode: { name: "GLM 5.3", source: "glm" } },
+    ] }))
+  })
+
+  await (await OpenProxyModels()).config(config)
+  assert.equal(requests, 2)
+  assert.deepEqual(config.provider.ludka2.models, { "glm/glm-5.3": { name: "My GLM · glm" } })
+  assert.deepEqual(warnings, [])
+
+  staysEmpty = true
+  fallback = config.provider.ludka2.models
+  await (await OpenProxyModels()).config(config)
+  assert.equal(requests, 6)
+  assert.strictEqual(config.provider.ludka2.models, fallback)
+  assert.match(warnings.at(-1), /empty models response/)
 })
 
 test("discovery generates readable names without changing model IDs", async (t) => {
@@ -144,15 +178,21 @@ test("discovery generates readable names without changing model IDs", async (t) 
       { id: "cx/explicit", opencode: { name: "Public Luna", source: "codex" } },
       { id: "cx/same", opencode: { name: "cx/same", source: "codex" } },
       { id: "cx/local", opencode: { source: "codex" } },
+      { id: "custom-glm/glm-5.3", opencode: { name: "Glm 5.3", source: "glm" } },
+      { id: "custom-glm/glm-5.3-flash", opencode: { source: "glm" } },
     ],
   }), { headers: { "Content-Type": "application/json" } }))
   const config = { provider: { ludka2: {
     options: { baseURL: "https://example.invalid/v1", apiKey: "fixture-key" },
-    models: { "cx/local": { name: "User chosen name" } },
+    models: {
+      "cx/local": { name: "User chosen name" },
+      "custom-glm/glm-5.3-flash": { name: "My Glm Flash · GLM · GLM · glm" },
+    },
   } } }
   await (await OpenProxyModels()).config(config)
   assert.deepEqual(Object.keys(config.provider.ludka2.models), [
     "custom-cx/gpt-5.6-luna", "custom-ocg/gpt-5.6-luna", "cx/gpt-5.6-sol-fast", "cx/glm-5.2", "cx/glm-4.6v", "cx/explicit", "cx/same", "cx/local",
+    "custom-glm/glm-5.3", "custom-glm/glm-5.3-flash",
   ])
   assert.equal(config.provider.ludka2.models["custom-cx/gpt-5.6-luna"].name, "GPT-5.6 Luna · codex")
   assert.equal(config.provider.ludka2.models["custom-ocg/gpt-5.6-luna"].name, "GPT-5.6 Luna · opencode-go")
@@ -162,6 +202,11 @@ test("discovery generates readable names without changing model IDs", async (t) 
   assert.equal(config.provider.ludka2.models["cx/explicit"].name, "Public Luna · codex")
   assert.equal(config.provider.ludka2.models["cx/same"].name, "Same · codex")
   assert.equal(config.provider.ludka2.models["cx/local"].name, "User chosen name · codex")
-  await (await OpenProxyModels()).config(config)
-  assert.equal(config.provider.ludka2.models["cx/local"].name, "User chosen name · codex")
+  assert.equal(config.provider.ludka2.models["custom-glm/glm-5.3"].name, "GLM 5.3 · glm")
+  const discovered = config.provider.ludka2.models
+  for (let pass = 0; pass < 3; pass++) {
+    await (await OpenProxyModels()).config(config)
+    assert.deepEqual(config.provider.ludka2.models, discovered)
+  }
+  assert.equal(config.provider.ludka2.models["custom-glm/glm-5.3-flash"].name, "My GLM Flash · glm")
 })

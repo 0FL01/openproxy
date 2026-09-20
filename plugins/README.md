@@ -50,8 +50,11 @@ Keep your existing provider options, including the SDK choice:
 
 Set `LUDKA2_API_URL` (including `/v1`) and `LUDKA2_API_KEY` in the environment
 that launches OpenCode. The plugin uses the resolved provider options and sends
-the same API key as `Authorization: Bearer …`. Discovery has its own 10-second
-timeout, independent of inference timeouts. HTTP redirects are not followed.
+the same API key as `Authorization: Bearer …`. Discovery allows 15 seconds per
+attempt within a 30-second total budget, independent of inference timeouts.
+Cold-start network failures, HTTP 408/425/429/5xx, unreadable JSON, and empty
+catalogs are retried up to three times after 250/750/1500 ms delays (bounded by
+the remaining budget). HTTP redirects are not followed.
 The remote MCP uses the same key directly—no local wrapper or search plugin is
 required—and OpenCode exposes its only tool as `codex_web_search`. The proxy
 uses the configured private Codex account against the standalone search index;
@@ -71,8 +74,8 @@ inside OpenProxy retains its existing cache policy.
 
 ## Metadata and local overrides
 
-The router determines which IDs exist. On success the plugin replaces the
-in-memory list, excluding removed/disabled models even if locally configured.
+The router determines which IDs exist. On a valid nonempty response the plugin
+replaces the in-memory list, excluding removed/disabled models even if locally configured.
 Local `models` entries override metadata for matching IDs (limits are merged
 field by field); other provider options and other providers are untouched.
 After merging, context and input limits above 500,000 tokens are capped at
@@ -86,6 +89,9 @@ never from the configurable model prefix. The model ID used for requests is
 unchanged. Explicit proxy and local names retain priority before the source suffix.
 Known acronym casing is preserved for the generated `GPT` and `GLM` names;
 `Glm 5.2` from proxy metadata is normalized to `GLM 5.2`.
+Repeated configuration hooks keep exactly one canonical source suffix; existing
+trailing duplicates such as ` · GLM · glm` are collapsed to ` · glm` without
+changing the base model name beyond acronym normalization.
 
 The updated router supplies an additive `opencode` object on `/v1/models` rows:
 name, canonical `source`, limits, modalities, reasoning/tool support, and
@@ -129,6 +135,9 @@ include credentials, SDK overrides or transport settings in model metadata.
 On timeout, HTTP error or invalid data the plugin keeps the original configured
 models and reports a sanitized warning. With no local entries there is no offline
 fallback catalog. JSONC on disk is never changed.
+An empty catalog is treated as a cold-start failure: if it stays empty after
+retries, configured models are retained with a warning, even if the proxy has
+intentionally disabled all models.
 
 ## Verification
 
