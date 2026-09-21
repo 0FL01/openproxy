@@ -148,8 +148,8 @@ pub fn resolve_thinking_native(
                 ThinkingNative::GeminiBudget
             }
         }
-        // Ollama / CommandCode: leave body alone (executors normalize).
-        Format::Ollama | Format::CommandCode => ThinkingNative::Noop,
+        // Ollama: leave body alone (the executor normalizes it).
+        Format::Ollama => ThinkingNative::Noop,
     }
 }
 

@@ -194,6 +194,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .merge(models_custom::routes())
         .merge(provider_nodes::routes())
         .merge(providers::routes())
+        .merge(provider_validate::routes())
         .merge(usage::routes())
         .merge(crate::server::application_logs::routes())
         .merge(admin_items::routes())
@@ -257,8 +258,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .merge(cloud_credentials::routes())
         .merge(observability::routes())
         .merge(proxy_pool_ops::routes())
-        .merge(auth::routes())
-        .merge(provider_validate::routes());
+        .merge(auth::routes());
 
     // ── Assemble ──
     public
@@ -334,6 +334,25 @@ async fn api_catalog(State(state): State<AppState>) -> Response {
                 entry["models"] =
                     Value::Array(models.iter().map(|model| model.catalog_json()).collect());
             }
+        }
+    }
+
+    let commandcode = state.commandcode_models.load();
+    if let Some(entries) = catalog
+        .get_mut("providerModels")
+        .and_then(Value::as_array_mut)
+    {
+        if let Some(entry) = entries
+            .iter_mut()
+            .find(|entry| entry.get("alias").and_then(Value::as_str) == Some("commandcode"))
+        {
+            entry["models"] = Value::Array(
+                commandcode
+                    .models()
+                    .iter()
+                    .map(|model| model.catalog_json())
+                    .collect(),
+            );
         }
     }
 
@@ -697,6 +716,7 @@ const USAGE_SUPPORTED_PROVIDERS: &[&str] = &[
     "glm-cn",
     "minimax",
     "opencode-go",
+    "commandcode",
 ];
 
 const USAGE_APIKEY_PROVIDERS: &[&str] = &[
@@ -706,6 +726,7 @@ const USAGE_APIKEY_PROVIDERS: &[&str] = &[
     "kimi",
     "deepseek",
     "opencode-go",
+    "commandcode",
 ];
 
 #[derive(Debug, Deserialize, Default)]

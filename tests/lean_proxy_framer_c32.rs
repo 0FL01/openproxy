@@ -263,7 +263,7 @@ fn normalize_generated_stream_metadata(output: Vec<String>) -> Vec<String> {
 }
 
 #[test]
-fn gemini_sse_and_ollama_commandcode_records_survive_arbitrary_chunks() {
+fn gemini_sse_and_ollama_records_survive_arbitrary_chunks() {
     let gemini = b"data: {\"responseId\":\"g32\",\"modelVersion\":\"gemini-c32\",\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"gemini-one-byte\"}]}}]}\r\n\r\n";
     let expected = translate_stream(Format::Gemini, Format::OpenAi, &[gemini]);
     assert!(expected.join("").contains("gemini-one-byte"));
@@ -288,35 +288,6 @@ fn gemini_sse_and_ollama_commandcode_records_survive_arbitrary_chunks() {
         )),
         normalize_generated_stream_metadata(expected)
     );
-
-    let commandcode_ndjson = concat!(
-        "{\"type\":\"text-delta\",\"text\":\"command\"}\n",
-        "{\"type\":\"text-delta\",\"text\":\"code\"}\n"
-    );
-    let expected = translate_stream(
-        Format::CommandCode,
-        Format::OpenAi,
-        &[commandcode_ndjson.as_bytes()],
-    );
-    assert!(expected.join("").contains("command"));
-    let one_byte = commandcode_ndjson.as_bytes().chunks(1).collect::<Vec<_>>();
-    assert_eq!(
-        normalize_generated_stream_metadata(translate_stream(
-            Format::CommandCode,
-            Format::OpenAi,
-            &one_byte,
-        )),
-        normalize_generated_stream_metadata(expected)
-    );
-
-    let commandcode_sse = concat!(
-        "event: message\r\ndata: {\"type\":\"text-delta\",\"text\":\"wrapped\"}\r\n\r\n",
-        "data: {\"type\":\"text-delta\",\"text\":\"-sse\"}\r\n\r\n"
-    );
-    let one_byte = commandcode_sse.as_bytes().chunks(1).collect::<Vec<_>>();
-    let output = translate_stream(Format::CommandCode, Format::OpenAi, &one_byte).join("");
-    assert!(output.contains("wrapped"));
-    assert!(output.contains("-sse"));
 }
 
 #[test]
@@ -716,7 +687,6 @@ fn active_paths_use_shared_framer_and_keep_binary_protocols_separate() {
         "Self::Vertex",
         "Self::Antigravity",
         "Self::Ollama",
-        "Self::CommandCode",
     ] {
         assert!(registry.contains(format), "missing framing for {format}");
     }

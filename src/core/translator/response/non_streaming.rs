@@ -398,32 +398,6 @@ pub fn ollama_to_openai_non_streaming(response: &mut Value) -> bool {
     true
 }
 
-/// CommandCode -> OpenAI chat.completion (non-streaming).
-///
-/// CommandCode's non-streaming response may already be in OpenAI-compatible format.
-/// If the response has a `choices` array, we add the `object` field if missing.
-pub fn commandcode_to_openai_non_streaming(response: &mut Value) -> bool {
-    if response.get("object").and_then(|v| v.as_str()) == Some("chat.completion") {
-        return false;
-    }
-
-    if response
-        .get("choices")
-        .and_then(|v| v.as_array())
-        .is_some_and(|a| !a.is_empty())
-    {
-        if let Some(obj) = response.as_object_mut() {
-            obj.insert(
-                "object".to_string(),
-                Value::String("chat.completion".to_string()),
-            );
-        }
-        return true;
-    }
-
-    false
-}
-
 /// OpenAI chat.completion -> Claude Messages API (non-streaming).
 ///
 /// Used when a Claude-format client sends a request to an OpenAI-compatible provider.
@@ -778,23 +752,6 @@ mod tests {
     fn test_ollama_to_openai_skips_already_openai() {
         let mut resp = json!({"object": "chat.completion", "choices": []});
         let result = ollama_to_openai_non_streaming(&mut resp);
-        assert!(!result);
-    }
-
-    // ── CommandCode -> OpenAI ──────────────────────────────────────────
-
-    #[test]
-    fn test_commandcode_to_openai_adds_object() {
-        let mut resp = json!({"choices": [{"index": 0}]});
-        let result = commandcode_to_openai_non_streaming(&mut resp);
-        assert!(result);
-        assert_eq!(resp["object"], "chat.completion");
-    }
-
-    #[test]
-    fn test_commandcode_to_openai_skips_unknown() {
-        let mut resp = json!({"type": "error"});
-        let result = commandcode_to_openai_non_streaming(&mut resp);
         assert!(!result);
     }
 

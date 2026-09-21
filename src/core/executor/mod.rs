@@ -7,7 +7,6 @@ mod codebuddy_cn;
 mod codebuddy_intl;
 mod codex;
 mod codex_search;
-mod commandcode;
 mod default;
 mod devin_cli;
 mod github;
@@ -51,10 +50,6 @@ pub use codex::{
 pub use codex_search::{
     CodexSearchExecutionRequest, CodexSearchExecutor, CodexSearchExecutorError,
     CODEX_STANDALONE_SEARCH_URL,
-};
-pub use commandcode::{
-    CommandCodeExecutionRequest, CommandCodeExecutor, CommandCodeExecutorError,
-    CommandCodeExecutorResponse,
 };
 pub use default::{
     provider_config_base_url, select_anthropic_beta, DefaultExecutor, ExecutionRequest,

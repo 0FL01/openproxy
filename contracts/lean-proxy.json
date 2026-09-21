@@ -61,7 +61,6 @@
     "kiro": "kiro",
     "ollama|ollama-cloud": "ollama",
     "antigravity": "antigravity",
-    "commandcode|command-code": "commandcode",
     "openai-compatible*": "openai-or-openai-responses",
     "anthropic-compatible*": "claude",
     "other": "openai"
@@ -80,12 +79,10 @@
     "antigravity->openai",
     "openai->openai-responses",
     "openai-responses->openai",
-    "openai->codex",
-    "openai->commandcode"
+    "openai->codex"
   ],
   "registered_response_transforms": [
     "kiro->claude",
-    "commandcode->openai",
     "openai->gemini",
     "claude->openai",
     "gemini->openai",
@@ -467,7 +464,6 @@
     "upstream_error_status_preserved": true,
     "upstream_retry_after_preserved": true,
     "bounded_protocol_collectors": [
-      "commandcode_ndjson",
       "cursor_protobuf",
       "windsurf_grpc_web",
       "trae_session_and_events",
@@ -558,8 +554,7 @@
     "registry_paths_with_explicit_tool_accounting": [
       "ollama_to_openai",
       "gemini_to_openai",
-      "kiro_to_openai_legacy",
-      "commandcode_to_openai"
+      "kiro_to_openai_legacy"
     ],
     "forced_sse_to_json_limit_failure_status": 502,
     "forced_sse_to_json_limit_failure_can_enter_json_fallback": false,
@@ -631,7 +626,6 @@
     "line_formats": [
       "ollama"
     ],
-    "commandcode_framing": "actual_content_type_selects_executor_sse_or_ndjson_lines",
     "one_live_source_dispatch_for_observation_and_transform": true,
     "duplicate_live_incomplete_buffers": false,
     "registry_text_translators_receive_complete_events": true,

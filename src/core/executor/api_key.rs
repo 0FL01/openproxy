@@ -109,7 +109,7 @@ impl std::fmt::Debug for ApiKeyExecutorResponse {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ApiKeyExecutorResponse")
             .field("url", &self.url)
-            .field("headers", &self.headers)
+            .field("headers", &"<redacted>")
             .field("transport", &self.transport)
             .finish()
     }
@@ -246,6 +246,10 @@ static API_KEY_PROVIDERS: Lazy<BTreeMap<&'static str, (&'static str, &'static st
             ("deepseek", ("https://api.deepseek.com/v1", "Authorization")),
             ("mistral", ("https://api.mistral.ai/v1", "Authorization")),
             ("cohere", ("https://api.cohere.ai/v1", "Authorization")),
+            (
+                "commandcode",
+                ("https://api.commandcode.ai/provider/v1", "Authorization"),
+            ),
             (
                 "fireworks",
                 ("https://api.fireworks.ai/inference/v1", "Authorization"),

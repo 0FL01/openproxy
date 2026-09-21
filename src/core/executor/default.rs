@@ -86,6 +86,12 @@ static PROVIDER_CONFIGS: Lazy<BTreeMap<&'static str, ProviderConfig>> = Lazy::ne
             ProviderConfig::openai("https://api.cohere.ai/v1/chat/completions"),
         ),
         (
+            "commandcode",
+            ProviderConfig::openai(
+                "https://api.commandcode.ai/provider/v1/chat/completions",
+            ),
+        ),
+        (
             "hyperbolic",
             ProviderConfig::openai("https://api.hyperbolic.xyz/v1/chat/completions"),
         ),
@@ -837,6 +843,15 @@ impl DefaultExecutor {
                 HeaderValue::from_static("claude-code-20250219,interleaved-thinking-2025-05-14"),
             );
         }
+        let commandcode_messages_transport = self.provider == "commandcode"
+            && credentials
+                .runtime_transport
+                .as_ref()
+                .and_then(|transport| transport.base_url.as_deref())
+                .is_some_and(|url| url.ends_with("/messages"));
+        if commandcode_messages_transport {
+            headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+        }
 
         let is_anthropic_compatible = self
             .provider_node
@@ -1002,6 +1017,12 @@ impl DefaultExecutor {
             }
         }
 
+        if self.provider == "commandcode"
+            && client_headers.get("x-cmd-zdr").map(String::as_str) == Some("1")
+        {
+            headers.insert("x-cmd-zdr", HeaderValue::from_static("1"));
+        }
+
         if stream {
             headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
         }
@@ -1010,6 +1031,9 @@ impl DefaultExecutor {
     }
 
     pub fn transform_request(&self, body: &Value, model: &str) -> Value {
+        if self.provider == "commandcode" {
+            return body.clone();
+        }
         let mut body = self.apply_json_schema_fallback(body);
 
         // Normalize developer→system role (many providers reject role:developer)
@@ -1675,5 +1699,53 @@ mod tests {
             .build_url("tencent/hy3:free", false, &credentials)
             .unwrap();
         assert_eq!(url, "https://api.kilo.ai/api/openrouter/chat/completions");
+    }
+
+    #[test]
+    fn commandcode_preserves_translated_body_and_scopes_zdr_header() {
+        let executor =
+            DefaultExecutor::new("commandcode", Arc::new(ClientPool::new()), None).unwrap();
+        let body = serde_json::json!({
+            "model": "gpt-5.6-sol",
+            "messages": [{"role": "developer", "content": "keep"}],
+            "unknown_vendor_field": true
+        });
+        assert_eq!(executor.transform_request(&body, "gpt-5.6-sol"), body);
+
+        let credentials = ProviderConnection {
+            api_key: Some("test-key".to_string()),
+            ..ProviderConnection::default()
+        };
+        let client_headers = BTreeMap::from([("x-cmd-zdr".to_string(), "1".to_string())]);
+        let headers = executor
+            .build_headers_for_request("gpt-5.6-sol", &credentials, false, &client_headers)
+            .unwrap();
+        assert_eq!(headers["x-cmd-zdr"], "1");
+
+        let mut messages_credentials = credentials.clone();
+        messages_credentials.runtime_transport = Some(crate::types::RuntimeTransport {
+            base_url: Some("https://api.commandcode.ai/provider/v1/messages".to_string()),
+        });
+        assert_eq!(
+            executor
+                .build_url("claude-sonnet-5", false, &messages_credentials)
+                .unwrap(),
+            "https://api.commandcode.ai/provider/v1/messages"
+        );
+        let headers = executor
+            .build_headers_for_request(
+                "claude-sonnet-5",
+                &messages_credentials,
+                false,
+                &BTreeMap::new(),
+            )
+            .unwrap();
+        assert_eq!(headers["anthropic-version"], "2023-06-01");
+
+        let openai = DefaultExecutor::new("openai", Arc::new(ClientPool::new()), None).unwrap();
+        let headers = openai
+            .build_headers_for_request("gpt-5.6-sol", &credentials, false, &client_headers)
+            .unwrap();
+        assert!(!headers.contains_key("x-cmd-zdr"));
     }
 }

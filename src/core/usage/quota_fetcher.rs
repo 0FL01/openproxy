@@ -51,6 +51,11 @@
 use serde_json::{json, Value};
 use std::time::Duration;
 
+use crate::core::executor::read_reqwest_body;
+
+const COMMANDCODE_CREDITS_URL: &str = "https://api.commandcode.ai/alpha/billing/credits";
+const COMMANDCODE_RESPONSE_LIMIT_BYTES: usize = 256 * 1024;
+
 const GLM_INTL_URL: &str = "https://api.z.ai/api/monitor/usage/quota/limit";
 const GLM_CN_URL: &str = "https://open.bigmodel.cn/api/monitor/usage/quota/limit";
 
@@ -74,6 +79,222 @@ fn http_client() -> reqwest::Client {
         .timeout(REQUEST_TIMEOUT)
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// Fetch Command Code's read-only credit balances and rolling windows.
+///
+/// This undocumented first-party endpoint is isolated from generation. Its
+/// response is normalized into the existing dashboard quota shape without
+/// converting missing values to zero.
+pub async fn fetch_commandcode_quota(api_key: &str) -> Value {
+    fetch_commandcode_quota_from_url(api_key, COMMANDCODE_CREDITS_URL).await
+}
+
+async fn fetch_commandcode_quota_from_url(api_key: &str, url: &str) -> Value {
+    if api_key.trim().is_empty() {
+        return json!({
+            "status": "auth_error",
+            "message": "Command Code API key not available.",
+            "quotas": {}
+        });
+    }
+
+    let response = match http_client()
+        .get(url)
+        .bearer_auth(api_key)
+        .header("Accept", "application/json")
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(_) => {
+            return json!({
+                "status": "unavailable",
+                "message": "Command Code credits are temporarily unavailable.",
+                "quotas": {}
+            });
+        }
+    };
+
+    let status = response.status();
+    if !status.is_success() {
+        let (source_status, message) = match status.as_u16() {
+            401 => ("auth_error", "Command Code API key is invalid."),
+            403 => ("forbidden", "Command Code credits access is forbidden."),
+            429 => ("rate_limited", "Command Code credits are rate limited."),
+            _ => (
+                "unavailable",
+                "Command Code credits are temporarily unavailable.",
+            ),
+        };
+        return json!({
+            "status": source_status,
+            "message": message,
+            "quotas": {}
+        });
+    }
+
+    let body = match read_reqwest_body(response, COMMANDCODE_RESPONSE_LIMIT_BYTES).await {
+        Ok(body) => body,
+        Err(_) => {
+            return json!({
+                "status": "schema_error",
+                "message": "Command Code credits response is invalid.",
+                "quotas": {}
+            });
+        }
+    };
+    let payload = match serde_json::from_slice::<Value>(&body) {
+        Ok(payload) => payload,
+        Err(_) => {
+            return json!({
+                "status": "schema_error",
+                "message": "Command Code credits response is invalid.",
+                "quotas": {}
+            });
+        }
+    };
+    parse_commandcode_credits(&payload)
+}
+
+fn parse_commandcode_credits(payload: &Value) -> Value {
+    let data = payload
+        .get("data")
+        .and_then(Value::as_object)
+        .or_else(|| payload.as_object());
+    let Some(data) = data else {
+        return commandcode_schema_error();
+    };
+
+    let mut quotas = serde_json::Map::new();
+    let mut partial = false;
+    let mut recognized = false;
+
+    for (field, key, label) in [
+        ("monthlyCredits", "monthly", "Monthly remaining"),
+        (
+            "purchasedCredits",
+            "purchased",
+            "Purchased / PAYG remaining",
+        ),
+        ("freeCredits", "free", "Free remaining"),
+    ] {
+        match data.get(field) {
+            Some(value) => match commandcode_number(value) {
+                Some(remaining) => {
+                    quotas.insert(
+                        key.to_string(),
+                        json!({
+                            "kind": "balance",
+                            "label": label,
+                            "remaining": remaining,
+                            "unit": "credit value"
+                        }),
+                    );
+                    recognized = true;
+                }
+                None => partial = true,
+            },
+            None => partial = true,
+        }
+    }
+
+    match data.get("windowLimits") {
+        Some(Value::Object(limits))
+            if limits.get("limited").and_then(Value::as_bool) == Some(false) => {}
+        Some(Value::Object(limits)) => {
+            for (field, key, label, minutes) in [
+                ("fiveHour", "five-hour", "5-hour", 300_u64),
+                ("weekly", "weekly", "Weekly", 10_080_u64),
+            ] {
+                match limits.get(field).and_then(commandcode_window) {
+                    Some(mut window) => {
+                        if let Some(object) = window.as_object_mut() {
+                            object.insert("label".to_string(), json!(label));
+                            object.insert("windowMinutes".to_string(), json!(minutes));
+                        }
+                        quotas.insert(key.to_string(), window);
+                        recognized = true;
+                    }
+                    None => partial = true,
+                }
+            }
+        }
+        Some(_) | None => partial = true,
+    }
+
+    if !recognized {
+        return commandcode_schema_error();
+    }
+
+    let status = if partial { "partial" } else { "available" };
+    json!({
+        "status": status,
+        "message": if partial {
+            "Some Command Code credit fields are unavailable."
+        } else {
+            ""
+        },
+        "quotas": Value::Object(quotas)
+    })
+}
+
+fn commandcode_number(value: &Value) -> Option<f64> {
+    let number = value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|value| value.trim().parse().ok()))?;
+    (number.is_finite() && number >= 0.0).then_some(number)
+}
+
+fn commandcode_window(value: &Value) -> Option<Value> {
+    let window = value.as_object()?;
+    let used = commandcode_number(window.get("used")?)?;
+    let total = commandcode_number(window.get("cap")?)?;
+    if total <= 0.0 {
+        return None;
+    }
+    let remaining = (total - used).max(0.0);
+    let remaining_percentage = ((remaining / total) * 100.0).clamp(0.0, 100.0);
+    let reset_at = window
+        .get("resetAt")
+        .or_else(|| window.get("resetTime"))
+        .and_then(commandcode_reset_time);
+    let mut entry = json!({
+        "kind": "window",
+        "used": used,
+        "total": total,
+        "remaining": remaining,
+        "remainingPercentage": remaining_percentage,
+        "resetAt": reset_at,
+        "unlimited": false,
+        "unit": "credit value"
+    });
+    if let Some(exceeded) = window.get("exceeded").and_then(Value::as_bool) {
+        entry["exceeded"] = json!(exceeded);
+    }
+    Some(entry)
+}
+
+fn commandcode_reset_time(value: &Value) -> Option<String> {
+    match value {
+        Value::Number(number) => {
+            let number = number.as_f64()?;
+            (number > 0.0).then(|| parse_reset_time(value)).flatten()
+        }
+        Value::String(raw) => match raw.trim().parse::<f64>() {
+            Ok(number) => (number > 0.0).then(|| parse_reset_time(value)).flatten(),
+            Err(_) => parse_reset_time(value),
+        },
+        _ => None,
+    }
+}
+
+fn commandcode_schema_error() -> Value {
+    json!({
+        "status": "schema_error",
+        "message": "Command Code credits response has an unsupported schema.",
+        "quotas": {}
+    })
 }
 
 /// Fetch GLM (z.ai / open.bigmodel.cn) quota using the provider's API key.
@@ -2411,6 +2632,64 @@ pub async fn fetch_ollama_quota(api_key: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn commandcode_credits_preserve_zero_balances_and_windows() {
+        let parsed = parse_commandcode_credits(&json!({
+            "monthlyCredits": 0,
+            "purchasedCredits": 12.5,
+            "freeCredits": 0,
+            "windowLimits": {
+                "limited": true,
+                "fiveHour": {"used": 0, "cap": 14, "resetAt": 0},
+                "weekly": {"used": 7, "cap": 35, "resetAt": 1789400000}
+            }
+        }));
+
+        assert_eq!(parsed["status"], "available");
+        assert_eq!(parsed["quotas"]["monthly"]["remaining"].as_f64(), Some(0.0));
+        assert_eq!(parsed["quotas"]["purchased"]["remaining"], 12.5);
+        assert_eq!(parsed["quotas"]["five-hour"]["used"].as_f64(), Some(0.0));
+        assert!(parsed["quotas"]["five-hour"]["resetAt"].is_null());
+        assert_eq!(parsed["quotas"]["five-hour"]["unit"], "credit value");
+    }
+
+    #[test]
+    fn commandcode_payg_is_available_without_rolling_windows() {
+        let parsed = parse_commandcode_credits(&json!({
+            "monthlyCredits": 0,
+            "purchasedCredits": 12.5,
+            "freeCredits": 0,
+            "windowLimits": {"limited": false}
+        }));
+
+        assert_eq!(parsed["status"], "available");
+        assert!(parsed["quotas"].get("five-hour").is_none());
+        assert_eq!(parsed["quotas"]["purchased"]["remaining"], 12.5);
+    }
+
+    #[test]
+    fn commandcode_missing_window_is_partial_not_zero() {
+        let parsed = parse_commandcode_credits(&json!({
+            "monthlyCredits": 10,
+            "purchasedCredits": 0,
+            "freeCredits": 0,
+            "windowLimits": {
+                "limited": true,
+                "fiveHour": {"used": 1, "cap": 10}
+            }
+        }));
+
+        assert_eq!(parsed["status"], "partial");
+        assert!(parsed["quotas"].get("weekly").is_none());
+    }
+
+    #[test]
+    fn commandcode_unrecognized_schema_is_explicit() {
+        let parsed = parse_commandcode_credits(&json!({"success": true}));
+        assert_eq!(parsed["status"], "schema_error");
+        assert_eq!(parsed["quotas"], json!({}));
+    }
 
     #[test]
     fn opencode_go_quota_normalizes_all_usage_windows() {

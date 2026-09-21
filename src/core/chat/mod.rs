@@ -17,6 +17,7 @@ pub mod stream_to_json;
 use serde_json::Value;
 
 use crate::core::model::catalog::provider_catalog;
+use crate::core::model::commandcode_catalog::CommandCodeModelMetadata;
 use crate::core::model::models_dev::OpenCodeModelMetadata;
 use crate::core::translator::registry::{self, Format};
 use crate::types::Settings;
@@ -134,6 +135,13 @@ impl RequestPlan {
         self.target_format = metadata.format;
         self.passthrough = self.source_format == self.target_format;
         self.model_family.clone_from(&metadata.family);
+    }
+
+    pub fn apply_commandcode_metadata(&mut self, metadata: &CommandCodeModelMetadata) {
+        let endpoint = metadata.endpoint_for_source(self.source_format);
+        self.target_format = endpoint.format();
+        self.transport_base_url = Some(metadata.endpoint_url(self.source_format));
+        self.passthrough = self.source_format == self.target_format;
     }
 }
 
@@ -276,6 +284,7 @@ pub fn plan_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::model::commandcode_catalog::CommandCodeEndpoint;
     use serde_json::json;
 
     #[test]
@@ -434,6 +443,61 @@ mod tests {
         plan.apply_opencode_metadata(&metadata);
         assert!(plan.passthrough);
         assert!(!plan.needs_translation());
+    }
+
+    #[test]
+    fn commandcode_metadata_selects_native_or_deterministic_endpoint() {
+        let dual = CommandCodeModelMetadata {
+            id: "gpt-5.6-sol".into(),
+            name: "GPT-5.6 Sol".into(),
+            context_length: 1_050_000,
+            supported_endpoints: vec![
+                CommandCodeEndpoint::Responses,
+                CommandCodeEndpoint::ChatCompletions,
+            ],
+        };
+
+        for (path, expected_format, expected_suffix, passthrough) in [
+            (
+                "/v1/chat/completions",
+                Format::OpenAi,
+                "/chat/completions",
+                true,
+            ),
+            ("/v1/responses", Format::OpenAiResponses, "/responses", true),
+            ("/v1/messages", Format::OpenAi, "/chat/completions", false),
+        ] {
+            let body = json!({"model": dual.id, "messages": [], "stream": false});
+            let mut plan = RequestPlan::new(Some(path), &body, "commandcode", &dual.id);
+            plan.apply_commandcode_metadata(&dual);
+            assert_eq!(plan.target_format, expected_format);
+            assert_eq!(plan.passthrough, passthrough);
+            assert!(plan
+                .transport_base_url
+                .as_deref()
+                .is_some_and(|url| url.ends_with(expected_suffix)));
+        }
+
+        let messages_only = CommandCodeModelMetadata {
+            id: "claude-sonnet-5".into(),
+            name: "Claude Sonnet 5".into(),
+            context_length: 1_000_000,
+            supported_endpoints: vec![CommandCodeEndpoint::Messages],
+        };
+        let body = json!({"model": messages_only.id, "messages": [], "stream": false});
+        let mut plan = RequestPlan::new(
+            Some("/v1/chat/completions"),
+            &body,
+            "commandcode",
+            &messages_only.id,
+        );
+        plan.apply_commandcode_metadata(&messages_only);
+        assert_eq!(plan.target_format, Format::Claude);
+        assert!(!plan.passthrough);
+        assert_eq!(
+            plan.transport_base_url.as_deref(),
+            Some("https://api.commandcode.ai/provider/v1/messages")
+        );
     }
 
     #[test]

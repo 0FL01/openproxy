@@ -8,6 +8,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::core::usage::quota_fetcher::fetch_commandcode_quota;
 use crate::server::state::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -58,6 +59,35 @@ async fn validate_provider(
     };
 
     let (valid, error) = match provider.as_str() {
+        "commandcode" => {
+            let result = fetch_commandcode_quota(&api_key).await;
+            let status = result
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("schema_error");
+            let valid = matches!(status, "available" | "partial" | "schema_error");
+            if valid {
+                if let Err(error) = state.commandcode_models.refresh().await {
+                    tracing::warn!(
+                        %error,
+                        "Command Code validation succeeded but catalog refresh failed"
+                    );
+                }
+            }
+            let error = (!valid).then(|| {
+                result
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Command Code validation failed")
+                    .to_string()
+            });
+            return Json(json!({
+                "valid": valid,
+                "status": status,
+                "error": error,
+            }))
+            .into_response();
+        }
         "openai" => validate_bearer(&client, "https://api.openai.com/v1/models", &api_key).await,
         "deepseek" => validate_bearer(&client, "https://api.deepseek.com/models", &api_key).await,
         "openrouter" => validate_bearer(&client, "https://openrouter.ai/api/v1/models", &api_key).await,
@@ -262,7 +292,7 @@ async fn validate_provider(
             }
         }
 
-        _ => (true, None),
+        _ => (false, Some("Provider validation is not supported".to_string())),
     };
 
     Json(json!({

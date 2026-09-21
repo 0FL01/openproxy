@@ -7,6 +7,9 @@ interface Quota {
   total: number;
   resetAt?: string;
   remainingPercentage?: number;
+  kind?: "window" | "balance";
+  remaining?: number;
+  unit?: string;
   /** When false, resetAt is a hard expiry (one-shot pack). Defaults true. */
   recurring?: boolean;
 }
@@ -99,6 +102,7 @@ export default function QuotaTable({ quotas = [], compact = false }: QuotaTableP
       <table className="w-full table-fixed text-left">
         <tbody>
           {quotas.map((quota, index) => {
+            const isBalance = quota.kind === "balance";
             const remaining = quota.remainingPercentage !== undefined
               ? Math.round(quota.remainingPercentage)
               : calculatePercentage(quota.used, quota.total);
@@ -131,7 +135,7 @@ export default function QuotaTable({ quotas = [], compact = false }: QuotaTableP
                 {/* Model Name with Status Emoji */}
                 <td className={`${cellPad} w-[30%]`}>
                   <div className="flex items-center gap-1.5 min-w-0">
-                    <span className="text-[10px] shrink-0">{colors.emoji}</span>
+                    <span className="text-[10px] shrink-0">{isBalance ? "💳" : colors.emoji}</span>
                     <span className={`${nameText} font-medium text-text-primary truncate`}>
                       {quota.name}
                     </span>
@@ -140,6 +144,11 @@ export default function QuotaTable({ quotas = [], compact = false }: QuotaTableP
 
                 {/* Limit (Progress + Numbers) */}
                 <td className={`${cellPad} w-[45%]`}>
+                  {isBalance ? (
+                    <div className={`${compact ? "text-[11px]" : "text-sm"} font-medium text-text-primary`}>
+                      {quota.remaining?.toLocaleString() ?? "N/A"} {quota.unit || "credit value"}
+                    </div>
+                  ) : (
                   <div className={compact ? "space-y-1" : "space-y-1.5"}>
                     {/* Progress bar - always show with border for visibility */}
                     <div className={`${compact ? "h-1" : "h-1.5"} rounded-full overflow-hidden border ${colors.bgLight} ${
@@ -161,11 +170,14 @@ export default function QuotaTable({ quotas = [], compact = false }: QuotaTableP
                       </span>
                     </div>
                   </div>
+                  )}
                 </td>
 
                 {/* Reset / Expiry Time */}
                 <td className={`${cellPad} w-[25%]`}>
-                  {countdownLabel || resetDisplay ? (
+                  {isBalance ? (
+                    <div className={`${resetPrimary} text-text-muted`}>Available</div>
+                  ) : countdownLabel || resetDisplay ? (
                     compact ? (
                       <div
                         className={`${resetPrimary} text-text-primary font-medium truncate`}

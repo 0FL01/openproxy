@@ -156,7 +156,6 @@ fn source_guards_keep_c31_separate_from_c32_c33_and_sparse_vectors() {
 
     for relative in [
         "src/core/translator/response/claude_to_openai.rs",
-        "src/core/translator/response/commandcode_to_openai.rs",
         "src/core/translator/response/gemini_to_openai.rs",
         "src/core/translator/response/openai_responses.rs",
         "src/core/translator/response/openai_to_antigravity.rs",

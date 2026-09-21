@@ -16,6 +16,7 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::core::model::catalog::provider_catalog;
+use crate::core::usage::quota_fetcher::fetch_commandcode_quota;
 use crate::oauth::token_refresh::{
     connection_credential_generation, CONNECTION_REFRESH_COORDINATOR,
 };
@@ -166,6 +167,14 @@ pub(super) async fn test_provider_connection(
                     result.error = Some(error);
                 }
             }
+        }
+    }
+    if result.valid && connection.provider == "commandcode" {
+        if let Err(error) = state.commandcode_models.refresh().await {
+            tracing::warn!(
+                %error,
+                "Command Code connection test succeeded but catalog refresh failed"
+            );
         }
     }
 
@@ -459,7 +468,7 @@ async fn test_api_key_connection(
         return compatible_result(response, "Invalid API key or base URL");
     }
 
-    let response = match connection.provider.as_str() {
+    match connection.provider.as_str() {
         "cloudflare-ai" => test_cloudflare_ai_connection(state, connection, effective_proxy).await,
         "azure" => test_azure_connection(state, connection, effective_proxy).await,
         "openai" => {
@@ -493,6 +502,7 @@ async fn test_api_key_connection(
             )
             .await
         }
+        "commandcode" => test_commandcode_connection(connection).await,
         "glm" => {
             anthropic_like_status_test(
                 state,
@@ -698,9 +708,28 @@ async fn test_api_key_connection(
             .await
         }
         _ => invalid("Provider test not supported"),
-    };
+    }
+}
 
-    response
+async fn test_commandcode_connection(connection: &ProviderConnection) -> ConnectionTestResult {
+    let api_key = connection.api_key.as_deref().unwrap_or_default();
+    let result = fetch_commandcode_quota(api_key).await;
+    let status = result
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("schema_error");
+    let valid = matches!(status, "available" | "partial" | "schema_error");
+    ConnectionTestResult {
+        valid,
+        error: (!valid).then(|| {
+            result
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("Command Code validation failed")
+                .to_string()
+        }),
+        refreshed: false,
+    }
 }
 
 async fn test_cloudflare_ai_connection(

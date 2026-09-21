@@ -112,6 +112,12 @@ pub(super) async fn import_provider_models(
     };
 
     let provider = connection.provider.clone();
+    if provider == "commandcode" {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "Command Code models are served from the live provider catalog and are not imported as custom models",
+        );
+    }
     let provider_alias = storage_alias_for_provider(&provider);
     let legacy_alias = connection.name.clone().unwrap_or_else(|| provider.clone());
     if legacy_alias != provider_alias {
@@ -318,6 +324,7 @@ pub(super) fn supports_models_discovery(provider: &str) -> bool {
                 | "fireworks"
                 | "cerebras"
                 | "cohere"
+                | "commandcode"
                 | "hyperbolic"
                 | "ollama"
                 | "nvidia"
@@ -436,6 +443,7 @@ async fn fetch_provider_models_response(
         "openrouter" => {
             fetch_openrouter_models(connection, "https://openrouter.ai/api/v1/models").await
         }
+        "commandcode" => fetch_commandcode_models(state, connection).await,
         "opencode-zen" | "opencode-go" => fetch_opencode_models(state, connection).await,
         "alicode" => {
             fetch_first_party_openai_style_models(
@@ -607,6 +615,32 @@ async fn fetch_opencode_models(
                     .iter()
                     .map(|(key, value)| (key.clone(), value.clone()))
                     .collect(),
+            }
+        })
+        .collect();
+    Ok(response_with_models(connection, models, warning))
+}
+
+async fn fetch_commandcode_models(
+    state: &AppState,
+    connection: &ProviderConnection,
+) -> Result<ProviderModelsResponse, RouteError> {
+    let warning = state.commandcode_models.refresh_if_stale().await.err();
+    let snapshot = state.commandcode_models.load();
+    let models = snapshot
+        .models()
+        .iter()
+        .map(|metadata| {
+            let mut extra = BTreeMap::new();
+            extra.insert("contextWindow".to_string(), json!(metadata.context_length));
+            extra.insert(
+                "supportedEndpoints".to_string(),
+                json!(metadata.supported_endpoints),
+            );
+            ProviderModel {
+                id: metadata.id.clone(),
+                name: metadata.name.clone(),
+                extra,
             }
         })
         .collect();

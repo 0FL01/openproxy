@@ -92,6 +92,10 @@ async fn build_models_list(
     } else {
         None
     };
+    let commandcode_catalog = active_connections
+        .iter()
+        .any(|connection| connection.provider == "commandcode")
+        .then(|| state.commandcode_models.load());
 
     let mut seen_providers = HashSet::new();
     let mut active_connection_by_provider = Vec::new();
@@ -178,8 +182,18 @@ async fn build_models_list(
                     raw_model_ids.extend(inventory.models.iter().map(|model| model.id.clone()));
                 }
             } else if !had_enabled_models {
-                raw_model_ids = if crate::core::model::models_dev::is_opencode_provider(provider_id)
-                {
+                raw_model_ids = if provider_id == "commandcode" {
+                    commandcode_catalog
+                        .as_ref()
+                        .map(|snapshot| {
+                            snapshot
+                                .models()
+                                .iter()
+                                .map(|model| model.id.clone())
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                } else if crate::core::model::models_dev::is_opencode_provider(provider_id) {
                     models_dev
                         .as_ref()
                         .and_then(|snapshot| snapshot.models(provider_id))
@@ -197,6 +211,7 @@ async fn build_models_list(
 
             if raw_model_ids.is_empty()
                 && provider_id != "codex"
+                && provider_id != "commandcode"
                 && !UPSTREAM_CONNECTION_RE.is_match(provider_id)
                 && super::provider_models::supports_models_discovery(provider_id)
             {
@@ -283,6 +298,11 @@ async fn build_models_list(
                                 .find_model(provider_id, &model_id)
                                 .and_then(|model| model.context_window)
                         })
+                } else if provider_id == "commandcode" {
+                    commandcode_catalog
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.find(&model_id))
+                        .map(|model| model.context_length)
                 } else {
                     catalog
                         .find_model(provider_id, &model_id)
@@ -397,6 +417,24 @@ async fn build_models_list(
                     reasoning: entry.reasoning,
                     tool_call: entry.tool_call,
                     efforts: entry.reasoning_efforts.as_deref(),
+                }));
+            }
+            if let Some(entry) = commandcode_catalog
+                .as_ref()
+                .filter(|_| provider_id == "commandcode")
+                .and_then(|catalog| catalog.find(model_id))
+            {
+                metadata.overlay(OpenCodeModelConfig::from_facts(ModelMetadataFacts {
+                    name: Some(entry.name.clone()),
+                    context: Some(entry.context_length),
+                    input: None,
+                    output: None,
+                    capabilities: &[],
+                    modalities: None,
+                    attachment: None,
+                    reasoning: None,
+                    tool_call: None,
+                    efforts: None,
                 }));
             }
             if let Some(entry) = codex_inventory
@@ -1005,6 +1043,32 @@ mod tests {
             json!(["text", "image", "pdf"])
         );
         assert_eq!(metadata["variants"]["high"]["reasoningEffort"], "high");
+    }
+
+    #[tokio::test]
+    async fn commandcode_models_use_shared_catalog_metadata() {
+        let snapshot = AppDb {
+            provider_connections: vec![ProviderConnection {
+                id: "conn-commandcode".into(),
+                provider: "commandcode".into(),
+                auth_type: "apikey".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let state = test_state().await;
+
+        let models = build_models_list(&state, &snapshot, &[LLM_KIND]).await;
+        let kimi = models
+            .iter()
+            .find(|model| model.id == "commandcode/moonshotai/Kimi-K3")
+            .expect("bundled Command Code model must be listed with exact casing");
+        let metadata = json!(kimi.opencode);
+
+        assert_eq!(kimi.context_length, Some(1_000_000));
+        assert_eq!(metadata["name"], "Kimi K3");
+        assert_eq!(metadata["limit"]["context"], 1_000_000);
+        assert_eq!(metadata["source"], "commandcode");
     }
 
     #[tokio::test]

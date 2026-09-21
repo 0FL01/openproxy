@@ -1,5 +1,6 @@
 pub mod capabilities;
 pub mod catalog;
+pub mod commandcode_catalog;
 pub mod models_dev;
 
 use std::collections::{BTreeMap, HashMap};
@@ -37,6 +38,7 @@ static ALIAS_TO_PROVIDER_ID: Lazy<HashMap<&'static str, &'static str>> = Lazy::n
         ("fireworks", "fireworks"),
         ("cerebras", "cerebras"),
         ("cohere", "cohere"),
+        ("commandcode", "commandcode"),
         ("nvidia", "nvidia"),
         ("hyp", "hyperbolic"),
         ("hyperbolic", "hyperbolic"),

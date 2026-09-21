@@ -334,6 +334,7 @@ async fn main() -> anyhow::Result<()> {
     // within max(provider lead, 30 min) so idle periods don't surface 401s.
     openproxy::oauth::background_refresh::spawn_background_token_refresh(state.clone().into());
     spawn_models_dev_refresh(state.clone());
+    spawn_commandcode_catalog_refresh(state.clone());
     spawn_codex_catalog_refresh(state.clone());
 
     let app = openproxy::build_app(state.clone());
@@ -442,6 +443,36 @@ fn spawn_models_dev_refresh(state: AppState) {
             tokio::select! {
                 _ = state.shutdown_signal.notified() => break,
                 _ = tokio::time::sleep(std::time::Duration::from_secs(60 * 60)) => {}
+            }
+        }
+    });
+}
+
+/// Refresh the public Command Code model inventory outside generation. Request
+/// planning reads only the last atomically published snapshot.
+fn spawn_commandcode_catalog_refresh(state: AppState) {
+    tokio::spawn(async move {
+        loop {
+            let has_commandcode = state
+                .db
+                .snapshot()
+                .provider_connections
+                .iter()
+                .any(|connection| connection.is_active() && connection.provider == "commandcode");
+            if has_commandcode {
+                if let Err(error) = state.commandcode_models.refresh_if_stale().await {
+                    tracing::warn!(
+                        %error,
+                        "Command Code catalog refresh failed; retaining published snapshot"
+                    );
+                }
+            }
+
+            tokio::select! {
+                _ = state.shutdown_signal.notified() => break,
+                // Poll connection state cheaply; refresh_if_stale keeps remote
+                // catalog fetches on the one-hour freshness interval.
+                _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {}
             }
         }
     });

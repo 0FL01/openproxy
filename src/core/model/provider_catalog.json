@@ -27,6 +27,7 @@
   "fireworks": "fireworks",
   "cerebras": "cerebras",
   "cohere": "cohere",
+  "commandcode": "commandcode",
   "hyperbolic": "hyperbolic",
   "deepgram": "deepgram",
   "assemblyai": "assemblyai",
@@ -2927,63 +2928,7 @@
   },
   {
    "alias": "commandcode",
-   "models": [
-    {
-     "id": "deepseek/deepseek-v4-pro",
-     "name": "DeepSeek V4 Pro",
-     "kind": "llm"
-    },
-    {
-     "id": "deepseek/deepseek-v4-flash",
-     "name": "DeepSeek V4 Flash",
-     "kind": "llm"
-    },
-    {
-     "id": "moonshotai/Kimi-K2.6",
-     "name": "Kimi K2.6",
-     "kind": "llm"
-    },
-    {
-     "id": "moonshotai/Kimi-K2.5",
-     "name": "Kimi K2.5",
-     "kind": "llm"
-    },
-    {
-     "id": "zai-org/GLM-5.1",
-     "name": "GLM 5.1",
-     "kind": "llm"
-    },
-    {
-     "id": "zai-org/GLM-5",
-     "name": "GLM 5",
-     "kind": "llm"
-    },
-    {
-     "id": "MiniMaxAI/MiniMax-M2.7",
-     "name": "MiniMax M2.7",
-     "kind": "llm"
-    },
-    {
-     "id": "MiniMaxAI/MiniMax-M2.5",
-     "name": "MiniMax M2.5",
-     "kind": "llm"
-    },
-    {
-     "id": "Qwen/Qwen3.6-Max-Preview",
-     "name": "Qwen3.6 Max Preview",
-     "kind": "llm"
-    },
-    {
-     "id": "Qwen/Qwen3.6-Plus",
-     "name": "Qwen3.6 Plus",
-     "kind": "llm"
-    },
-    {
-     "id": "stepfun/Step-3.5-Flash",
-     "name": "Step 3.5 Flash",
-     "kind": "llm"
-    }
-   ]
+   "models": []
   },
   {
    "alias": "deepgram",
@@ -4364,6 +4309,13 @@
    "embeddingModels": [],
    "hasSearch": false,
    "hasFetch": false
+  },
+  {
+   "id": "commandcode",
+   "alias": "commandcode",
+   "serviceKinds": [
+    "llm"
+   ]
   },
   {
    "id": "github",

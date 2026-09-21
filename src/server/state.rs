@@ -6,6 +6,7 @@ use tokio::sync::{Notify, RwLock};
 
 use crate::core::executor::ClientPool;
 use crate::core::health::{health_registry, HealthRegistry};
+use crate::core::model::commandcode_catalog::CommandCodeModelCatalog;
 use crate::core::model::models_dev::ModelsDevCatalog;
 use crate::db::Db;
 use crate::oauth::antigravity_onboarding::AntigravityOnboardingCoordinator;
@@ -74,6 +75,7 @@ pub struct AppState {
     pub health: Arc<HealthRegistry>,
 
     pub models_dev: Arc<ModelsDevCatalog>,
+    pub commandcode_models: Arc<CommandCodeModelCatalog>,
     pub codex_models: Arc<CodexModelCatalog>,
     pub antigravity_onboarding: Arc<AntigravityOnboardingCoordinator>,
     pub quota_auto_ping: Arc<QuotaAutoPingLifecycle>,
@@ -103,6 +105,7 @@ impl AppState {
             shutdown_signal: Arc::new(Notify::new()),
             health: health_registry(),
             models_dev: Arc::new(ModelsDevCatalog::default()),
+            commandcode_models: Arc::new(CommandCodeModelCatalog::default()),
             codex_models: Arc::new(CodexModelCatalog::default()),
             antigravity_onboarding: Arc::new(AntigravityOnboardingCoordinator::new()),
             quota_auto_ping: Arc::new(QuotaAutoPingLifecycle::new()),

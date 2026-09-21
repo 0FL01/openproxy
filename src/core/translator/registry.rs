@@ -40,7 +40,6 @@ pub enum Format {
     Codex,
     Antigravity,
     Ollama,
-    CommandCode,
 }
 
 impl Format {
@@ -53,13 +52,6 @@ impl Format {
 
         match self {
             Self::Ollama => Some(TextStreamMode::Lines),
-            Self::CommandCode => {
-                if content_type.is_some_and(|value| value.contains("text/event-stream")) {
-                    Some(TextStreamMode::Sse)
-                } else {
-                    Some(TextStreamMode::Lines)
-                }
-            }
             Self::OpenAi
             | Self::OpenAiResponses
             | Self::OpenAiResponse
@@ -83,7 +75,6 @@ impl Format {
             "codex" => Some(Self::Codex),
             "antigravity" => Some(Self::Antigravity),
             "ollama" => Some(Self::Ollama),
-            "commandcode" | "command-code" => Some(Self::CommandCode),
             _ => None,
         }
     }
@@ -99,7 +90,6 @@ impl Format {
             Self::Codex => "codex",
             Self::Antigravity => "antigravity",
             Self::Ollama => "ollama",
-            Self::CommandCode => "commandcode",
         }
     }
 
@@ -116,7 +106,7 @@ impl Format {
     pub fn needs_image_prefetch(&self) -> bool {
         matches!(
             self,
-            Self::Gemini | Self::Vertex | Self::Ollama | Self::CommandCode | Self::Antigravity
+            Self::Gemini | Self::Vertex | Self::Ollama | Self::Antigravity
         )
     }
 }
@@ -147,8 +137,6 @@ pub struct ResponseTransformState {
     pub responses: ResponsesResponseState,
     /// Ollama streaming state
     pub ollama: OllamaResponseState,
-    /// CommandCode streaming state
-    pub commandcode: CommandCodeResponseState,
     /// Generic scratch map for Value-based response transforms
     /// (openai→claude, openai→antigravity, chat→responses, etc.).
     pub generic: serde_json::Map<String, Value>,
@@ -386,23 +374,10 @@ pub struct OllamaResponseState {
     pub state: std::collections::HashMap<String, Value>,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct CommandCodeResponseState {
-    pub response_id: Option<String>,
-    pub created: Option<i64>,
-    pub model: Option<String>,
-    pub chunk_index: u64,
-    pub tool_index: u64,
-    pub tool_index_by_id: serde_json::Map<String, Value>,
-    pub finish_reason: Option<String>,
-    pub usage: Option<Value>,
-}
-
 /// Detect source format from request body structure.
 /// Mirrors open-sse/services/provider.js:detectFormat() order carefully:
 /// Responses (input array|string && !messages) → Antigravity → Gemini contents[]
 /// → OpenAI-specific fields → Claude heuristics → default OpenAI.
-/// CommandCode is a Rust extension (threadId + params.messages).
 pub fn detect_source_format(body: &Value) -> Format {
     // 1. OpenAI Responses API: input as array or string, and no messages
     //    (JS requires !body.messages — bodies with both stay non-responses)
@@ -427,19 +402,12 @@ pub fn detect_source_format(body: &Value) -> Format {
         return Format::Antigravity;
     }
 
-    // 3. CommandCode (Rust extension): threadId + params.messages
-    if body.get("threadId").is_some()
-        && body.get("params").and_then(|p| p.get("messages")).is_some()
-    {
-        return Format::CommandCode;
-    }
-
-    // 4. Gemini format: contents must be an array (JS)
+    // 3. Gemini format: contents must be an array (JS)
     if body.get("contents").and_then(Value::as_array).is_some() {
         return Format::Gemini;
     }
 
-    // 5. OpenAI-specific indicators BEFORE Claude (9router order)
+    // 4. OpenAI-specific indicators BEFORE Claude (9router order)
     if body.get("stream_options").is_some()
         || body.get("response_format").is_some()
         || body.get("logprobs").is_some()
@@ -453,7 +421,7 @@ pub fn detect_source_format(body: &Value) -> Format {
         return Format::OpenAi;
     }
 
-    // 6. Claude-specific indicators
+    // 5. Claude-specific indicators
     if let Some(messages) = body.get("messages").and_then(Value::as_array) {
         if body.get("system").is_some() || body.get("anthropic_version").is_some() {
             return Format::Claude;
@@ -483,7 +451,7 @@ pub fn detect_source_format(body: &Value) -> Format {
         }
     }
 
-    // 7. Default to OpenAI
+    // 6. Default to OpenAI
     Format::OpenAi
 }
 
@@ -538,7 +506,6 @@ pub fn get_target_format_for_provider(provider: &str) -> Format {
         "codex" | "perplexity-agent" => Format::OpenAiResponses,
         "ollama" | "ollama-cloud" => Format::Ollama,
         "antigravity" => Format::Antigravity,
-        "commandcode" | "command-code" => Format::CommandCode,
         _ => Format::OpenAi,
     }
 }
@@ -1282,13 +1249,11 @@ pub fn global_registry() -> &'static TranslationRegistry {
         chat_to_openai_responses_request, openai_responses_to_chat_request,
     };
     use crate::core::translator::request::openai_to_claude::openai_to_claude_request;
-    use crate::core::translator::request::openai_to_commandcode::openai_to_commandcode_request;
     use crate::core::translator::request::openai_to_gemini::openai_to_antigravity_request;
     use crate::core::translator::request::openai_to_gemini::openai_to_gemini_request;
     use crate::core::translator::request::openai_to_ollama::openai_to_ollama_request;
     use crate::core::translator::request::openai_to_vertex::openai_to_vertex_request;
     use crate::core::translator::response::claude_to_openai::claude_to_openai_streaming;
-    use crate::core::translator::response::commandcode_to_openai::commandcode_to_openai_response;
     use crate::core::translator::response::gemini_to_openai::gemini_to_openai_streaming;
     use crate::core::translator::response::ollama_to_openai::ollama_to_openai_streaming;
     use crate::core::translator::response::openai_responses::{
@@ -1356,16 +1321,6 @@ pub fn global_registry() -> &'static TranslationRegistry {
             Format::OpenAi,
             Format::Codex,
             chat_to_openai_responses_request as RequestTransformFn,
-        );
-        reg.register_request(
-            Format::OpenAi,
-            Format::CommandCode,
-            openai_to_commandcode_request as RequestTransformFn,
-        );
-        reg.register_response(
-            Format::CommandCode,
-            Format::OpenAi,
-            commandcode_to_openai_response as ResponseTransformFn,
         );
         reg.register_response(
             Format::OpenAi,

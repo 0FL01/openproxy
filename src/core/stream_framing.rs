@@ -464,7 +464,7 @@ pub enum TextStreamMode {
 }
 
 /// One complete source record. `payload()` returns the joined SSE `data`
-/// fields or the JSON payload of a line/NDJSON record. CommandCode executors
+/// fields or the JSON payload of a line/NDJSON record. Provider executors
 /// may wrap NDJSON records in `data:` lines, so line mode accepts both forms.
 #[derive(Debug)]
 pub enum TextStreamFrame<'a> {

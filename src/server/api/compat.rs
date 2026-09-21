@@ -155,7 +155,7 @@ async fn forward_compat(
         CompatMode::Messages => Format::Claude,
         CompatMode::Responses { .. } => Format::OpenAiResponses,
     };
-    if should_bypass_compat_conversion(stream_request, native_format, expected_format) {
+    if should_bypass_compat_conversion(native_format, expected_format) {
         return with_cors_response(response);
     }
 
@@ -168,16 +168,14 @@ async fn forward_compat(
 }
 
 fn should_bypass_compat_conversion(
-    stream_request: bool,
     routed: Option<chat::RoutedResponseFormats>,
     expected_format: Format,
 ) -> bool {
-    stream_request
-        && routed.is_some_and(|formats| {
-            formats.native_passthrough
-                && formats.client == expected_format
-                && formats.upstream == expected_format
-        })
+    routed.is_some_and(|formats| {
+        formats.native_passthrough
+            && formats.client == expected_format
+            && formats.upstream == expected_format
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2413,14 +2411,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_stream_bypasses_compat_conversion() {
+    fn native_same_format_bypasses_compat_conversion() {
         let routed = Some(chat::RoutedResponseFormats {
             client: Format::OpenAiResponses,
             upstream: Format::OpenAiResponses,
             native_passthrough: true,
         });
         assert!(should_bypass_compat_conversion(
-            true,
             routed,
             Format::OpenAiResponses,
         ));

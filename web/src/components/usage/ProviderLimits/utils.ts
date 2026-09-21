@@ -205,18 +205,29 @@ export function getRemainingPercentage(quota: {
 }
 
 interface QuotaEntry {
-  name: string;
-  used: number;
-  total: number;
+  name?: string;
+  used?: number;
+  total?: number;
   resetAt?: string | null;
   recurring?: boolean;
+  remainingPercentage?: number;
+  kind?: "window" | "balance";
+  label?: string;
+  remaining?: number;
+  unit?: string;
 }
 
 interface NormalizedQuota extends QuotaEntry {
+  name: string;
+  used: number;
+  total: number;
   modelKey?: string;
   remainingPercentage?: number;
   message?: string;
   recurring?: boolean;
+  kind?: "window" | "balance";
+  remaining?: number;
+  unit?: string;
 }
 
 interface RawQuotaData {
@@ -373,6 +384,36 @@ export function parseQuotaData(provider: string, data: RawQuotaData | null | und
               total: quota.total || 0,
               resetAt: quota.resetAt || null,
               remainingPercentage: quota.remainingPercentage,
+            });
+          });
+        }
+        break;
+
+      case "commandcode":
+        if (data.quotas) {
+          Object.entries(data.quotas).forEach(([name, quota]: [string, QuotaEntry]) => {
+            if (quota.kind === "balance") {
+              if (typeof quota.remaining !== "number") return;
+              normalizedQuotas.push({
+                name: quota.label || name,
+                used: 0,
+                total: 0,
+                resetAt: null,
+                kind: "balance",
+                remaining: quota.remaining,
+                unit: quota.unit || "credit value",
+              });
+              return;
+            }
+            if (typeof quota.used !== "number" || typeof quota.total !== "number") return;
+            normalizedQuotas.push({
+              name: quota.label || name,
+              used: quota.used,
+              total: quota.total,
+              resetAt: quota.resetAt ?? null,
+              remainingPercentage: quota.remainingPercentage,
+              kind: "window",
+              unit: quota.unit || "credit value",
             });
           });
         }

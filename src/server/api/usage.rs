@@ -7,9 +7,9 @@ use serde_json::{json, Value};
 
 use crate::core::usage::quota_fetcher::{
     codex_account_id, consume_codex_rate_limit_reset_credit, fetch_antigravity_quota,
-    fetch_claude_quota, fetch_codebuddy_quota, fetch_codex_quota, fetch_deepseek_usage,
-    fetch_github_quota, fetch_glm_quota, fetch_kimi_oauth_usage, fetch_kimi_usage,
-    fetch_minimax_quota, fetch_ollama_quota, fetch_opencode_go_quota,
+    fetch_claude_quota, fetch_codebuddy_quota, fetch_codex_quota, fetch_commandcode_quota,
+    fetch_deepseek_usage, fetch_github_quota, fetch_glm_quota, fetch_kimi_oauth_usage,
+    fetch_kimi_usage, fetch_minimax_quota, fetch_ollama_quota, fetch_opencode_go_quota,
     fetch_vercel_ai_gateway_quota, get_codex_rate_limit_reset_credits,
 };
 use crate::oauth::token_refresh::{
@@ -38,6 +38,7 @@ fn is_usage_apikey_provider(provider: &str) -> bool {
             | "vercel-ai-gateway"
             | "codebuddy-cn"
             | "codebuddy-intl"
+            | "commandcode"
     )
 }
 
@@ -95,6 +96,8 @@ struct ConnectionUsageResponse {
     connection_id: String,
     message: String,
     quotas: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<String>,
 }
 
 async fn get_connection_usage(
@@ -137,6 +140,7 @@ async fn get_connection_usage(
     // `quotas: {}` + `message` as "connected, but quota unavailable".
     let mut live_quotas = serde_json::json!({});
     let mut live_message: Option<String> = None;
+    let mut live_status: Option<String> = None;
     if is_apikey_eligible {
         if let Some(api_key) = connection
             .api_key
@@ -155,6 +159,7 @@ async fn get_connection_usage(
                 "codebuddy-cn" | "codebuddy-intl" => {
                     fetch_codebuddy_quota(api_key, &provider).await
                 }
+                "commandcode" => fetch_commandcode_quota(api_key).await,
                 // Ollama has no live API-key quota fetcher yet.
                 _ => serde_json::json!({}),
             };
@@ -163,6 +168,9 @@ async fn get_connection_usage(
             }
             if let Some(msg) = result.get("message").and_then(|v| v.as_str()) {
                 live_message = Some(msg.to_string());
+            }
+            if let Some(status) = result.get("status").and_then(Value::as_str) {
+                live_status = Some(status.to_string());
             }
         }
     }
@@ -199,6 +207,7 @@ async fn get_connection_usage(
         connection_id,
         message,
         quotas: live_quotas,
+        status: live_status,
     })
     .unwrap_or_else(|_| json!({}));
     if let Some(obj) = body.as_object_mut() {

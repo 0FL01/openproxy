@@ -11,13 +11,7 @@ use crate::core::utils::client_detector::ClientTool;
 pub fn provider_requires_streaming(provider: &str) -> bool {
     matches!(
         provider,
-        "codex"
-            | "openai"
-            | "commandcode"
-            | "command-code"
-            | "codebuddy-cn"
-            | "codebuddy-intl"
-            | "cbai"
+        "codex" | "openai" | "codebuddy-cn" | "codebuddy-intl" | "cbai"
     )
 }
 

@@ -40,7 +40,6 @@ fn contract_provider_formats_match_the_runtime_registry() {
         ("codex", Format::OpenAiResponses),
         ("ollama", Format::Ollama),
         ("antigravity", Format::Antigravity),
-        ("commandcode", Format::CommandCode),
         ("openai-compatible-acme", Format::OpenAi),
         ("openai-compatible-responses-acme", Format::OpenAiResponses),
         ("anthropic-compatible-acme", Format::Claude),

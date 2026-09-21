@@ -653,6 +653,21 @@ async fn execute_single_model(
             })?;
         plan.apply_opencode_metadata(metadata);
     }
+    if plan.provider == "commandcode" {
+        let catalog = state.commandcode_models.load();
+        let metadata = catalog
+            .find(plan.dispatch_model())
+            .ok_or_else(|| ProviderAttemptError {
+                status: 400,
+                message: format!(
+                    "Model {} is not present in the published Command Code catalog",
+                    plan.dispatch_model()
+                ),
+                retry_after: None,
+                upstream_body: None,
+            })?;
+        plan.apply_commandcode_metadata(metadata);
+    }
 
     // C26: this is the single-consumer boundary after request planning. Keep
     // one immutable request-scoped source only inside the account-fallback
@@ -992,11 +1007,11 @@ async fn forward_with_provider_fallback(
 
         use crate::core::executor::{
             AntigravityExecutionRequest, AntigravityExecutor, AzureExecutionRequest, AzureExecutor,
-            CodexExecutionRequest, CodexExecutor, CommandCodeExecutionRequest, CommandCodeExecutor,
-            DefaultExecutor, DevinCliExecutor, DevinExecutionRequest, GithubExecutionRequest,
-            GithubExecutor, KimchiExecutor, OpenCodeExecutionRequest, OpenCodeExecutor,
-            OpenCodeTier, ProviderExecutionRequest, ProviderExecutionResponse, ProviderExecutor,
-            TraeExecutionRequest, TraeExecutor, VertexExecutionRequest, VertexExecutor,
+            CodexExecutionRequest, CodexExecutor, DefaultExecutor, DevinCliExecutor,
+            DevinExecutionRequest, GithubExecutionRequest, GithubExecutor, KimchiExecutor,
+            OpenCodeExecutionRequest, OpenCodeExecutor, OpenCodeTier, ProviderExecutionRequest,
+            ProviderExecutionResponse, ProviderExecutor, TraeExecutionRequest, TraeExecutor,
+            VertexExecutionRequest, VertexExecutor,
         };
 
         let is_codex_model = provider == "codex";
@@ -1154,35 +1169,6 @@ async fn forward_with_provider_fallback(
                     .map_err(|e| ProviderAttemptError {
                         status: 500,
                         message: format!("OpenCode execution failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                Ok(ProviderExecutionResponse {
-                    response: result.response,
-                    url: result.url,
-                    headers: result.headers,
-                    transport: result.transport,
-                })
-            } else if provider == "commandcode" {
-                let executor = CommandCodeExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ProviderAttemptError {
-                    status: 500,
-                    message: format!("CommandCode executor creation failed: {:?}", e),
-                    retry_after: None,
-                    upstream_body: None,
-                })?;
-                let result = executor
-                    .execute_request(CommandCodeExecutionRequest {
-                        model: model.to_string(),
-                        body: request_body.clone(),
-                        stream,
-                        credentials: connection.clone(),
-                        proxy,
-                    })
-                    .await
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("CommandCode execution failed: {:?}", e),
                         retry_after: None,
                         upstream_body: None,
                     })?;
@@ -2392,8 +2378,7 @@ async fn proxy_response_with_pending_tracking(
     }
     // Dashboard normalization follows the resolved upstream wire format, not
     // the configurable provider name. Custom Gemini-compatible routes, Vertex,
-    // and Antigravity all carry Gemini events; CommandCode carries NDJSON (or
-    // an SSE envelope around one NDJSON record).
+    // and Antigravity all carry Gemini events.
     let transformer = normalize_for_dashboard
         .then(|| dashboard_transformer_for_format(stream_target_format))
         .flatten();
@@ -2888,7 +2873,6 @@ fn dashboard_transformer_for_format(
         Format::Claude => transformer_for_provider("claude"),
         Format::Gemini | Format::Vertex | Format::Antigravity => transformer_for_provider("gemini"),
         Format::Ollama => transformer_for_provider("ollama"),
-        Format::CommandCode => transformer_for_provider("commandcode"),
         Format::OpenAi | Format::OpenAiResponses | Format::OpenAiResponse | Format::Codex => {
             transformer_for_provider("openai")
         }
@@ -2939,17 +2923,12 @@ fn transform_dashboard_frame(
             .collect();
     };
 
-    // Legacy dashboard transformers consume framed SSE for the OpenAI/Claude/
-    // Gemini/Ollama families, but CommandCode consumes one bare JSON record.
-    // Do not parse+serialize here: the selected transformer is the sole JSON
-    // parser for translated dashboard traffic.
+    // Legacy dashboard transformers consume framed SSE. Do not parse+serialize
+    // here: the selected transformer is the sole JSON parser for translated
+    // dashboard traffic.
     let normalized_payload = parsed_payload.and_then(|value| serde_json::to_string(value).ok());
     let payload = normalized_payload.as_deref().unwrap_or(payload);
-    let input = if source == Format::CommandCode {
-        Bytes::copy_from_slice(payload.as_bytes())
-    } else {
-        Bytes::from(format!("data: {payload}\n\n"))
-    };
+    let input = Bytes::from(format!("data: {payload}\n\n"));
     let mut output = transform_sse_stream(&input, transformer)
         .into_iter()
         .filter_map(|line| sse_frame_for_dashboard(&line))
@@ -4167,22 +4146,5 @@ mod tests {
                 .collect::<String>();
             assert!(output.contains("format-gemini"), "{source:?}: {output}");
         }
-
-        let commandcode = b"{\"type\":\"text-delta\",\"text\":\"format-commandcode\"}\n";
-        let mut dashboard = StreamDispatch::new(
-            Format::CommandCode,
-            Format::OpenAi,
-            "application/x-ndjson",
-            super::dashboard_transformer_for_format(Format::CommandCode),
-            None,
-            false,
-        );
-        let output = dashboard
-            .feed(commandcode)
-            .output
-            .iter()
-            .map(|bytes| String::from_utf8_lossy(bytes))
-            .collect::<String>();
-        assert!(output.contains("format-commandcode"), "{output}");
     }
 }

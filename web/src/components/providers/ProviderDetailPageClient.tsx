@@ -483,6 +483,7 @@ export default function ProviderDetailPageClient() {
       stopOneByOneRef.current = false;
       // Refresh connection statuses after tests
       fetchConnections();
+      if (providerId === "commandcode") await reloadCatalog();
     }
   };
 
@@ -585,7 +586,7 @@ export default function ProviderDetailPageClient() {
       const res = await fetch(`/api/providers/${target.id}`, { method: "DELETE" });
       if (res.ok) {
         setConnections((prev) => prev.filter((c) => c.id !== target.id));
-        if (providerId === "codex") await reloadCatalog();
+        if (providerId === "codex" || providerId === "commandcode") await reloadCatalog();
         notify.success("Connection deleted");
       } else {
         notify.error("Failed to delete connection");
@@ -601,7 +602,7 @@ export default function ProviderDetailPageClient() {
 
   const handleOAuthSuccess = async () => {
     await fetchConnections();
-    if (providerId === "codex") await reloadCatalog();
+    if (providerId === "codex" || providerId === "commandcode") await reloadCatalog();
     setShowOAuthModal(false);
   };
 
@@ -623,7 +624,7 @@ export default function ProviderDetailPageClient() {
 
       if (res.ok) {
         await fetchConnections();
-        if (providerId === "codex") await reloadCatalog();
+        if (providerId === "codex" || providerId === "commandcode") await reloadCatalog();
         setShowAddApiKeyModal(false);
         return;
       }
@@ -644,7 +645,7 @@ export default function ProviderDetailPageClient() {
       });
       if (res.ok) {
         await fetchConnections();
-        if (providerId === "codex") await reloadCatalog();
+        if (providerId === "codex" || providerId === "commandcode") await reloadCatalog();
         setShowEditModal(false);
       }
     } catch (error) {
@@ -661,7 +662,7 @@ export default function ProviderDetailPageClient() {
       });
       if (res.ok) {
         setConnections(prev => prev.map(c => c.id === id ? { ...c, isActive } : c));
-        if (providerId === "codex") await reloadCatalog();
+        if (providerId === "codex" || providerId === "commandcode") await reloadCatalog();
       }
     } catch (error) {
       console.log("Error updating connection status:", error);

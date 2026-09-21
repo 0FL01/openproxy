@@ -1077,12 +1077,17 @@ export default function ProviderLimits() {
                     </span>
                     <p className="mt-1.5 text-xs text-text-muted">{error}</p>
                   </div>
-                ) : quota?.message ? (
+                ) : quota?.message && (!quota.quotas || quota.quotas.length === 0) ? (
                   <div className="text-center py-5">
                     <p className="text-xs text-text-muted">{quota.message}</p>
                   </div>
                 ) : (
-                  <QuotaTable quotas={quota?.quotas} compact />
+                  <div className="space-y-2">
+                    {quota?.message && (
+                      <p className="text-[11px] text-text-muted">{quota.message}</p>
+                    )}
+                    <QuotaTable quotas={quota?.quotas} compact />
+                  </div>
                 )}
               </div>
             </Card>
