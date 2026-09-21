@@ -28,6 +28,7 @@
   "cerebras": "cerebras",
   "cohere": "cohere",
   "commandcode": "commandcode",
+  "a6api": "a6api",
   "hyperbolic": "hyperbolic",
   "deepgram": "deepgram",
   "assemblyai": "assemblyai",
@@ -2931,6 +2932,10 @@
    "models": []
   },
   {
+   "alias": "a6api",
+   "models": []
+  },
+  {
    "alias": "deepgram",
    "models": [
     {
@@ -4313,6 +4318,13 @@
   {
    "id": "commandcode",
    "alias": "commandcode",
+   "serviceKinds": [
+    "llm"
+   ]
+  },
+  {
+   "id": "a6api",
+   "alias": "a6api",
    "serviceKinds": [
     "llm"
    ]

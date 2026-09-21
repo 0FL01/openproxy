@@ -564,6 +564,24 @@ pub(crate) async fn test_provider_api(
     api_key: Option<&str>,
     base_url: Option<&str>,
 ) -> (bool, Option<String>, Option<u64>) {
+    if provider == "a6api" {
+        let Some(api_key) = api_key.map(str::trim).filter(|key| !key.is_empty()) else {
+            return (false, Some("API key required".to_string()), None);
+        };
+        let connection = crate::types::ProviderConnection {
+            provider: "a6api".into(),
+            api_key: Some(api_key.to_string()),
+            ..Default::default()
+        };
+        let start = Instant::now();
+        return match super::provider_models::fetch_a6api_model_ids_with_proxy(&connection, None)
+            .await
+        {
+            Ok(_) => (true, None, Some(start.elapsed().as_millis() as u64)),
+            Err((_, error)) => (false, Some(error), Some(start.elapsed().as_millis() as u64)),
+        };
+    }
+
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build();

@@ -261,6 +261,9 @@ fn normalize_dashboard_chat_request_body(
 }
 
 fn provider_connection_supports_model(connection: &ProviderConnection, model: &str) -> bool {
+    if connection.provider == "a6api" {
+        return crate::core::model::a6api_connection_supports_model(connection, model);
+    }
     if connection.default_model.as_deref() == Some(model) {
         return true;
     }
@@ -1788,6 +1791,9 @@ fn connection_has_credentials(connection: &ProviderConnection) -> bool {
 }
 
 fn connection_supports_model(connection: &ProviderConnection, model: &str) -> bool {
+    if connection.provider == "a6api" {
+        return crate::core::model::a6api_connection_supports_model(connection, model);
+    }
     let enabled_models: Vec<_> = connection
         .provider_specific_data
         .get("enabledModels")
@@ -3803,6 +3809,38 @@ mod tests {
             .expect("should select an account");
 
         assert_eq!(selected.id, "conn-b");
+    }
+
+    #[test]
+    fn a6api_selects_only_the_key_with_the_exact_model_id() {
+        let mut wildcard = connection("wildcard", 1);
+        wildcard.provider = "a6api".into();
+        wildcard.default_model = None;
+
+        let mut wrong_suffix = connection("wrong-suffix", 2);
+        wrong_suffix.provider = "a6api".into();
+        wrong_suffix.default_model = None;
+        wrong_suffix.provider_specific_data.insert(
+            "enabledModels".into(),
+            json!(["vendor/deepseek-v4.1-flash"]),
+        );
+
+        let mut supporting = connection("supporting", 3);
+        supporting.provider = "a6api".into();
+        supporting.default_model = None;
+        supporting
+            .provider_specific_data
+            .insert("enabledModels".into(), json!(["deepseek-v4.1-flash"]));
+
+        let snapshot = AppDb {
+            provider_connections: vec![wildcard, wrong_suffix, supporting.clone()],
+            ..AppDb::default()
+        };
+        let selected =
+            select_connection(&snapshot, "a6api", "deepseek-v4.1-flash", &HashSet::new())
+                .expect("exact supporting A6API key should be selected");
+        assert_eq!(selected.id, supporting.id);
+        assert!(select_connection(&snapshot, "a6api", "missing", &HashSet::new()).is_none());
     }
 
     #[test]

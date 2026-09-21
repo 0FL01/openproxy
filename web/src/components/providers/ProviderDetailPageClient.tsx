@@ -483,7 +483,7 @@ export default function ProviderDetailPageClient() {
       stopOneByOneRef.current = false;
       // Refresh connection statuses after tests
       fetchConnections();
-      if (providerId === "commandcode") await reloadCatalog();
+      if (providerId === "commandcode" || providerId === "a6api") await reloadCatalog();
     }
   };
 
@@ -586,7 +586,7 @@ export default function ProviderDetailPageClient() {
       const res = await fetch(`/api/providers/${target.id}`, { method: "DELETE" });
       if (res.ok) {
         setConnections((prev) => prev.filter((c) => c.id !== target.id));
-        if (providerId === "codex" || providerId === "commandcode") await reloadCatalog();
+        if (providerId === "codex" || providerId === "commandcode" || providerId === "a6api") await reloadCatalog();
         notify.success("Connection deleted");
       } else {
         notify.error("Failed to delete connection");
@@ -602,7 +602,7 @@ export default function ProviderDetailPageClient() {
 
   const handleOAuthSuccess = async () => {
     await fetchConnections();
-    if (providerId === "codex" || providerId === "commandcode") await reloadCatalog();
+    if (providerId === "codex" || providerId === "commandcode" || providerId === "a6api") await reloadCatalog();
     setShowOAuthModal(false);
   };
 
@@ -624,7 +624,7 @@ export default function ProviderDetailPageClient() {
 
       if (res.ok) {
         await fetchConnections();
-        if (providerId === "codex" || providerId === "commandcode") await reloadCatalog();
+        if (providerId === "codex" || providerId === "commandcode" || providerId === "a6api") await reloadCatalog();
         setShowAddApiKeyModal(false);
         return;
       }
@@ -645,7 +645,7 @@ export default function ProviderDetailPageClient() {
       });
       if (res.ok) {
         await fetchConnections();
-        if (providerId === "codex" || providerId === "commandcode") await reloadCatalog();
+        if (providerId === "codex" || providerId === "commandcode" || providerId === "a6api") await reloadCatalog();
         setShowEditModal(false);
       }
     } catch (error) {
@@ -662,7 +662,7 @@ export default function ProviderDetailPageClient() {
       });
       if (res.ok) {
         setConnections(prev => prev.map(c => c.id === id ? { ...c, isActive } : c));
-        if (providerId === "codex" || providerId === "commandcode") await reloadCatalog();
+        if (providerId === "codex" || providerId === "commandcode" || providerId === "a6api") await reloadCatalog();
       }
     } catch (error) {
       console.log("Error updating connection status:", error);
@@ -814,6 +814,7 @@ export default function ProviderDetailPageClient() {
       }
       setConnections((prev) => prev.filter((c) => !idsToDelete.includes(c.id)));
       setSelectedConnectionIds([]);
+      if (providerId === "a6api") await reloadCatalog();
       if (failed > 0) {
         notify.error(
           `Deleted ${idsToDelete.length - failed} connection(s), ${failed} failed.`,
@@ -1055,13 +1056,15 @@ export default function ProviderDetailPageClient() {
         })}
 
         {/* Add model button — inline, same style as model chips */}
-        <button
-          onClick={() => setShowAddCustomModel(true)}
-          className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-primary/40 px-3 py-2 text-xs text-primary transition-colors hover:border-primary hover:bg-primary/5 sm:w-auto"
-        >
-          <span className="material-symbols-outlined text-sm">add</span>
-          Add Model
-        </button>
+        {providerId !== "a6api" && (
+          <button
+            onClick={() => setShowAddCustomModel(true)}
+            className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-primary/40 px-3 py-2 text-xs text-primary transition-colors hover:border-primary hover:bg-primary/5 sm:w-auto"
+          >
+            <span className="material-symbols-outlined text-sm">add</span>
+            Add Model
+          </button>
+        )}
 
 
         {/* Suggested models from provider API — show only models not yet added */}
@@ -1614,6 +1617,7 @@ export default function ProviderDetailPageClient() {
           // and never goes through handleSaveApiKey, so fetchConnections only
           // runs here.
           fetchConnections();
+          if (providerId === "a6api") void reloadCatalog();
         }}
       />
       <EditConnectionModal
@@ -1621,7 +1625,10 @@ export default function ProviderDetailPageClient() {
         connection={selectedConnection}
         proxyPools={proxyPools}
         onSave={handleUpdateConnection}
-        onClose={() => setShowEditModal(false)}
+        onClose={() => {
+          setShowEditModal(false);
+          if (providerId === "a6api") void reloadCatalog();
+        }}
       />
       {isCompatible && (
         <EditCompatibleNodeModal

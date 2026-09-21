@@ -155,7 +155,7 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
       };
       if (!isOAuth && formData.apiKey) {
         updates.apiKey = formData.apiKey;
-        let isValid = validationResult === "success";
+        let isValid = connection.provider === "a6api" || validationResult === "success";
         if (!isValid) {
           try {
             setValidating(true);

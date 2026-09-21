@@ -117,6 +117,7 @@ export const APIKEY_PROVIDERS: Record<string, Provider> = {
   cerebras: { id: "cerebras", alias: "cerebras", name: "Cerebras", icon: "memory", color: "#FF4F00", textIcon: "CB", website: "https://www.cerebras.ai", notice: { apiKeyUrl: "https://cloud.cerebras.ai/platform" } },
   cohere: { id: "cohere", alias: "cohere", name: "Cohere", icon: "hub", color: "#39594D", textIcon: "CO", website: "https://cohere.com", notice: { apiKeyUrl: "https://dashboard.cohere.com/api-keys" } },
   commandcode: { id: "commandcode", alias: "commandcode", name: "Command Code", icon: "code", color: "#7C3AED", textIcon: "CC", website: "https://commandcode.ai", notice: { text: "Uses the Command Code Provider API with live models and credit limits.", apiKeyUrl: "https://commandcode.ai/settings/keys" }, serviceKinds: ["llm"] },
+  a6api: { id: "a6api", alias: "a6api", name: "A6API", icon: "hub", color: "#2563EB", textIcon: "A6", website: "https://a6api.com", notice: { text: "Models are synchronized from the models enabled for each API key.", apiKeyUrl: "https://a6api.com" }, serviceKinds: ["llm"] },
   hyperbolic: { id: "hyperbolic", alias: "hyp", name: "Hyperbolic", icon: "bolt", color: "#00D4FF", textIcon: "HY", website: "https://hyperbolic.xyz", notice: { apiKeyUrl: "https://app.hyperbolic.xyz/settings" }, serviceKinds: ["llm"] },
   "vertex-partner": { id: "vertex-partner", alias: "vxp", name: "Vertex Partner", icon: "cloud", color: "#34A853", textIcon: "VP", website: "https://cloud.google.com/vertex-ai/generative-ai/docs/partner-models/use-partner-models", notice: { apiKeyUrl: "https://console.cloud.google.com/iam-admin/serviceaccounts" } },
   modal: { id: "modal", alias: "modal", name: "Modal", icon: "cloud", color: "#22C55E", textIcon: "MD", website: "https://modal.com", notice: { apiKeyUrl: "https://modal.com" } },
@@ -460,6 +461,7 @@ export const USAGE_SUPPORTED_PROVIDERS: string[] = [
   "minimax",
   "opencode-go",
   "commandcode",
+  "a6api",
 ];
 
 // Subset that uses apikey auth (still surfaced on quota page)
@@ -471,6 +473,7 @@ export const USAGE_APIKEY_PROVIDERS: string[] = [
   "deepseek",
   "opencode-go",
   "commandcode",
+  "a6api",
 ];
 
 // Providers whose dashboard exposes an "Import catalog" button — mirrors

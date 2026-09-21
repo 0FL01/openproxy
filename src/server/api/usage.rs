@@ -6,11 +6,11 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::core::usage::quota_fetcher::{
-    codex_account_id, consume_codex_rate_limit_reset_credit, fetch_antigravity_quota,
-    fetch_claude_quota, fetch_codebuddy_quota, fetch_codex_quota, fetch_commandcode_quota,
-    fetch_deepseek_usage, fetch_github_quota, fetch_glm_quota, fetch_kimi_oauth_usage,
-    fetch_kimi_usage, fetch_minimax_quota, fetch_ollama_quota, fetch_opencode_go_quota,
-    fetch_vercel_ai_gateway_quota, get_codex_rate_limit_reset_credits,
+    codex_account_id, consume_codex_rate_limit_reset_credit, fetch_a6api_quota,
+    fetch_antigravity_quota, fetch_claude_quota, fetch_codebuddy_quota, fetch_codex_quota,
+    fetch_commandcode_quota, fetch_deepseek_usage, fetch_github_quota, fetch_glm_quota,
+    fetch_kimi_oauth_usage, fetch_kimi_usage, fetch_minimax_quota, fetch_ollama_quota,
+    fetch_opencode_go_quota, fetch_vercel_ai_gateway_quota, get_codex_rate_limit_reset_credits,
 };
 use crate::oauth::token_refresh::{
     connection_credential_generation, CONNECTION_REFRESH_COORDINATOR,
@@ -39,6 +39,7 @@ fn is_usage_apikey_provider(provider: &str) -> bool {
             | "codebuddy-cn"
             | "codebuddy-intl"
             | "commandcode"
+            | "a6api"
     )
 }
 
@@ -160,6 +161,7 @@ async fn get_connection_usage(
                     fetch_codebuddy_quota(api_key, &provider).await
                 }
                 "commandcode" => fetch_commandcode_quota(api_key).await,
+                "a6api" => fetch_a6api_quota(api_key).await,
                 // Ollama has no live API-key quota fetcher yet.
                 _ => serde_json::json!({}),
             };

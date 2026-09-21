@@ -119,6 +119,7 @@ pub(super) async fn test_provider_connection(
                     error: Some(error.clone()),
                     refreshed: false,
                 },
+                None,
             )
             .await;
 
@@ -132,10 +133,28 @@ pub(super) async fn test_provider_connection(
     }
 
     let auth_type = connection.auth_type.trim().to_ascii_lowercase();
-    let mut result = if matches!(auth_type.as_str(), "apikey" | "api_key" | "cookie") {
-        test_api_key_connection(&state, &connection, &effective_proxy).await
+    let (mut result, a6api_inventory) = if connection.provider == "a6api" {
+        match super::provider_models::fetch_a6api_model_ids(&state, &connection).await {
+            Ok(models) => (
+                ConnectionTestResult {
+                    valid: true,
+                    error: None,
+                    refreshed: false,
+                },
+                Some((connection.api_key.clone(), models)),
+            ),
+            Err((_, error)) => (invalid(&error), None),
+        }
+    } else if matches!(auth_type.as_str(), "apikey" | "api_key" | "cookie") {
+        (
+            test_api_key_connection(&state, &connection, &effective_proxy).await,
+            None,
+        )
     } else {
-        test_oauth_connection(&state, &connection, &effective_proxy).await
+        (
+            test_oauth_connection(&state, &connection, &effective_proxy).await,
+            None,
+        )
     };
 
     // C22: the explicit connection test is also the user-visible retry entry
@@ -178,13 +197,14 @@ pub(super) async fn test_provider_connection(
         }
     }
 
-    persist_test_result(&state, &connection.id, result).await
+    persist_test_result(&state, &connection.id, result, a6api_inventory).await
 }
 
 async fn persist_test_result(
     state: &AppState,
     connection_id: &str,
     result: ConnectionTestResult,
+    a6api_inventory: Option<(Option<String>, Vec<String>)>,
 ) -> Response {
     let error = result.error.clone();
     let persisted_error = error.clone();
@@ -212,6 +232,15 @@ async fn persist_test_result(
             else {
                 return;
             };
+
+            if let Some((expected_key, models)) = &a6api_inventory {
+                if &connection.api_key != expected_key {
+                    return;
+                }
+                connection
+                    .provider_specific_data
+                    .insert("enabledModels".to_string(), json!(models));
+            }
 
             connection.test_status = Some(if valid { "active" } else { "error" }.to_string());
             connection.last_error = if valid { None } else { persisted_error.clone() };

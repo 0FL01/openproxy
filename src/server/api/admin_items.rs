@@ -115,6 +115,63 @@ async fn update_provider(
             Err(message) => return bad_request(&message),
         };
 
+    let a6api_models = if existing.provider == "a6api" {
+        match req.api_key.as_deref() {
+            Some(api_key) if api_key.trim().is_empty() => {
+                return bad_request("API key cannot be empty");
+            }
+            Some(api_key) => {
+                let mut candidate = existing.clone();
+                candidate.api_key = Some(api_key.trim().to_string());
+                if let Some(provider_specific_data) = &req.provider_specific_data {
+                    for (key, value) in provider_specific_data {
+                        if key != "enabledModels" {
+                            candidate
+                                .provider_specific_data
+                                .insert(key.clone(), value.clone());
+                        }
+                    }
+                }
+                if let Some(enabled) = proxy_config.connection_proxy_enabled {
+                    candidate
+                        .provider_specific_data
+                        .insert("connectionProxyEnabled".to_string(), Value::Bool(enabled));
+                }
+                if let Some(url) = &proxy_config.connection_proxy_url {
+                    candidate
+                        .provider_specific_data
+                        .insert("connectionProxyUrl".to_string(), Value::String(url.clone()));
+                }
+                if let Some(no_proxy) = &proxy_config.connection_no_proxy {
+                    candidate.provider_specific_data.insert(
+                        "connectionNoProxy".to_string(),
+                        Value::String(no_proxy.clone()),
+                    );
+                }
+                if proxy_pool_update.has_field {
+                    if let Some(proxy_pool_id) = &proxy_pool_update.proxy_pool_id {
+                        candidate.provider_specific_data.insert(
+                            "proxyPoolId".to_string(),
+                            Value::String(proxy_pool_id.clone()),
+                        );
+                    } else {
+                        candidate.provider_specific_data.remove("proxyPoolId");
+                    }
+                }
+
+                match super::provider_models::fetch_a6api_model_ids(&state, &candidate).await {
+                    Ok(models) => Some(models),
+                    Err((status, message)) => {
+                        return (status, Json(json!({ "error": message }))).into_response();
+                    }
+                }
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+
     let updated = state
         .db
         .update({
@@ -168,6 +225,9 @@ async fn update_provider(
 
                     if let Some(provider_specific_data) = req.provider_specific_data.clone() {
                         for (key, value) in provider_specific_data {
+                            if existing.provider == "a6api" && key == "enabledModels" {
+                                continue;
+                            }
                             connection.provider_specific_data.insert(key, value);
                         }
                     }
@@ -196,6 +256,12 @@ async fn update_provider(
                         } else {
                             connection.provider_specific_data.remove("proxyPoolId");
                         }
+                    }
+
+                    if let Some(models) = &a6api_models {
+                        connection
+                            .provider_specific_data
+                            .insert("enabledModels".to_string(), json!(models));
                     }
 
                     connection.updated_at = Some(Utc::now().to_rfc3339());

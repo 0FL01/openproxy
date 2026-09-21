@@ -9,6 +9,8 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
+use crate::core::executor::read_reqwest_body;
+use crate::core::proxy::{resolve_proxy_target, ProxyTarget};
 use crate::oauth::token_refresh::{
     connection_credential_generation, CONNECTION_REFRESH_COORDINATOR,
 };
@@ -47,6 +49,8 @@ const GEMINI_API_MODELS_MAX_PAGES: usize = 10;
 
 const OPENROUTER_REFERER: &str = "https://endpoint-proxy.local";
 const OPENROUTER_TITLE: &str = "Endpoint Proxy";
+const A6API_MODELS_URL: &str = "https://api.a6api.com/v1/models";
+const A6API_MODELS_RESPONSE_LIMIT_BYTES: usize = 512 * 1024;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -112,10 +116,10 @@ pub(super) async fn import_provider_models(
     };
 
     let provider = connection.provider.clone();
-    if provider == "commandcode" {
+    if provider == "commandcode" || provider == "a6api" {
         return json_error(
             StatusCode::BAD_REQUEST,
-            "Command Code models are served from the live provider catalog and are not imported as custom models",
+            "Provider models are synchronized per connection and are not imported as custom models",
         );
     }
     let provider_alias = storage_alias_for_provider(&provider);
@@ -444,6 +448,7 @@ async fn fetch_provider_models_response(
             fetch_openrouter_models(connection, "https://openrouter.ai/api/v1/models").await
         }
         "commandcode" => fetch_commandcode_models(state, connection).await,
+        "a6api" => fetch_a6api_models(state, connection).await,
         "opencode-zen" | "opencode-go" => fetch_opencode_models(state, connection).await,
         "alicode" => {
             fetch_first_party_openai_style_models(
@@ -576,6 +581,99 @@ async fn fetch_provider_models_response(
             "Provider {other} does not support models listing"
         ))),
     }
+}
+
+pub(super) async fn fetch_a6api_model_ids(
+    state: &AppState,
+    connection: &ProviderConnection,
+) -> Result<Vec<String>, (StatusCode, String)> {
+    let snapshot = state.db.snapshot();
+    let proxy = resolve_proxy_target(&snapshot, connection, &snapshot.settings);
+    fetch_a6api_model_ids_with_proxy(connection, proxy.as_ref()).await
+}
+
+pub(crate) async fn fetch_a6api_model_ids_with_proxy(
+    connection: &ProviderConnection,
+    proxy: Option<&ProxyTarget>,
+) -> Result<Vec<String>, (StatusCode, String)> {
+    fetch_a6api_models_from_url(connection, A6API_MODELS_URL, proxy)
+        .await
+        .map(|response| response.models.into_iter().map(|model| model.id).collect())
+        .map_err(|error| (error.status, error.message))
+}
+
+async fn fetch_a6api_models(
+    state: &AppState,
+    connection: &ProviderConnection,
+) -> Result<ProviderModelsResponse, RouteError> {
+    let snapshot = state.db.snapshot();
+    let proxy = resolve_proxy_target(&snapshot, connection, &snapshot.settings);
+    fetch_a6api_models_from_url(connection, A6API_MODELS_URL, proxy.as_ref()).await
+}
+
+async fn fetch_a6api_models_from_url(
+    connection: &ProviderConnection,
+    url: &str,
+    proxy: Option<&ProxyTarget>,
+) -> Result<ProviderModelsResponse, RouteError> {
+    let token = connection
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| RouteError::unauthorized("No valid API key found"))?;
+
+    let mut builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none());
+    if let Some(proxy) = proxy.filter(|proxy| !proxy.url.is_empty()) {
+        let configured = reqwest::Proxy::all(&proxy.url)
+            .map_err(|_| RouteError::bad_request("Invalid connection proxy"))?
+            .no_proxy(reqwest::NoProxy::from_string(&proxy.no_proxy));
+        builder = builder.proxy(configured);
+    }
+    let client = builder
+        .build()
+        .map_err(|_| RouteError::internal("Failed to fetch A6API models"))?;
+    let response = client
+        .get(url)
+        .header(ACCEPT, "application/json")
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|_| RouteError::internal("Failed to fetch A6API models"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let public_status = match status {
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => status,
+            StatusCode::TOO_MANY_REQUESTS => StatusCode::TOO_MANY_REQUESTS,
+            _ => StatusCode::BAD_GATEWAY,
+        };
+        return Err(RouteError::new(
+            public_status,
+            format!("A6API models request failed: {}", status.as_u16()),
+        ));
+    }
+
+    let body = read_reqwest_body(response, A6API_MODELS_RESPONSE_LIMIT_BYTES)
+        .await
+        .map_err(|_| RouteError::new(StatusCode::BAD_GATEWAY, "Invalid A6API models response"))?;
+    let payload: Value = serde_json::from_slice(&body)
+        .map_err(|_| RouteError::new(StatusCode::BAD_GATEWAY, "Invalid A6API models response"))?;
+    let models = parse_a6api_models(&payload)?;
+
+    Ok(response_with_models(connection, models, None))
+}
+
+fn parse_a6api_models(payload: &Value) -> Result<Vec<ProviderModel>, RouteError> {
+    let mut models = parse_openai_style_models(payload);
+    let mut seen = std::collections::BTreeSet::new();
+    models.retain(|model| seen.insert(model.id.clone()));
+    if models.is_empty() {
+        return Err(RouteError::bad_request("A6API key has no enabled models"));
+    }
+    Ok(models)
 }
 
 async fn fetch_first_party_openai_style_models(
@@ -1519,6 +1617,24 @@ mod tests {
         assert!(supports_models_discovery("anthropic-compatible-chat"));
         assert!(supports_models_discovery("glm"));
         assert!(!supports_models_discovery("totally-unknown-provider"));
+        assert!(!supports_models_discovery("a6api"));
+    }
+
+    #[test]
+    fn a6api_models_preserve_exact_key_scoped_ids_and_reject_empty_lists() {
+        let models = parse_a6api_models(&json!({
+            "success": true,
+            "object": "list",
+            "data": [
+                {"id": "deepseek-v4.1-flash", "object": "model", "supported_endpoint_types": ["openai"]},
+                {"id": "vendor/model", "object": "model"},
+                {"id": "deepseek-v4.1-flash", "object": "model"}
+            ]
+        }))
+        .unwrap();
+        let ids: Vec<&str> = models.iter().map(|model| model.id.as_str()).collect();
+        assert_eq!(ids, vec!["deepseek-v4.1-flash", "vendor/model"]);
+        assert!(parse_a6api_models(&json!({"object": "list", "data": []})).is_err());
     }
 
     #[test]

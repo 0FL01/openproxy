@@ -67,7 +67,7 @@ pub enum ProviderExtCmd {
     },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProviderInput {
     name: String,
@@ -212,14 +212,30 @@ async fn run_edit(
     priority: Option<u32>,
     default_model: Option<String>,
 ) -> anyhow::Result<()> {
-    if find_provider(db, id_or_name).is_none() {
+    let Some(existing) = find_provider(db, id_or_name) else {
         let exit = emit_error(
             ctx,
             "not_found",
             &format!("provider '{id_or_name}' not found"),
         )?;
         std::process::exit(exit);
-    }
+    };
+    let a6api_models = if existing.provider == "a6api" && api_key.is_some() {
+        let mut candidate = existing.clone();
+        candidate.api_key = api_key.clone();
+        if let Some(url) = &base_url {
+            candidate
+                .provider_specific_data
+                .insert("baseUrl".into(), Value::String(url.clone()));
+        }
+        super::sync_a6api_inventory(db, &mut candidate).await?;
+        candidate
+            .provider_specific_data
+            .get("enabledModels")
+            .cloned()
+    } else {
+        None
+    };
     let mut updated: Option<ProviderConnection> = None;
     db.update(|app| {
         if let Some(conn) = app.provider_connections.iter_mut().find(|c| {
@@ -237,6 +253,10 @@ async fn run_edit(
             }
             if let Some(model) = &default_model {
                 conn.default_model = Some(model.clone());
+            }
+            if let Some(models) = &a6api_models {
+                conn.provider_specific_data
+                    .insert("enabledModels".into(), models.clone());
             }
             conn.updated_at = Some(chrono::Utc::now().to_rfc3339());
             updated = Some(conn.clone());
@@ -345,19 +365,33 @@ async fn run_test(db: &Db, ctx: OutputCtx, id_or_name: &str) -> anyhow::Result<(
         std::process::exit(exit);
     };
 
-    let base_url = conn
-        .provider_specific_data
-        .get("baseUrl")
-        .and_then(Value::as_str)
-        .map(String::from);
-    let api_key = conn.api_key.as_deref();
     let start = std::time::Instant::now();
-    let (valid, error, latency_ms) = crate::server::api::providers::test_provider_api(
-        conn.provider.as_str(),
-        api_key,
-        base_url.as_deref(),
-    )
-    .await;
+    let mut a6api_inventory = None;
+    let (valid, error, latency_ms) = if conn.provider == "a6api" {
+        let mut candidate = conn.clone();
+        match super::sync_a6api_inventory(db, &mut candidate).await {
+            Ok(()) => {
+                a6api_inventory = candidate
+                    .provider_specific_data
+                    .get("enabledModels")
+                    .cloned();
+                (true, None, None)
+            }
+            Err(error) => (false, Some(error.to_string()), None),
+        }
+    } else {
+        let base_url = conn
+            .provider_specific_data
+            .get("baseUrl")
+            .and_then(Value::as_str)
+            .map(String::from);
+        crate::server::api::providers::test_provider_api(
+            conn.provider.as_str(),
+            conn.api_key.as_deref(),
+            base_url.as_deref(),
+        )
+        .await
+    };
     let measured_ms = start.elapsed().as_millis() as u64;
     let latency_ms = latency_ms.unwrap_or(measured_ms);
 
@@ -375,6 +409,12 @@ async fn run_test(db: &Db, ctx: OutputCtx, id_or_name: &str) -> anyhow::Result<(
             c.test_status = Some(if valid_clone { "ok" } else { "failed" }.to_string());
             c.last_tested = Some(now_clone.clone());
             c.last_error = error_clone.clone();
+            if valid_clone && c.api_key == conn.api_key {
+                if let Some(models) = &a6api_inventory {
+                    c.provider_specific_data
+                        .insert("enabledModels".into(), models.clone());
+                }
+            }
         }
     })
     .await?;
@@ -476,13 +516,63 @@ async fn run_apply(
             std::process::exit(exit);
         }
     };
-    let items: Vec<ProviderInput> = match into_items(doc) {
+    let mut items: Vec<ProviderInput> = match into_items(doc) {
         Ok(items) => items,
         Err(e) => {
             let exit = emit_error(ctx, "validation", &e.to_string())?;
             std::process::exit(exit);
         }
     };
+
+    if !dry_run {
+        let snapshot = db.snapshot();
+        for item in &mut items {
+            if item.provider != "a6api" {
+                continue;
+            }
+            item.auth_type = Some("apikey".into());
+            let existing = snapshot
+                .provider_connections
+                .iter()
+                .find(|connection| connection.name.as_deref() == Some(item.name.as_str()))
+                .cloned();
+            let mut candidate = existing.clone().unwrap_or_default();
+            candidate.provider = "a6api".into();
+            candidate.name = Some(item.name.clone());
+            if let Some(api_key) = item.api_key.as_deref().filter(|key| !key.is_empty()) {
+                candidate.api_key = Some(api_key.to_string());
+            }
+            if let Some(url) = item.base_url.as_deref().filter(|url| !url.is_empty()) {
+                candidate
+                    .provider_specific_data
+                    .insert("baseUrl".into(), Value::String(url.to_string()));
+            }
+            if let Some(provider_specific_data) = &item.provider_specific_data {
+                for (key, value) in provider_specific_data {
+                    if key != "enabledModels" {
+                        candidate
+                            .provider_specific_data
+                            .insert(key.clone(), value.clone());
+                    }
+                }
+            }
+            candidate.proxy_url = item.proxy_url.clone().or(candidate.proxy_url);
+            candidate.proxy_label = item.proxy_label.clone().or(candidate.proxy_label);
+            candidate.use_connection_proxy =
+                item.use_connection_proxy.or(candidate.use_connection_proxy);
+
+            let key_changed = existing
+                .as_ref()
+                .map(|connection| connection.api_key.as_deref())
+                .unwrap_or(None)
+                != candidate.api_key.as_deref();
+            if key_changed || crate::core::model::a6api_enabled_model_ids(&candidate).is_empty() {
+                candidate.provider_specific_data.remove("enabledModels");
+                super::sync_a6api_inventory(db, &mut candidate).await?;
+            }
+            item.provider_specific_data = Some(candidate.provider_specific_data);
+        }
+    }
 
     let names_in_doc: HashSet<String> = items.iter().map(|i| i.name.clone()).collect();
     let mut diff = ApplyDiff::default();

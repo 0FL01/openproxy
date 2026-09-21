@@ -55,6 +55,9 @@ use crate::core::executor::read_reqwest_body;
 
 const COMMANDCODE_CREDITS_URL: &str = "https://api.commandcode.ai/alpha/billing/credits";
 const COMMANDCODE_RESPONSE_LIMIT_BYTES: usize = 256 * 1024;
+const A6API_SUBSCRIPTION_URL: &str = "https://api.a6api.com/dashboard/billing/subscription";
+const A6API_TOKEN_USAGE_URL: &str = "https://api.a6api.com/api/usage/token/";
+const A6API_RESPONSE_LIMIT_BYTES: usize = 512 * 1024;
 
 const GLM_INTL_URL: &str = "https://api.z.ai/api/monitor/usage/quota/limit";
 const GLM_CN_URL: &str = "https://open.bigmodel.cn/api/monitor/usage/quota/limit";
@@ -79,6 +82,199 @@ fn http_client() -> reqwest::Client {
         .timeout(REQUEST_TIMEOUT)
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+#[derive(Clone, Copy)]
+enum A6ApiFetchError {
+    Auth,
+    RateLimited,
+    Unavailable,
+    Invalid,
+}
+
+pub async fn fetch_a6api_quota(api_key: &str) -> Value {
+    fetch_a6api_quota_from_urls(api_key, A6API_SUBSCRIPTION_URL, A6API_TOKEN_USAGE_URL).await
+}
+
+async fn fetch_a6api_quota_from_urls(
+    api_key: &str,
+    subscription_url: &str,
+    token_usage_url: &str,
+) -> Value {
+    if api_key.trim().is_empty() {
+        return json!({
+            "status": "auth_error",
+            "message": "A6API key not available.",
+            "quotas": {}
+        });
+    }
+
+    let client = match reqwest::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return a6api_fetch_error(A6ApiFetchError::Unavailable),
+    };
+
+    let (subscription, token_usage) = tokio::join!(
+        fetch_a6api_quota_json(&client, subscription_url, api_key),
+        fetch_a6api_quota_json(&client, token_usage_url, api_key),
+    );
+    match (subscription, token_usage) {
+        (Ok(subscription), Ok(token_usage)) => parse_a6api_quota(&subscription, &token_usage),
+        (Err(A6ApiFetchError::Auth), _) | (_, Err(A6ApiFetchError::Auth)) => {
+            a6api_fetch_error(A6ApiFetchError::Auth)
+        }
+        (Err(A6ApiFetchError::RateLimited), _) | (_, Err(A6ApiFetchError::RateLimited)) => {
+            a6api_fetch_error(A6ApiFetchError::RateLimited)
+        }
+        (Err(A6ApiFetchError::Invalid), _) | (_, Err(A6ApiFetchError::Invalid)) => {
+            a6api_fetch_error(A6ApiFetchError::Invalid)
+        }
+        _ => a6api_fetch_error(A6ApiFetchError::Unavailable),
+    }
+}
+
+async fn fetch_a6api_quota_json(
+    client: &reqwest::Client,
+    url: &str,
+    api_key: &str,
+) -> Result<Value, A6ApiFetchError> {
+    let response = client
+        .get(url)
+        .header("Accept", "application/json")
+        .bearer_auth(api_key)
+        .send()
+        .await
+        .map_err(|_| A6ApiFetchError::Unavailable)?;
+    match response.status().as_u16() {
+        200..=299 => {}
+        401 | 403 => return Err(A6ApiFetchError::Auth),
+        429 => return Err(A6ApiFetchError::RateLimited),
+        _ => return Err(A6ApiFetchError::Unavailable),
+    }
+    let body = read_reqwest_body(response, A6API_RESPONSE_LIMIT_BYTES)
+        .await
+        .map_err(|_| A6ApiFetchError::Invalid)?;
+    serde_json::from_slice(&body).map_err(|_| A6ApiFetchError::Invalid)
+}
+
+fn parse_a6api_quota(subscription: &Value, token_usage: &Value) -> Value {
+    let subscription = a6api_payload(subscription);
+    let token_usage = a6api_payload(token_usage);
+    let (Some(subscription), Some(token_usage)) = (subscription, token_usage) else {
+        return a6api_fetch_error(A6ApiFetchError::Invalid);
+    };
+
+    let unlimited = match token_usage.get("unlimited_quota") {
+        Some(Value::Bool(value)) => *value,
+        Some(Value::Number(value)) => value.as_i64() == Some(1),
+        Some(Value::String(value)) => value.eq_ignore_ascii_case("true"),
+        _ => false,
+    };
+    let expires_at = token_usage.get("expires_at").and_then(a6api_positive_time);
+
+    if unlimited {
+        let mut quota = json!({
+            "used": 0,
+            "total": 0,
+            "remaining": 0,
+            "remainingPercentage": 100,
+            "unit": "USD",
+            "unlimited": true,
+            "recurring": false
+        });
+        if let Some(expires_at) = expires_at {
+            quota["resetAt"] = json!(expires_at);
+        }
+        return json!({
+            "status": "available",
+            "message": "",
+            "quotas": { "API credits": quota }
+        });
+    }
+
+    let values = (
+        subscription.get("hard_limit_usd").and_then(a6api_number),
+        token_usage.get("total_granted").and_then(a6api_number),
+        token_usage.get("total_used").and_then(a6api_number),
+        token_usage.get("total_available").and_then(a6api_number),
+    );
+    let (Some(limit_usd), Some(granted), Some(used), Some(available)) = values else {
+        return a6api_fetch_error(A6ApiFetchError::Invalid);
+    };
+    let tolerance = granted.abs() * 1e-9;
+    if limit_usd <= 0.0
+        || granted <= 0.0
+        || used < 0.0
+        || available < 0.0
+        || ((used + available) - granted).abs() > tolerance
+    {
+        return a6api_fetch_error(A6ApiFetchError::Invalid);
+    }
+
+    let usd_per_unit = limit_usd / granted;
+    let used_usd = used * usd_per_unit;
+    let remaining_usd = available * usd_per_unit;
+    let mut quota = json!({
+        "used": used_usd,
+        "total": limit_usd,
+        "remaining": remaining_usd,
+        "remainingPercentage": ((remaining_usd / limit_usd) * 100.0).clamp(0.0, 100.0),
+        "unit": "USD",
+        "unlimited": false,
+        "recurring": false
+    });
+    if let Some(expires_at) = expires_at {
+        quota["resetAt"] = json!(expires_at);
+    }
+    json!({
+        "status": "available",
+        "message": "",
+        "quotas": { "API credits": quota }
+    })
+}
+
+fn a6api_payload(value: &Value) -> Option<&serde_json::Map<String, Value>> {
+    value
+        .get("data")
+        .and_then(Value::as_object)
+        .or_else(|| value.as_object())
+}
+
+fn a6api_number(value: &Value) -> Option<f64> {
+    let number = value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|value| value.trim().parse().ok()))?;
+    number.is_finite().then_some(number)
+}
+
+fn a6api_positive_time(value: &Value) -> Option<String> {
+    match value {
+        Value::Number(number) if number.as_f64().is_some_and(|value| value > 0.0) => {
+            parse_reset_time(value)
+        }
+        Value::String(raw) => match raw.trim().parse::<f64>() {
+            Ok(number) if number > 0.0 => parse_reset_time(value),
+            Err(_) if !raw.trim().is_empty() => parse_reset_time(value),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn a6api_fetch_error(error: A6ApiFetchError) -> Value {
+    let (status, message) = match error {
+        A6ApiFetchError::Auth => ("auth_error", "A6API key is invalid."),
+        A6ApiFetchError::RateLimited => ("rate_limited", "A6API balance is rate limited."),
+        A6ApiFetchError::Unavailable => {
+            ("unavailable", "A6API balance is temporarily unavailable.")
+        }
+        A6ApiFetchError::Invalid => ("schema_error", "A6API balance response is invalid."),
+    };
+    json!({ "status": status, "message": message, "quotas": {} })
 }
 
 /// Fetch Command Code's read-only credit balances and rolling windows.
@@ -2689,6 +2885,71 @@ mod tests {
         let parsed = parse_commandcode_credits(&json!({"success": true}));
         assert_eq!(parsed["status"], "schema_error");
         assert_eq!(parsed["quotas"], json!({}));
+    }
+
+    #[test]
+    fn a6api_finite_quota_converts_live_units_to_usd() {
+        let parsed = parse_a6api_quota(
+            &json!({"object": "billing_subscription", "hard_limit_usd": 0.1}),
+            &json!({"data": {
+                "total_granted": 50000,
+                "total_used": 0,
+                "total_available": 50000,
+                "unlimited_quota": false,
+                "expires_at": 0
+            }}),
+        );
+        assert_eq!(parsed["status"], "available");
+        assert_eq!(parsed["quotas"]["API credits"]["used"], 0.0);
+        assert_eq!(parsed["quotas"]["API credits"]["total"], 0.1);
+        assert!(
+            (parsed["quotas"]["API credits"]["remaining"]
+                .as_f64()
+                .unwrap()
+                - 0.1)
+                .abs()
+                < f64::EPSILON
+        );
+        assert!(
+            (parsed["quotas"]["API credits"]["remainingPercentage"]
+                .as_f64()
+                .unwrap()
+                - 100.0)
+                .abs()
+                < 1e-9
+        );
+        assert!(parsed["quotas"]["API credits"].get("resetAt").is_none());
+    }
+
+    #[test]
+    fn a6api_explicit_unlimited_is_visible_and_malformed_totals_fail_closed() {
+        let unlimited = parse_a6api_quota(
+            &json!({"data": {"hard_limit_usd": "100"}}),
+            &json!({"data": {
+                "total_granted": 0,
+                "total_used": 0,
+                "total_available": 0,
+                "unlimited_quota": "true",
+                "expires_at": "2027-01-01T00:00:00Z"
+            }}),
+        );
+        assert_eq!(unlimited["quotas"]["API credits"]["unlimited"], true);
+        assert_eq!(
+            unlimited["quotas"]["API credits"]["resetAt"],
+            "2027-01-01T00:00:00Z"
+        );
+
+        let malformed = parse_a6api_quota(
+            &json!({"hard_limit_usd": 20}),
+            &json!({"data": {
+                "total_granted": 100,
+                "total_used": 20,
+                "total_available": 70,
+                "unlimited_quota": false
+            }}),
+        );
+        assert_eq!(malformed["status"], "schema_error");
+        assert_eq!(malformed["quotas"], json!({}));
     }
 
     #[test]

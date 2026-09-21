@@ -12,6 +12,7 @@ interface Quota {
   unit?: string;
   /** When false, resetAt is a hard expiry (one-shot pack). Defaults true. */
   recurring?: boolean;
+  unlimited?: boolean;
 }
 
 interface QuotaTableProps {
@@ -103,7 +104,10 @@ export default function QuotaTable({ quotas = [], compact = false }: QuotaTableP
         <tbody>
           {quotas.map((quota, index) => {
             const isBalance = quota.kind === "balance";
-            const remaining = quota.remainingPercentage !== undefined
+            const unlimited = quota.unlimited === true;
+            const remaining = unlimited
+              ? 100
+              : quota.remainingPercentage !== undefined
               ? Math.round(quota.remainingPercentage)
               : calculatePercentage(quota.used, quota.total);
             
@@ -144,7 +148,11 @@ export default function QuotaTable({ quotas = [], compact = false }: QuotaTableP
 
                 {/* Limit (Progress + Numbers) */}
                 <td className={`${cellPad} w-[45%]`}>
-                  {isBalance ? (
+                  {unlimited ? (
+                    <div className={`${compact ? "text-[11px]" : "text-sm"} font-medium text-green-600 dark:text-green-400`}>
+                      Unlimited
+                    </div>
+                  ) : isBalance ? (
                     <div className={`${compact ? "text-[11px]" : "text-sm"} font-medium text-text-primary`}>
                       {quota.remaining?.toLocaleString() ?? "N/A"} {quota.unit || "credit value"}
                     </div>
@@ -163,7 +171,7 @@ export default function QuotaTable({ quotas = [], compact = false }: QuotaTableP
                     {/* Numbers */}
                     <div className={`flex items-center justify-between ${compact ? "text-[10px]" : "text-xs"}`}>
                       <span className="text-text-muted">
-                        {quota.used.toLocaleString()} / {quota.total > 0 ? quota.total.toLocaleString() : "∞"}
+                        {quota.used.toLocaleString()} / {quota.total > 0 ? quota.total.toLocaleString() : "∞"}{quota.unit ? ` ${quota.unit}` : ""}
                       </span>
                       <span className={`font-medium ${colors.text}`}>
                         {remaining}%

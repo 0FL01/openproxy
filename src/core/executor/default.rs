@@ -92,6 +92,10 @@ static PROVIDER_CONFIGS: Lazy<BTreeMap<&'static str, ProviderConfig>> = Lazy::ne
             ),
         ),
         (
+            "a6api",
+            ProviderConfig::openai("https://api.a6api.com/v1/chat/completions"),
+        ),
+        (
             "hyperbolic",
             ProviderConfig::openai("https://api.hyperbolic.xyz/v1/chat/completions"),
         ),
@@ -1482,6 +1486,14 @@ fn convert_openai_tools_to_claude(body: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a6api_uses_the_canonical_chat_completions_endpoint() {
+        assert_eq!(
+            provider_config_base_url("a6api").as_deref(),
+            Some("https://api.a6api.com/v1/chat/completions")
+        );
+    }
 
     #[test]
     fn bounded_serializer_accepts_exact_limit_and_rejects_plus_one() {

@@ -819,6 +819,24 @@ async fn try_add_key_via_http(key: &ApiKey) -> bool {
     )
 }
 
+pub(crate) async fn sync_a6api_inventory(
+    db: &Db,
+    connection: &mut ProviderConnection,
+) -> anyhow::Result<()> {
+    let snapshot = db.snapshot();
+    let proxy = crate::core::proxy::resolve_proxy_target(&snapshot, connection, &snapshot.settings);
+    let models = crate::server::api::provider_models::fetch_a6api_model_ids_with_proxy(
+        connection,
+        proxy.as_ref(),
+    )
+    .await
+    .map_err(|(_, message)| anyhow::anyhow!(message))?;
+    connection
+        .provider_specific_data
+        .insert("enabledModels".into(), serde_json::json!(models));
+    Ok(())
+}
+
 pub async fn run_provider(cmd: ProviderCmd, db: &Db, ctx: output::OutputCtx) -> anyhow::Result<()> {
     match cmd {
         ProviderCmd::List { json } => {
@@ -906,6 +924,11 @@ pub async fn run_provider(cmd: ProviderCmd, db: &Db, ctx: output::OutputCtx) -> 
             }
             if new_conn.id.is_empty() {
                 new_conn.id = uuid::Uuid::new_v4().to_string();
+            }
+            if new_conn.provider == "a6api" {
+                new_conn.auth_type = "apikey".into();
+                new_conn.provider_specific_data.remove("enabledModels");
+                sync_a6api_inventory(db, &mut new_conn).await?;
             }
 
             db.update(|db| {
@@ -1483,6 +1506,9 @@ fn connection_has_credentials(connection: &ProviderConnection) -> bool {
 }
 
 fn connection_supports_model(connection: &ProviderConnection, model: &str) -> bool {
+    if connection.provider == "a6api" {
+        return crate::core::model::a6api_connection_supports_model(connection, model);
+    }
     let enabled_models: Vec<_> = connection
         .provider_specific_data
         .get("enabledModels")

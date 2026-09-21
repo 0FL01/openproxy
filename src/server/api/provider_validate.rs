@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 
 use crate::core::usage::quota_fetcher::fetch_commandcode_quota;
 use crate::server::state::AppState;
+use crate::types::ProviderConnection;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -86,7 +87,23 @@ async fn validate_provider(
                 "status": status,
                 "error": error,
             }))
-            .into_response();
+                .into_response();
+        }
+        "a6api" => {
+            let mut connection = ProviderConnection {
+                provider: "a6api".to_string(),
+                api_key: Some(api_key),
+                ..ProviderConnection::default()
+            };
+            if let Some(provider_specific_data) = req.provider_specific_data {
+                connection.provider_specific_data = provider_specific_data.into_iter().collect();
+            }
+            return match super::provider_models::fetch_a6api_model_ids(&state, &connection).await {
+                Ok(models) => Json(json!({ "valid": true, "modelCount": models.len() })).into_response(),
+                Err((status, error)) => {
+                    (status, Json(json!({ "valid": false, "error": error }))).into_response()
+                }
+            };
         }
         "openai" => validate_bearer(&client, "https://api.openai.com/v1/models", &api_key).await,
         "deepseek" => validate_bearer(&client, "https://api.deepseek.com/models", &api_key).await,

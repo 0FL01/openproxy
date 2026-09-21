@@ -148,13 +148,15 @@ export function buildAvailableModels(
   }
 
   // 2. Custom + legacyAlias rows (always shown).
-  const customRowsRaw = getProviderCustomModelRows({
-    customModels: customModels as CustomModelEntry[],
-    modelAliases,
-    providerAlias,
-    builtInModels: catalogModels as Array<{ id: string }>,
-    type,
-  });
+  const customRowsRaw = providerAlias === "a6api"
+    ? []
+    : getProviderCustomModelRows({
+        customModels: customModels as CustomModelEntry[],
+        modelAliases,
+        providerAlias,
+        builtInModels: catalogModels as Array<{ id: string }>,
+        type,
+      });
   const customRows: AvailableModelRow[] = customRowsRaw.map((r) => ({
     id: r.id,
     name: r.name || r.id,
@@ -393,11 +395,11 @@ export interface UseAvailableModelsResult extends BuildAvailableModelsResult {
 export function useAvailableModels(providerId: string): UseAvailableModelsResult {
   const providerAlias = getProviderAlias(providerId);
   const catalogReady = useEnsureCatalog();
-  useCatalogStore((s) => s.modelsByAlias);
+  const modelsByAlias = useCatalogStore((s) => s.modelsByAlias);
   const catalogModels = useMemo(
     () => getModelsByProviderId(providerId) as unknown as CatalogModelInput[],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [providerId, catalogReady]
+    [providerId, catalogReady, modelsByAlias]
   );
   const [liveModels, setLiveModels] = useState<LiveModel[]>([]);
   const [customModels, setCustomModels] = useState<CustomModelEntry[]>([]);

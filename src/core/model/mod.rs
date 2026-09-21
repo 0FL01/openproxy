@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use once_cell::sync::Lazy;
 
-use crate::types::{AppDb, ModelAliasTarget, ProviderModelRef};
+use crate::types::{AppDb, ModelAliasTarget, ProviderConnection, ProviderModelRef};
 
 static ALIAS_TO_PROVIDER_ID: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
     HashMap::from([
@@ -39,6 +39,7 @@ static ALIAS_TO_PROVIDER_ID: Lazy<HashMap<&'static str, &'static str>> = Lazy::n
         ("cerebras", "cerebras"),
         ("cohere", "cohere"),
         ("commandcode", "commandcode"),
+        ("a6api", "a6api"),
         ("nvidia", "nvidia"),
         ("hyp", "hyperbolic"),
         ("hyperbolic", "hyperbolic"),
@@ -102,6 +103,37 @@ static ALIAS_TO_PROVIDER_ID: Lazy<HashMap<&'static str, &'static str>> = Lazy::n
         ("ms-web", "muse-spark-web"),
     ])
 });
+
+pub fn a6api_enabled_model_ids(connection: &ProviderConnection) -> Vec<String> {
+    connection
+        .provider_specific_data
+        .get("enabledModels")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+pub fn a6api_connection_supports_model(connection: &ProviderConnection, model: &str) -> bool {
+    connection.provider == "a6api"
+        && a6api_enabled_model_ids(connection)
+            .iter()
+            .any(|id| id == model.trim())
+}
+
+pub fn a6api_active_model_ids(db: &AppDb) -> Vec<String> {
+    db.provider_connections
+        .iter()
+        .filter(|connection| connection.provider == "a6api" && connection.is_active())
+        .flat_map(a6api_enabled_model_ids)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedModel {

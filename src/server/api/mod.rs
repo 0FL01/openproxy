@@ -21,7 +21,7 @@ pub mod observability;
 mod provider_connection_test;
 pub mod provider_filters;
 mod provider_model_tests;
-mod provider_models;
+pub(crate) mod provider_models;
 pub mod provider_nodes;
 mod provider_validate;
 pub mod providers;
@@ -376,6 +376,24 @@ async fn api_catalog(State(state): State<AppState>) -> Response {
         }
     }
 
+    let a6api_models = crate::core::model::a6api_active_model_ids(&db);
+    if let Some(entries) = catalog
+        .get_mut("providerModels")
+        .and_then(Value::as_array_mut)
+    {
+        if let Some(entry) = entries
+            .iter_mut()
+            .find(|entry| entry.get("alias").and_then(Value::as_str) == Some("a6api"))
+        {
+            entry["models"] = Value::Array(
+                a6api_models
+                    .into_iter()
+                    .map(|id| json!({ "id": id, "name": id, "kind": "llm" }))
+                    .collect(),
+            );
+        }
+    }
+
     if let Some(entries) = catalog
         .get_mut("providerModels")
         .and_then(Value::as_array_mut)
@@ -717,6 +735,7 @@ const USAGE_SUPPORTED_PROVIDERS: &[&str] = &[
     "minimax",
     "opencode-go",
     "commandcode",
+    "a6api",
 ];
 
 const USAGE_APIKEY_PROVIDERS: &[&str] = &[
@@ -727,6 +746,7 @@ const USAGE_APIKEY_PROVIDERS: &[&str] = &[
     "deepseek",
     "opencode-go",
     "commandcode",
+    "a6api",
 ];
 
 #[derive(Debug, Deserialize, Default)]
@@ -1036,6 +1056,20 @@ async fn create_provider_api(
         default_conn
             .provider_specific_data
             .insert("proxyPoolId".to_string(), Value::String(proxy_pool_id));
+    }
+
+    if provider == "a6api" {
+        default_conn.provider_specific_data.remove("enabledModels");
+        let model_ids = match provider_models::fetch_a6api_model_ids(&state, &default_conn).await {
+            Ok(model_ids) => model_ids,
+            Err((status, message)) => {
+                return (status, Json(json!({ "success": false, "error": message })))
+                    .into_response();
+            }
+        };
+        default_conn
+            .provider_specific_data
+            .insert("enabledModels".to_string(), json!(model_ids));
     }
 
     let result = state

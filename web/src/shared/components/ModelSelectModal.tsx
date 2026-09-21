@@ -88,6 +88,7 @@ export default function ModelSelectModal({
 }: ModelSelectModalProps) {
   useEnsureCatalog();
   const reloadCatalog = useCatalogStore((state) => state.reload);
+  const modelsByAlias = useCatalogStore((state) => state.modelsByAlias);
   const { getCaps } = useModelCaps();
   const [searchQuery, setSearchQuery] = useState("");
   const [providerNodes, setProviderNodes] = useState<ProviderNode[]>([]);
@@ -311,7 +312,7 @@ export default function ModelSelectModal({
           isCustom: r.source === "custom" || r.source === "legacyAlias",
         }));
 
-        if (providerId !== "codex" && allModels.length === 0 && (providerInfo.serviceKinds || ["llm"]).includes("llm")) {
+        if (providerId !== "codex" && providerId !== "a6api" && allModels.length === 0 && (providerInfo.serviceKinds || ["llm"]).includes("llm")) {
           allModels = [{ id: providerId, name: providerInfo.name, value: alias }];
         }
 
@@ -322,7 +323,7 @@ export default function ModelSelectModal({
     });
 
     return groups;
-  }, [activeProviders, modelAliases, allProviders, providerNodes, customModels, disabledMap, liveModelsByAlias, freeOnlyByAlias]);
+  }, [activeProviders, modelAliases, allProviders, providerNodes, customModels, disabledMap, liveModelsByAlias, freeOnlyByAlias, modelsByAlias]);
 
   // Filter models by search query
   const filteredGroups = useMemo(() => {

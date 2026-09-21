@@ -136,7 +136,10 @@ async fn build_models_list(
 
         if kind_filter.contains(&LLM_KIND) {
             for custom_model in snapshot.custom_models.iter().filter(|model| {
-                model.r#type.is_empty() || model.r#type == LLM_KIND || model.r#type == "chat"
+                model.provider_alias.trim() != "a6api"
+                    && (model.r#type.is_empty()
+                        || model.r#type == LLM_KIND
+                        || model.r#type == "chat")
             }) {
                 let model_id = custom_model.id.trim();
                 let provider_alias = custom_model.provider_alias.trim();
@@ -181,6 +184,8 @@ async fn build_models_list(
                 if let Some(inventory) = &codex_inventory {
                     raw_model_ids.extend(inventory.models.iter().map(|model| model.id.clone()));
                 }
+            } else if provider_id == "a6api" {
+                raw_model_ids = crate::core::model::a6api_active_model_ids(snapshot);
             } else if !had_enabled_models {
                 raw_model_ids = if provider_id == "commandcode" {
                     commandcode_catalog
@@ -225,38 +230,48 @@ async fn build_models_list(
                 .filter_map(|model_id| strip_provider_prefix(&model_id, &prefixes))
                 .collect::<Vec<_>>();
 
-            let custom_model_ids = snapshot
-                .custom_models
-                .iter()
-                .filter(|model| {
-                    model.r#type.is_empty() || model.r#type == LLM_KIND || model.r#type == "chat"
-                })
-                .filter_map(|model| {
-                    let provider_alias = model.provider_alias.trim();
-                    let model_id = model.id.trim();
-                    if model_id.is_empty()
-                        || (provider_alias != static_alias
-                            && provider_alias != output_alias
-                            && provider_alias != provider_id)
-                    {
-                        return None;
-                    }
+            let custom_model_ids = if provider_id == "a6api" {
+                Vec::new()
+            } else {
+                snapshot
+                    .custom_models
+                    .iter()
+                    .filter(|model| {
+                        model.r#type.is_empty()
+                            || model.r#type == LLM_KIND
+                            || model.r#type == "chat"
+                    })
+                    .filter_map(|model| {
+                        let provider_alias = model.provider_alias.trim();
+                        let model_id = model.id.trim();
+                        if model_id.is_empty()
+                            || (provider_alias != static_alias
+                                && provider_alias != output_alias
+                                && provider_alias != provider_id)
+                        {
+                            return None;
+                        }
 
-                    Some(model_id.to_string())
-                })
-                .collect::<Vec<_>>();
+                        Some(model_id.to_string())
+                    })
+                    .collect::<Vec<_>>()
+            };
 
-            let alias_model_ids = snapshot
-                .model_aliases
-                .values()
-                .flat_map(model_alias_paths)
-                .filter(|path| {
-                    path.starts_with(&format!("{output_alias}/"))
-                        || path.starts_with(&format!("{static_alias}/"))
-                        || path.starts_with(&format!("{provider_id}/"))
-                })
-                .filter_map(|path| strip_provider_prefix(&path, &prefixes))
-                .collect::<Vec<_>>();
+            let alias_model_ids = if provider_id == "a6api" {
+                Vec::new()
+            } else {
+                snapshot
+                    .model_aliases
+                    .values()
+                    .flat_map(model_alias_paths)
+                    .filter(|path| {
+                        path.starts_with(&format!("{output_alias}/"))
+                            || path.starts_with(&format!("{static_alias}/"))
+                            || path.starts_with(&format!("{provider_id}/"))
+                    })
+                    .filter_map(|path| strip_provider_prefix(&path, &prefixes))
+                    .collect::<Vec<_>>()
+            };
 
             let merged_model_ids = dedupe_strings(
                 model_ids
@@ -324,6 +339,9 @@ async fn build_models_list(
     // (e.g., custom models registered on provider nodes rather than connections)
     if kind_filter.contains(&LLM_KIND) {
         for custom_model in &snapshot.custom_models {
+            if custom_model.provider_alias.trim() == "a6api" {
+                continue;
+            }
             if !custom_model.r#type.is_empty()
                 && custom_model.r#type != LLM_KIND
                 && custom_model.r#type != "chat"
@@ -1069,6 +1087,57 @@ mod tests {
         assert_eq!(metadata["name"], "Kimi K3");
         assert_eq!(metadata["limit"]["context"], 1_000_000);
         assert_eq!(metadata["source"], "commandcode");
+    }
+
+    #[tokio::test]
+    async fn a6api_models_are_the_active_key_union_without_custom_expansion() {
+        let connection = |id: &str, active: bool, models: Value| ProviderConnection {
+            id: id.into(),
+            provider: "a6api".into(),
+            auth_type: "apikey".into(),
+            api_key: Some(format!("key-{id}")),
+            is_active: Some(active),
+            provider_specific_data: BTreeMap::from([("enabledModels".into(), models)]),
+            ..Default::default()
+        };
+        let snapshot = AppDb {
+            provider_connections: vec![
+                connection("first", true, json!(["deepseek-v4.1-flash", "shared"])),
+                connection("second", true, json!(["gemini-3-flash", "shared"])),
+                connection("inactive", false, json!(["hidden"])),
+            ],
+            custom_models: vec![CustomModel {
+                provider_alias: "a6api".into(),
+                id: "not-key-enabled".into(),
+                r#type: "llm".into(),
+                name: None,
+                extra: BTreeMap::new(),
+            }],
+            ..Default::default()
+        };
+
+        let models = build_models_list(&test_state().await, &snapshot, &[LLM_KIND]).await;
+        let ids: Vec<&str> = models
+            .iter()
+            .filter(|model| model.id.starts_with("a6api/"))
+            .map(|model| model.id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                "a6api/deepseek-v4.1-flash",
+                "a6api/gemini-3-flash",
+                "a6api/shared"
+            ]
+        );
+        assert!(models.iter().all(|model| model.id != "a6api/hidden"));
+        assert!(models
+            .iter()
+            .all(|model| model.id != "a6api/not-key-enabled"));
+        assert!(models
+            .iter()
+            .filter(|model| model.id.starts_with("a6api/"))
+            .all(|model| json!(model.opencode)["source"] == "a6api"));
     }
 
     #[tokio::test]

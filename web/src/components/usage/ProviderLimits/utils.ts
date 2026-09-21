@@ -215,6 +215,7 @@ interface QuotaEntry {
   label?: string;
   remaining?: number;
   unit?: string;
+  unlimited?: boolean;
 }
 
 interface NormalizedQuota extends QuotaEntry {
@@ -228,6 +229,7 @@ interface NormalizedQuota extends QuotaEntry {
   kind?: "window" | "balance";
   remaining?: number;
   unit?: string;
+  unlimited?: boolean;
 }
 
 interface RawQuotaData {
@@ -414,6 +416,39 @@ export function parseQuotaData(provider: string, data: RawQuotaData | null | und
               remainingPercentage: quota.remainingPercentage,
               kind: "window",
               unit: quota.unit || "credit value",
+            });
+          });
+        }
+        break;
+
+      case "a6api":
+        if (data.quotas) {
+          Object.entries(data.quotas).forEach(([name, quota]: [string, QuotaEntry]) => {
+            if (quota.unlimited === true) {
+              normalizedQuotas.push({
+                name,
+                used: 0,
+                total: 0,
+                remaining: 0,
+                remainingPercentage: 100,
+                resetAt: quota.resetAt ?? null,
+                recurring: false,
+                unit: quota.unit || "USD",
+                unlimited: true,
+              });
+              return;
+            }
+            if (typeof quota.used !== "number" || typeof quota.total !== "number") return;
+            normalizedQuotas.push({
+              name,
+              used: quota.used,
+              total: quota.total,
+              remaining: quota.remaining,
+              remainingPercentage: quota.remainingPercentage,
+              resetAt: quota.resetAt ?? null,
+              recurring: false,
+              unit: quota.unit || "USD",
+              unlimited: false,
             });
           });
         }
