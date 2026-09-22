@@ -1209,11 +1209,27 @@ async fn parse_json_refresh_response(resp: reqwest::Response) -> Result<RefreshR
     })?;
 
     if !status.is_success() {
-        let error = payload
+        let error = payload.get("error").and_then(Value::as_str);
+        let error = error.map(str::trim).filter(|value| {
+            !value.is_empty()
+                && value.len() <= 80
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+        });
+        let nested_code = payload
             .get("error")
+            .and_then(|error| error.get("code"))
             .and_then(Value::as_str)
             .map(str::trim)
-            .filter(|value| !value.is_empty());
+            .filter(|value| {
+                !value.is_empty()
+                    && value.len() <= 80
+                    && value.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')
+                    })
+            });
+        let error = error.or(nested_code);
         let detail = error.map(|error| format!(": {error}")).unwrap_or_default();
         return Err(format!(
             "Refresh request returned HTTP {}{detail}",

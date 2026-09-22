@@ -1340,16 +1340,32 @@ fn codex_to_iso_date(value: &Value) -> Option<String> {
 pub async fn get_codex_rate_limit_reset_credits(
     access_token: &str,
     account_id: Option<&str>,
-) -> Result<Value, String> {
+) -> Result<Value, CodexResetCreditsFetchError> {
+    get_codex_rate_limit_reset_credits_from_url(access_token, account_id, CODEX_RESET_CREDITS_URL)
+        .await
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexResetCreditsFetchError {
+    pub status: Option<u16>,
+    pub code: Option<String>,
+}
+
+async fn get_codex_rate_limit_reset_credits_from_url(
+    access_token: &str,
+    account_id: Option<&str>,
+    url: &str,
+) -> Result<Value, CodexResetCreditsFetchError> {
     if access_token.trim().is_empty() {
-        return Err(
-            "No Codex access token available. Please re-authorize the connection.".to_string(),
-        );
+        return Err(CodexResetCreditsFetchError {
+            status: None,
+            code: Some("missing_access_token".to_string()),
+        });
     }
 
     let client = http_client();
     let mut request = client
-        .get(CODEX_RESET_CREDITS_URL)
+        .get(url)
         .bearer_auth(access_token)
         .header("Accept", "application/json")
         .header("OpenAI-Beta", "codex-1")
@@ -1361,22 +1377,36 @@ pub async fn get_codex_rate_limit_reset_credits(
     let response = request
         .send()
         .await
-        .map_err(|e| format!("Failed to fetch Codex reset credits: {e}"))?;
+        .map_err(|_| CodexResetCreditsFetchError {
+            status: None,
+            code: Some("request_failed".to_string()),
+        })?;
 
     let status = response.status();
-    let body: Value = response.json().await.unwrap_or(Value::Null);
+    let status_code = status.as_u16();
+    let text = response
+        .text()
+        .await
+        .map_err(|_| CodexResetCreditsFetchError {
+            status: Some(status_code),
+            code: Some("response_read_failed".to_string()),
+        })?;
+    let body: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
 
     if !status.is_success() {
-        let message = body
-            .get("message")
-            .or_else(|| body.get("error"))
-            .or_else(|| body.get("detail"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| {
-                format!("Codex reset credits API unavailable ({}).", status.as_u16())
-            });
-        return Err(message);
+        let code = body
+            .get("code")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                body.get("error")
+                    .and_then(|error| error.get("code"))?
+                    .as_str()
+            })
+            .and_then(safe_upstream_error_code);
+        return Err(CodexResetCreditsFetchError {
+            status: Some(status_code),
+            code,
+        });
     }
 
     let available_count = body
@@ -1415,6 +1445,16 @@ pub async fn get_codex_rate_limit_reset_credits(
         "availableCount": available_count,
         "credits": credits,
     }))
+}
+
+fn safe_upstream_error_code(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()
+        && value.len() <= 80
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')))
+    .then(|| value.to_string())
 }
 
 /// Result of consuming one Codex rate-limit reset credit via OpenAI.
@@ -1467,7 +1507,7 @@ pub async fn consume_codex_rate_limit_reset_credit(
     let code = data
         .get("code")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .and_then(safe_upstream_error_code);
     let windows_reset = data
         .get("windows_reset")
         .and_then(|v| v.as_f64())
@@ -2828,6 +2868,41 @@ pub async fn fetch_ollama_quota(api_key: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn codex_reset_credits_error_keeps_status_and_safe_code_only() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/credits"))
+            .and(header("authorization", "Bearer sentinel-access-token"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+                "error": {
+                    "code": "refresh_token_reused",
+                    "message": "sensitive upstream detail must not escape"
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let error = get_codex_rate_limit_reset_credits_from_url(
+            "sentinel-access-token",
+            None,
+            &format!("{}/credits", server.uri()),
+        )
+        .await
+        .expect_err("mock upstream returns unauthorized");
+
+        assert_eq!(error.status, Some(401));
+        assert_eq!(error.code.as_deref(), Some("refresh_token_reused"));
+        let rendered = format!("{error:?}");
+        assert!(!rendered.contains("sentinel-access-token"));
+        assert!(!rendered.contains("sensitive upstream detail"));
+        server.verify().await;
+    }
 
     #[test]
     fn commandcode_credits_preserve_zero_balances_and_windows() {

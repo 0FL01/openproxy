@@ -242,3 +242,50 @@ async fn codex_proxy_server_side_callback_exchanges_and_clears_session() {
 
     stop_proxy(&app).await;
 }
+
+#[tokio::test]
+async fn codex_refresh_uses_oauth_token_url_override_and_preserves_safe_error_code() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    ensure_rustls_provider();
+    let server = MockServer::start().await;
+    let _token_url = EnvVarGuard::set(
+        "OPENPROXY_CODEX_TOKEN_URL",
+        &format!("{}/oauth/token", server.uri()),
+    );
+
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .and(body_string_contains("grant_type=refresh_token"))
+        .and(body_string_contains("refresh_token=sentinel-refresh-token"))
+        .and(body_string_contains(
+            "client_id=app_EMoamEEZ73f0CkXaXp7hrann",
+        ))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+            "error": {
+                "code": "refresh_token_reused",
+                "message": "sensitive upstream detail must not escape"
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = openproxy::oauth::token_refresh::dispatch_oauth_refresh(
+        "codex",
+        "sentinel-refresh-token",
+        &Default::default(),
+    )
+    .await
+    .expect_err("mock endpoint rejects the reused refresh token");
+
+    assert!(error.contains("HTTP 401"), "unexpected error: {error}");
+    assert!(
+        error.contains("refresh_token_reused"),
+        "unexpected error: {error}"
+    );
+    assert!(!error.contains("sentinel-refresh-token"));
+    assert!(!error.contains("sensitive upstream detail"));
+    server.verify().await;
+}
