@@ -1,6 +1,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { Badge, Toggle, Tooltip } from "@/shared/components";
+import { AUTO_PING_TOOLTIPS } from "@/shared/constants/config";
 
 interface ProxyPool {
   id: string;
@@ -92,11 +93,9 @@ export default function ConnectionRow({
         ? `Legacy: ${connection.providerSpecificData?.connectionProxyUrl}`
         : "";
 
-  const autoPingTooltip = autoPing?.provider === "codex"
-    ? "Auto-starts the next available Codex quota window after reset with a tiny gpt-6-luna request. Consumes a small amount of quota."
-    : autoPing?.provider === "glm"
-      ? "Auto-starts the next GLM 5-hour window after reset with a tiny glm-5.3-flash request. Consumes a small amount of Coding Plan quota."
-      : "When your 5h quota runs out, auto-sends a request the moment it resets so a new window starts right away.";
+  const autoPingTooltip = autoPing
+    ? AUTO_PING_TOOLTIPS[autoPing.provider as keyof typeof AUTO_PING_TOOLTIPS] || "Auto-ping warmup"
+    : "Auto-ping warmup";
 
   // Prefer per-connection authType for dual-auth providers (xAI OAuth vs API key).
   const rowAuthType = (connection.authType || (isOAuth ? "oauth" : "apikey")).toLowerCase();

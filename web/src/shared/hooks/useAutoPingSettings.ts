@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AUTO_PING_SETTINGS_KEYS } from "@/shared/constants/config";
+import { AUTO_PING_SETTINGS_KEYS, type AutoPingProvider } from "@/shared/constants/config";
 import { updateSettings, type AutoPingConfig } from "@/shared/utils/backendApi";
-
-export type AutoPingProvider = keyof typeof AUTO_PING_SETTINGS_KEYS;
 
 type AutoPingConfigs = Partial<Record<AutoPingProvider, AutoPingConfig>>;
 

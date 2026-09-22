@@ -10,7 +10,11 @@ import { ConfirmModal } from "@/shared/components/Modal";
 import Tooltip from "@/shared/components/Tooltip";
 import { useNotificationStore } from "@/store/notificationStore";
 import { USAGE_SUPPORTED_PROVIDERS, USAGE_APIKEY_PROVIDERS } from "@/shared/constants/providers";
-import { AUTO_PING_SETTINGS_KEYS } from "@/shared/constants/config";
+import {
+  AUTO_PING_TOOLTIPS,
+  getAutoPingProviderForAuth,
+  type AutoPingProvider,
+} from "@/shared/constants/config";
 import { useAutoPingSettings } from "@/shared/hooks/useAutoPingSettings";
 
 interface Connection {
@@ -38,11 +42,6 @@ const AUTO_REFRESH_STORAGE_KEY = "quotaAutoRefresh";
 const isUsageEligible = (conn: Connection) =>
   USAGE_SUPPORTED_PROVIDERS.includes(conn.provider) &&
   (conn.authType === "oauth" || USAGE_APIKEY_PROVIDERS.includes(conn.provider));
-
-const isAutoPingProvider = (
-  provider: string,
-): provider is keyof typeof AUTO_PING_SETTINGS_KEYS =>
-  Object.prototype.hasOwnProperty.call(AUTO_PING_SETTINGS_KEYS, provider);
 
 function getConnectionLabel(connection: Connection): string {
   return (
@@ -154,10 +153,6 @@ export default function ProviderLimits() {
   const [providerMenuOpen, setProviderMenuOpen] = useState<boolean>(false);
   const [bulkToggling, setBulkToggling] = useState<boolean>(false);
   const autoPingSettings = useAutoPingSettings();
-  const autoPingTooltips: Record<string, string> = {
-    claude: "When your 5h quota runs out, auto-sends a request the moment it resets so a new window starts right away.",
-    codex: "Auto-starts the next available Codex quota window after reset with a tiny gpt-6-luna request. Consumes a small amount of quota.",
-  };
 
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const countdownRef = useRef<NodeJS.Timeout | null>(null);
@@ -652,8 +647,7 @@ export default function ProviderLimits() {
     [bulkToggling],
   );
 
-  const toggleAutoPing = async (connectionId: string, provider: string, on: boolean) => {
-    if (!isAutoPingProvider(provider)) return;
+  const toggleAutoPing = async (connectionId: string, provider: AutoPingProvider, on: boolean) => {
     try {
       await autoPingSettings.toggleConnection(provider, connectionId, on);
     } catch (error) {
@@ -873,7 +867,7 @@ export default function ProviderLimits() {
           // Use table layout for all providers
           const isInactive = conn.isActive === false;
           const isCodex = conn.provider === "codex";
-          const autoPingProvider = isAutoPingProvider(conn.provider) ? conn.provider : null;
+          const autoPingProvider = getAutoPingProviderForAuth(conn.provider, conn.authType);
           const isAutoPingEnabled =
             autoPingProvider !== null &&
             autoPingSettings.configs[autoPingProvider]?.connections[conn.id] === true;
@@ -941,12 +935,11 @@ export default function ProviderLimits() {
                   <div className="flex items-center gap-1 shrink-0">
                     {autoPingSettings.ready &&
                       autoPingProvider &&
-                      conn.authType === "oauth" &&
                       (!isCodex || hasCodexAutoPingQuota) && (
-                      <Tooltip text={autoPingTooltips[conn.provider] || "Auto-ping warmup"}>
+                      <Tooltip text={AUTO_PING_TOOLTIPS[autoPingProvider]}>
                         <button
                           type="button"
-                          onClick={() => toggleAutoPing(conn.id, conn.provider, !isAutoPingEnabled)}
+                          onClick={() => toggleAutoPing(conn.id, autoPingProvider, !isAutoPingEnabled)}
                           disabled={autoPingSettings.saving[autoPingProvider] === true}
                           aria-pressed={isAutoPingEnabled}
                           aria-label={`${isAutoPingEnabled ? "Disable" : "Enable"} auto-ping for ${getConnectionLabel(conn) || conn.id}`}

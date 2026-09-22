@@ -14,7 +14,10 @@ import { useAutoPingSettings } from "@/shared/hooks/useAutoPingSettings";
 import { useCatalogStore } from "@/store/catalogStore";
 import { fetchSuggestedModels } from "@/shared/utils/providerModelsFetcher";
 import { type CustomModelEntry } from "@/shared/utils/providerCustomModels";
-import { AUTO_PING_SETTINGS_KEYS } from "@/shared/constants/config";
+import {
+  AUTO_PING_SETTINGS_KEYS,
+  getAutoPingProviderForAuth,
+} from "@/shared/constants/config";
 import {
   getThinkingLevels,
   unionThinkingLevels,
@@ -341,11 +344,15 @@ export default function ProviderDetailPageClient() {
     }
   };
 
-  const handleAutoPingConnection = async (connectionId: string, on: boolean) => {
+  const handleAutoPingConnection = async (
+    provider: keyof typeof AUTO_PING_SETTINGS_KEYS,
+    connectionId: string,
+    on: boolean,
+  ) => {
     if (!autoPingSettingsKey) return;
     try {
       await autoPingSettings.toggleConnection(
-        providerId as keyof typeof AUTO_PING_SETTINGS_KEYS,
+        provider,
         connectionId,
         on,
       );
@@ -820,6 +827,18 @@ export default function ProviderDetailPageClient() {
 
   const isSelected = (connectionId) => selectedConnectionIds.includes(connectionId);
 
+  const getConnectionAutoPing = (connectionId: string, authType?: string) => {
+    const autoPingProvider = getAutoPingProviderForAuth(providerId, authType);
+    if (!autoPingSettings.ready || !autoPingProvider) return null;
+
+    return {
+      on: autoPingSettings.configs[autoPingProvider]?.connections[connectionId] === true,
+      onToggle: (on: boolean) => handleAutoPingConnection(autoPingProvider, connectionId, on),
+      provider: autoPingProvider,
+      saving: autoPingSettings.saving[autoPingProvider] === true,
+    };
+  };
+
   const connectionsList = (
     <div className="flex min-w-0 flex-col divide-y divide-black/[0.03] dark:divide-white/[0.03]">
       {connections
@@ -844,16 +863,7 @@ export default function ProviderDetailPageClient() {
                 onMoveUp={() => handleSwapPriority(index, index - 1)}
                 onMoveDown={() => handleSwapPriority(index, index + 1)}
                 onToggleActive={(isActive) => handleUpdateConnectionStatus(conn.id, isActive)}
-                autoPing={autoPingSettings.ready && autoPingSettingsKey && (
-                  conn.authType === "oauth" ||
-                  isOAuth ||
-                  (providerId === "glm" && ["apikey", "api_key"].includes((conn.authType || "").toLowerCase()))
-                ) ? {
-                  on: autoPingSettings.configs[providerId as keyof typeof AUTO_PING_SETTINGS_KEYS]?.connections[conn.id] === true,
-                  onToggle: (on) => handleAutoPingConnection(conn.id, on),
-                  provider: providerId,
-                  saving: autoPingSettings.saving[providerId as keyof typeof AUTO_PING_SETTINGS_KEYS] === true,
-                } : null}
+                autoPing={getConnectionAutoPing(conn.id, conn.authType)}
                 oneByOneStatus={oneByOneResults[conn.id] || null}
                 onUpdateProxy={async (proxyPoolId) => {
                   try {
