@@ -43,8 +43,8 @@ export interface Settings {
 }
 
 export interface AutoPingConfig {
-  enabled?: boolean;
-  connections?: Record<string, boolean>;
+  enabled: boolean;
+  connections: Record<string, boolean>;
 }
 
 interface ApiKey {

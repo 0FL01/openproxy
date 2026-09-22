@@ -6,12 +6,12 @@ import Toggle from "@/shared/components/Toggle";
 import { parseQuotaData, calculatePercentage } from "./utils";
 import Card from "@/shared/components/Card";
 import { EditConnectionModal } from "@/shared/components";
-import { updateSettings as patchSettings } from "@/shared/utils/backendApi";
 import { ConfirmModal } from "@/shared/components/Modal";
 import Tooltip from "@/shared/components/Tooltip";
 import { useNotificationStore } from "@/store/notificationStore";
 import { USAGE_SUPPORTED_PROVIDERS, USAGE_APIKEY_PROVIDERS } from "@/shared/constants/providers";
 import { AUTO_PING_SETTINGS_KEYS } from "@/shared/constants/config";
+import { useAutoPingSettings } from "@/shared/hooks/useAutoPingSettings";
 
 interface Connection {
   id: string;
@@ -38,6 +38,11 @@ const AUTO_REFRESH_STORAGE_KEY = "quotaAutoRefresh";
 const isUsageEligible = (conn: Connection) =>
   USAGE_SUPPORTED_PROVIDERS.includes(conn.provider) &&
   (conn.authType === "oauth" || USAGE_APIKEY_PROVIDERS.includes(conn.provider));
+
+const isAutoPingProvider = (
+  provider: string,
+): provider is keyof typeof AUTO_PING_SETTINGS_KEYS =>
+  Object.prototype.hasOwnProperty.call(AUTO_PING_SETTINGS_KEYS, provider);
 
 function getConnectionLabel(connection: Connection): string {
   return (
@@ -148,7 +153,7 @@ export default function ProviderLimits() {
   const [expiringFirst, setExpiringFirst] = useState<boolean>(false);
   const [providerMenuOpen, setProviderMenuOpen] = useState<boolean>(false);
   const [bulkToggling, setBulkToggling] = useState<boolean>(false);
-  const [autoPingMaps, setAutoPingMaps] = useState<Record<string, Record<string, boolean>>>({ claude: {}, codex: {} });
+  const autoPingSettings = useAutoPingSettings();
   const autoPingTooltips: Record<string, string> = {
     claude: "When your 5h quota runs out, auto-sends a request the moment it resets so a new window starts right away.",
     codex: "Auto-starts the next available Codex quota window after reset with a tiny gpt-5.6-luna request. Consumes a small amount of quota.",
@@ -512,6 +517,12 @@ export default function ProviderLimits() {
     initializeData();
   }, [fetchConnections, fetchQuota]);
 
+  useEffect(() => {
+    if (autoPingSettings.error) {
+      notify.error(`Auto-ping settings unavailable: ${autoPingSettings.error}`);
+    }
+  }, [autoPingSettings.error]);
+
   // Persist auto-refresh preference
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -641,23 +652,15 @@ export default function ProviderLimits() {
     [bulkToggling],
   );
 
-  const toggleAutoPing = useCallback(
-    async (connectionId: string, provider: string, on: boolean) => {
-      const settingsKey = AUTO_PING_SETTINGS_KEYS[provider as keyof typeof AUTO_PING_SETTINGS_KEYS];
-      if (!settingsKey) return;
-      const previous = autoPingMaps[provider] || {};
-      const nextProviderMap = { ...previous, [connectionId]: on };
-      const nextMaps = { ...autoPingMaps, [provider]: nextProviderMap };
-      setAutoPingMaps(nextMaps);
-      try {
-        await patchSettings({ [settingsKey]: nextProviderMap });
-      } catch (error) {
-        console.error("Error saving auto-ping config:", error);
-        setAutoPingMaps((prev) => ({ ...prev, [provider]: previous }));
-      }
-    },
-    [autoPingMaps],
-  );
+  const toggleAutoPing = async (connectionId: string, provider: string, on: boolean) => {
+    if (!isAutoPingProvider(provider)) return;
+    try {
+      await autoPingSettings.toggleConnection(provider, connectionId, on);
+    } catch (error) {
+      console.error("Error saving auto-ping config:", error);
+      notify.error(error instanceof Error ? error.message : "Failed to save auto-ping setting");
+    }
+  };
 
   const handleDisableDepleted = () => {
     const ids = sortedConnections
@@ -870,6 +873,10 @@ export default function ProviderLimits() {
           // Use table layout for all providers
           const isInactive = conn.isActive === false;
           const isCodex = conn.provider === "codex";
+          const autoPingProvider = isAutoPingProvider(conn.provider) ? conn.provider : null;
+          const isAutoPingEnabled =
+            autoPingProvider !== null &&
+            autoPingSettings.configs[autoPingProvider]?.connections[conn.id] === true;
           const hasCodexAutoPingQuota =
             isCodex &&
             quota?.quotas?.some(
@@ -932,14 +939,18 @@ export default function ProviderLimits() {
                   </div>
 
                   <div className="flex items-center gap-1 shrink-0">
-                    {AUTO_PING_SETTINGS_KEYS[conn.provider as keyof typeof AUTO_PING_SETTINGS_KEYS] &&
+                    {autoPingSettings.ready &&
+                      autoPingProvider &&
                       conn.authType === "oauth" &&
                       (!isCodex || hasCodexAutoPingQuota) && (
                       <Tooltip text={autoPingTooltips[conn.provider] || "Auto-ping warmup"}>
                         <button
                           type="button"
-                          onClick={() => toggleAutoPing(conn.id, conn.provider, !(autoPingMaps[conn.provider]?.[conn.id] === true))}
-                          className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-black/5 dark:hover:bg-white/5 ${autoPingMaps[conn.provider]?.[conn.id] === true ? "text-primary" : "text-text-muted"}`}
+                          onClick={() => toggleAutoPing(conn.id, conn.provider, !isAutoPingEnabled)}
+                          disabled={autoPingSettings.saving[autoPingProvider] === true}
+                          aria-pressed={isAutoPingEnabled}
+                          aria-label={`${isAutoPingEnabled ? "Disable" : "Enable"} auto-ping for ${getConnectionLabel(conn) || conn.id}`}
+                          className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-black/5 dark:hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50 ${isAutoPingEnabled ? "text-primary" : "text-text-muted"}`}
                           title="Toggle auto-ping warmup"
                         >
                           <span className="material-symbols-outlined text-[18px]">bolt</span>

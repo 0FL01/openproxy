@@ -10,6 +10,7 @@ import { getModelsByProviderId, useEnsureCatalog } from "@/shared/constants/mode
 import { useAvailableModels } from "@/shared/models/availableModels";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
+import { useAutoPingSettings } from "@/shared/hooks/useAutoPingSettings";
 import { useCatalogStore } from "@/store/catalogStore";
 import { fetchSuggestedModels } from "@/shared/utils/providerModelsFetcher";
 import { type CustomModelEntry } from "@/shared/utils/providerCustomModels";
@@ -88,8 +89,7 @@ export default function ProviderDetailPageClient() {
   const [savedContextLimit, setSavedContextLimit] = useState(String(DEFAULT_CONTEXT_LIMIT));
   const [contextLimitSaving, setContextLimitSaving] = useState(false);
   const [suggestedModels, setSuggestedModels] = useState([]);
-  const [autoPing, setAutoPing] = useState<{ enabled: boolean; connections: Record<string, boolean> }>({ enabled: false, connections: {} });
-  const [autoPingSaving, setAutoPingSaving] = useState(false);
+  const autoPingSettings = useAutoPingSettings();
   const [oneByOneRunning, setOneByOneRunning] = useState(false);
   const [oneByOneStopping, setOneByOneStopping] = useState(false);
   const [oneByOneCurrentConnectionId, setOneByOneCurrentConnectionId] = useState<string | null>(null);
@@ -259,9 +259,6 @@ export default function ProviderDetailPageClient() {
       );
       setContextLimit(loadedContextLimit);
       setSavedContextLimit(loadedContextLimit);
-      // Load Claude/Codex auto-ping maps (settings.extra keys)
-      const apCfg = autoPingSettingsKey ? (settingsData[autoPingSettingsKey] || {}) : {};
-      setAutoPing({ enabled: apCfg.enabled === true, connections: apCfg.connections || {} });
       if (nodesRes.ok) {
         let node = (nodesData.nodes || []).find((entry) => entry.id === providerId) || null;
 
@@ -344,32 +341,17 @@ export default function ProviderDetailPageClient() {
     }
   };
 
-  const saveAutoPing = async (next: { enabled: boolean; connections: Record<string, boolean> }) => {
+  const handleAutoPingConnection = async (connectionId: string, on: boolean) => {
     if (!autoPingSettingsKey) return;
-    const previous = autoPing;
-    setAutoPing(next);
-    setAutoPingSaving(true);
     try {
-      const response = await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ [autoPingSettingsKey]: next }),
-      });
-      if (!response.ok) throw new Error("Failed to save auto-ping setting");
+      await autoPingSettings.toggleConnection(
+        providerId as keyof typeof AUTO_PING_SETTINGS_KEYS,
+        connectionId,
+        on,
+      );
     } catch (error) {
-      setAutoPing(previous);
       notify.error(error instanceof Error ? error.message : "Failed to save auto-ping setting");
-    } finally {
-      setAutoPingSaving(false);
     }
-  };
-
-  const handleAutoPingConnection = (connectionId: string, on: boolean) => {
-    const connections = { ...autoPing.connections, [connectionId]: on };
-    saveAutoPing({
-      enabled: Object.values(connections).some(Boolean),
-      connections,
-    });
   };
 
   const openOAuthConnection = () => {
@@ -498,6 +480,12 @@ export default function ProviderDetailPageClient() {
     fetchAliases();
     fetchCustomModels();
   }, [fetchConnections, fetchAliases, fetchCustomModels]);
+
+  useEffect(() => {
+    if (autoPingSettingsKey && autoPingSettings.error) {
+      notify.error(`Auto-ping settings unavailable: ${autoPingSettings.error}`);
+    }
+  }, [autoPingSettings.error, autoPingSettingsKey]);
 
   // Fetch suggested models from provider's public API (if configured)
   useEffect(() => {
@@ -856,15 +844,15 @@ export default function ProviderDetailPageClient() {
                 onMoveUp={() => handleSwapPriority(index, index - 1)}
                 onMoveDown={() => handleSwapPriority(index, index + 1)}
                 onToggleActive={(isActive) => handleUpdateConnectionStatus(conn.id, isActive)}
-                autoPing={autoPingSettingsKey && (
+                autoPing={autoPingSettings.ready && autoPingSettingsKey && (
                   conn.authType === "oauth" ||
                   isOAuth ||
                   (providerId === "glm" && ["apikey", "api_key"].includes((conn.authType || "").toLowerCase()))
                 ) ? {
-                  on: autoPing.connections[conn.id] === true,
+                  on: autoPingSettings.configs[providerId as keyof typeof AUTO_PING_SETTINGS_KEYS]?.connections[conn.id] === true,
                   onToggle: (on) => handleAutoPingConnection(conn.id, on),
                   provider: providerId,
-                  saving: autoPingSaving,
+                  saving: autoPingSettings.saving[providerId as keyof typeof AUTO_PING_SETTINGS_KEYS] === true,
                 } : null}
                 oneByOneStatus={oneByOneResults[conn.id] || null}
                 onUpdateProxy={async (proxyPoolId) => {
