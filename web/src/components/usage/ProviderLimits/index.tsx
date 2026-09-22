@@ -156,7 +156,7 @@ export default function ProviderLimits() {
   const autoPingSettings = useAutoPingSettings();
   const autoPingTooltips: Record<string, string> = {
     claude: "When your 5h quota runs out, auto-sends a request the moment it resets so a new window starts right away.",
-    codex: "Auto-starts the next available Codex quota window after reset with a tiny gpt-5.6-luna request. Consumes a small amount of quota.",
+    codex: "Auto-starts the next available Codex quota window after reset with a tiny gpt-6-luna request. Consumes a small amount of quota.",
   };
 
   const intervalRef = useRef<NodeJS.Timeout | null>(null);

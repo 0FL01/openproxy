@@ -93,7 +93,7 @@ export default function ConnectionRow({
         : "";
 
   const autoPingTooltip = autoPing?.provider === "codex"
-    ? "Auto-starts the next available Codex quota window after reset with a tiny gpt-5.6-luna request. Consumes a small amount of quota."
+    ? "Auto-starts the next available Codex quota window after reset with a tiny gpt-6-luna request. Consumes a small amount of quota."
     : autoPing?.provider === "glm"
       ? "Auto-starts the next GLM 5-hour window after reset with a tiny glm-5.3-flash request. Consumes a small amount of Coding Plan quota."
       : "When your 5h quota runs out, auto-sends a request the moment it resets so a new window starts right away.";

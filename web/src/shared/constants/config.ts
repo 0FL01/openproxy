@@ -112,7 +112,7 @@ export const QUOTA_AUTOPING_CONFIG = {
     codex: {
       settingsKey: "codexAutoPing",
       quotaKeys: ["session", "weekly"],
-      pingModel: "gpt-5.6-luna",
+      pingModel: "gpt-6-luna",
     },
     glm: {
       settingsKey: "glmAutoPing",
