@@ -739,18 +739,29 @@ mod tests {
             {"slug":"gpt-future","minimal_client_version":"999.0.0"},
             {"slug":"gpt-malformed","minimal_client_version":"next"},
             {"slug":"gpt-current","display_name":"duplicate"},
+            {"slug":"gpt-6-sol","visibility":"list","supported_in_api":true,"minimal_client_version":"0.155.0"},
+            {"slug":"gpt-6-luna","visibility":"list","supported_in_api":true,"minimal_client_version":"0.155.0"},
             {"slug":"  "}
         ]})).unwrap();
 
-        assert_eq!(models.len(), 1);
-        assert_eq!(models[0].id, "gpt-current");
-        assert_eq!(models[0].context_window, Some(872000));
-        assert_eq!(models[0].reasoning_efforts, ["low", "high"]);
         assert_eq!(
-            models[0].capabilities,
+            models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            ["gpt-6-luna", "gpt-6-sol", "gpt-current"]
+        );
+        let current = models
+            .iter()
+            .find(|model| model.id == "gpt-current")
+            .unwrap();
+        assert_eq!(current.context_window, Some(872000));
+        assert_eq!(current.reasoning_efforts, ["low", "high"]);
+        assert_eq!(
+            current.capabilities,
             ["tools", "reasoning", "vision", "search"]
         );
-        let output = models[0].catalog_json();
+        let output = current.catalog_json();
         assert!(output.get("base_instructions").is_none());
         assert_eq!(output["targetFormat"], "openai-responses");
     }
