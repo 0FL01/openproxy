@@ -100,6 +100,12 @@ function formatTimeRemaining(value?: string | null): string {
   return days > 0 ? `${days}d ${hours}h` : `${hours}h`;
 }
 
+function getAvailableCodexResetCredits(
+  credits: CodexResetCredit[],
+): CodexResetCredit[] {
+  return credits.filter((credit) => credit.status?.toLowerCase() === "available");
+}
+
 interface CodexResetCredit {
   status?: string;
   grantedAt?: string | null;
@@ -109,6 +115,39 @@ interface CodexResetCredit {
 interface CodexResetCreditsData {
   availableCount?: number;
   credits: CodexResetCredit[];
+}
+
+async function fetchCodexResetCredits(
+  connectionId: string,
+): Promise<CodexResetCreditsData> {
+  const response = await fetch(
+    `/api/usage/${connectionId}/codex-reset-credits`,
+    { cache: "no-store" },
+  );
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(
+      result.error || result.message || "Failed to load Codex reset credits",
+    );
+  }
+
+  const credits: CodexResetCredit[] = Array.isArray(result.credits)
+    ? [...result.credits]
+    : [];
+  credits.sort((a, b) => {
+    const aTime = a.expiresAt
+      ? new Date(a.expiresAt).getTime()
+      : Number.POSITIVE_INFINITY;
+    const bTime = b.expiresAt
+      ? new Date(b.expiresAt).getTime()
+      : Number.POSITIVE_INFINITY;
+    return aTime - bTime;
+  });
+
+  return {
+    availableCount: result.availableCount ?? 0,
+    credits,
+  };
 }
 
 interface ProxyPool {
@@ -135,9 +174,11 @@ export default function ProviderLimits() {
   const notify = useNotificationStore();
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [resettingLimitId, setResettingLimitId] = useState<string | null>(null);
+  const [loadingResetCreditsId, setLoadingResetCreditsId] = useState<string | null>(null);
   const [resetConfirmState, setResetConfirmState] = useState<{
     connection: Connection;
     resetCreditCount: number;
+    credits: CodexResetCredit[];
   } | null>(null);
   const [resetCreditsState, setResetCreditsState] = useState<{
     connection: Connection;
@@ -310,38 +351,12 @@ export default function ProviderLimits() {
         data: null,
       });
       try {
-        const response = await fetch(
-          `/api/usage/${connection.id}/codex-reset-credits`,
-          { cache: "no-store" },
-        );
-        const result = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          throw new Error(
-            result.error ||
-              result.message ||
-              "Failed to load Codex reset credits",
-          );
-        }
-        const credits: CodexResetCredit[] = Array.isArray(result.credits)
-          ? [...result.credits]
-          : [];
-        credits.sort((a, b) => {
-          const aTime = a.expiresAt
-            ? new Date(a.expiresAt).getTime()
-            : Number.POSITIVE_INFINITY;
-          const bTime = b.expiresAt
-            ? new Date(b.expiresAt).getTime()
-            : Number.POSITIVE_INFINITY;
-          return aTime - bTime;
-        });
+        const data = await fetchCodexResetCredits(connection.id);
         setResetCreditsState({
           connection,
           loading: false,
           error: null,
-          data: {
-            availableCount: result.availableCount ?? 0,
-            credits,
-          },
+          data,
         });
       } catch (error) {
         setResetCreditsState({
@@ -354,6 +369,33 @@ export default function ProviderLimits() {
       }
     },
     [],
+  );
+
+  const handlePrepareCodexReset = useCallback(
+    async (connection: Connection) => {
+      if (loadingResetCreditsId || resettingLimitId) return;
+
+      setLoadingResetCreditsId(connection.id);
+      try {
+        const data = await fetchCodexResetCredits(connection.id);
+        if ((data.availableCount ?? 0) <= 0) {
+          notify.error("No Codex reset credits available");
+          return;
+        }
+        setResetConfirmState({
+          connection,
+          resetCreditCount: data.availableCount ?? 0,
+          credits: data.credits,
+        });
+      } catch (error) {
+        notify.error(
+          (error as Error).message || "Failed to load Codex reset credits",
+        );
+      } finally {
+        setLoadingResetCreditsId(null);
+      }
+    },
+    [loadingResetCreditsId, notify, resettingLimitId],
   );
 
   const handleDeleteConnection = useCallback((id: string) => {
@@ -678,6 +720,9 @@ export default function ProviderLimits() {
   const activeWithLimits = Object.values(quotaData).filter(
     (data) => data?.quotas?.length > 0,
   ).length;
+  const availableResetCredits = getAvailableCodexResetCredits(
+    resetConfirmState?.credits ?? [],
+  );
 
   // Count low quotas (remaining < 30%)
   const lowQuotasCount = Object.values(quotaData).reduce((count, data) => {
@@ -878,10 +923,12 @@ export default function ProviderLimits() {
             );
           const resetCreditCount = getCodexResetCreditCount(quota);
           const isResettingLimit = resettingLimitId === conn.id;
+          const isLoadingResetCredits = loadingResetCreditsId === conn.id;
           const rowBusy =
             deletingId === conn.id ||
             togglingId === conn.id ||
-            isResettingLimit;
+            isResettingLimit ||
+            isLoadingResetCredits;
 
           return (
             <Card
@@ -961,17 +1008,17 @@ export default function ProviderLimits() {
                         >
                           <button
                             type="button"
-                            onClick={() =>
-                              setResetConfirmState({
-                                connection: conn,
-                                resetCreditCount,
-                              })
-                            }
+                            onClick={() => handlePrepareCodexReset(conn)}
                             disabled={
-                              resetCreditCount <= 0 || isLoading || rowBusy
+                              resetCreditCount <= 0 ||
+                              isLoading ||
+                              rowBusy ||
+                              Boolean(loadingResetCreditsId)
                             }
                             aria-label={
-                              resetCreditCount > 0
+                              isLoadingResetCredits
+                                ? "Loading Codex reset credit details."
+                                : resetCreditCount > 0
                                 ? `Use one Codex reset credit. ${resetCreditCount} available.`
                                 : "No Codex reset credits available"
                             }
@@ -982,9 +1029,9 @@ export default function ProviderLimits() {
                             }`}
                           >
                             <span
-                              className={`material-symbols-outlined text-[15px] ${isResettingLimit ? "animate-spin" : ""}`}
+                              className={`material-symbols-outlined text-[15px] ${isResettingLimit || isLoadingResetCredits ? "animate-spin" : ""}`}
                             >
-                              {isResettingLimit
+                              {isResettingLimit || isLoadingResetCredits
                                 ? "progress_activity"
                                 : "restart_alt"}
                             </span>
@@ -1133,12 +1180,39 @@ export default function ProviderLimits() {
           setResetConfirmState(null);
         }}
         title="Reset Codex limit?"
-        message={`Use 1 Codex reset credit for ${
-          getConnectionLabel(resetConfirmState?.connection || { id: "", provider: "codex" }) ||
-          "this account"
-        }. This cannot be undone. Remaining credits: ${
-          resetConfirmState?.resetCreditCount ?? 0
-        }.`}
+        message={
+          <>
+            <span>
+              Use 1 Codex reset credit for{" "}
+              {getConnectionLabel(
+                resetConfirmState?.connection || { id: "", provider: "codex" },
+              ) || "this account"}. This cannot be undone. Remaining credits: {resetConfirmState?.resetCreditCount ?? 0}.
+            </span>
+            <br />
+            <br />
+            <strong>Available reset credits, soonest expiry first:</strong>
+            {availableResetCredits.length > 0 ? (
+              availableResetCredits.map((credit, index) => (
+                <span key={`${credit.status}-${credit.expiresAt || index}`}>
+                  <br />
+                  #{index + 1}: Expires {formatCreditDate(credit.expiresAt)}
+                  {credit.expiresAt
+                    ? ` (${formatTimeRemaining(credit.expiresAt)} remaining)`
+                    : ""}
+                </span>
+              ))
+            ) : (
+              <span>
+                <br />
+                No individual available reset details were returned.
+              </span>
+            )}
+            <br />
+            <span className="text-xs">
+              The list order does not indicate which credit the reset API will consume.
+            </span>
+          </>
+        }
         confirmText="Reset limit"
         cancelText="Cancel"
         variant="danger"
