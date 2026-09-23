@@ -170,15 +170,8 @@ export default function Sidebar({ onClose }: SidebarProps) {
   return (
     <>
       <aside className="flex w-72 flex-col border-r border-hairline-soft bg-canvas transition-colors duration-300 min-h-full">
-        {/* Traffic lights */}
-        <div className="flex items-center gap-2 px-6 pt-5 pb-2">
-          <div className="w-3 h-3 rounded-full bg-[#FF5F56]" />
-          <div className="w-3 h-3 rounded-full bg-[#FFBD2E]" />
-          <div className="w-3 h-3 rounded-full bg-[#27C93F]" />
-        </div>
-
         {/* Editorial wordmark — spike-mark glyph + serif headline */}
-        <div className="px-6 py-4 flex flex-col gap-2">
+        <div className="px-6 pt-6 pb-4 flex flex-col gap-2">
           <a href="/dashboard" className="flex items-center gap-3 group">
             <div className="flex items-center justify-center size-9 rounded-mini-md bg-surface-card border border-hairline">
               <AnthropicSpike size={20} className="text-brand-coral" ariaLabel="OpenProxy mark" />

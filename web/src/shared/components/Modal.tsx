@@ -12,7 +12,6 @@ interface ExtendedModalProps extends Omit<ModalProps, 'size'> {
   footer?: React.ReactNode;
   closeOnOverlay?: boolean;
   showCloseButton?: boolean;
-  showTrafficLights?: boolean;
   className?: string;
 }
 
@@ -25,7 +24,6 @@ export default function Modal({
   size = "md",
   closeOnOverlay = false,
   showCloseButton = true,
-  showTrafficLights = true,
   className,
 }: ExtendedModalProps) {
   const sizes: Record<ModalSize, string> = {
@@ -78,13 +76,6 @@ export default function Modal({
         {(title || showCloseButton) && (
           <div className="flex items-center justify-between p-2 border-b border-border-subtle">
             <div className="flex items-center">
-              {showTrafficLights && (
-                <div className="flex items-center gap-2 mr-4 ml-2">
-                  <div className="w-3 h-3 rounded-full bg-[#FF5F56]" />
-                  <div className="w-3 h-3 rounded-full bg-[#FFBD2E]" />
-                  <div className="w-3 h-3 rounded-full bg-[#27C93F]" />
-                </div>
-              )}
               {title && (
                 <h2 className="text-lg font-semibold text-text-main">{title}</h2>
               )}
