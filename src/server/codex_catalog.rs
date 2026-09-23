@@ -166,7 +166,7 @@ impl CodexModelCatalog {
         let _refresh = self.refresh_lock.lock().await;
         let before_db = state.db.snapshot();
         let before = self.reconcile_configuration(&before_db);
-        let canonical = before_db
+        let mut canonical = before_db
             .provider_connections
             .iter()
             .find(|candidate| {
@@ -201,7 +201,7 @@ impl CodexModelCatalog {
             .get(&canonical.id)
             .filter(|entry| entry.identity == identity)
             .cloned();
-        match fetch_models(state, &canonical, &self.models_url).await {
+        match fetch_models(state, &mut canonical, &self.models_url).await {
             Ok(models) => {
                 let models = Arc::new(models);
                 let after_db = state.db.snapshot();
@@ -218,6 +218,12 @@ impl CodexModelCatalog {
                     ));
                 };
                 let published_identity = cache_identity(after_connection);
+                if published_identity != cache_identity(&canonical) {
+                    return Err(CodexCatalogError::new(
+                        StatusCode::CONFLICT,
+                        "Codex connection changed while model discovery was active",
+                    ));
+                }
                 self.publish_entry(
                     &after_db,
                     &after_connection.id,
@@ -509,12 +515,11 @@ fn cache_identity(connection: &ProviderConnection) -> String {
 
 async fn fetch_models(
     state: &AppState,
-    connection: &ProviderConnection,
+    connection: &mut ProviderConnection,
     models_url: &str,
 ) -> Result<Vec<CodexModelMetadata>, CodexCatalogError> {
-    let mut connection = connection.clone();
     if needs_refresh_with_lead(&connection.expires_at, REFRESH_LEAD_MS) {
-        refresh_connection(state, &mut connection).await?;
+        refresh_connection(state, connection).await?;
     }
 
     let token = connection
@@ -523,16 +528,16 @@ async fn fetch_models(
         .map(str::trim)
         .filter(|token| !token.is_empty())
         .ok_or_else(|| CodexCatalogError::new(StatusCode::UNAUTHORIZED, "No valid token found"))?;
-    match fetch_with_token(state, &connection, token, models_url).await {
+    match fetch_with_token(state, connection, token, models_url).await {
         Err(error)
             if matches!(
                 error.status,
                 StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
             ) && connection.refresh_token.is_some() =>
         {
-            refresh_connection(state, &mut connection).await?;
+            refresh_connection(state, connection).await?;
             let token = connection.access_token.as_deref().unwrap_or_default();
-            fetch_with_token(state, &connection, token, models_url).await
+            fetch_with_token(state, connection, token, models_url).await
         }
         result => result,
     }

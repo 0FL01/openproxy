@@ -225,6 +225,54 @@ async fn known_chat_uses_published_inventory_while_forced_refresh_is_held() {
 }
 
 #[tokio::test]
+async fn held_refresh_does_not_publish_models_for_replaced_credentials() {
+    let release_refresh = Arc::new(Notify::new());
+    let catalog = MockUpstream::start([ScriptedResponse::json(
+        StatusCode::OK,
+        catalog_payload(&[("old-account-model", false)]),
+    )
+    .holding_eof(release_refresh.clone())])
+    .await;
+    let connection = codex_connection("codex-a", 1);
+    let (test_db, state) = state_with_catalog(
+        catalog.url("/backend-api/codex/models"),
+        String::new(),
+        vec![connection.clone()],
+        Vec::new(),
+    )
+    .await;
+
+    let refresh_state = state.clone();
+    let refresh_connection = connection.clone();
+    let refresh = tokio::spawn(async move {
+        refresh_state
+            .codex_models
+            .refresh_connection(&refresh_state, &refresh_connection, true)
+            .await
+    });
+    catalog.wait_for_requests(1).await;
+    test_db
+        .db
+        .update(|db| {
+            db.provider_connections[0].access_token = Some("replacement-account-access".into());
+        })
+        .await
+        .expect("replace Codex credentials while catalog HTTP is in flight");
+
+    release_refresh.notify_one();
+    let error = refresh
+        .await
+        .expect("join held refresh")
+        .expect_err("old account inventory must not be published for new credentials");
+    assert_eq!(error.status, StatusCode::CONFLICT);
+    assert!(state
+        .codex_models
+        .cached_supporters("old-account-model", &state.db.snapshot())
+        .is_empty());
+    catalog.shutdown().await;
+}
+
+#[tokio::test]
 async fn failed_refresh_keeps_prior_publication_and_unknown_model_never_routes() {
     let catalog = MockUpstream::start([
         ScriptedResponse::json(StatusCode::OK, catalog_payload(&[("gpt-known", false)])),
