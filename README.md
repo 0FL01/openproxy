@@ -1,388 +1,139 @@
 # OpenProxy
 
 <div align="center">
-  <img src="openproxy_illustration.webp" alt="OpenProxy — local AI router. 40+ providers. Auto-fallback.">
+  <img src="openproxy_illustration.webp" alt="OpenProxy — local AI proxy router">
 </div>
 
-<div align="center">
+**A local AI proxy router for existing clients.** This is the
+[0FL01 fork](https://github.com/0FL01/openproxy) of
+[quangdang46/openproxy](https://github.com/quangdang46/openproxy). It keeps
+provider credentials and OAuth in the proxy, routes configured models to
+eligible accounts, translates the required API formats, and serves a dashboard
+from the same Rust binary. It is not an agent runtime: the client owns history,
+compaction, general tool execution, semantic repair, and timed generation
+retries. See the [lean proxy contract](contracts/lean-proxy.md) for the exact
+boundary.
 
-![CI](https://img.shields.io/github/actions/workflow/status/quangdang46/openproxy/ci.yml?branch=main)
-![Release](https://img.shields.io/github/v/release/quangdang46/openproxy?display_name=tag&sort=semver&label=release&color=brightgreen)
-![License](https://img.shields.io/badge/License-MIT-blue.svg)
-![Install](https://img.shields.io/badge/install-curl%20%7C%20npm-1e90ff)
+## Start this fork
 
-</div>
+There are **no fork-specific prebuilt releases** yet. The checked-in
+`install.sh` and `install.ps1` download **upstream** `quangdang46/openproxy`
+releases, not this fork. To run the fork, build from this checkout or use Docker
+Compose.
 
-**Single-binary AI router for AI coding tools.**  
-Routes to 40+ providers with account fallback. Embedded dashboard, OpenAI-compatible API. Run on `127.0.0.1:4623` — no cloud required.
-
-<p align="center">
-  <a href="#install">Install</a> ·
-  <a href="#connect-a-cli-tool">Connect a CLI</a> ·
-  <a href="#supported-providers">Providers</a> ·
-  <a href="#for-ai-agents">For AI Agents</a> ·
-  <a href="#configuration">Configuration</a>
-</p>
-
-<div align="center">
+### Docker Compose
 
 ```bash
-# Start locally (auto-opens dashboard)
-curl -fsSL "https://raw.githubusercontent.com/quangdang46/openproxy/main/install.sh" | bash
-openproxy
+git clone https://github.com/0FL01/openproxy.git
+cd openproxy
+cp .env.example .env.prod
+# Edit .env.prod: replace JWT_SECRET and set a strong, stable
+# OPENPROXY_ENCRYPTION_KEY (see Configuration below).
+docker compose up -d --build
+curl -fsS http://127.0.0.1:4623/health
 ```
 
-</div>
+Open `http://127.0.0.1:4623/`. For a fresh database, find the generated
+dashboard password in `docker compose logs openproxy` (or set
+`INITIAL_PASSWORD` before the first start). Keep that output private. Compose
+binds the host port to loopback and keeps the SQLite database and credentials
+in the `openproxy-prod-data` volume. `docker compose down` stops the service;
+do not use `--volumes` if you want to retain its configuration.
 
----
+### Build from source
 
-## 🤖 Agent Quickstart (API / Robot Mode)
-
-Point your coding agent CLI at `http://127.0.0.1:4623`:
+Requires Rust **1.85+**, a working C compiler/linker, Node **20.3+**, and
+pnpm **10.33.2**. From the checkout:
 
 ```bash
-# Claude Code
-claude config set proxyUrl http://127.0.0.1:4623
-
-# Codex CLI
-codex --proxy http://127.0.0.1:4623
-
-# Any OpenAI-compatible tool
-curl http://127.0.0.1:4623/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"claude/claude-opus-4-8","messages":[{"role":"user","content":"hi"}]}'
+corepack enable
+corepack prepare pnpm@10.33.2 --activate
+pnpm --dir web install --frozen-lockfile
+pnpm --dir web run build
+cargo build --release --locked
+./target/release/openproxy --no-open
 ```
 
-**Dashboard** — open `http://127.0.0.1:4623/` in browser for provider config, quota tracking, and request logs.
+The dashboard is embedded at build time, so build `web/dist` before the Rust
+binary. By default the server listens on `127.0.0.1:4623` and stores state
+under `~/.openproxy/` (`openproxy.sqlite`). The first-start dashboard password
+is printed in the server output. For a non-Compose deployment, export stable
+`JWT_SECRET` and `OPENPROXY_ENCRYPTION_KEY` values before adding credentials;
+the binary does not load `.env` automatically. For an isolated development
+server on port `4625` with separate data under `~/.openproxy-dev`, use
+`./scripts/dev.sh` after building the dashboard. Rebuild the dashboard after
+changes to `web/src`.
 
----
+## Configure a provider and OpenCode
 
-## What it does
+1. Sign in to the dashboard at `http://127.0.0.1:4623/`. Its **Endpoint** page
+   manages API keys; create or select a key for your client.
+2. Go to **Providers**, choose a provider, and add an account/connection with
+   its supported OAuth or API-key method. Custom compatible endpoints are also
+   available.
+3. On that provider's **Available Models** section, disable models you do not
+   want offered, restore them from **Disabled models**, or add a custom model
+   ID. These choices are stored in SQLite, not in the built dashboard assets.
+4. Go to **CLI Tools → OpenCode** (`/dashboard/cli-tools/opencode`). Select a
+   key and models, choose the active model, and **Apply**. Use **Manual Config**
+   if OpenCode is on another machine or cannot be detected locally.
 
-OpenProxy runs as one binary on `127.0.0.1:4623`. Point any tool that speaks the OpenAI Chat Completions API at it (Claude Code, Codex, Cursor, Cline, OpenClaw, Copilot, ...) and OpenProxy:
+The model picker shares the provider page's available-model logic: enabled
+catalog/discovered models and custom rows, excluding disabled models. For
+automatic `/v1/models` discovery in an existing aggregate OpenCode provider
+named `ludka2`, see [the separate OpenCode plugin](plugins/README.md). The
+dashboard's OpenCode config instead uses provider ID `openproxy`; its Apply
+action does not install that plugin.
 
-- routes the request to a provider you've configured (OAuth, API key, or free)
-- falls back to the next configured account when one is rate-limited or errors
-- tracks per-account quota so you can use subscription tiers fully before paying for API calls
-- serves a local dashboard at `/` for configuration, monitoring, and account management
+Other clients that accept an OpenAI-compatible endpoint can use
+`http://127.0.0.1:4623/v1` as their base URL and an OpenProxy API key. Select a
+model ID from `/v1/models` after configuring a provider; a catalog entry alone
+does not guarantee a working upstream connection.
 
-There is no cloud component required. All state lives in `~/.openproxy/` (SQLite database at `openproxy.sqlite`).
+## Routes and routing behavior
 
----
+| Interface | Route |
+|---|---|
+| OpenAI Chat Completions | `POST /v1/chat/completions` |
+| Anthropic Messages and count tokens | `POST /v1/messages`, `POST /v1/messages/count_tokens` |
+| OpenAI Responses | `POST /v1/responses` |
+| Gemini-style models/API | `GET /v1beta/models`, `POST /v1beta/models/{...}` |
+| Ollama-style chat | `POST /v1/api/chat` |
+| Model discovery | `GET /v1/models` |
+| One-shot URL extraction | `POST /v1/web/fetch` |
+| One-shot Codex indexed web search (MCP) | `POST /v1/mcp` |
+| Liveness (no auth) | `GET /health` |
 
-## Install
+Fresh installs require an API key for chat and model discovery. Export a key
+from the dashboard as `OPENPROXY_API_KEY` in your shell. For example, with a
+configured Claude Code connection:
 
 ```bash
-# Linux / macOS — x86_64 + aarch64
-curl -fsSL "https://raw.githubusercontent.com/quangdang46/openproxy/main/install.sh" | bash
+curl -fsS http://127.0.0.1:4623/v1/models \
+  -H "Authorization: Bearer $OPENPROXY_API_KEY"
+curl -fsS http://127.0.0.1:4623/v1/chat/completions \
+  -H "Authorization: Bearer $OPENPROXY_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"cc/claude-opus-4-7","messages":[{"role":"user","content":"Hi"}]}'
 ```
 
-```powershell
-# Windows (PowerShell 5.1+, x86_64)
-irm "https://raw.githubusercontent.com/quangdang46/openproxy/main/install.ps1" | iex
-```
-
-Both pull the same prebuilt binary from the same GitHub release. The Linux/macOS curl path drops the binary at `~/.local/bin/openproxy`. The Windows PowerShell path drops `openproxy.exe` at `%USERPROFILE%\.local\bin`.
-
-```bash
-openproxy
-```
-
-The server binds to `127.0.0.1:4623` and the dashboard auto-opens in your browser. Use `--no-open` for headless / SSH / container contexts.
-
-<details>
-<summary>Other install options</summary>
-
-```bash
-# Pin a version
-curl -fsSL "https://raw.githubusercontent.com/quangdang46/openproxy/main/install.sh" | bash -s -- --version v0.1.0
-
-# Install system-wide (may need sudo)
-curl -fsSL "https://raw.githubusercontent.com/quangdang46/openproxy/main/install.sh" | bash -s -- --system
-
-# Add to PATH automatically (~/.bashrc / ~/.zshrc)
-curl -fsSL "https://raw.githubusercontent.com/quangdang46/openproxy/main/install.sh" | bash -s -- --easy-mode
-
-# Build from source (requires cargo + Node 20 + pnpm)
-curl -fsSL "https://raw.githubusercontent.com/quangdang46/openproxy/main/install.sh" | bash -s -- --from-source
-
-# Uninstall
-curl -fsSL "https://raw.githubusercontent.com/quangdang46/openproxy/main/install.sh" | bash -s -- --uninstall
-```
-
-Manual download: https://github.com/quangdang46/openproxy/releases
-
-</details>
-
----
-
-## Connect a CLI tool
-
-Most tools ask for an OpenAI base URL and an API key.
-
-| Tool | Setting | Value |
-|---|---|---|
-| Cursor / Cline / Continue / Roo | OpenAI base URL | `http://127.0.0.1:4623/v1` |
-| Codex CLI | `OPENAI_BASE_URL` | `http://127.0.0.1:4623` |
-| Claude Code | `~/.claude/config.json` `anthropic_api_base` | `http://127.0.0.1:4623/v1` |
-
-The API key comes from the dashboard. Visit `http://127.0.0.1:4623`, create an API key, paste it into the tool's settings.
-
-Tested CLIs: **Claude Code, Codex, Cursor, Cline, Continue, Roo, OpenCode, Antigravity**.
-
----
-
-## For AI Agents
-
-OpenProxy is built to be driven by AI agents (Devin, Claude Code, Codex, Cursor, OpenClaw, …) end-to-end — install, init, configure, and verify without any browser interaction.
-
-A ready-to-use agent skill ships in this repo:
-
-- [`.agents/skills/openproxy/SKILL.md`](.agents/skills/openproxy/SKILL.md) — install, `server init`, `server start --detach`, declarative `provider apply`, and wiring CLI tools.
-
-The `install.sh` one-shot installer **automatically drops the same file at `~/.agents/skills/openproxy/SKILL.md`** so agents that scan the home directory (Devin, Claude Code, …) pick it up the moment you install openproxy. The installer preserves any user-edited skill file (detected via the `name: openproxy` frontmatter marker) and exposes two flags:
-
-- `--no-skill` — skip the auto-install entirely.
-- `--skill-dest <dir>` — write to a custom skills root (default: `~/.agents/skills`).
-
-The CLI is agent-friendly by design:
-
-- `--robot` emits stable line-delimited JSON envelopes (`openproxy.v1.*`, frozen contract — additive only).
-- `openproxy schema list` / `schema show <resource>` exposes the JSON shape for every `apply`-able resource.
-- `openproxy provider apply --from-file -` is declarative and idempotent (`--prune` to reconcile).
-- `openproxy doctor` self-tests the install, data dir, and server reachability.
-
-Minimal autonomous bootstrap (no TTY, no browser, no prompts):
-
-```bash
-# 1. Install (drops binary at ~/.local/bin/openproxy)
-curl -fsSL "https://raw.githubusercontent.com/quangdang46/openproxy/main/install.sh" | bash
-export PATH="$HOME/.local/bin:$PATH"
-
-# 2. Initialize data dir; capture the admin API key from the JSON envelope
-openproxy --robot server init | tee /tmp/op-init.json
-APIKEY=$(jq -r '.data.admin_key.key' /tmp/op-init.json)
-
-# 3. Start server detached + headless, then self-test
-openproxy server start --detach --no-open
-openproxy --robot doctor
-openproxy --robot server status
-
-# 4. Configure a provider declaratively (idempotent)
-cat > /tmp/providers.json <<JSON
-{ "providers": [{ "name": "openai", "provider": "openai", "apiKey": "sk-...", "isActive": true }] }
-JSON
-OPENPROXY_API_KEY="$APIKEY" openproxy --robot provider apply --from-file /tmp/providers.json
-
-# 5. End-to-end smoke test against the running server
-curl -sS http://127.0.0.1:4623/health
-curl -sS http://127.0.0.1:4623/v1/models -H "Authorization: Bearer $APIKEY"
-```
-
-Full walkthrough — including failure modes, OAuth provider notes, and post-install verification — lives in [`.agents/skills/openproxy/SKILL.md`](.agents/skills/openproxy/SKILL.md).
-
-### Copy-paste prompt for your AI agent
-
-Paste the block below into Devin, Claude Code, Codex, Cursor, OpenClaw, or any agent chat. It's a single self-contained instruction set — the agent will install OpenProxy, start it, and verify it works without asking further questions.
-
-````text
-You are setting up OpenProxy (https://github.com/quangdang46/openproxy) on this
-machine. OpenProxy is a single-binary AI router exposing an OpenAI-compatible
-API on http://127.0.0.1:4623. Follow these steps exactly, stop on the first
-error, and report the captured admin API key back to me at the end.
-
-1. Check whether `openproxy` is already on PATH:
-       command -v openproxy && openproxy --version || echo "not installed"
-   If already installed, skip to step 3.
-
-2. Install the binary. Pick ONE path:
-   a) Linux / macOS, x86_64 or aarch64 (preferred):
-          curl -fsSL "https://raw.githubusercontent.com/quangdang46/openproxy/main/install.sh" | bash
-          export PATH="$HOME/.local/bin:$PATH"
-   b) Windows, x86_64 (PowerShell 5.1+):
-          irm "https://raw.githubusercontent.com/quangdang46/openproxy/main/install.ps1" | iex
-          $env:Path = "$env:USERPROFILE\.local\bin;" + $env:Path
-
-3. Initialize a data dir and capture the admin API key. Use --robot so the
-   output is JSON; never re-run with --force without my explicit approval:
-       openproxy --robot server init | tee /tmp/op-init.json
-       APIKEY=$(jq -r '.data.admin_key.key' /tmp/op-init.json)
-       export OPENPROXY_API_KEY="$APIKEY"
-   If `server init` reports `openproxy.sqlite already exists`, STOP and tell me — the
-   data dir is pre-populated and I need to decide whether to overwrite.
-
-4. Start the server detached and headless, then self-test:
-       openproxy server start --detach --no-open
-       openproxy --robot server status
-       openproxy --robot doctor
-
-5. Verify end-to-end:
-       curl -sS http://127.0.0.1:4623/health
-       curl -sS http://127.0.0.1:4623/v1/models \
-         -H "Authorization: Bearer $OPENPROXY_API_KEY"
-
-6. Report back to me:
-   - The exact `openproxy --version` output.
-   - The admin API key (value of $OPENPROXY_API_KEY).
-   - Result of step 4's `server status` and `doctor`.
-   - Any non-2xx response from step 5.
-
-Do NOT run `openproxy server init --force`, do NOT delete ~/.openproxy/, and
-do NOT add provider API keys unless I gave you values explicitly. If you hit
-the failure modes documented in
-https://github.com/quangdang46/openproxy/blob/main/.agents/skills/openproxy/SKILL.md
-("Common failure modes & fixes"), apply the listed fix; otherwise stop and ask.
-````
-
-The same instructions in machine-readable form live at [`.agents/skills/openproxy/SKILL.md`](.agents/skills/openproxy/SKILL.md) — agents that auto-discover `.agents/skills/` (Devin, etc.) will pick them up without any copy-paste.
-
----
-
-## Supported providers
-
-| Tier | Provider | Auth | Notes |
-|---|---|---|---|
-| OAuth subscription | Claude Code, Codex, GitHub Copilot, Cursor, Antigravity | OAuth (PKCE) | Use your existing subscription quota. Auto-refresh. |
-| API key | OpenAI, Anthropic, Gemini, OpenRouter, GLM, Kimi, MiniMax, DeepSeek, Groq, xAI, Mistral, Perplexity, Together, Fireworks, Cerebras, Cohere, NVIDIA, SiliconFlow, Nebius, Chutes, Hyperbolic, custom OpenAI/Anthropic-compatible endpoints | API key | 40+ supported. |
-| Free | OpenCode Free, Vertex AI ($300 trial credits) | OAuth / no auth / GCP service account | Best for fallback tiers. |
-
-Configure providers from the dashboard (`Providers` tab) or via `openproxy provider` CLI subcommands. Each provider supports multiple accounts; OpenProxy prefers the lowest-priority-number account and tries each remaining account once after an upstream failure. Every new client request starts with the preferred account; upstream `Retry-After` is forwarded to the client rather than enforced by the proxy.
-
----
-
-## Configuration
-
-Most operators set stable `JWT_SECRET` and `OPENPROXY_ENCRYPTION_KEY` values and leave the rest at defaults. The dashboard password is a random value generated on first boot (see `INITIAL_PASSWORD` below).
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `JWT_SECRET` | `openproxy-default-secret-change-me` | Sign the dashboard session cookie. **Change in production.** |
-| `OPENPROXY_ENCRYPTION_KEY` | _unset_ | Encrypt provider credentials in SQLite. Keep it stable across restarts and backups. |
-| `INITIAL_PASSWORD` | _random, generated once_ | First-login password when no saved hash exists. When unset, a random password is generated at first boot and **printed once in the startup banner** (`$DATA_DIR/initial_password` is persisted so it stays stable). Reset it anytime with `openproxy auth reset-password`. |
-| `DATA_DIR` | `~/.openproxy` | Where `openproxy.sqlite`, data, and logs live. |
-| `PORT` | `4623` | HTTP listen port. |
-| `HOSTNAME` | `127.0.0.1` | Bind host. Set `0.0.0.0` to expose on LAN. |
-| `BASE_URL` | `http://localhost:4623` | Internal base URL for cloud-sync jobs. |
-| `CLOUD_URL` | _unset_ | Cloud-sync endpoint. Leave unset to disable cloud sync. |
-| `API_KEY_SECRET` | _auto-generated, persisted_ | HMAC secret for generated API keys. When unset, a random secret is generated at first startup and persisted to `$DATA_DIR/api_key_secret`. |
-| `MACHINE_ID_SALT` | `endpoint-proxy-salt` | Salt for the stable machine-ID hash. |
-| `AUTH_COOKIE_SECURE` | `false` | Force `Secure` flag on the auth cookie. Set `true` behind HTTPS. |
-| `REQUIRE_API_KEY` | `false` | Reject `/v1/*` requests without `Authorization: Bearer …`. Recommended for any internet-exposed deploy. |
-| `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` | _unset_ | Forward outbound provider calls through an HTTP proxy. Lowercase variants also honored. |
-
-### TOML config profiles
-
-For advanced setups (multiple OpenProxy instances, remote server management) the CLI
-reads an optional TOML profile file at `~/.config/openproxy/config.toml`
-(`%APPDATA%\openproxy\config.toml` on Windows; override via `$OPENPROXY_CONFIG`).
-
-```toml
-default_profile = "work"
-
-[profiles.work]
-data_dir = "/home/me/proxy-data"
-url = "https://proxy.example.com"
-api_key_env = "MY_PROXY_KEY"        # read API key from this env var
-
-[profiles.local]
-data_dir = "/tmp/proxy-test"
-```
-
-Resolution precedence (highest first):
-1. Explicit CLI flags (`--data-dir`, `--url`, `--api-key`, `--profile`, `--port`)
-2. `OPENPROXY_*` environment variables
-3. Selected profile (`--profile <name>` or `default_profile`)
-4. Built-in defaults
-
-Profiles are created programmatically by `openproxy auth login` / `openproxy auth logout`
-— you do not normally need to hand-edit the TOML file.
-
-### Compiled-in constants
-
-The following are **not** hot-reloadable or config-file driven.
-They are compiled into the binary and require a rebuild to change:
-
-| Constant | Source file | Default |
-|---|---|---|
-| Stream stall timeout | `src/core/config/runtime_config.rs` | 360 s (6 min) |
-| First-chunk timeout | `src/core/config/runtime_config.rs` | 200 s |
-| Default max tokens | `src/core/config/runtime_config.rs` | 64 000 |
-| Retry config (502, 503, 504) | `src/core/config/runtime_config.rs` | 2–3 attempts, 2–3 s delay |
-| Provider catalog (models, aliases) | `src/core/model/provider_catalog.json` | ~70 providers, ~200 models |
-| OAuth provider registry | `src/oauth/providers.rs` | 18 built-in OAuth configs |
-| Gemini CLI version string | `src/core/config/app_constants.rs` | `0.34.0` |
-| GitHub Copilot versions | `src/core/config/app_constants.rs` | Chat `0.38.0`, VS Code `1.110.0` |
-| Default tool-name decoys | `src/core/config/app_constants.rs` | Claude Code / Antigravity tool sets |
-| Kiro suffixes & system prompt (retired) | `src/core/config/kiro_constants.rs` | `-agentic`, `-thinking` |
-| Thinking-mode signatures | `src/core/config/default_thinking_signature.rs` | Claude, AG, Vertex, Gemini CLI |
-
----
-
-## CLI reference
-
-```
-openproxy [FLAGS]                  # default: start server + open browser
-openproxy --port 4623 --no-open    # foreground, no browser
-openproxy --web-dir ./web/dist     # serve dashboard from disk (UI dev)
-openproxy --dashboard-sidecar-url http://127.0.0.1:4624
-                                   # reverse-proxy dashboard requests to a dev server
-
-openproxy --version
-openproxy provider list
-openproxy provider add <name> '<json-config>'
-                                   # e.g. openproxy provider add openai-paid \
-                                   #        '{"provider":"openai","apiKey":"sk-..."}'
-openproxy key list
-openproxy key add <name> <secret>  # provide your own secret
-openproxy key add <name> --auto    # let openproxy mint a fresh `op-…` secret
-openproxy quota list               # subcommands: list / get / reset / refresh
-openproxy usage summary            # subcommands: summary / daily / chart / history / …
-openproxy doctor                   # diagnose common config issues
-
-openproxy server start [--detach] [--no-open] [--port P]
-openproxy server status
-openproxy server stop
-openproxy server init              # mint the first admin API key
-```
-
-`openproxy --help` prints the full reference. Subcommands have their own `--help`.
-
-Output formats: human (default), `--robot` (line-delimited JSON for agent/automation use), `--quiet`.
-
----
-
-## API
-
-OpenAI-compatible chat completions:
-
-```http
-POST /v1/chat/completions
-Authorization: Bearer <api-key>
-Content-Type: application/json
-
-{
-  "model": "cc/claude-opus-4-6",
-  "messages": [{"role": "user", "content": "..."}],
-  "stream": true
-}
-```
-
-List available models:
-
-```http
-GET /v1/models
-Authorization: Bearer <api-key>
-```
-
-Health probe (no auth):
-
-```http
-GET /health   →   200 OK
-```
-
-Codex indexed web search is available as one direct remote MCP server. It uses
-the same OpenProxy API key, private configured Codex credentials upstream, and
-exposes `codex_web_search` in OpenCode:
+Routing uses the selected provider/model. If an upstream attempt fails, the
+proxy can try another **eligible account for that same provider/model** within
+the request; it does not switch to an unrelated provider or schedule timed
+generation retries. Invalid-request upstream responses (400/413/422) are
+terminal. A final upstream failure preserves its status, body, and
+`Retry-After` (apart from a documented 429 reset-message suffix). Streaming
+responses are not retried after downstream commitment.
+
+The proxy does not execute general client tools. `/v1/web/fetch` is a single
+configured-provider URL extraction request. `/v1/mcp` is a stateless,
+authenticated POST/JSON MCP server with one wire-level tool, `search` (shown
+as `codex_web_search` by OpenCode). It needs a configured Codex account and
+uses Codex's standalone indexed-search endpoint, **not** a Responses
+generation call. It accepts `query` and optional `response_length` (`short`,
+`medium`, `long`). The server supports MCP protocol version `2025-11-25`;
+it has no MCP sessions or SSE transport. Native Codex `web_search` in
+generation requests is rejected; configure the MCP endpoint instead:
 
 ```json
 {
@@ -392,140 +143,65 @@ exposes `codex_web_search` in OpenCode:
       "url": "http://127.0.0.1:4623/v1/mcp",
       "enabled": true,
       "oauth": false,
-      "headers": { "Authorization": "Bearer <api-key>" },
+      "headers": { "Authorization": "Bearer <openproxy-api-key>" },
       "timeout": 30000
     }
   }
 }
 ```
 
-The tool accepts `query` and optional `response_length` (`short`, `medium`, or
-`long`). It calls Codex's standalone search index, not a Responses generation
-model. Direct Codex `web_search` tools on chat/Responses routes are rejected.
+Removed backends (Kiro, Cursor as a **provider**, Windsurf, Grok Web and Grok
+CLI) are not supported by this fork. This does not prevent using a client
+such as Cursor against a compatible proxy endpoint, or using the separate
+xAI API-key provider. Legacy saved configuration is retained for round-trip
+compatibility, not reactivated.
 
-The dashboard at `/` is the same authenticated API surface in HTML form. Admin endpoints live under `/api/*` and use the dashboard session cookie.
+## Configuration and CLI
 
----
+| Setting | Default / effect |
+|---|---|
+| `HOSTNAME`, `PORT` | `127.0.0.1`, `4623` for local runs; Compose listens inside the container on `0.0.0.0` but publishes only to host loopback. |
+| `DATA_DIR` | `~/.openproxy` on typical Unix installs; contains `openproxy.sqlite`, keys, and backups. Keep it backed up and private. |
+| `JWT_SECRET` | Random per process when unset. Set a stable, strong value so dashboard sessions survive restarts. |
+| `OPENPROXY_ENCRYPTION_KEY` | Unset means **credentials are stored unencrypted**. Set a stable strong key before adding credentials, and retain it for restores. |
+| `INITIAL_PASSWORD` | If unset on a fresh install, a random password is generated, stored under the data directory, and printed at first startup. |
+| `API_KEY_SECRET` | Random and persisted under the data directory when unset; protects generated API keys. |
+| `AUTH_COOKIE_SECURE` | Set `true` when serving the dashboard over HTTPS. |
+| `TRUST_PROXY` | Set `true` only behind a trusted reverse proxy that controls forwarded headers. |
+| `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` | Optional outbound provider proxy settings. |
 
-## Architecture
-
-```
-┌─────────────────────────────────────────────┐
-│ openproxy  (single binary, port 4623)      │
-│                                             │
-│  /            embedded web dashboard       │
-│               (Astro static via rust-embed)│
-│                                             │
-│  /v1/*        OpenAI-compatible API        │
-│  /v1/mcp      Codex web search MCP         │
-│  /api/*       admin / dashboard data       │
-│  /codex/*     Codex OAuth helper           │
-│                                             │
-│  format translation     ─┤                  │
-│  quota tracking         ─┼─→ provider HTTP │
-│  account fallback       ─┘                  │
-└─────────────────────────────────────────────┘
-                                                  │
-                                                  ↓
-                          [ provider APIs: Anthropic, OpenAI, GLM, ... ]
-```
-
-Stack: Rust 1.76+, axum 0.8, hyper 1, rusqlite (bundled), Astro 4 (static, embedded), React 19, Tailwind. Storage: SQLite (`openproxy.sqlite`) with legacy JSON import on first run.
-
----
-
-## Build from source
-
-Requires Node ≥ 20.3 and `pnpm` (`corepack enable && corepack prepare pnpm@10.33.2 --activate`, or `npm i -g pnpm`).
+The persisted settings `requireApiKey` and `requireLogin` default to **true**
+on fresh installs. `REQUIRE_API_KEY` is **not** an environment switch. Use
+dashboard settings for policy changes; do not expose an unauthenticated
+instance to the network. Compose loads `.env.prod` explicitly; a local binary
+does **not** automatically read `.env` files, so export its environment before
+starting it.
 
 ```bash
-git clone https://github.com/quangdang46/openproxy.git
-cd openproxy
-
-pnpm --dir web install
-pnpm --dir web run build
-
-cargo build --release --locked
-./target/release/openproxy
+openproxy --help
+openproxy provider list            # configured connections in the local DB
+openproxy models list              # local model catalog
+openproxy --robot schema stability # additive-only openproxy.v1.* envelopes
+openproxy --robot doctor
+openproxy server status
 ```
 
-UI iteration without rebuilding the binary:
+Local provider/key/model commands work against the data directory. The
+`settings`, `chat`, and `logs` CLI commands can talk to a running server via
+`--url` and `--api-key` (or `OPENPROXY_API_KEY`); `provider apply` is a local
+database operation, not a remote API call. `openproxy --robot server init` can
+mint an initial admin key **before** first startup on an empty data directory;
+store that secret privately and do not use `--force` on existing data. See
+`openproxy <command> --help` and the
+[agent setup skill](.agents/skills/openproxy/SKILL.md) for more CLI details
+(note that its installer path currently targets upstream).
 
-```bash
-pnpm --dir web run build
-cargo run -- --web-dir ./web/dist
-```
+## Development and provenance
 
-UI live-reload via the Astro dev server:
-
-```bash
-# Terminal 1
-pnpm --dir web run dev   # → http://127.0.0.1:4624
-
-# Terminal 2
-cargo run -- --port 4625 --data-dir ~/.openproxy-dev --dashboard-sidecar-url http://127.0.0.1:4624
-```
-
-Headless build (no embedded dashboard, smaller binary):
-
-```bash
-cargo build --release --locked --no-default-features
-# Requires --web-dir or --dashboard-sidecar-url at runtime.
-```
-
----
-
-## Deployment
-
-### Docker Compose (production)
-
-The repository's `docker-compose.yml` is the production deployment. It keeps
-the database, backups, logs, password hash, and encrypted OAuth credentials in
-the named `openproxy-prod-data` volume. Create `.env.prod` once, set strong
-stable values for `JWT_SECRET` and `OPENPROXY_ENCRYPTION_KEY`, then run:
-
-```bash
-cp .env.example .env.prod
-# Edit .env.prod and replace the example authentication/encryption values.
-docker compose up -d --build
-docker compose ps
-curl -sS http://127.0.0.1:4623/health
-```
-
-Use `docker compose down` when stopping the service; do not add `--volumes` if
-the persistent configuration and provider credentials must be retained.
-Container defaults: `HOSTNAME=0.0.0.0`, `PORT=4623`, `DATA_DIR=/app/data`.
-The dashboard is embedded — no separate web volume is needed.
-
-### Behind a reverse proxy
-
-For internet-exposed deploys: set `REQUIRE_API_KEY=true`, `AUTH_COOKIE_SECURE=true`, terminate TLS at the proxy, and forward only `/v1/*` if you don't need the dashboard accessible publicly.
-
----
-
-## Troubleshooting
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| `EADDRINUSE` on `4623` | Port in use | Check the owner with `ss -ltnp 'sport = :4623'`; run development on `4625` or `4626`. |
-| Dashboard shows blank page | Embedded asset not hashed correctly | Hard reload (`Ctrl+Shift+R`); check `/health` returns 200 |
-| OAuth "callback failed" | Browser blocked the redirect | Retry from the dashboard's `Providers → Reconnect` |
-| 401 on `/v1/chat/completions` | Wrong API key | Copy fresh from dashboard. Header: `Authorization: Bearer <key>` |
-| Quota exhausted message | Subscription / API limit hit | Configure another account for the same provider and model |
-| `cargo build` fails with "web/dist not built" | Embedded build needs the dashboard | `(cd web && pnpm install --frozen-lockfile && pnpm run build)` first |
-| First login password rejected | Wrong dashboard password | If you set `INITIAL_PASSWORD`, check `.env.prod` is loaded. Otherwise the password was generated at first boot — look for "Initial dashboard password" in the startup banner or run `openproxy auth reset-password --show` |
-
-
----
-
-## Acknowledgments
-
-Built on the work of others:
-
-- **CLIProxyAPI** — Go implementation that inspired the architecture.
-
----
-
-## License
+Rust 2024, axum, SQLite WAL, and an embedded Astro 5 / React 19 dashboard.
+For development details see [AGENTS.md](AGENTS.md); for supported routes and
+product boundaries see [contracts/lean-proxy.md](contracts/lean-proxy.md).
+This fork is an independent product path, not a promise of upstream feature
+parity. Original project: [quangdang46/openproxy](https://github.com/quangdang46/openproxy).
 
 MIT — see [LICENSE](LICENSE).
