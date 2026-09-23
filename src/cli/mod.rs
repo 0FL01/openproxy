@@ -31,7 +31,6 @@ pub mod runtime;
 pub mod schema;
 pub mod server;
 pub mod settings;
-pub mod tool;
 pub mod translator;
 
 #[cfg(test)]
@@ -177,11 +176,6 @@ pub enum Command {
     Models {
         #[command(subcommand)]
         cmd: models::ModelsCmd,
-    },
-    /// Manage retained CLI-tool integrations (claude, codex, continue, opencode).
-    Tool {
-        #[command(subcommand)]
-        cmd: tool::ToolCmd,
     },
     /// Translate or pass requests through the format translator.
     Translator {
@@ -677,14 +671,6 @@ impl Cli {
                 Command::Chat { cmd } => {
                     let resolved = config::ResolvedConfig::resolve(overrides)?;
                     let exit = rt.block_on(chat::run(cmd, &resolved, ctx))?;
-                    if exit != 0 {
-                        std::process::exit(exit);
-                    }
-                    Ok(())
-                }
-                Command::Tool { cmd } => {
-                    let resolved = config::ResolvedConfig::resolve(overrides)?;
-                    let exit = rt.block_on(tool::run(cmd, &resolved, ctx))?;
                     if exit != 0 {
                         std::process::exit(exit);
                     }

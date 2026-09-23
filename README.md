@@ -64,7 +64,7 @@ server on port `4625` with separate data under `~/.openproxy-dev`, use
 `./scripts/dev.sh` after building the dashboard. Rebuild the dashboard after
 changes to `web/src`.
 
-## Configure a provider and OpenCode
+## Configure a provider and client
 
 1. Sign in to the dashboard at `http://127.0.0.1:4623/`. Its **Endpoint** page
    manages API keys; create or select a key for your client.
@@ -74,16 +74,14 @@ changes to `web/src`.
 3. On that provider's **Available Models** section, disable models you do not
    want offered, restore them from **Disabled models**, or add a custom model
    ID. These choices are stored in SQLite, not in the built dashboard assets.
-4. Go to **CLI Tools → OpenCode** (`/dashboard/cli-tools/opencode`). Select a
-   key and models, choose the active model, and **Apply**. Use **Manual Config**
-   if OpenCode is on another machine or cannot be detected locally.
+4. Configure your client directly: use `http://127.0.0.1:4623/v1` as its
+   OpenAI-compatible base URL, an OpenProxy API key, and a model ID from
+   `/v1/models`. OpenProxy does not read or write client configuration files.
 
-The model picker shares the provider page's available-model logic: enabled
-catalog/discovered models and custom rows, excluding disabled models. For
-automatic `/v1/models` discovery in an existing aggregate OpenCode provider
-named `ludka2`, see [the separate OpenCode plugin](plugins/README.md). The
-dashboard's OpenCode config instead uses provider ID `openproxy`; its Apply
-action does not install that plugin.
+For automatic OpenCode model discovery, configure the aggregate provider as
+`ludka2` and install [the separate OpenCode plugin](plugins/README.md). The
+plugin fetches `/v1/models`; it is independent of client configuration and
+does not write JSONC to disk.
 
 Other clients that accept an OpenAI-compatible endpoint can use
 `http://127.0.0.1:4623/v1` as their base URL and an OpenProxy API key. Select a

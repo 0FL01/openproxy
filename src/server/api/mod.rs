@@ -2,7 +2,6 @@ pub mod admin_items;
 pub mod admission;
 mod auth;
 pub mod chat;
-pub mod cli_tools;
 pub mod cloud_credentials;
 pub mod cloud_sync;
 pub mod codex_web_mcp;
@@ -184,7 +183,6 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .route("/api/keys", post(create_key_api))
         .route("/api/keys/{id}", delete(delete_key_api))
         .route("/api/keys/{id}", put(update_key_api))
-        .merge(cli_tools::routes())
         .merge(quota_auto_ping::routes())
         .merge(db_backups::routes())
         .merge(models_disabled::routes())

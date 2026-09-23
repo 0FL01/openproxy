@@ -1,4 +1,4 @@
-//! M5 CLI integration tests — tool / translator.
+//! M5 CLI integration tests — translator.
 //!
 //! Exercises the `openproxy` binary against a wiremock server and asserts the
 //! `--robot` JSON envelopes. We hit one happy-path per subcommand group; the
@@ -78,91 +78,6 @@ fn parse_robot(stdout: &[u8]) -> Value {
     serde_json::from_str(s.trim()).unwrap_or_else(|e| {
         panic!("invalid robot envelope: {e}\nraw: {s}");
     })
-}
-
-// ─── tool ───────────────────────────────────────────────────────────────────
-
-#[tokio::test(flavor = "multi_thread")]
-async fn tool_list_emits_envelope() {
-    let server = boot_server().await;
-    Mock::given(method("GET"))
-        .and(path("/api/cli-tools"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "tools": [
-                {"name": "provider-list", "description": "List providers", "category": "provider"},
-                {"name": "key-list",      "description": "List keys",      "category": "key"},
-            ],
-        })))
-        .mount(&server)
-        .await;
-
-    let out = op(&server, &["--robot", "tool", "list"]);
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let env = parse_robot(&out.stdout);
-    assert_eq!(env["schema"], "openproxy.v1.tool.list");
-    assert_eq!(env["data"]["tools"].as_array().map(Vec::len), Some(2));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn tool_apply_dry_run_does_not_call_server() {
-    // No mock for POST /api/cli-tools/claude-settings — if the binary
-    // tries to hit it, wiremock will return 404 and we'll see a failure.
-    let server = boot_server().await;
-    let out = op(
-        &server,
-        &[
-            "--robot",
-            "tool",
-            "apply",
-            "claude",
-            "--model",
-            "claude-sonnet-4",
-            "--api-key",
-            "op_test",
-            "--endpoint",
-            "http://router.example",
-            "--dry-run",
-        ],
-    );
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let env = parse_robot(&out.stdout);
-    assert_eq!(env["schema"], "openproxy.v1.tool.apply.dry_run");
-    assert_eq!(env["data"]["path"], "/api/cli-tools/claude-settings");
-    assert_eq!(
-        env["data"]["body"]["env"]["ANTHROPIC_BASE_URL"],
-        "http://router.example"
-    );
-    assert_eq!(
-        env["data"]["body"]["env"]["ANTHROPIC_AUTH_TOKEN"],
-        "op_test"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn tool_revert_calls_delete() {
-    let server = boot_server().await;
-    Mock::given(method("DELETE"))
-        .and(path("/api/cli-tools/codex-settings"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"reverted": true})))
-        .mount(&server)
-        .await;
-
-    let out = op(&server, &["--robot", "tool", "revert", "codex"]);
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let env = parse_robot(&out.stdout);
-    assert_eq!(env["schema"], "openproxy.v1.tool.revert");
 }
 
 // ─── translator ─────────────────────────────────────────────────────────────

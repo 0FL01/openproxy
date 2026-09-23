@@ -78,13 +78,12 @@ runs Rust library tests on Ubuntu. `astro check` is currently advisory in CI.
 
 ## Core Product Surfaces (TOP PRIORITY)
 
-These 3 surfaces ARE the product. Everything else is optional. They must be flawless, reliable, and mutually consistent — always prioritize regressions and improvements here:
+These surfaces ARE the product. Everything else is optional. They must be flawless, reliable, and mutually consistent — always prioritize regressions and improvements here:
 
 1. **Providers page** — `/dashboard/providers/<provider>` (e.g. kilocode): user controls Available Models (disable/enable/custom). Configuration is user data, persisted in SQLite — must survive binary rebuilds/updates.
-2. **CLI tools config** — `/dashboard/cli-tools/opencode` (opencode is the primary client).
-3. **`web/src/shared/components/ModelSelectModal.tsx`** — the single model-picker used everywhere; must exactly mirror the provider page's Available Models (same disabled map + custom rows + catalog merge). Any change to model-list logic MUST be applied consistently to both the provider page and this modal.
+2. **OpenCode model discovery** — `/v1/models` and the supported `plugins/openproxy-models.js` plugin for the aggregate `ludka2` provider.
 
-Core workflow that must never break: configure provider → customize available models → select models for opencode CLI config.
+Core workflow that must never break: configure provider → customize available models → create an OpenProxy API key → configure the client's base URL, key, and model directly in that client.
 
 ## OpenCode Model Discovery
 - `plugins/openproxy-models.js` is the supported fetch path for the aggregate `ludka2` provider; OpenCode auto-loads its installed copy from `~/.config/opencode/plugins/` and fetches `/v1/models` at startup.

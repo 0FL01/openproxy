@@ -193,7 +193,7 @@ OAuth providers (`openproxy provider oauth …`) require a one-time browser danc
 - API-key providers wherever possible.
 - If the user has a graphical session, direct them to the dashboard's **Providers → Reconnect** flow at `http://127.0.0.1:4623`.
 
-## 5 · Wire a CLI tool into the proxy
+## 5 · Configure an AI client manually
 
 Most AI CLIs accept an OpenAI-compatible base URL and a bearer token:
 
@@ -203,7 +203,7 @@ Most AI CLIs accept an OpenAI-compatible base URL and a bearer token:
 | Codex CLI | env `OPENAI_BASE_URL` | `http://127.0.0.1:4623` |
 | Claude Code | `~/.claude/config.json` → `anthropic_api_base` | `http://127.0.0.1:4623/v1` |
 
-The bearer is the admin key captured in step 2, or any key minted via `openproxy key add`. OpenProxy also has a `tool` subcommand (`openproxy tool …`) that can apply retained settings programmatically — run `openproxy tool --help` to see the supported matrix in the installed binary.
+Use the admin key captured in step 2 or a key minted via `openproxy key add` as the bearer. Get supported model IDs from the authenticated `/v1/models` endpoint and configure the URL, key, and model in the client itself; OpenProxy does not edit client config files.
 
 ## 6 · Verifications
 

@@ -23,7 +23,7 @@ interface ModelRowProps {
   isTesting?: boolean;
   caps?: ModelCaps | null;
   thinkingSuffix?: string;
-  /** Favorite (star) state + toggle, shared with ModelSelectModal. */
+  /** Favorite (star) state + toggle. */
   isFavorite?: boolean;
   onToggleFavorite?: () => void;
 }

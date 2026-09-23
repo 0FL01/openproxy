@@ -49,13 +49,6 @@ export const SKILLS: Skill[] = [
     icon: "cloud",
   },
   {
-    id: "openproxy-cli-tools",
-    name: "CLI Tools",
-    description: "Wire Claude Code, Codex, Cline, Continue, Roo, and more into OpenProxy with one-click configuration.",
-    endpoint: null,
-    icon: "terminal",
-  },
-  {
     id: "openproxy-rtk",
     name: "RTK Token Compression",
     description: "Reduce input tokens by 20-40% via runtime token compression of tool-call results. Lower latency and cost on every request.",

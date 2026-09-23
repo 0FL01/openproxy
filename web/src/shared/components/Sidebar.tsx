@@ -34,7 +34,6 @@ const navItems: NavItem[] = [
   { href: "/dashboard/db-backups", label: "DB Backups", icon: "backup" },
   { href: "/dashboard/logs", label: "Application Logs", icon: "receipt_long" },
   { href: "/dashboard/quota", label: "Quota Tracker", icon: "data_usage" },
-  { href: "/dashboard/cli-tools", label: "CLI Tools", icon: "terminal" },
 ];
 
 const debugItems: NavItem[] = [

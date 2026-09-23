@@ -1,8 +1,7 @@
 // Single source of truth for "Available Models" on a provider.
 //
-// Both the provider detail page (ProviderDetailPageClient) and the model
-// picker (ModelSelectModal) must show an IDENTICAL list. They do so by
-// consuming `buildAvailableModels` (pure) and `useAvailableModels` (hook).
+// The provider detail page (ProviderDetailPageClient) consumes
+// `buildAvailableModels` (pure) and `useAvailableModels` (hook).
 //
 // The merged list is: catalog models + live-fetched models (kilo free-models,
 // opencode-zen / openrouter / opencode fetchers) + user custom/legacy-alias
@@ -291,9 +290,8 @@ async function saveFreeOnly(alias: string, value: boolean): Promise<void> {
 // Backend contract:
 //   GET  /api/models/favorites → { favorites: { [alias]: string[] } }
 //   PUT  /api/models/favorites  → { alias, favorites: string[] }
-// Module-level singleton so the multi-provider ModelSelectModal and the
-// single-provider ProviderDetailPageClient share ONE cache and update
-// instantly. Both key favorites by getProviderAlias(providerId).
+// Module-level singleton for provider-page favorites. Favorites are keyed by
+// getProviderAlias(providerId).
 
 let _favorites: Record<string, string[]> = {};
 const _favListeners = new Set<() => void>();

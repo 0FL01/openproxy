@@ -1,5 +1,3 @@
-pub mod cli_tool_tests;
-
 #[test]
 fn direct_route_ignores_legacy_cooldown_fields() {
     use std::collections::HashSet;

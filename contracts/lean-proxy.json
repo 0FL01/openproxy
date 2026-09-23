@@ -658,7 +658,6 @@
     "src/server/api/mod.rs:routes",
     "src/server/api/v1_models.rs:build_models_list",
     "web/src/shared/models/availableModels.ts:buildAvailableModels",
-    "web/src/shared/components/ModelSelectModal.tsx",
     "plugins/openproxy-models.js"
   ],
   "request_attempt_logging": {

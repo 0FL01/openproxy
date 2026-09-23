@@ -32,11 +32,11 @@ the planner unchanged; incompatible protocol pairs use the registered translator
 
 ## Product and security invariants
 
-The following chain is one contract and must remain consistent:
+The following provider/model-discovery chain is one contract and must remain consistent:
 
-`ProviderDetailPageClient/useAvailableModels` → `buildAvailableModels` → `ModelSelectModal` → OpenCode tool configuration → `/v1/models` → `plugins/openproxy-models.js`.
+`ProviderDetailPageClient/useAvailableModels` → `buildAvailableModels` → `/v1/models` → `plugins/openproxy-models.js`.
 
-It preserves user custom/enabled/disabled models and canonical `opencode.source`. It also preserves TLS, SSRF protection tied to the actual connection, encrypted credentials, API/dashboard authentication, bounded audit behavior, provider-native cache fields/usage, required continuation state, and HTTP connection pooling.
+It preserves user custom/enabled/disabled models and canonical `opencode.source`. Client configuration is user-owned: OpenProxy does not inspect or edit external CLI configuration files. This also preserves TLS, SSRF protection tied to the actual connection, encrypted credentials, API/dashboard authentication, bounded audit behavior, provider-native cache fields/usage, required continuation state, and HTTP connection pooling.
 
 The `openproxy.v1.*` namespace remains additive-only. Retired behavior is not assigned a new meaning under an existing field.
 

@@ -12,7 +12,7 @@
 
 Удаляй ненужную работу до её оптимизации: Kiro semantic repair/history replay, глобальный Claude header replay, завершённые token-keyed caches и независимые generation retry loops. Не заменяй их новым общим cache framework. Сохрани HTTP connection reuse, корректную OAuth singleflight coordination, security state, достоверные model metadata и необходимый provider continuation protocol.
 
-Не обрезай prompt/tools и не меняй присланную историю. Не ломай providers → Available Models → ModelSelectModal → OpenCode config/discovery; `opencode.source` и пользовательские custom/enabled/disabled models обязательны. `openproxy.v1.*` — additive-only: для удаления старой политики/настройки требуется описанная миграция/депрекация, а не новый смысл под старым полем. Административный UI не удаляется вместе с optional BasicChat.
+Не обрезай prompt/tools и не меняй присланную историю. Сохраняй providers → Available Models → `/v1/models` → OpenCode model discovery; `opencode.source` и пользовательские custom/enabled/disabled models обязательны. Внешние CLI конфиги пользователь настраивает сам: не добавляй управление ими в proxy. `/v1/mcp` остаётся отдельным stateless Codex web-search инструментом. `openproxy.v1.*` — additive-only: не меняй смысл существующих полей. Административный UI не удаляется вместе с optional BasicChat.
 
 Не добавляй sleep/retry после начала ответа; учти единый account/auth attempt budget. Не отключай TLS/SSRF/шифрование/auth/аудит молча. Лёгкий неблокирующий metadata logging имеет явные ограничения durability/overflow; lossless durable logging не обещает zero-wait.
 

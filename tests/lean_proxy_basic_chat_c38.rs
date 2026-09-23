@@ -1,10 +1,10 @@
 //! C38: the optional BasicChat demo surface is gone from the lean product.
 //!
 //! The proxy must not grow a second chat/harness UI with its own history and
-//! attachments. Providers, Available Models, the shared model picker, OpenCode
-//! discovery/config, and the backend dashboard-chat route (also serving the
-//! `openproxy chat` CLI) stay intact; browser `basic-chat.*` localStorage data
-//! is never deleted by this change.
+//! attachments. Providers, Available Models, OpenCode model discovery, and the
+//! backend dashboard-chat route (also serving the `openproxy chat` CLI) stay
+//! intact; browser `basic-chat.*` localStorage data is never deleted by this
+//! change.
 
 use std::path::PathBuf;
 
@@ -68,20 +68,14 @@ fn protected_product_surfaces_stay_intact() {
         providers.contains("Available Models") || providers.contains("available"),
         "providers page must keep Available Models"
     );
-    // 2. Single shared model picker.
-    let picker = read_rel("shared/components/ModelSelectModal.tsx");
-    assert!(
-        picker.contains("opencode") || picker.contains("source"),
-        "ModelSelectModal must keep discovery metadata"
-    );
-    // 3. OpenCode discovery path.
+    // 2. OpenCode discovery path.
     assert!(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("plugins/openproxy-models.js")
             .exists(),
         "OpenCode models plugin must stay"
     );
-    // 4. Backend dashboard-chat route stays: it also serves the CLI
+    // 3. Backend dashboard-chat route stays: it also serves the CLI
     // (`src/cli/chat.rs`), not just the removed demo page.
     let api = std::fs::read_to_string(
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/server/api/mod.rs"),
@@ -98,7 +92,7 @@ fn protected_product_surfaces_stay_intact() {
         cli.contains("/api/dashboard/chat/completions"),
         "CLI chat consumer must keep working"
     );
-    // 5. Dashboard layout has no demo-chat special casing left.
+    // 4. Dashboard layout has no demo-chat special casing left.
     let layout = read_rel("shared/components/layouts/DashboardLayout.tsx");
     assert!(
         !layout.contains("basic-chat"),

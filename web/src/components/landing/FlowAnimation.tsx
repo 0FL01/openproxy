@@ -70,7 +70,7 @@ export default function FlowAnimation() {
         <div className="absolute inset-0 rounded-full border border-[#f97815]/30 animate-ping opacity-20"></div>
       </div>
 
-      {/* CLI Tools - Left side */}
+      {/* Client apps - Left side */}
       <div className="absolute left-0 top-1/2 -translate-y-1/2 flex flex-col gap-7">
         {CLI_TOOLS.map((tool) => (
           <div
