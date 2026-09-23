@@ -293,17 +293,6 @@ export function getStatusColor(percentage: number): "green" | "yellow" | "red" {
 }
 
 /**
- * Get status emoji based on percentage
- * @param percentage - Remaining percentage (0-100)
- * @returns Emoji: "🟢" | "🟡" | "🔴"
- */
-export function getStatusEmoji(percentage: number): string {
-  if (percentage > 70) return "🟢";
-  if (percentage >= 30) return "🟡";
-  return "🔴"; // 0-29% including 0% (out of quota) - show red
-}
-
-/**
  * Calculate remaining percentage
  * @param used - Used amount
  * @param total - Total amount

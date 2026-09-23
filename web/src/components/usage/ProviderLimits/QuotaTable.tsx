@@ -62,8 +62,7 @@ function getColorClasses(remainingPercentage: number) {
     return {
       text: "text-green-600 dark:text-green-400",
       bg: "bg-green-500",
-      bgLight: "bg-green-500/10",
-      emoji: "🟢"
+      bgLight: "bg-green-500/10"
     };
   }
   
@@ -71,8 +70,7 @@ function getColorClasses(remainingPercentage: number) {
     return {
       text: "text-yellow-600 dark:text-yellow-400",
       bg: "bg-yellow-500",
-      bgLight: "bg-yellow-500/10",
-      emoji: "🟡"
+      bgLight: "bg-yellow-500/10"
     };
   }
   
@@ -80,8 +78,7 @@ function getColorClasses(remainingPercentage: number) {
   return {
     text: "text-red-600 dark:text-red-400",
     bg: "bg-red-500",
-    bgLight: "bg-red-500/10",
-    emoji: "🔴"
+    bgLight: "bg-red-500/10"
   };
 }
 
@@ -139,7 +136,9 @@ export default function QuotaTable({ quotas = [], compact = false }: QuotaTableP
                 {/* Model Name with Status Emoji */}
                 <td className={`${cellPad} w-[30%]`}>
                   <div className="flex items-center gap-1.5 min-w-0">
-                    <span className="text-[10px] shrink-0">{isBalance ? "💳" : colors.emoji}</span>
+                    <span
+                      className={`w-2 h-2 rounded-full shrink-0 ${isBalance ? "bg-text-muted" : colors.bg}`}
+                    />
                     <span className={`${nameText} font-medium text-text-primary truncate`}>
                       {quota.name}
                     </span>

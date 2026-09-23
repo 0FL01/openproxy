@@ -17,8 +17,7 @@ const getColorClasses = (remainingPercentage: number) => {
     return {
       text: "text-green-500",
       bg: "bg-green-500",
-      bgLight: "bg-green-500/10",
-      emoji: "🟢"
+      bgLight: "bg-green-500/10"
     };
   }
   
@@ -26,8 +25,7 @@ const getColorClasses = (remainingPercentage: number) => {
     return {
       text: "text-yellow-500",
       bg: "bg-yellow-500",
-      bgLight: "bg-yellow-500/10",
-      emoji: "🟡"
+      bgLight: "bg-yellow-500/10"
     };
   }
   
@@ -35,8 +33,7 @@ const getColorClasses = (remainingPercentage: number) => {
   return {
     text: "text-red-500",
     bg: "bg-red-500",
-    bgLight: "bg-red-500/10",
-    emoji: "🔴"
+    bgLight: "bg-red-500/10"
   };
 };
 
@@ -94,7 +91,7 @@ export default function QuotaProgressBar({
           {label}
         </span>
         <div className="flex items-center gap-1.5">
-          <span className="text-xs">{colors.emoji}</span>
+          <span className={cn("w-2 h-2 rounded-full shrink-0", colors.bg)} />
           <span className={cn("font-medium", colors.text)}>
             {remaining}%
           </span>
