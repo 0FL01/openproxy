@@ -26,7 +26,7 @@ unavailable — never as a pass.
 
 | Metric | Baseline | Final | Delta | Predeclared gate |
 |---|---|---|---|---|
-| TTFC p50 (µs) | 52,243 | 55,455 | +0.4% | noise 10% |
+| TTFC p50 (µs) | 55,243 | 55,455 | +0.4% | noise 10% |
 | TTFC p95 (µs) | 59,236 | 60,564 | +2.2% | regression 15% + 250 µs |
 | TTFC p99 (µs) | 62,261 | 64,683 | +3.9% | — |
 | Throughput (rps) | 151.22 | 149.21 | −1.3% | decrease 10% |

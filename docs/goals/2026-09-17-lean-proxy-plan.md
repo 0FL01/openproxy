@@ -2,7 +2,7 @@
 
 Status: complete
 Source: [user instruction](../AGENT-PROMPT.md), [checkpoint tracker](../CHECKPOINTS.json), and the user request of 2026-09-17 to execute every checkpoint iteratively on a new branch with commits after major changes
-Last updated: 2026-09-18
+Last updated: 2026-09-23
 
 ## Objective
 
@@ -42,28 +42,28 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Acceptance: Every checkpoint acceptance statement C15-C25 is met, including foreground/control-plane refresh migration before old cache removal and an evidence-backed disposition for C25.
   - Primary evidence: DB concurrency/cancellation tests, OAuth singleflight tests, catalog/project/onboarding/quota/health mock tests, and background-task lifecycle tests.
   - Status: verified
-  - Evidence: C15-C25 are complete. Database publication is cancellation-safe; every configured OAuth refresh caller uses active-only connection/generation coordination; completed token/quota caches are gone; model catalogs publish outside generation; Antigravity project/onboarding state is connection-scoped; default health probing and orphan breaker state are gone; quota auto-ping has no idle worker without an explicit eligible opt-in.
+  - Evidence: C15-C25 are complete. Database publication is cancellation-safe; every configured OAuth refresh caller uses active-only connection/generation coordination; completed token/quota caches are gone; model catalogs publish outside generation; Antigravity project/onboarding state is connection-scoped; default health probing and orphan breaker state are gone; quota auto-ping has no idle worker without an explicit eligible opt-in. A later C20 follow-up rejects a catalog response if the credentials used for its fetch no longer match the canonical connection.
 
 - R5: Reduce payload copies and bound all collected response, image, tool, and SSE state without changing valid wire semantics (C26-C34).
   - Source: `docs/CHECKPOINTS.json` C26-C34.
   - Acceptance: Every checkpoint acceptance statement C26-C34 is met; native streams remain streaming and valid golden payloads remain equivalent.
   - Primary evidence: Ownership/serialization instrumentation, byte-bound edge tests, all-chunk-boundary SSE tests, translator goldens, and allocation measurements.
-  - Status: pending
-- Evidence: C26-C33 are verified; C34 remains pending, so R5 is not verified.
+  - Status: verified
+  - Evidence: C26-C34 are done in `docs/CHECKPOINTS.json`; C34's focused delta tests verify valid output and bounded retention. The final combined workload measured allocations, but an isolated C34 allocation delta was not measured.
 
 - R6: Complete bounded logging/admission/runtime lifecycle and resolve optional product-surface checkpoints without harming the three core product surfaces (C35-C41).
   - Source: `docs/CHECKPOINTS.json` C35-C41.
   - Acceptance: Every required checkpoint is done and C37-C39/C41 are done or evidence-backed `not_applicable`; providers, Available Models, `ModelSelectModal`, and OpenCode discovery/config remain mutually consistent.
   - Primary evidence: Logging/admission/backup tests, measured SQLite experiment, dashboard/model-discovery tests, supported-feature builds, and dependency census.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: C35-C41 are done in `docs/CHECKPOINTS.json`; bounded logging/admission and backup tests, the C37 SQLite comparison (default retained), and dashboard/model-discovery gates are recorded in `docs/lean-proxy-results.md`.
 
 - R7: Publish final like-for-like acceptance evidence and close the tracker (C42).
   - Source: `docs/CHECKPOINTS.json` C42.
   - Acceptance: The same successful workload and logging contract are measured for baseline/final; all checkpoint states and dependencies are valid; `docs/lean-proxy-results.md` reports real values, limitations, rollback, and unavailable external-provider/OpenCode-harness checks without invented passes.
   - Primary evidence: C42 commands, final artifacts, full affected regression suite, clean diff/secret scan, and checkpoint-graph validation.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: C42 is done in `docs/CHECKPOINTS.json`; `bench/lean/baseline.json` and `bench/lean/final.json` record 410/410 successful requests/attempts and no regression gate tripped. `docs/lean-proxy-results.md` records verification and external-provider/harness limitations.
 
 ### Constraints
 
@@ -100,7 +100,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 ## Current State
 
 - Resolved: R1 / C00, R2 / C01-C02, R3 / C03-C14, R4 / C15-C25, and C26-C34 inside R5. Proxy-owned semantic/header/history replay, heuristic context policy, client-identity passthrough gating, all three executor temporal retry schedulers, successful-response legacy housekeeping, token-keyed completed refresh/quota results, generation-path remote catalog waits, both process-wide Antigravity project maps, request-scoped onboarding workers, default provider health probes, and the write-only circuit breaker are gone. C13 provides the single bounded request-scoped generation/account/auth planner; C16-C18 provide one active-only connection/generation refresh service used by every configured caller; C19-C20 publish immutable OpenCode and Codex model metadata outside generation; C21-C22 make project metadata and onboarding configured-connection lifecycle concerns; C23 makes Claude quota an uncached explicit control-plane read; C24 keeps liveness local and health diagnostics explicit/opt-in; C25 creates no quota auto-ping task without a saved matching connection opt-in and preserves proactive OAuth refresh separately. C26 moves parsed request JSON across the handler's sole-consumer boundary, C27 uses one bounded DefaultExecutor serialization for byte-identical account attempts, C28 removes transformed request JSON from executor response ownership, C29 bounds successful/protocol and diagnostic upstream body collection independently without collecting native chat SSE, C30A bounds only required image expansion with request-scoped decoded/encoded/final budgets and explicit pre-generation failure, C30B binds validated image addresses to the actual socket while preserving hostname/TLS verification and per-redirect validation, C31 bounds wire indices plus retained tool/text/reasoning state, C32 gives live text streams one bounded incremental framing contract without changing native bytes, C33 feeds completed frames incrementally into the forced accumulator without retaining raw SSE history, and C34 keeps Chat-to-Responses accumulation byte-equivalent with point mutation/push_str and frees completed buffers SSE history.
-- Last relevant evidence: C33 proves golden-equivalent Chat/Responses conversion from incremental frames at every byte split, long chunked streams, bare-JSON single-representation fallback, explicit 502 on truncation/oversized frames without partial success, and cancellation that drops the held upstream body. C31/C29/C32/C33 exact tests remain green; C34 proves 2000 text / 1000 tool / 500 reasoning deltas concatenate and free after done with parallel ordering preserved.
+- Checkpoint-local evidence: C33 proves golden-equivalent Chat/Responses conversion from incremental frames at every byte split, long chunked streams, bare-JSON single-representation fallback, explicit 502 on truncation/oversized frames without partial success, and cancellation that drops the held upstream body. C31/C29/C32/C33 exact tests remain green; C34 proves 2000 text / 1000 tool / 500 reasoning deltas concatenate and free after done with parallel ordering preserved. Final acceptance and its limits are in `docs/lean-proxy-results.md`.
 - Blocker: None; the prompt explicitly allows independent safe work when external harness/version evidence is unavailable.
 - Next: none — plan complete. See docs/lean-proxy-results.md.
 
@@ -149,10 +149,12 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-09-18: C31 passed after follow-up audit. Forced SSE collapse, Ollama/Gemini/Kiro/CommandCode registry paths, Responses/Messages compatibility, Kiro binary ordering, and Cursor full-response accumulators now validate non-negative bounded wire indices before allocation, preserve bounded deterministic order, and cap choices, calls, per-tool arguments, and total retained text/reasoning/tool state with checked growth. Forced Responses parse/final assembly share one budget; args-before-identity are preserved and missing identity at finish fails; recorded transform failure suppresses finish output. Unsupported indices, fake tool identity, unknown argument targets, and limit overflow fail explicitly; the forced collector returns 502 before commitment without JSON fallback masking, while committed translations terminate with a structured error. Exact-limit/out-of-order/repeated/Unicode goldens and cancellation remain valid; C32 is next.
 - 2026-09-18: C32 passed after follow-up audit. Added one bytes-first bounded SSE/line cursor with a 1 MiB positive-configurable incomplete-record limit, checked growth, monotonic scanning, complete-frame UTF-8, multiline fields, EOF dispatch, and tiny-tail capacity compaction. A single format-aware live dispatch now feeds usage/completion plus translation or dashboard consumers for all text protocols; CommandCode handles both NDJSON and its executor SSE envelope. Pivot stage two receives OpenAI payloads, non-stream EOF is flushed, collected Responses validates without marker sniffing, valid output precedes terminal failure, and explicit native Responses/Messages routes preserve exact bytes unless proxy-injected search items still require sanitization. Dashboard conversion keys off the resolved upstream format rather than a configurable provider name, and per-frame usage observation inspects only newly emitted output. Pre-commit overflow is 502, post-commit overflow is one terminal event, cancellation remains intact, and Codex plus binary Kiro/Cursor framing stay separate. C33 is next.
 - 2026-09-18: C33 passed. Forced SSE-to-JSON now feeds completed C32 frames incrementally into a request-local C31-bounded accumulator without retaining full raw SSE history. Wire bytes remain counted against the C29 success limit with declared-length early rejection; oversized, truncated, framing, and state failures are explicit pre-commit 502 without partial JSON or fallback masking. Bare non-SSE JSON uses only its short pre-first-frame prefix; cancellation drops the held upstream body and native streaming is unchanged. C34 is next.
+- 2026-09-18: C34-C42 passed; the checkpoint tracker records their individual results and `docs/lean-proxy-results.md` records the final acceptance and limitations. The C00-C42 goal is complete.
+- 2026-09-23: A held Codex catalog refresh exposed a C20 follow-up: changing credentials during the fetch could publish the old account's models under the new identity. The focused regression failed before the fix and passes after comparing the credentials actually used for the fetch with the canonical connection before publication.
 
 ## Completion
 
-- Resolved outcomes:
-- Commands and artifacts:
-- Constraint and diff-scope check:
-- Final status:
+- Resolved outcomes: R1-R7 verified; C00-C42 are complete in `docs/CHECKPOINTS.json`.
+- Commands and artifacts: `scripts/bench-lean` produced `bench/lean/{baseline,final}.json`; final focused and full-suite gates are recorded in `docs/lean-proxy-results.md`. The C20 follow-up was reproduced and verified with `cargo test -p openproxy --test lean_proxy_codex_c20 held_refresh_does_not_publish_models_for_replaced_credentials`.
+- Constraint and diff-scope check: C1-C8 remain in force; later product checkpoints and the separate README update are not part of the C00-C42 goal.
+- Final status: complete; no remaining checkpoint work. External generation/harness limitations remain as reported in `docs/lean-proxy-results.md`.
