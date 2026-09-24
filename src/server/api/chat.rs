@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;
 
+use tokio::time::Instant;
+
 use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::State;
@@ -958,17 +960,7 @@ async fn forward_with_provider_fallback(
     // once, then shares the bounded bytes across eligible account attempts.
     let mut default_prepared_body: Option<PreparedUpstreamBody> = None;
     let codex_supporters = if provider == "codex" {
-        let snapshot = state.db.snapshot();
-        let supporters = state.codex_models.cached_supporters(model, &snapshot);
-        if supporters.is_empty() {
-            return Err(ProviderAttemptError::new(
-                400,
-                format!(
-                    "Codex model {model} is not present in the published catalog or explicit configuration"
-                ),
-            ));
-        }
-        Some(supporters)
+        Some(codex_supporters_after_cold_wait(state, model).await?)
     } else {
         None
     };
@@ -1708,6 +1700,47 @@ async fn forward_with_provider_fallback(
                 continue;
             }
         }
+    }
+}
+
+/// Give the background Codex discovery a bounded chance to publish a cold
+/// account's models before declaring a previously selected model absent.
+async fn codex_supporters_after_cold_wait(
+    state: &AppState,
+    model: &str,
+) -> Result<HashSet<String>, ProviderAttemptError> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let snapshot = state.db.snapshot();
+        let supporters = state.codex_models.cached_supporters(model, &snapshot);
+        if !supporters.is_empty() {
+            return Ok(supporters);
+        }
+        let unpublished = snapshot.provider_connections.iter().any(|connection| {
+            connection.provider == "codex"
+                && connection.is_active()
+                && connection_has_credentials(connection)
+                && state
+                    .codex_models
+                    .published_for_connection(&snapshot, connection)
+                    .is_none()
+        });
+        if !unpublished {
+            return Err(ProviderAttemptError::new(
+                400,
+                format!(
+                    "Codex model {model} is not present in the published catalog or explicit configuration"
+                ),
+            ));
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(ProviderAttemptError::new(
+                503,
+                "Codex model catalog is still loading",
+            ));
+        }
+        tokio::time::sleep_until((now + Duration::from_millis(200)).min(deadline)).await;
     }
 }
 

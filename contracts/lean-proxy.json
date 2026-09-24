@@ -271,6 +271,7 @@
   "codex_catalog_publication": {
     "checkpoint": "C20",
     "generation_read": "atomic_immutable_per_connection_model_index",
+    "cold_unpublished_generation_wait_ms": 15000,
     "generation_remote_http": false,
     "generation_refresh_lock_wait": false,
     "unknown_cold_model_routes_arbitrary_account": false,

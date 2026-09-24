@@ -225,6 +225,93 @@ async fn known_chat_uses_published_inventory_while_forced_refresh_is_held() {
 }
 
 #[tokio::test]
+async fn cold_chat_waits_for_the_unpublished_account_without_routing_elsewhere() {
+    let release_refresh = Arc::new(Notify::new());
+    let catalog = MockUpstream::start([
+        ScriptedResponse::json(StatusCode::OK, catalog_payload(&[("gpt-other", false)])),
+        ScriptedResponse::json(StatusCode::OK, catalog_payload(&[("gpt-target", false)]))
+            .holding_eof(release_refresh.clone()),
+    ])
+    .await;
+    let generation = MockUpstream::start([ScriptedResponse::sse([concat!(
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"
+    )])])
+    .await;
+    let first = codex_connection("codex-first", 1);
+    let second = codex_connection("codex-second", 2);
+    let (_db, state) = state_with_catalog(
+        catalog.url("/backend-api/codex/models"),
+        generation.url("/backend-api/codex/responses"),
+        vec![first.clone(), second],
+        Vec::new(),
+    )
+    .await;
+    state
+        .codex_models
+        .refresh_connection(&state, &first, true)
+        .await
+        .expect("publish first account without the requested model");
+    let refresh_state = state.clone();
+    let refresh = tokio::spawn(async move {
+        refresh_state
+            .codex_models
+            .refresh_active(&refresh_state)
+            .await;
+    });
+    catalog.wait_for_requests(2).await;
+
+    let app = openproxy::build_app(state);
+    let pending = tokio::spawn({
+        let app = app.clone();
+        async move { post_codex(&app, "gpt-target").await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !pending.is_finished(),
+        "cold request must await publication"
+    );
+    assert_eq!(generation.request_count().await, 0);
+
+    release_refresh.notify_one();
+    refresh.await.expect("background catalog refresh");
+    let response = tokio::time::timeout(Duration::from_secs(2), pending)
+        .await
+        .expect("original request must resume")
+        .expect("cold request task");
+    assert_eq!(response.status(), StatusCode::OK);
+    drop(response);
+    assert_eq!(generation.request_count().await, 1);
+    assert_eq!(catalog.request_count().await, 2);
+
+    let absent = post_codex(&app, "gpt-absent").await;
+    assert_eq!(absent.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(generation.request_count().await, 1);
+    catalog.shutdown().await;
+    generation.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn unpublished_codex_catalog_times_out_without_generating() {
+    let catalog = MockUpstream::start([]).await;
+    let generation = MockUpstream::start([]).await;
+    let (_db, state) = state_with_catalog(
+        catalog.url("/backend-api/codex/models"),
+        generation.url("/backend-api/codex/responses"),
+        vec![codex_connection("codex-cold", 1)],
+        Vec::new(),
+    )
+    .await;
+
+    let response = post_codex(&openproxy::build_app(state), "gpt-target").await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(catalog.request_count().await, 0);
+    assert_eq!(generation.request_count().await, 0);
+    catalog.shutdown().await;
+    generation.shutdown().await;
+}
+
+#[tokio::test]
 async fn held_refresh_does_not_publish_models_for_replaced_credentials() {
     let release_refresh = Arc::new(Notify::new());
     let catalog = MockUpstream::start([ScriptedResponse::json(
