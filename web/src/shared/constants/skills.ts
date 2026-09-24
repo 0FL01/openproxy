@@ -48,13 +48,6 @@ export const SKILLS: Skill[] = [
     endpoint: null,
     icon: "cloud",
   },
-  {
-    id: "openproxy-rtk",
-    name: "RTK Token Compression",
-    description: "Reduce input tokens by 20-40% via runtime token compression of tool-call results. Lower latency and cost on every request.",
-    endpoint: null,
-    icon: "compress",
-  },
 ];
 
 export function getSkillRawUrl(id: string): string {
