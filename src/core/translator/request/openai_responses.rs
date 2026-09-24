@@ -61,23 +61,43 @@ fn coerce_arguments(value: Option<&Value>) -> String {
     }
 }
 
+/// Fixed markers for Responses media tool-output parts. The JS port stringifies
+/// these parts, which embeds base64 data URLs in the prompt as text and can
+/// overflow the target context (z.ai error 1261). Never echo client bytes or a
+/// client-supplied `type` here.
+const TOOL_IMAGE_OMITTED: &str = "[image omitted from tool output]";
+const TOOL_FILE_OMITTED: &str = "[file omitted from tool output]";
+const TOOL_CONTENT_OMITTED: &str = "[content omitted from tool output]";
+
+/// One `function_call_output.output` array element → chat tool-message text.
+fn tool_output_part_text(part: &Value) -> String {
+    match part {
+        Value::String(s) => s.clone(),
+        Value::Object(obj) => {
+            if let Some(t) = obj.get("text").and_then(Value::as_str) {
+                return t.to_string();
+            }
+            match obj.get("type").and_then(Value::as_str) {
+                Some("input_image") | Some("image_url") | Some("image") => {
+                    TOOL_IMAGE_OMITTED.to_string()
+                }
+                Some("input_file") | Some("file") => TOOL_FILE_OMITTED.to_string(),
+                _ => TOOL_CONTENT_OMITTED.to_string(),
+            }
+        }
+        other => serde_json::to_string(other).unwrap_or_else(|_| other.to_string()),
+    }
+}
+
 /// function_call_output.output must be a string — never null/object.
-/// Mirrors `coerceResponsesOutput` in responsesApi.js:60-77.
+/// Mirrors `coerceResponsesOutput` in responsesApi.js:60-77, except media
+/// array parts, which use `tool_output_part_text` instead of stringifying.
 fn coerce_output(content: Option<&Value>) -> String {
     match content {
         None => String::new(),
         Some(Value::Null) => String::new(),
         Some(Value::String(s)) => s.clone(),
-        Some(Value::Array(arr)) => arr
-            .iter()
-            .map(|c| {
-                if let Some(t) = c.get("text").and_then(Value::as_str) {
-                    t.to_string()
-                } else {
-                    serde_json::to_string(c).unwrap_or_else(|_| c.to_string())
-                }
-            })
-            .collect::<String>(),
+        Some(Value::Array(arr)) => arr.iter().map(tool_output_part_text).collect::<String>(),
         Some(v) => serde_json::to_string(v).unwrap_or_else(|_| v.to_string()),
     }
 }
@@ -101,21 +121,13 @@ pub fn coerce_responses_arguments(value: &Value) -> String {
 }
 
 /// JS parity (responsesApi.js coerceResponsesOutput): output must be a string;
-/// arrays join c.text (fallback: stringify each element).
+/// arrays join c.text. Unlike the JS port, media/unknown object parts become
+/// fixed markers (`tool_output_part_text`) — never megabytes of base64 text.
 pub fn coerce_responses_output(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
         Value::Null => String::new(),
-        Value::Array(arr) => arr
-            .iter()
-            .map(|c| {
-                if let Some(t) = c.get("text").and_then(Value::as_str) {
-                    t.to_string()
-                } else {
-                    serde_json::to_string(c).unwrap_or_else(|_| c.to_string())
-                }
-            })
-            .collect::<String>(),
+        Value::Array(arr) => arr.iter().map(tool_output_part_text).collect::<String>(),
         other => serde_json::to_string(other).unwrap_or_else(|_| other.to_string()),
     }
 }
@@ -1220,6 +1232,64 @@ mod tests {
         let fallback = messages[2]["tool_calls"][0]["id"].as_str().unwrap();
         assert!(fallback.starts_with("call_"), "fallback id: {fallback}");
         assert_eq!(messages[3]["content"], "");
+    }
+
+    #[test]
+    fn tool_output_media_is_never_serialized_as_text() {
+        // OpenCode's read tool + @ai-sdk/openai send an image inside
+        // function_call_output.output. Stringifying that part embeds the
+        // base64 data URL in the prompt as text and overflows the target
+        // context (z.ai error 1261 "Prompt exceeds max length").
+        let data_url = format!("data:image/png;base64,{}", "A".repeat(4096));
+        let mut body: Value = serde_json::json!({
+            "input": [
+                {"type": "function_call", "call_id": "c1", "name": "read", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "c1", "output": [
+                    {"type": "input_text", "text": "Image read successfully"},
+                    {"type": "input_image", "image_url": data_url.clone()}
+                ]},
+                {"type": "custom_tool_call_output", "call_id": "c2", "output": [
+                    {"type": "input_file", "filename": "doc.pdf", "file_data": data_url.clone()}
+                ]},
+                {"type": "function_call_output", "call_id": "c3", "output": [
+                    {"type": "video", "url": data_url.clone()},
+                    "plain"
+                ]}
+            ],
+            "model": "gpt-4"
+        });
+        openai_responses_to_chat_request("gpt-4", &mut body, false, None);
+        let messages = body.get("messages").unwrap().as_array().unwrap();
+        let image = messages[1]["content"].as_str().unwrap();
+        assert_eq!(
+            image,
+            format!("Image read successfully{TOOL_IMAGE_OMITTED}")
+        );
+        assert!(
+            !image.contains("base64") && !image.contains("data:image"),
+            "tool output leaked media bytes: {image}"
+        );
+        assert_eq!(messages[2]["content"], TOOL_FILE_OMITTED);
+        assert_eq!(
+            messages[3]["content"],
+            format!("{TOOL_CONTENT_OMITTED}plain")
+        );
+
+        // Chat → Responses coerces tool messages through the same helper.
+        let mut chat: Value = serde_json::json!({
+            "model": "gpt-4",
+            "messages": [
+                {"role": "tool", "tool_call_id": "c1", "content": [
+                    {"type": "text", "text": "done"},
+                    {"type": "image_url", "image_url": {"url": data_url.clone()}}
+                ]}
+            ]
+        });
+        chat_to_openai_responses_request("gpt-4", &mut chat, false, None);
+        assert_eq!(
+            chat["input"][0]["output"],
+            format!("done{TOOL_IMAGE_OMITTED}")
+        );
     }
 
     #[test]
