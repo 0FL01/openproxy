@@ -5,7 +5,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use openproxy::db::Db;
 use openproxy::server::state::AppState;
-use openproxy::types::{ApiKey, ProviderConnection, ProviderNode};
+use openproxy::types::{ApiKey, CustomModel, ProviderConnection, ProviderNode};
 use serde_json::json;
 use tempfile::tempdir;
 use tower::util::ServiceExt;
@@ -471,4 +471,92 @@ async fn responses_tool_history_uses_shared_translation() {
     let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(body["status"], "completed");
     assert_eq!(body["output"][0]["content"][0]["text"], "Complete");
+}
+
+#[tokio::test]
+async fn responses_tool_image_reaches_vision_chat_upstream() {
+    let url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/kL8AAAAASUVORK5CYII=";
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_partial_json(json!({
+            "messages": [
+                {"role": "assistant", "tool_calls": [{"id": "call_1"}]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "Image read successfully"},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "Attached media from tool result:"},
+                    {"type": "image_url", "image_url": {"url": url}}
+                ]}
+            ]
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "chatcmpl-image",
+            "model": "gpt-4o-mini",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "Image received"},
+                "finish_reason": "stop"
+            }]
+        })))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let state = seeded_state(
+        vec![provider_node(
+            "node-openai",
+            "compat",
+            &format!("{}/v1", upstream.uri()),
+        )],
+        vec![connection("conn-1", "node-openai", "upstream-key")],
+    )
+    .await;
+    state
+        .db
+        .update(|db| {
+            db.custom_models.push(CustomModel {
+                provider_alias: "node-openai".into(),
+                id: "gpt-4o-mini".into(),
+                r#type: "llm".into(),
+                name: None,
+                extra: BTreeMap::from([(
+                    "opencode".into(),
+                    json!({"modalities": {"input": ["text", "image"], "output": ["text"]}}),
+                )]),
+            });
+        })
+        .await
+        .unwrap();
+    let response = openproxy::build_app(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("authorization", "Bearer valid-bearer")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "compat/gpt-4o-mini",
+                        "input": [
+                            {"type": "function_call", "call_id": "call_1", "name": "read", "arguments": "{}"},
+                            {"type": "function_call_output", "call_id": "call_1", "output": [
+                                {"type": "input_text", "text": "Image read successfully"},
+                                {"type": "input_image", "image_url": url}
+                            ]}
+                        ],
+                        "stream": false
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["output"][0]["content"][0]["text"], "Image received");
 }

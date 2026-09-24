@@ -89,6 +89,38 @@ fn tool_output_part_text(part: &Value) -> String {
     }
 }
 
+/// Chat tool replies are text-only. A supported image from a Responses tool
+/// result can instead follow the tool reply as a multimodal user message.
+fn tool_output_image(part: &Value) -> Option<Value> {
+    if part.get("type").and_then(Value::as_str) != Some("input_image") {
+        return None;
+    }
+    let url = part.get("image_url").and_then(Value::as_str)?;
+    let (_, data) = url.strip_prefix("data:image/")?.split_once(";base64,")?;
+    if data.is_empty() {
+        return None;
+    }
+    let mut image = serde_json::json!({"type": "image_url", "image_url": {"url": url}});
+    if let Some(detail) = part.get("detail").and_then(Value::as_str) {
+        image["image_url"]["detail"] = Value::String(detail.to_string());
+    }
+    Some(image)
+}
+
+fn append_tool_images(messages: &mut Value, pending: &mut Vec<Value>) {
+    if pending.is_empty() {
+        return;
+    }
+    let mut content = vec![serde_json::json!({
+        "type": "text", "text": "Attached media from tool result:"
+    })];
+    content.append(pending);
+    messages
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({"role": "user", "content": content}));
+}
+
 /// function_call_output.output must be a string — never null/object.
 /// Mirrors `coerceResponsesOutput` in responsesApi.js:60-77, except media
 /// array parts, which use `tool_output_part_text` instead of stringifying.
@@ -301,7 +333,7 @@ pub fn openai_responses_to_chat_request(
     model: &str,
     body: &mut Value,
     stream: bool,
-    _credentials: Option<&Value>,
+    credentials: Option<&Value>,
 ) -> bool {
     let input = body.get("input");
     if input.is_none() {
@@ -359,6 +391,11 @@ pub fn openai_responses_to_chat_request(
     // contribute tool declarations; custom tool names are tracked in metadata.
     let mut additional_tools: Vec<Value> = Vec::new();
     let mut custom_tool_names: Vec<String> = Vec::new();
+    let accepts_tool_images = credentials
+        .and_then(|value| value.get("acceptsToolImages"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let mut pending_tool_images: Vec<Value> = Vec::new();
 
     let default_msg_type = Value::String("message".to_string());
     for item in &input_items {
@@ -372,6 +409,15 @@ pub fn openai_responses_to_chat_request(
                 }
             })
             .and_then(|v| v.as_str());
+
+        // Keep all replies to a batch of tool calls adjacent. Images from that
+        // batch follow its last reply, before the next conversation item.
+        if !matches!(
+            item_type,
+            Some("function_call_output" | "custom_tool_call_output")
+        ) {
+            append_tool_images(&mut result["messages"], &mut pending_tool_images);
+        }
 
         match item_type {
             Some("message") => {
@@ -495,7 +541,20 @@ pub fn openai_responses_to_chat_request(
                 // Non-assistant items clear the pending reasoning buffers (JS 95-98).
                 pending_reasoning.clear();
                 pending_reasoning_encrypted.clear();
-                let output = coerce_responses_output(item.get("output").unwrap_or(&Value::Null));
+                let output = match item.get("output") {
+                    Some(Value::Array(parts)) if accepts_tool_images => {
+                        let mut text = String::new();
+                        for part in parts {
+                            if let Some(image) = tool_output_image(part) {
+                                pending_tool_images.push(image);
+                            } else {
+                                text.push_str(&tool_output_part_text(part));
+                            }
+                        }
+                        text
+                    }
+                    other => coerce_responses_output(other.unwrap_or(&Value::Null)),
+                };
                 result["messages"]
                     .as_array_mut()
                     .unwrap()
@@ -535,6 +594,7 @@ pub fn openai_responses_to_chat_request(
     if let Some(msg) = current_assistant_msg.take() {
         result["messages"].as_array_mut().unwrap().push(msg);
     }
+    append_tool_images(&mut result["messages"], &mut pending_tool_images);
 
     // JS parity (openai-responses.js:181-232): body.tools plus items-level
     // additional_tools[].tools, exposed as Chat functions; `custom` tools
@@ -1290,6 +1350,53 @@ mod tests {
             chat["input"][0]["output"],
             format!("done{TOOL_IMAGE_OMITTED}")
         );
+    }
+
+    #[test]
+    fn vision_tool_images_follow_all_chat_tool_replies() {
+        let url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/kL8AAAAASUVORK5CYII=";
+        let mut body = serde_json::json!({
+            "model": "glm-5.3-flash",
+            "input": [
+                {"type": "function_call", "call_id": "c1", "name": "read", "arguments": "{}"},
+                {"type": "function_call", "call_id": "c2", "name": "read", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "c1", "output": [
+                    {"type": "input_text", "text": "first image read"},
+                    {"type": "input_image", "image_url": url, "detail": "low"}
+                ]},
+                {"type": "function_call_output", "call_id": "c2", "output": [
+                    {"type": "input_text", "text": "second image read"},
+                    {"type": "input_image", "image_url": url, "detail": "high"}
+                ]},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "continue"}]}
+            ]
+        });
+        crate::core::translator::registry::global_registry().translate_request(
+            crate::core::translator::registry::Format::OpenAiResponses,
+            crate::core::translator::registry::Format::OpenAi,
+            "glm-5.3-flash",
+            &mut body,
+            false,
+            Some(&serde_json::json!({"provider": "glm", "acceptsToolImages": true})),
+        );
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 5);
+        assert_eq!(messages[0]["tool_calls"].as_array().unwrap().len(), 2);
+        assert_eq!(messages[1]["tool_call_id"], "c1");
+        assert_eq!(messages[1]["content"], "first image read");
+        assert_eq!(messages[2]["tool_call_id"], "c2");
+        assert_eq!(messages[2]["content"], "second image read");
+        assert_eq!(messages[3]["role"], "user");
+        assert_eq!(
+            messages[3]["content"][0]["text"],
+            "Attached media from tool result:"
+        );
+        assert_eq!(messages[3]["content"][1]["image_url"]["url"], url);
+        assert_eq!(messages[3]["content"][1]["image_url"]["detail"], "low");
+        assert_eq!(messages[3]["content"][2]["image_url"]["detail"], "high");
+        assert_eq!(messages[4]["content"][0]["text"], "continue");
+        assert!(!messages[1]["content"].as_str().unwrap().contains("base64"));
+        assert!(!messages[2]["content"].as_str().unwrap().contains("base64"));
     }
 
     #[test]
