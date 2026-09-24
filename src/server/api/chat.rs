@@ -499,15 +499,15 @@ fn should_prefetch_message_images(plan: &RequestPlan) -> bool {
     !plan.passthrough && plan.target_format.needs_image_prefetch()
 }
 
-/// Use the same catalog → published models.dev → custom override precedence
-/// as /v1/models. Unknown or contradictory metadata cannot authorize turning
-/// a tool result into a Chat user image message.
-fn accepts_tool_images(
+/// Use the /v1/models metadata precedence. `None` means unknown or conflicting
+/// capabilities; only an explicit text-only declaration justifies telling the
+/// model that it cannot see images.
+fn tool_image_support(
     snapshot: &AppDb,
     provider: &str,
     model: &str,
     published: Option<&OpenCodeModelMetadata>,
-) -> bool {
+) -> Option<bool> {
     let catalog = crate::core::model::catalog::provider_catalog();
     let entry = catalog.find_model(provider, model);
     let mut metadata = OpenCodeModelConfig::from_facts(ModelMetadataFacts {
@@ -555,13 +555,19 @@ fn accepts_tool_images(
             metadata.overlay(overrides);
         }
     }
-    metadata.attachment != Some(false)
-        && metadata.modalities.as_ref().is_some_and(|modalities| {
-            modalities
-                .input
-                .iter()
-                .any(|modality| matches!(modality, Modality::Image))
-        })
+    let has_image = metadata
+        .modalities
+        .as_ref()?
+        .input
+        .iter()
+        .any(|modality| matches!(modality, Modality::Image));
+    if metadata
+        .attachment
+        .is_some_and(|attachment| attachment != has_image)
+    {
+        return None;
+    }
+    Some(has_image)
 }
 
 async fn prefetch_images_in_messages(body: &mut Value) -> Result<(), ImagePrefetchError> {
@@ -722,12 +728,8 @@ async fn execute_single_model(
                 retry_after: None,
                 upstream_body: None,
             })?;
-        published_tool_images = Some(accepts_tool_images(
-            &snapshot,
-            &plan.provider,
-            &plan.model,
-            Some(metadata),
-        ));
+        published_tool_images =
+            tool_image_support(&snapshot, &plan.provider, &plan.model, Some(metadata));
         plan.apply_opencode_metadata(metadata);
     }
     if plan.provider == "commandcode" {
@@ -815,12 +817,16 @@ async fn execute_single_model(
             "provider": plan.provider,
         });
         if plan.source_format == Format::OpenAiResponses && plan.target_format == Format::OpenAi {
+            let image_support =
+                if crate::core::model::models_dev::is_opencode_provider(&plan.provider) {
+                    published_tool_images
+                } else {
+                    tool_image_support(&snapshot, &plan.provider, &plan.model, None)
+                };
             creds["acceptsToolImages"] = Value::Bool(
-                !plan.strip_list.iter().any(|part| part == "image")
-                    && published_tool_images.unwrap_or_else(|| {
-                        accepts_tool_images(&snapshot, &plan.provider, &plan.model, None)
-                    }),
+                !plan.strip_list.iter().any(|part| part == "image") && image_support == Some(true),
             );
+            creds["modelLacksVision"] = Value::Bool(image_support == Some(false));
         }
         if let Some(headers) = client_headers {
             if let Some(obj) = creds.as_object_mut() {
@@ -3650,9 +3656,9 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::{
-        accepts_tool_images, attempt_error_response, build_dashboard_sse_response,
-        build_proxied_response, has_native_codex_web_search, select_connection,
-        select_connection_with_supporters, should_prefetch_message_images, StreamDispatch,
+        attempt_error_response, build_dashboard_sse_response, build_proxied_response,
+        has_native_codex_web_search, select_connection, select_connection_with_supporters,
+        should_prefetch_message_images, tool_image_support, StreamDispatch,
     };
     use crate::core::account_fallback::ProviderAttemptError;
     use crate::core::chat::RequestPlan;
@@ -3664,17 +3670,26 @@ mod tests {
     #[test]
     fn tool_image_gate_uses_advertised_model_capability_and_overrides() {
         let mut snapshot = AppDb::default();
-        assert!(accepts_tool_images(&snapshot, "glm", "glm-5.3-flash", None));
-        assert!(!accepts_tool_images(&snapshot, "glm", "glm-5.3", None));
-        assert!(!accepts_tool_images(&snapshot, "glm", "glm-4.6v", None));
+        assert_eq!(
+            tool_image_support(&snapshot, "glm", "glm-5.3-flash", None),
+            Some(true)
+        );
+        assert_eq!(
+            tool_image_support(&snapshot, "glm", "glm-5.3", None),
+            Some(false)
+        );
+        assert_eq!(tool_image_support(&snapshot, "glm", "glm-4.6v", None), None);
 
         let published = ModelsDevCatalog::default().load();
-        assert!(accepts_tool_images(
-            &snapshot,
-            "opencode-go",
-            "glm-5.3-flash",
-            published.find("opencode-go", "glm-5.3-flash"),
-        ));
+        assert_eq!(
+            tool_image_support(
+                &snapshot,
+                "opencode-go",
+                "glm-5.3-flash",
+                published.find("opencode-go", "glm-5.3-flash"),
+            ),
+            Some(true)
+        );
 
         snapshot.custom_models.push(CustomModel {
             provider_alias: "glm".into(),
@@ -3684,16 +3699,15 @@ mod tests {
             extra: BTreeMap::from([(
                 "opencode".into(),
                 json!({
-                    "modalities": {"input": ["text"], "output": ["text"]}
+                    "modalities": {"input": ["text"], "output": ["text"]},
+                    "attachment": false
                 }),
             )]),
         });
-        assert!(!accepts_tool_images(
-            &snapshot,
-            "glm",
-            "glm-5.3-flash",
-            None
-        ));
+        assert_eq!(
+            tool_image_support(&snapshot, "glm", "glm-5.3-flash", None),
+            Some(false)
+        );
 
         snapshot.custom_models.push(CustomModel {
             provider_alias: "glm".into(),
@@ -3707,7 +3721,10 @@ mod tests {
                 }),
             )]),
         });
-        assert!(accepts_tool_images(&snapshot, "glm", "glm-4.6v", None));
+        assert_eq!(
+            tool_image_support(&snapshot, "glm", "glm-4.6v", None),
+            Some(true)
+        );
     }
 
     fn connection(id: &str, priority: u32) -> ProviderConnection {

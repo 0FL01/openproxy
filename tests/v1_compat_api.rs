@@ -474,7 +474,7 @@ async fn responses_tool_history_uses_shared_translation() {
 }
 
 #[tokio::test]
-async fn responses_tool_image_reaches_vision_chat_upstream() {
+async fn responses_tool_image_respects_chat_model_vision() {
     let url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/kL8AAAAASUVORK5CYII=";
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -495,6 +495,28 @@ async fn responses_tool_image_reaches_vision_chat_upstream() {
             "choices": [{
                 "index": 0,
                 "message": {"role": "assistant", "content": "Image received"},
+                "finish_reason": "stop"
+            }]
+        })))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_partial_json(json!({
+            "model": "gpt-4o-mini",
+            "messages": [
+                {"role": "assistant", "tool_calls": [{"id": "call_1"}]},
+                {"role": "tool", "tool_call_id": "call_1", "content":
+                    "This model has no vision. Read or base64 cannot show the image; use a vision model."}
+            ]
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "chatcmpl-text-only",
+            "model": "gpt-4o-mini",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "Cannot view images"},
                 "finish_reason": "stop"
             }]
         })))
@@ -527,7 +549,8 @@ async fn responses_tool_image_reaches_vision_chat_upstream() {
         })
         .await
         .unwrap();
-    let response = openproxy::build_app(state)
+    let app = openproxy::build_app(state.clone());
+    let response = app.clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -559,4 +582,53 @@ async fn responses_tool_image_reaches_vision_chat_upstream() {
         .unwrap();
     let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(body["output"][0]["content"][0]["text"], "Image received");
+
+    state
+        .db
+        .update(|db| {
+            db.custom_models[0].extra.insert(
+                "opencode".into(),
+                json!({
+                    "modalities": {"input": ["text"], "output": ["text"]},
+                    "attachment": false
+                }),
+            );
+        })
+        .await
+        .unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("authorization", "Bearer valid-bearer")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "compat/gpt-4o-mini",
+                        "input": [
+                            {"type": "function_call", "call_id": "call_1", "name": "read", "arguments": "{}"},
+                            {"type": "function_call_output", "call_id": "call_1", "output": [
+                                {"type": "input_text", "text": "Image read successfully"},
+                                {"type": "input_image", "image_url": url}
+                            ]}
+                        ],
+                        "stream": false
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        body["output"][0]["content"][0]["text"],
+        "Cannot view images"
+    );
 }

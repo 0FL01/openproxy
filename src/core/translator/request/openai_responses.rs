@@ -68,6 +68,8 @@ fn coerce_arguments(value: Option<&Value>) -> String {
 const TOOL_IMAGE_OMITTED: &str = "[image omitted from tool output]";
 const TOOL_FILE_OMITTED: &str = "[file omitted from tool output]";
 const TOOL_CONTENT_OMITTED: &str = "[content omitted from tool output]";
+const READ_NO_VISION: &str =
+    "This model has no vision. Read or base64 cannot show the image; use a vision model.";
 
 /// One `function_call_output.output` array element → chat tool-message text.
 fn tool_output_part_text(part: &Value) -> String {
@@ -395,6 +397,11 @@ pub fn openai_responses_to_chat_request(
         .and_then(|value| value.get("acceptsToolImages"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let model_lacks_vision = credentials
+        .and_then(|value| value.get("modelLacksVision"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let mut read_call_ids = Vec::new();
     let mut pending_tool_images: Vec<Value> = Vec::new();
 
     let default_msg_type = Value::String("message".to_string());
@@ -480,6 +487,11 @@ pub fn openai_responses_to_chat_request(
                 if name.is_none() || name.map(|s| s.trim().is_empty()).unwrap_or(true) {
                     continue;
                 }
+                if item_type == Some("function_call") && name == Some("read") {
+                    if let Some(id) = item.get("call_id").and_then(Value::as_str) {
+                        read_call_ids.push(id);
+                    }
+                }
                 if item_type == Some("custom_tool_call") {
                     if let Some(n) = item.get("name").and_then(Value::as_str) {
                         if !n.trim().is_empty() && !custom_tool_names.iter().any(|x| x == n) {
@@ -542,6 +554,32 @@ pub fn openai_responses_to_chat_request(
                 pending_reasoning.clear();
                 pending_reasoning_encrypted.clear();
                 let output = match item.get("output") {
+                    Some(Value::Array(parts))
+                        if model_lacks_vision
+                            && parts.iter().any(|part| part["type"] == "input_image") =>
+                    {
+                        let from_read = item_type == Some("function_call_output")
+                            && item
+                                .get("call_id")
+                                .and_then(Value::as_str)
+                                .is_some_and(|id| read_call_ids.contains(&id));
+                        let mut text = READ_NO_VISION.to_string();
+                        for part in parts {
+                            if part["type"] == "input_image"
+                                || (from_read
+                                    && part["type"] == "input_text"
+                                    && part["text"] == "Image read successfully")
+                            {
+                                continue;
+                            }
+                            let additional = tool_output_part_text(part);
+                            if !additional.is_empty() {
+                                text.push('\n');
+                                text.push_str(&additional);
+                            }
+                        }
+                        text
+                    }
                     Some(Value::Array(parts)) if accepts_tool_images => {
                         let mut text = String::new();
                         for part in parts {
@@ -1397,6 +1435,35 @@ mod tests {
         assert_eq!(messages[4]["content"][0]["text"], "continue");
         assert!(!messages[1]["content"].as_str().unwrap().contains("base64"));
         assert!(!messages[2]["content"].as_str().unwrap().contains("base64"));
+    }
+
+    #[test]
+    fn text_only_read_image_explains_missing_vision() {
+        let mut body = serde_json::json!({
+            "model": "glm-5.3",
+            "input": [
+                {"type": "function_call", "call_id": "read-1", "name": "read", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "read-1", "output": [
+                    {"type": "input_text", "text": "Image read successfully"},
+                    {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+                    {"type": "input_text", "text": "File metadata: 1x1 PNG"}
+                ]}
+            ]
+        });
+        openai_responses_to_chat_request(
+            "glm-5.3",
+            &mut body,
+            false,
+            Some(&serde_json::json!({"modelLacksVision": true, "acceptsToolImages": false})),
+        );
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1]["tool_call_id"], "read-1");
+        assert_eq!(
+            messages[1]["content"],
+            format!("{READ_NO_VISION}\nFile metadata: 1x1 PNG")
+        );
+        assert!(!messages[1]["content"].as_str().unwrap().contains("base64,"));
     }
 
     #[test]
