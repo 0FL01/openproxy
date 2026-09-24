@@ -95,7 +95,7 @@ pub fn list(
                 apiKeyId, apiKeyName, correlationId, data
          FROM requestDetails
          WHERE (?1 IS NULL OR provider = ?1)
-           AND (?2 IS NULL OR model = ?2)
+           AND (?2 IS NULL OR instr(model, ?2) > 0)
            AND (?3 IS NULL OR connectionId = ?3)
            AND (?4 IS NULL OR status = ?4)
            AND (?5 IS NULL OR apiKeyId = ?5)
@@ -127,7 +127,7 @@ pub fn count(conn: &Connection, filter: &RequestDetailFilter<'_>) -> rusqlite::R
     conn.query_row(
         "SELECT COUNT(*) FROM requestDetails
          WHERE (?1 IS NULL OR provider = ?1)
-           AND (?2 IS NULL OR model = ?2)
+           AND (?2 IS NULL OR instr(model, ?2) > 0)
            AND (?3 IS NULL OR connectionId = ?3)
            AND (?4 IS NULL OR status = ?4)
            AND (?5 IS NULL OR apiKeyId = ?5)
