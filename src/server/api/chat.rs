@@ -1034,6 +1034,14 @@ async fn forward_with_provider_fallback(
             });
         };
 
+        if provider == "codex" {
+            connection = crate::oauth::token_refresh::codex_connection_for_request(
+                state.db.clone(),
+                connection,
+            )
+            .await;
+        }
+
         // 9router resolveTransport: pin multi-endpoint base URL for this request
         if let Some(ref base) = plan.transport_base_url {
             connection.runtime_transport = Some(crate::types::RuntimeTransport {

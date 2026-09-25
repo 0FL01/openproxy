@@ -43,8 +43,7 @@ use crate::core::executor::{
 use crate::core::proxy::resolve_proxy_target;
 use crate::core::usage::quota_fetcher::fetch_glm_quota;
 use crate::oauth::token_refresh::{
-    connection_credential_generation, should_refresh_credentials, CONNECTION_REFRESH_COORDINATOR,
-    REFRESH_LEAD_CODEX_MS,
+    connection_credential_generation, CONNECTION_REFRESH_COORDINATOR,
 };
 use crate::server::api::usage::fetch_oauth_quota;
 use crate::server::state::AppState;
@@ -1606,21 +1605,7 @@ fn should_refresh_for_auto_ping(connection: &ProviderConnection, provider: &str)
     if provider != "codex" {
         return true;
     }
-
-    let last_refresh_at = connection
-        .provider_specific_data
-        .get("lastRefreshAt")
-        .and_then(Value::as_str);
-    should_refresh_credentials(
-        provider,
-        &connection.expires_at,
-        last_refresh_at,
-        connection
-            .refresh_token
-            .as_deref()
-            .is_some_and(|token| !token.trim().is_empty()),
-        REFRESH_LEAD_CODEX_MS,
-    )
+    crate::oauth::token_refresh::codex_refresh_due(connection)
 }
 
 fn has_access_token(connection: &ProviderConnection) -> bool {
@@ -1672,8 +1657,10 @@ mod tests {
         let now = chrono::Utc::now();
         let mut connection = ProviderConnection {
             provider: "codex".into(),
+            auth_type: "oauth".into(),
             refresh_token: Some("refresh-token".into()),
-            expires_at: Some((now + chrono::Duration::days(9)).to_rfc3339()),
+            access_token: Some("opaque-access-token".into()),
+            expires_at: Some((now + chrono::Duration::hours(1)).to_rfc3339()),
             ..Default::default()
         };
         connection.provider_specific_data.insert(

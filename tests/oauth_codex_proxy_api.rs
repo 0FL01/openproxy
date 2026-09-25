@@ -1,4 +1,5 @@
 #![allow(clippy::await_holding_lock)]
+use base64::Engine;
 use openproxy::core::tls::ensure_rustls_provider;
 use std::sync::{Arc, Mutex};
 
@@ -7,6 +8,7 @@ use axum::http::{Method, Request, StatusCode};
 use once_cell::sync::Lazy;
 use openproxy::db::Db;
 use openproxy::server::state::AppState;
+use openproxy::types::ProviderConnection;
 use serde_json::json;
 use tempfile::tempdir;
 use tower::util::ServiceExt;
@@ -257,11 +259,15 @@ async fn codex_refresh_uses_oauth_token_url_override_and_preserves_safe_error_co
 
     Mock::given(method("POST"))
         .and(path("/oauth/token"))
-        .and(body_string_contains("grant_type=refresh_token"))
-        .and(body_string_contains("refresh_token=sentinel-refresh-token"))
-        .and(body_string_contains(
-            "client_id=app_EMoamEEZ73f0CkXaXp7hrann",
+        .and(wiremock::matchers::header(
+            "content-type",
+            "application/json",
         ))
+        .and(wiremock::matchers::body_json(json!({
+            "grant_type": "refresh_token",
+            "refresh_token": "sentinel-refresh-token",
+            "client_id": "app_EMoamEEZ73f0CkXaXp7hrann"
+        })))
         .respond_with(ResponseTemplate::new(401).set_body_json(json!({
             "error": {
                 "code": "refresh_token_reused",
@@ -287,5 +293,69 @@ async fn codex_refresh_uses_oauth_token_url_override_and_preserves_safe_error_co
     );
     assert!(!error.contains("sentinel-refresh-token"));
     assert!(!error.contains("sensitive upstream detail"));
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn codex_request_refresh_rotates_once_and_reuses_fresh_credentials() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    ensure_rustls_provider();
+    let server = MockServer::start().await;
+    let _token_url = EnvVarGuard::set(
+        "OPENPROXY_CODEX_TOKEN_URL",
+        &format!("{}/oauth/token", server.uri()),
+    );
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .and(wiremock::matchers::body_json(json!({
+            "grant_type": "refresh_token",
+            "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+            "refresh_token": "old-refresh"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "new-access",
+            "refresh_token": "new-refresh",
+            "expires_in": 3600
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let expiry = chrono::Utc::now().timestamp() + 60;
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(json!({ "exp": expiry }).to_string());
+    let connection = ProviderConnection {
+        id: "codex-request-refresh".into(),
+        provider: "codex".into(),
+        auth_type: "oauth".into(),
+        access_token: Some(format!("header.{payload}.signature")),
+        refresh_token: Some("old-refresh".into()),
+        ..Default::default()
+    };
+    let directory = tempdir().expect("tempdir");
+    let db = Arc::new(Db::load_from(directory.path()).await.expect("db"));
+    db.update(|state| state.provider_connections.push(connection.clone()))
+        .await
+        .expect("store connection");
+
+    let refreshed =
+        openproxy::oauth::token_refresh::codex_connection_for_request(db.clone(), connection).await;
+    assert_eq!(refreshed.access_token.as_deref(), Some("new-access"));
+    assert_eq!(refreshed.refresh_token.as_deref(), Some("new-refresh"));
+    assert!(refreshed
+        .provider_specific_data
+        .contains_key("lastRefreshAt"));
+
+    let next =
+        openproxy::oauth::token_refresh::codex_connection_for_request(db.clone(), refreshed).await;
+    assert_eq!(next.access_token.as_deref(), Some("new-access"));
+    assert_eq!(
+        db.snapshot().provider_connections[0]
+            .refresh_token
+            .as_deref(),
+        Some("new-refresh")
+    );
     server.verify().await;
 }

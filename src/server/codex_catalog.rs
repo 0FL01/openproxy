@@ -15,14 +15,13 @@ use crate::core::config::app_constants::{
 use crate::core::proxy::resolve_proxy_target;
 use crate::core::usage::quota_fetcher::codex_account_id;
 use crate::oauth::token_refresh::{
-    connection_credential_generation, needs_refresh_with_lead, CONNECTION_REFRESH_COORDINATOR,
+    connection_credential_generation, CONNECTION_REFRESH_COORDINATOR,
 };
 use crate::server::state::AppState;
 use crate::types::{AppDb, ProviderConnection};
 
 const MODELS_URL: &str = "https://chatgpt.com/backend-api/codex/models";
 const CACHE_TTL: Duration = Duration::from_secs(60 * 60);
-const REFRESH_LEAD_MS: u64 = 5 * 60 * 1000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CodexModelMetadata {
@@ -518,8 +517,10 @@ async fn fetch_models(
     connection: &mut ProviderConnection,
     models_url: &str,
 ) -> Result<Vec<CodexModelMetadata>, CodexCatalogError> {
-    if needs_refresh_with_lead(&connection.expires_at, REFRESH_LEAD_MS) {
-        refresh_connection(state, connection).await?;
+    if crate::oauth::token_refresh::codex_refresh_due(connection) {
+        // Like Codex CLI, a failed proactive refresh still tries the stored
+        // access token; an upstream auth failure below can trigger recovery.
+        let _ = refresh_connection(state, connection).await;
     }
 
     let token = connection

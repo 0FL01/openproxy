@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::Engine;
 use futures_util::FutureExt;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
@@ -514,7 +515,7 @@ pub async fn refresh_provider_connection_credentials(
 // Refresh lead times (how early before expiry we proactively refresh)
 // ---------------------------------------------------------------------------
 
-pub const REFRESH_LEAD_CODEX_MS: u64 = 5 * 24 * 60 * 60 * 1000; // 5 days
+pub const REFRESH_LEAD_CODEX_MS: u64 = 5 * 24 * 60 * 60 * 1000; // legacy opencode/cx background lead
 pub const REFRESH_LEAD_OPENAI_MS: u64 = 5 * 24 * 60 * 60 * 1000; // 5 days
 pub const REFRESH_LEAD_CLAUDE_MS: u64 = 4 * 60 * 60 * 1000; // 4 hours
 pub const REFRESH_LEAD_KIMI_CODING_MS: u64 = 5 * 60 * 1000; // 5 minutes
@@ -545,8 +546,74 @@ const GITHUB_COPILOT_TOKEN_URL: &str = "https://api.github.com/copilot_internal/
 
 const GITLAB_TOKEN_URL: &str = "https://gitlab.com/oauth/token";
 
-/// Codex max refresh age: 8 days (9router CODEX_MAX_REFRESH_AGE_MS).
+/// Fallback refresh age when the Codex access-token JWT has no readable expiry.
 pub const CODEX_MAX_REFRESH_AGE_MS: u64 = 8 * 24 * 60 * 60 * 1000;
+const CODEX_ACCESS_TOKEN_REFRESH_WINDOW_SECS: i64 = 5 * 60;
+
+/// Codex CLI policy: prefer the access-token JWT expiry; use lastRefreshAt
+/// only when the expiry is unavailable. Never rotate a healthy JWT for age alone.
+pub fn codex_refresh_due(connection: &ProviderConnection) -> bool {
+    if connection.auth_type != "oauth"
+        || connection
+            .refresh_token
+            .as_deref()
+            .is_none_or(|token| token.trim().is_empty())
+    {
+        return false;
+    }
+    let Some(token) = connection
+        .access_token
+        .as_deref()
+        .filter(|token| !token.is_empty())
+    else {
+        return true;
+    };
+    let expiry = token
+        .split('.')
+        .nth(1)
+        .and_then(|payload| {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(payload)
+                .ok()
+        })
+        .and_then(|payload| serde_json::from_slice::<Value>(&payload).ok())
+        .and_then(|claims| claims.get("exp").and_then(Value::as_i64));
+    let now = chrono::Utc::now();
+    if let Some(expiry) = expiry {
+        return expiry <= now.timestamp() + CODEX_ACCESS_TOKEN_REFRESH_WINDOW_SECS;
+    }
+    connection
+        .provider_specific_data
+        .get("lastRefreshAt")
+        .or_else(|| connection.extra.get("lastRefreshAt"))
+        .and_then(Value::as_str)
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .is_some_and(|last| {
+            now.signed_duration_since(last)
+                >= chrono::Duration::milliseconds(CODEX_MAX_REFRESH_AGE_MS as i64)
+        })
+}
+
+/// Return the current canonical Codex credential after any due refresh.
+/// A proactive failure leaves 401 recovery to the existing request path.
+pub async fn codex_connection_for_request(
+    db: Arc<Db>,
+    connection: ProviderConnection,
+) -> ProviderConnection {
+    if !codex_refresh_due(&connection) {
+        return connection;
+    }
+    CONNECTION_REFRESH_COORDINATOR
+        .refresh_connection(
+            db,
+            &connection.provider,
+            &connection.id,
+            connection_credential_generation(&connection),
+        )
+        .await
+        .map(|result| result.connection)
+        .unwrap_or(connection)
+}
 
 /// Check whether an access token needs refreshing based on its `expires_at`
 /// RFC 3339 timestamp.
@@ -638,17 +705,20 @@ pub async fn refresh_claude_oauth_token(refresh_token: &str) -> Result<RefreshRe
 
 /// Refresh a Codex / ChatGPT access token.
 ///
-/// POST form-urlencoded to the OpenAI Auth0 token endpoint.
+/// POST JSON to the OpenAI token endpoint, matching Codex CLI.
 pub async fn refresh_codex_token(refresh_token: &str) -> Result<RefreshResult, String> {
-    refresh_form_token(
-        &codex_token_url(),
-        vec![
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token),
-            ("client_id", CODEX_CLIENT_ID),
-        ],
-    )
-    .await
+    let response = reqwest::Client::new()
+        .post(codex_token_url())
+        .header(ACCEPT, "application/json")
+        .json(&serde_json::json!({
+            "grant_type": "refresh_token",
+            "client_id": CODEX_CLIENT_ID,
+            "refresh_token": refresh_token,
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("Refresh request failed: {error}"))?;
+    parse_json_refresh_response(response).await
 }
 
 /// Resolve the codex token URL (allows env-override).

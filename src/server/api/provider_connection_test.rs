@@ -1150,13 +1150,13 @@ async fn refresh_oauth_token(
             .await
         }
         "codex" => {
-            refresh_form_token(
+            refresh_json_token(
                 CODEX_TOKEN_URL,
-                vec![
-                    ("grant_type".to_string(), "refresh_token".to_string()),
-                    ("client_id".to_string(), CODEX_CLIENT_ID.to_string()),
-                    ("refresh_token".to_string(), refresh_token.to_string()),
-                ],
+                json!({
+                    "grant_type": "refresh_token",
+                    "client_id": CODEX_CLIENT_ID,
+                    "refresh_token": refresh_token,
+                }),
                 effective_proxy,
             )
             .await

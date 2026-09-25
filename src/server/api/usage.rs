@@ -309,19 +309,23 @@ async fn refresh_oauth_connection(
         .access_token
         .as_deref()
         .is_some_and(|token| !token.trim().is_empty());
-    let needs_refresh = force
-        || !has_access_token
-        || match connection.expires_at.as_deref() {
-            Some(expires_at) => crate::oauth::token_refresh::needs_refresh_with_lead(
-                &Some(expires_at.to_string()),
-                // Refresh a bit early (2 min) to avoid a doomed fetch.
-                120_000,
-            ),
-            None => connection
-                .access_token
-                .as_deref()
-                .is_none_or(|t| t.trim().is_empty()),
-        };
+    let needs_refresh = if connection.provider == "codex" {
+        force || !has_access_token || crate::oauth::token_refresh::codex_refresh_due(connection)
+    } else {
+        force
+            || !has_access_token
+            || match connection.expires_at.as_deref() {
+                Some(expires_at) => crate::oauth::token_refresh::needs_refresh_with_lead(
+                    &Some(expires_at.to_string()),
+                    // Refresh a bit early (2 min) to avoid a doomed fetch.
+                    120_000,
+                ),
+                None => connection
+                    .access_token
+                    .as_deref()
+                    .is_none_or(|t| t.trim().is_empty()),
+            }
+    };
     if !needs_refresh {
         return Ok(connection.clone());
     }
@@ -973,7 +977,10 @@ mod tests {
             &format!("{}/oauth/token", refresh_server.uri()),
         );
 
-        let connection = codex_oauth_connection("read-fallback", "2020-01-01T00:00:00Z");
+        let mut connection = codex_oauth_connection("read-fallback", "2020-01-01T00:00:00Z");
+        connection
+            .provider_specific_data
+            .insert("lastRefreshAt".into(), json!("2020-01-01T00:00:00Z"));
         let (state, _directory) = app_state_with_codex_connection(connection.clone()).await;
         let calls = Arc::new(AtomicUsize::new(0));
         let observed_tokens = Arc::new(Mutex::new(Vec::new()));
@@ -1006,14 +1013,18 @@ mod tests {
 
     #[tokio::test]
     async fn reset_credit_get_refreshes_once_only_after_upstream_401() {
-        use wiremock::matchers::{body_string_contains, method, path};
+        use wiremock::matchers::{body_json, method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let _env_lock = CODEX_REFRESH_ENV_LOCK.lock().unwrap();
         let refresh_server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/oauth/token"))
-            .and(body_string_contains("grant_type=refresh_token"))
+            .and(body_json(json!({
+                "grant_type": "refresh_token",
+                "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+                "refresh_token": "stored-refresh-token"
+            })))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "access_token": "refreshed-access-token",
                 "refresh_token": "rotated-refresh-token",

@@ -82,6 +82,9 @@ pub(crate) async fn run_codex_standalone_search(
                     .to_string(),
             }));
         };
+        let connection =
+            crate::oauth::token_refresh::codex_connection_for_request(state.db.clone(), connection)
+                .await;
         let proxy = resolve_proxy_target(&snapshot, &connection, &snapshot.settings);
         let executor =
             CodexSearchExecutor::new(state.client_pool.clone(), codex_provider_node(&snapshot));

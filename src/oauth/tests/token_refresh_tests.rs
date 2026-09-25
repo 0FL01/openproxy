@@ -8,6 +8,9 @@ use std::time::Duration;
 use crate::oauth::device_code;
 use crate::oauth::providers;
 use crate::oauth::{pkce, RefreshRequest, TokenResponse};
+use crate::types::ProviderConnection;
+use base64::Engine;
+use serde_json::{json, Value};
 
 #[tokio::test]
 async fn refresh_does_not_retry_permanent_http_error() {
@@ -60,6 +63,49 @@ fn test_refresh_lead_antigravity_is_5_minutes() {
 fn test_refresh_lead_unknown_is_none() {
     let lead = crate::core::config::app_constants::refresh_lead("nonexistent");
     assert!(lead.is_none());
+}
+
+fn codex_jwt(expiry: i64) -> String {
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(json!({ "exp": expiry }).to_string());
+    format!("header.{payload}.signature")
+}
+
+#[test]
+fn codex_refresh_prefers_jwt_expiry_over_old_last_refresh() {
+    let now = chrono::Utc::now();
+    let mut connection = ProviderConnection {
+        provider: "codex".into(),
+        auth_type: "oauth".into(),
+        access_token: Some(codex_jwt((now + chrono::Duration::hours(1)).timestamp())),
+        refresh_token: Some("refresh".into()),
+        ..Default::default()
+    };
+    connection.provider_specific_data.insert(
+        "lastRefreshAt".into(),
+        Value::String((now - chrono::Duration::days(9)).to_rfc3339()),
+    );
+    assert!(!crate::oauth::token_refresh::codex_refresh_due(&connection));
+
+    connection.access_token = Some(codex_jwt((now + chrono::Duration::minutes(4)).timestamp()));
+    assert!(crate::oauth::token_refresh::codex_refresh_due(&connection));
+}
+
+#[test]
+fn codex_refresh_uses_age_only_without_jwt_expiry() {
+    let mut connection = ProviderConnection {
+        provider: "codex".into(),
+        auth_type: "oauth".into(),
+        access_token: Some("opaque-access-token".into()),
+        refresh_token: Some("refresh".into()),
+        ..Default::default()
+    };
+    assert!(!crate::oauth::token_refresh::codex_refresh_due(&connection));
+    connection.provider_specific_data.insert(
+        "lastRefreshAt".into(),
+        Value::String((chrono::Utc::now() - chrono::Duration::days(9)).to_rfc3339()),
+    );
+    assert!(crate::oauth::token_refresh::codex_refresh_due(&connection));
 }
 
 // ─── Claude refresh body format = JSON ───────────────────────────────────

@@ -1,8 +1,8 @@
 //! Background proactive OAuth token-refresh scheduler — port of 9router
 //! `src/sse/services/backgroundTokenRefresh.js`.
 //!
-//! Independent of inbound requests. Fail-open everywhere: tick errors and
-//! per-connection failures never kill the interval.
+//! Independent of inbound requests for non-Codex providers. Codex refreshes
+//! on demand like the CLI. Tick errors and per-connection failures are fail-open.
 //!
 //! - Tick every 5 minutes, first pass after 10 seconds.
 //! - Select active OAuth connections with a refresh token whose access token
@@ -29,7 +29,7 @@ static TICK_RUNNING: AtomicBool = AtomicBool::new(false);
 fn provider_lead_ms(provider: &str) -> Option<u64> {
     use crate::oauth::token_refresh as tr;
     let lead = match provider {
-        "codex" | "opencode" | "cx" => tr::REFRESH_LEAD_CODEX_MS,
+        "opencode" | "cx" => tr::REFRESH_LEAD_CODEX_MS,
         "openai" => tr::REFRESH_LEAD_OPENAI_MS,
         "claude" | "anthropic" => tr::REFRESH_LEAD_CLAUDE_MS,
         "kimi-coding" | "kimi" => tr::REFRESH_LEAD_KIMI_CODING_MS,
@@ -50,6 +50,9 @@ pub fn select_connections_needing_refresh(
     connections
         .iter()
         .filter(|conn| {
+            if conn.provider == "codex" {
+                return false;
+            }
             if !conn.is_active() {
                 return false;
             }
@@ -181,12 +184,9 @@ mod tests {
 
     #[test]
     fn provider_lead_extends_window() {
-        // codex lead is 5 days → a connection expiring in 4 days IS due.
-        let conns = vec![conn("codex", "oauth", Some("rt"), 4 * 24 * 60 * 60)];
-        assert_eq!(
-            select_connections_needing_refresh(&conns, now_ms()).len(),
-            1
-        );
+        // Codex refreshes on request, never on a background tick.
+        let conns = vec![conn("codex", "oauth", Some("rt"), 60)];
+        assert!(select_connections_needing_refresh(&conns, now_ms()).is_empty());
         // claude lead is 4h > the 30-min floor → max() wins; a connection
         // expiring in 2h IS due (window = max(lead, floor)).
         let conns = vec![conn("claude", "oauth", Some("rt"), 2 * 60 * 60)];

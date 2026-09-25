@@ -1927,8 +1927,12 @@ async fn exchange_codex_compat(
         .json()
         .await
         .map_err(|error| format!("Token exchange failed: {error}"))?;
-    let (email, provider_specific_data) =
+    let (email, mut provider_specific_data) =
         extract_codex_account_info(token_response.id_token.as_deref());
+    provider_specific_data.insert(
+        "lastRefreshAt".to_string(),
+        Value::String(chrono::Utc::now().to_rfc3339()),
+    );
 
     Ok(ProviderConnection {
         provider: "codex".to_string(),
@@ -3485,7 +3489,7 @@ async fn codex_bulk_import(
             .map(str::to_string)
             .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
         connection
-            .extra
+            .provider_specific_data
             .insert("lastRefreshAt".to_string(), Value::String(last_refresh_at));
 
         match create_imported_oauth_connection(&state, connection).await {
