@@ -6,6 +6,7 @@ mod client_pool;
 mod codebuddy_cn;
 mod codebuddy_intl;
 mod codex;
+mod codex_headers;
 mod codex_search;
 mod default;
 mod devin_cli;
@@ -47,6 +48,7 @@ pub use codex::{
     convert_openai_sse_to_standard, CodexExecutionRequest, CodexExecutor, CodexExecutorError,
     CodexExecutorResponse,
 };
+pub(crate) use codex_headers::build_codex_headers;
 pub use codex_search::{
     CodexSearchExecutionRequest, CodexSearchExecutor, CodexSearchExecutorError,
     CODEX_STANDALONE_SEARCH_URL,

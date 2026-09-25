@@ -170,7 +170,13 @@ async fn known_chat_uses_published_inventory_while_forced_refresh_is_held() {
         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"
     )])])
     .await;
-    let connection = codex_connection("codex-a", 1);
+    let mut connection = codex_connection("codex-a", 1);
+    connection
+        .provider_specific_data
+        .insert("chatgptAccountId".into(), json!("canonical-account"));
+    connection
+        .provider_specific_data
+        .insert("workspaceId".into(), json!("different-workspace"));
     let (_db, state) = state_with_catalog(
         catalog.url("/backend-api/codex/models"),
         generation.url("/backend-api/codex/responses"),
@@ -202,6 +208,35 @@ async fn known_chat_uses_published_inventory_while_forced_refresh_is_held() {
     assert_eq!(response.status(), StatusCode::OK);
     drop(response);
     assert_eq!(generation.request_count().await, 1);
+    let catalog_requests = catalog.requests().await;
+    let catalog_request = &catalog_requests[0];
+    assert_eq!(catalog_request.path, "/backend-api/codex/models");
+    let generation_requests = generation.requests().await;
+    let generation_request = &generation_requests[0];
+    for request in [catalog_request, generation_request] {
+        assert_eq!(request.headers.get("version").unwrap(), "0.157.0");
+        assert_eq!(request.headers.get("originator").unwrap(), "codex_cli_rs");
+        assert_eq!(
+            request.headers.get("user-agent").unwrap(),
+            "codex_cli_rs/0.157.0"
+        );
+        assert_eq!(
+            request.headers.get("chatgpt-account-id").unwrap(),
+            "canonical-account"
+        );
+        assert_eq!(
+            request.headers.get("authorization").unwrap(),
+            "Bearer fixture-codex-a-access"
+        );
+    }
+    assert_eq!(
+        catalog_request.headers.get("accept").unwrap(),
+        "application/json"
+    );
+    assert_eq!(
+        generation_request.headers.get("accept").unwrap(),
+        "text/event-stream"
+    );
     assert!(state
         .codex_models
         .published_snapshot_identity()
@@ -438,6 +473,9 @@ async fn mcp_search_uses_standalone_index_account_fallback_and_all_lengths() {
     first
         .provider_specific_data
         .insert("chatgptAccountId".into(), json!("account-mcp-a"));
+    first
+        .provider_specific_data
+        .insert("workspaceId".into(), json!("different-workspace"));
     let mut second = codex_connection("codex-mcp-b", 2);
     second.default_model = Some("gpt-5.5".into());
     second
@@ -513,6 +551,17 @@ async fn mcp_search_uses_standalone_index_account_fallback_and_all_lengths() {
         assert_eq!(upstream["commands"]["response_length"], expected_length);
         assert!(upstream.get("tools").is_none());
         assert!(upstream.get("tool_choice").is_none());
+        assert_eq!(request.headers.get("version").unwrap(), "0.157.0");
+        assert_eq!(request.headers.get("originator").unwrap(), "codex_cli_rs");
+        assert_eq!(
+            request.headers.get("user-agent").unwrap(),
+            "codex_cli_rs/0.157.0"
+        );
+        assert_eq!(
+            request.headers.get("content-type").unwrap(),
+            "application/json"
+        );
+        assert!(request.headers.get("session_id").is_none());
         let authorization = request
             .headers
             .get("authorization")

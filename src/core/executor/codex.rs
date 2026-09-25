@@ -4,13 +4,10 @@ use futures_util::stream;
 use futures_util::StreamExt;
 use hyper::http;
 use hyper::http::uri::InvalidUri;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
+use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::Body as ReqwestBody;
 use serde_json::{json, Value};
 
-use crate::core::config::app_constants::{
-    CODEX_CLIENT_VERSION, CODEX_ORIGINATOR, CODEX_USER_AGENT,
-};
 use crate::core::proxy::ProxyTarget;
 use crate::core::translator::helpers::image_helper::{
     ensure_final_request_size, fetch_image_as_base64, ImagePrefetchBudget, ImagePrefetchError,
@@ -18,7 +15,7 @@ use crate::core::translator::helpers::image_helper::{
 use crate::core::translator::request::openai_responses::chat_to_openai_responses_request;
 use crate::types::{ProviderConnection, ProviderNode};
 
-use super::{ClientPool, TransportKind, UpstreamResponse};
+use super::{build_codex_headers, ClientPool, TransportKind, UpstreamResponse};
 
 /// Codex tool JSON Schema pattern strip: Codex's `/responses` validator
 /// rejects Unicode property escapes (`\p{...}`) with HTTP 400 — even
@@ -492,13 +489,7 @@ impl CodexExecutor {
         connection_id: Option<&str>,
         credentials: &ProviderConnection,
     ) -> Result<HeaderMap, CodexExecutorError> {
-        let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", api_key))
-                .map_err(CodexExecutorError::InvalidHeader)?,
-        );
+        let mut headers = build_codex_headers(api_key, credentials)?;
 
         // 9router parity: session_id header for request session continuity.
         let session_id = connection_id
@@ -508,27 +499,6 @@ impl CodexExecutor {
             "session_id",
             HeaderValue::from_str(session_id).map_err(CodexExecutorError::InvalidHeader)?,
         );
-
-        // Identify the current Codex client version to unlock version-gated models.
-        headers.insert("originator", HeaderValue::from_static(CODEX_ORIGINATOR));
-        headers.insert("Version", HeaderValue::from_static(CODEX_CLIENT_VERSION));
-        headers.insert(USER_AGENT, HeaderValue::from_static(CODEX_USER_AGENT));
-
-        // 9router parity: workspace binding for account scope + cache affinity.
-        {
-            let ws_id = credentials
-                .provider_specific_data
-                .get("workspaceId")
-                .or_else(|| credentials.provider_specific_data.get("chatgptAccountId"))
-                .and_then(|v| v.as_str())
-                .or(connection_id);
-            if let Some(ws) = ws_id {
-                headers.insert(
-                    "chatgpt-account-id",
-                    HeaderValue::from_str(ws).map_err(CodexExecutorError::InvalidHeader)?,
-                );
-            }
-        }
 
         if stream {
             headers.insert("Accept", HeaderValue::from_static("text/event-stream"));
@@ -1004,6 +974,10 @@ pub fn convert_openai_sse_to_standard(input: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::config::app_constants::{
+        CODEX_CLIENT_VERSION, CODEX_ORIGINATOR, CODEX_USER_AGENT,
+    };
+    use reqwest::header::USER_AGENT;
 
     #[test]
     fn test_parse_codex_model_with_prefix() {

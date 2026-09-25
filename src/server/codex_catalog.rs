@@ -9,9 +9,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
-use crate::core::config::app_constants::{
-    CODEX_CLIENT_VERSION, CODEX_ORIGINATOR, CODEX_USER_AGENT,
-};
+use crate::core::config::app_constants::CODEX_CLIENT_VERSION;
+use crate::core::executor::build_codex_headers;
 use crate::core::proxy::resolve_proxy_target;
 use crate::core::usage::quota_fetcher::codex_account_id;
 use crate::oauth::token_refresh::{
@@ -561,17 +560,17 @@ async fn fetch_with_token(
                 format!("Failed to build Codex models client: {error}"),
             )
         })?;
-    let mut request = client
+    let headers = build_codex_headers(token, connection).map_err(|error| {
+        CodexCatalogError::new(
+            StatusCode::BAD_GATEWAY,
+            format!("Invalid Codex models request header: {error}"),
+        )
+    })?;
+    let request = client
         .get(models_url)
         .query(&[("client_version", CODEX_CLIENT_VERSION)])
-        .bearer_auth(token)
         .header("Accept", "application/json")
-        .header("originator", CODEX_ORIGINATOR)
-        .header("Version", CODEX_CLIENT_VERSION)
-        .header("User-Agent", CODEX_USER_AGENT);
-    if let Some(account_id) = codex_account_id(&connection.provider_specific_data) {
-        request = request.header("ChatGPT-Account-ID", account_id);
-    }
+        .headers(headers);
     let response = request.send().await.map_err(|error| {
         CodexCatalogError::new(
             StatusCode::BAD_GATEWAY,

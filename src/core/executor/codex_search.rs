@@ -1,17 +1,14 @@
 use std::sync::Arc;
 
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
 use serde_json::json;
 
 use crate::core::proxy::ProxyTarget;
-use crate::core::usage::quota_fetcher::codex_account_id;
 use crate::types::{ProviderConnection, ProviderNode};
 
-use super::ClientPool;
+use super::{build_codex_headers, ClientPool};
 
 pub const CODEX_STANDALONE_SEARCH_URL: &str = "https://chatgpt.com/backend-api/codex/alpha/search";
 const CODEX_SEARCH_MODEL: &str = "gpt-4o";
-const CODEX_SEARCH_USER_AGENT: &str = "codex-cli/0.147.0-alpha.6.5";
 
 #[derive(Debug)]
 pub enum CodexSearchExecutorError {
@@ -66,19 +63,7 @@ impl CodexSearchExecutor {
             .map(str::trim)
             .filter(|token| !token.is_empty())
             .ok_or(CodexSearchExecutorError::MissingCredentials)?;
-        let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        headers.insert(
-            USER_AGENT,
-            HeaderValue::from_static(CODEX_SEARCH_USER_AGENT),
-        );
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {token}"))?,
-        );
-        if let Some(account_id) = codex_account_id(&request.credentials.provider_specific_data) {
-            headers.insert("chatgpt-account-id", HeaderValue::from_str(&account_id)?);
-        }
+        let headers = build_codex_headers(token, request.credentials)?;
 
         let body = json!({
             "id": request.request_id,
