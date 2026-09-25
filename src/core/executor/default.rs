@@ -354,8 +354,11 @@ impl ProviderConfig {
 
 /// Anthropic beta flags, ported from `selectAnthropicBeta` in
 /// `open-sse/providers/shared.js:51-69`. Heavy-agent flags are gated to
-/// opus/sonnet — cheaper models don't need them.
-const ANTHROPIC_BETA_BASE: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28";
+/// opus/sonnet — cheaper models don't need them. `token-efficient-tools`
+/// is intentionally absent: the official Claude Code 2.1.282 binary does
+/// not reference it (binary-RECON 2026-09-26), nor does it reference
+/// `fine-grained-tool-streaming`, which we therefore do not add.
+const ANTHROPIC_BETA_BASE: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12";
 const ANTHROPIC_BETA_HEAVY_AGENT: &str = "advanced-tool-use-2025-11-20,effort-2025-11-24";
 
 pub fn select_anthropic_beta(model: &str) -> String {
@@ -364,6 +367,43 @@ pub fn select_anthropic_beta(model: &str) -> String {
     } else {
         ANTHROPIC_BETA_BASE.to_string()
     }
+}
+
+/// Union of adapter base flags with client-supplied extras (dedup,
+/// ours-first so the client can only add, never deselect). Bounded:
+/// real clients send ~40 flags, so the cap is 64 flags / 4096 bytes;
+/// per-flag charset validation keeps header construction infallible.
+pub const MAX_MERGED_BETA_FLAGS: usize = 64;
+pub const MAX_MERGED_BETA_BYTES: usize = 4096;
+
+pub fn merge_anthropic_beta(base: &str, client: Option<&str>) -> String {
+    use std::collections::HashSet;
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut out: Vec<&str> = Vec::new();
+    let mut bytes: usize = 0;
+    for part in base
+        .split(',')
+        .chain(client.into_iter().flat_map(|flags| flags.split(',')))
+    {
+        let flag = part.trim();
+        if flag.is_empty()
+            || flag.len() > 64
+            || !flag
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            continue;
+        }
+        if !seen.insert(flag) {
+            continue;
+        }
+        if out.len() >= MAX_MERGED_BETA_FLAGS || bytes + flag.len() + 1 > MAX_MERGED_BETA_BYTES {
+            break;
+        }
+        bytes += flag.len() + 1;
+        out.push(flag);
+    }
+    out.join(",")
 }
 
 pub struct DefaultExecutor {
@@ -1004,15 +1044,25 @@ impl DefaultExecutor {
         }
 
         // Per-model Anthropic-Beta flags (9router default.js:167-170 +
-        // shared.js selectAnthropicBeta). Runs outside the auth chain so the
-        // first-party claude branch above gets the same flags the generic
-        // branch used to provide. Gateway nodes are excluded: the dual-auth
-        // branch strips first-party identity and the client beta wins via
-        // the allowlist below (C04). The old anthropic-compatible arm never
-        // fired (those nodes always take the dual branch) and stays out.
+        // shared.js selectAnthropicBeta). First-party guard mirrors the
+        // auth chain above: third-party transports and gateway nodes keep
+        // the generic/allowlist path (no harness-beta leak). Union with
+        // client extras (C04 passthrough); ours-first, client cannot
+        // deselect `oauth-2025-04-20`.
         // Overwrites the static default (which only had 2 flags).
-        if self.provider == "claude" && !is_anthropic_compatible {
-            if let Ok(val) = HeaderValue::from_str(&select_anthropic_beta(model)) {
+        if matches!(self.provider.as_str(), "claude" | "anthropic")
+            && !is_anthropic_compatible
+            && credentials
+                .runtime_transport
+                .as_ref()
+                .and_then(|transport| transport.base_url.as_deref())
+                .is_none_or(|url| url.trim().is_empty())
+        {
+            let merged = merge_anthropic_beta(
+                &select_anthropic_beta(model),
+                client_headers.get("anthropic-beta").map(String::as_str),
+            );
+            if let Ok(val) = HeaderValue::from_str(&merged) {
                 headers.insert("anthropic-beta", val);
             }
         }
@@ -1835,5 +1885,36 @@ mod tests {
         assert!(!headers.contains_key("user-agent"));
         assert!(!headers.contains_key("x-app"));
         assert_eq!(headers["x-api-key"], "sk-ant-test");
+    }
+
+    #[test]
+    fn beta_base_has_no_non_cli_flags() {
+        // Binary-RECON 2.1.282: neither flag is referenced by the real CLI.
+        assert!(!ANTHROPIC_BETA_BASE.contains("token-efficient"));
+        assert!(!ANTHROPIC_BETA_BASE.contains("fine-grained"));
+        assert!(!select_anthropic_beta("claude-opus-5-5").contains("token-efficient"));
+    }
+
+    #[test]
+    fn merge_beta_unions_dedups_and_bounds() {
+        let base = "claude-code-20250219,oauth-2025-04-20";
+        // Client extras appended, duplicates dropped, ours-first.
+        let merged = merge_anthropic_beta(base, Some("oauth-2025-04-20,my-flag-2026-01-01"));
+        assert_eq!(
+            merged,
+            "claude-code-20250219,oauth-2025-04-20,my-flag-2026-01-01"
+        );
+        // Garbage dropped per-flag, request not failed.
+        let merged = merge_anthropic_beta(base, Some("  ,,ok-flag-1,has space,bad下划线"));
+        assert_eq!(merged, "claude-code-20250219,oauth-2025-04-20,ok-flag-1");
+        // Bound: extras beyond the cap are dropped, base survives.
+        let many = (0..100)
+            .map(|i| format!("f-{i:03}-2026-01-01"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let merged = merge_anthropic_beta(base, Some(&many));
+        assert!(merged.starts_with(base));
+        assert!(merged.split(',').count() <= MAX_MERGED_BETA_FLAGS);
+        assert!(merged.len() <= MAX_MERGED_BETA_BYTES);
     }
 }

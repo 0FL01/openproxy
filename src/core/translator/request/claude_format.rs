@@ -457,6 +457,32 @@ pub fn claude_harness_gated(
     claude_first_party(provider, custom_base_url, gateway_node)
 }
 
+/// Upstream policy-rejection texts: Anthropic refuses the OAuth credential
+/// for policy/transport reasons where a token refresh cannot help.
+/// Matched on 400|401|403 raw bodies (lowercase-contains); structured
+/// expiry codes stay with the refresh classifier.
+const CLAUDE_OAUTH_POLICY_REJECTION_MARKERS: [&str; 5] = [
+    "oauth authentication is currently not supported",
+    "this organization has been disabled",
+    "oauth authentication is currently not allowed for this organization",
+    "only authorized for use with claude code",
+    "cannot be used for other api requests",
+];
+
+/// Single predicate for (a)+(b)+(c): one match point, one test matrix.
+pub fn is_claude_oauth_policy_rejection(status: u16, body: Option<&[u8]>) -> bool {
+    if !(status == 400 || status == 401 || status == 403) {
+        return false;
+    }
+    let Some(bytes) = body else {
+        return false;
+    };
+    let lower = String::from_utf8_lossy(bytes).to_ascii_lowercase();
+    CLAUDE_OAUTH_POLICY_REJECTION_MARKERS
+        .iter()
+        .any(|marker| lower.contains(marker))
+}
+
 /// Relay `_isActualClaudeCodeRequest`: reference identity in system +
 /// `claude-cli/<version> (` UA. Pure function — same input, same verdict.
 pub fn is_real_claude_code_request(system_text: &str, client_ua: Option<&str>) -> bool {
@@ -1242,6 +1268,63 @@ mod tests {
         let heavy = crate::core::executor::select_anthropic_beta("claude-sonnet-4-6");
         assert!(heavy.contains("advanced-tool-use-2025-11-20"));
         assert!(heavy.contains("effort-2025-11-24"));
+    }
+
+    // ─── is_claude_oauth_policy_rejection ────────────────────────────
+
+    #[test]
+    fn policy_rejection_matches_known_texts_across_statuses() {
+        let cases = [
+            (
+                401u16,
+                r#"{"type":"error","error":{"type":"authentication_error","message":"OAuth authentication is currently not supported."}}"#,
+            ),
+            (
+                400u16,
+                r#"{"type":"error","error":{"type":"invalid_request_error","message":"This credential is only authorized for use with Claude Code and cannot be used for other API requests."}}"#,
+            ),
+            (
+                403u16,
+                r#"{"type":"error","error":{"type":"forbidden","message":"OAuth authentication is currently not allowed for this organization."}}"#,
+            ),
+            (
+                400u16,
+                r#"{"type":"error","error":{"type":"invalid_request_error","message":"This organization has been disabled."}}"#,
+            ),
+        ];
+        for (status, body) in cases {
+            assert!(
+                is_claude_oauth_policy_rejection(status, Some(body.as_bytes())),
+                "matched {status}: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn policy_rejection_rejects_expiry_and_other_statuses() {
+        // Structured expiry codes must NOT match: refresh still applies.
+        let expiry = r#"{"type":"error","error":{"type":"authentication_error","code":"token_expired","message":"Access token expired"}}"#;
+        assert!(!is_claude_oauth_policy_rejection(
+            401,
+            Some(expiry.as_bytes())
+        ));
+        assert!(!is_claude_oauth_policy_rejection(401, None));
+        // Same text on a non-auth status is not a credential verdict.
+        let body = "OAuth authentication is currently not supported";
+        assert!(!is_claude_oauth_policy_rejection(
+            429,
+            Some(body.as_bytes())
+        ));
+        assert!(!is_claude_oauth_policy_rejection(
+            200,
+            Some(body.as_bytes())
+        ));
+        // Case-insensitive match.
+        let shouty = "ONLY AUTHORIZED FOR USE WITH CLAUDE CODE";
+        assert!(is_claude_oauth_policy_rejection(
+            400,
+            Some(shouty.as_bytes())
+        ));
     }
 
     // ─── prepare_claude_request ────────────────────────────────────

@@ -1657,6 +1657,11 @@ async fn forward_with_provider_fallback(
                     .as_deref()
                     .and_then(crate::core::account_fallback::parse_retry_after_from_body);
                 let retry_after = header_retry_after.or(body_retry_after);
+                let policy_rejection =
+                    crate::core::translator::request::claude_format::is_claude_oauth_policy_rejection(
+                        status.as_u16(),
+                        upstream_body.as_deref(),
+                    );
                 let refreshable_auth_failure =
                     is_refreshable_auth_failure(status, upstream_body.as_deref());
                 last_error = Some(ProviderAttemptError {
@@ -1667,8 +1672,9 @@ async fn forward_with_provider_fallback(
                 });
                 if let Some(attempt_log) = attempt_log {
                     // C43: explicit error-kind literal per branch — never
-                    // inferred from the status code.
-                    let error_kind = if refreshable_auth_failure {
+                    // inferred from the status code. Policy rejections stay
+                    // AUTH_FAILURE: classification is by body text, not status.
+                    let error_kind = if policy_rejection || refreshable_auth_failure {
                         error_kind::AUTH_FAILURE
                     } else if matches!(status.as_u16(), 429) {
                         error_kind::RATE_LIMITED
@@ -1684,9 +1690,42 @@ async fn forward_with_provider_fallback(
 
                 // A body-invalid request is account-independent. Replaying it
                 // across every configured credential only multiplies an
-                // already-known client failure.
-                if matches!(status.as_u16(), 400 | 413 | 422) {
+                // already-known client failure. Carve-out (C13 amend): a 400
+                // carrying a Claude OAuth policy-rejection text is an
+                // auth-failure, not a body failure — advance, don't terminate.
+                if matches!(status.as_u16(), 400 | 413 | 422)
+                    && !(status.as_u16() == 400 && policy_rejection)
+                {
                     return Err(last_error.expect("upstream error recorded"));
+                }
+                // F3: persist policy rejections to the existing diagnostic
+                // fields only. No new columns, no routing suppression (C14).
+                if policy_rejection {
+                    let policy_db = state.db.clone();
+                    let policy_connection_id = connection.id.clone();
+                    let policy_provider = connection.provider.clone();
+                    let now = Utc::now().to_rfc3339();
+                    let _ = policy_db
+                        .update(move |snapshot| {
+                            let Some(stored) = snapshot
+                                .provider_connections
+                                .iter_mut()
+                                .find(|candidate| {
+                                    candidate.id == policy_connection_id
+                                        && candidate.provider == policy_provider
+                                })
+                            else {
+                                return;
+                            };
+                            stored.last_error = Some(
+                                "Claude OAuth credential was rejected by upstream policy. Please re-authorize the connection."
+                                    .to_string(),
+                            );
+                            stored.last_error_at = Some(now);
+                            stored.error_code =
+                                Some("claude_oauth_policy_rejection".to_string());
+                        })
+                        .await;
                 }
 
                 // C17A: the request-scoped planner is the sole foreground
@@ -1799,8 +1838,16 @@ async fn codex_supporters_after_cold_wait(
 /// A 401 is an explicit authentication failure. A 403 can also be returned for
 /// authorization policy and quota failures, so it triggers credential rotation
 /// only when the provider supplies a structured token/authentication code.
-/// Free-text messages are intentionally not classified.
+/// Free-text messages are intentionally not classified — except for the narrow
+/// Claude OAuth policy-rejection predicate, where a refresh provably cannot
+/// help (policy/transport/ban, not expiry).
 fn is_refreshable_auth_failure(status: StatusCode, body: Option<&[u8]>) -> bool {
+    if crate::core::translator::request::claude_format::is_claude_oauth_policy_rejection(
+        status.as_u16(),
+        body,
+    ) {
+        return false;
+    }
     if status == StatusCode::UNAUTHORIZED {
         return true;
     }
@@ -3742,8 +3789,9 @@ mod tests {
 
     use super::{
         attempt_error_response, build_dashboard_sse_response, build_proxied_response,
-        has_native_codex_web_search, select_connection, select_connection_with_supporters,
-        should_prefetch_message_images, tool_image_support, StreamDispatch,
+        has_native_codex_web_search, is_refreshable_auth_failure, select_connection,
+        select_connection_with_supporters, should_prefetch_message_images, tool_image_support,
+        StreamDispatch,
     };
     use crate::core::account_fallback::ProviderAttemptError;
     use crate::core::chat::RequestPlan;
@@ -3751,6 +3799,21 @@ mod tests {
     use crate::core::translator::registry::Format;
     use crate::core::translator::response_transform::OpenAiTransformer;
     use crate::types::{AppDb, CustomModel, ProviderConnection};
+
+    #[test]
+    fn refresh_guard_skips_claude_policy_rejections() {
+        let policy = r#"{"error":{"message":"OAuth authentication is currently not supported."}}"#;
+        assert!(!is_refreshable_auth_failure(
+            StatusCode::UNAUTHORIZED,
+            Some(policy.as_bytes())
+        ));
+        // Plain 401 without policy text still refreshes.
+        let plain = r#"{"error":{"message":"invalid token"}}"#;
+        assert!(is_refreshable_auth_failure(
+            StatusCode::UNAUTHORIZED,
+            Some(plain.as_bytes())
+        ));
+    }
 
     #[test]
     fn tool_image_gate_uses_advertised_model_capability_and_overrides() {

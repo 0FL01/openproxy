@@ -67,7 +67,10 @@ const CLAUDE_PING_MODEL: &str = "claude-haiku-4-5-20251001";
 const CLAUDE_PING_TEXT: &str = "hi";
 const CLAUDE_PING_MAX_TOKENS: u32 = 1;
 const CLAUDE_ANTHROPIC_VERSION: &str = "2023-06-01";
-const CLAUDE_ANTHROPIC_BETA: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28";
+// Explicit resync of ANTHROPIC_BETA_BASE (default.rs) minus
+// token-efficient-tools, plus heavy — kept as a literal on purpose so a
+// shared-helper change cannot silently alter ping behavior.
+const CLAUDE_ANTHROPIC_BETA: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12";
 
 const CODEX_PING_TEXT: &str = "hi";
 const CODEX_PING_INSTRUCTIONS: &str = "Reply with OK.";

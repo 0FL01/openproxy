@@ -527,9 +527,11 @@ fn default_executor_builds_expected_headers() {
         .build_headers("claude-sonnet-4.5", &connection("anthropic"), false)
         .expect("anthropic headers");
     assert_eq!(anthropic_headers["x-api-key"], "sk-test");
+    // F2: first-party `anthropic` shares the per-model beta union with
+    // `claude` (was a stale 2-flag static).
     assert_eq!(
         anthropic_headers["anthropic-beta"],
-        "claude-code-20250219,interleaved-thinking-2025-05-14"
+        "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,advanced-tool-use-2025-11-20,effort-2025-11-24"
     );
     assert!(anthropic_headers.get("authorization").is_none());
 
