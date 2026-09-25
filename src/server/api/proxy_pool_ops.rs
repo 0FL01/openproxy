@@ -546,19 +546,17 @@ async fn test_proxy_url(
             elapsed_ms: Some(started_at.elapsed().as_millis() as u64),
             error: None,
         },
-        Err(error) => {
-            return TestResult {
-                ok: false,
-                status: 500,
-                status_text: None,
-                elapsed_ms: None,
-                error: Some(if error.is_timeout() {
-                    "Proxy test timed out".to_string()
-                } else {
-                    error.to_string()
-                }),
-            }
-        }
+        Err(error) => TestResult {
+            ok: false,
+            status: 500,
+            status_text: None,
+            elapsed_ms: None,
+            error: Some(if error.is_timeout() {
+                "Proxy test timed out".to_string()
+            } else {
+                error.to_string()
+            }),
+        },
     }
 }
 

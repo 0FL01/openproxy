@@ -414,9 +414,11 @@ fn replace_citation_markers(output: &str, results: &[IndexedResult]) -> String {
                 .unwrap_or_default();
             if let Some((_, label)) = inner.split_once('†') {
                 let label = label.trim();
-                return (!label.is_empty())
-                    .then(|| format!("[{label}]"))
-                    .unwrap_or_default();
+                return if label.is_empty() {
+                    String::new()
+                } else {
+                    format!("[{label}]")
+                };
             }
             references
                 .get(inner)

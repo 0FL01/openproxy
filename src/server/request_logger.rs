@@ -180,7 +180,7 @@ impl RequestLog {
                     }
                     Err(error) => {
                         watch.fail("upstream_error");
-                        yield Err(std::io::Error::new(std::io::ErrorKind::Other, error));
+                        yield Err(std::io::Error::other(error));
                         return;
                     }
                 }
