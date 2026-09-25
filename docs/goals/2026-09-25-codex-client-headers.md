@@ -1,6 +1,6 @@
 # Goal: Codex client version and shared headers
 
-Status: active
+Status: complete
 Source: User request to audit the plan, require shared provider/search headers, then create a goal, implement iteratively, commit, push, and deploy (2026-09-25). Production Compose on this host and `origin/main` confirmed by user.
 Last updated: 2026-09-25
 
@@ -29,8 +29,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: User instruction “формируй goal с копией плана и итеративно реализовать коммит пуш деплой” and confirmation of production Compose and origin/main.
   - Acceptance: Only goal-owned code/tests/docs are committed, `origin/main` matches the commit, production Compose `openproxy-prod` is running the new image with its existing volume and health check passes on `127.0.0.1:4623`.
   - Primary evidence: Staged diff, git refs, Compose service status, and `/health`.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: Commit `095be09e` pushed to `origin/main`; `docker compose up -d --build` built `openproxy:prod` as `sha256:ffd5321e499643db3fff440521e1f9085bd7f61133d7654bd36d22a901642661`. Compose reported healthy, the container runs that image and still mounts `openproxy-prod-data:/app/data`, and `curl -fsS http://127.0.0.1:4623/health` returned `"status":"ok"`.
 
 ### Constraints
 - Preserve authenticated, stateless one-shot `/v1/mcp` search and account fallback; do not turn search `body.id` into a session header.
@@ -44,7 +44,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - Target: Version constants and shared outbound Codex headers for Responses, models catalog, and standalone search.
 - Expected paths and direct consumers: `src/core/config/app_constants.rs`, `src/core/executor/codex.rs`, `src/core/executor/codex_search.rs`, `src/core/executor/mod.rs`, `src/server/codex_catalog.rs`, existing `src/core/usage/quota_fetcher.rs::codex_account_id`, and closest tests (`src/core/executor/codex.rs`, `src/server/codex_catalog.rs`, `tests/lean_proxy_codex_c20.rs`), plus this goal.
 - Allowed and forbidden artifacts: At most one small internal shared header helper in the existing Codex executor area; no new dependency, public generic API, schema, persistent state, service, or unrelated formatting.
-- Deployment: One scoped commit pushed to `origin/main`, then `docker compose up -d --build` for `openproxy-prod` and health verification; no volume deletion or unrelated services.
+- Deployment: One scoped implementation commit pushed to `origin/main`, then `docker compose up -d --build` for `openproxy-prod` and health verification; a documentation-only closure commit records completion without rebuilding the unchanged image. No volume deletion or unrelated services.
 
 ## Approved Implementation Plan (copy of audited plan)
 1. Pin `0.157.0` in `CODEX_CLIENT_VERSION` and `CODEX_USER_AGENT`. The catalog already uses that constant for `client_version` and `minimal_client_version`; do not redesign its filter.
@@ -52,16 +52,16 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 3. Check outgoing requests against a local mock upstream: version/identity parity, account choice when both account fields exist, search without Responses session header, and relevant `Accept`; reuse nearest tests and add one search header regression if absent. Run targeted Rust checks, inspect diff, commit, push, production Compose deploy, and verify health.
 
 ## Current Checkpoint
-- Closes: R3.
-- Smallest next action: Review only the intended diff and secret hygiene, commit goal-owned paths (the new goal is ignored by default and must be staged explicitly), push `origin/main`, deploy production Compose preserving its volume, and verify health.
-- Expected evidence: Git refs match, Compose reports the updated image healthy, and `/health` succeeds.
-- Stop or replan if: Push is rejected, Compose fails, or health fails; record the exact blocker without touching persistent data.
+- Closes: R1, R2, R3.
+- Smallest next action: None after documentation-only closure is pushed.
+- Expected evidence: Git refs match; production image and `/health` have already been verified.
+- Stop or replan if: Closure push fails; record the exact blocker without touching the deployed image.
 
 ## Current State
-- Resolved: R1/R2. Production deploy target confirmed.
-- Last relevant evidence: `cargo test -p openproxy --test lean_proxy_codex_c20` (9 passed), `cargo test -p openproxy --lib test_codex_headers_advertise_current_client`, `cargo test -p openproxy --lib parser_filters_and_sanitizes_codex_models`, `cargo fmt --all --check`, and `cargo clippy -p openproxy --all-targets` succeeded. Strict `clippy -- -D warnings` fails on three existing unrelated warnings in `proxy_pool_ops.rs`, `codex_search.rs`, and `request_logger.rs`; none is in this diff.
+- Resolved: R1/R2/R3.
+- Last relevant evidence: Focused tests (C20: 9 passed; two Codex unit tests), `cargo fmt --all --check`, and `cargo clippy -p openproxy --all-targets` succeeded; production Compose and health passed. Strict `clippy -- -D warnings` fails on three existing unrelated warnings in `proxy_pool_ops.rs`, `codex_search.rs`, and `request_logger.rs`; none is in this diff.
 - Blocker: None.
-- Next: Commit, push, deploy, and verify R3.
+- Next: No runtime work; finish publication of this closure document, then stop.
 
 ## Material Decisions
 - 2026-09-25: “Parity” means shared declared client identity and correct account, not byte-for-byte transport/session parity with the native CLI.
@@ -70,9 +70,10 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 ## Checkpoint History
 - 2026-09-25: Contract frozen from the audited plan; implementation not yet started.
 - 2026-09-25: R1/R2 verified via captured requests and focused tests. Strict Clippy found three pre-existing warnings; non-strict Clippy and formatting pass. Next: R3.
+- 2026-09-25: R3 implementation commit pushed and production image built, deployed, healthy, and mounted on the existing volume. No runtime work remains.
 
 ## Completion
-- Resolved outcomes:
-- Commands and artifacts:
-- Constraint and diff-scope check:
-- Final status:
+- Resolved outcomes: R1, R2, R3.
+- Commands and artifacts: Focused Codex tests, formatting, non-strict Clippy, staged-diff review, commit/push, `docker compose up -d --build`, Compose health/volume/image inspection, and `/health`.
+- Constraint and diff-scope check: Only Codex version/shared headers, existing C20 test, and this goal changed; search remains stateless and credentials private; no new dependency, service, or persistent data changes.
+- Final status: complete.
