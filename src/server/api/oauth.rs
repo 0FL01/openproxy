@@ -39,10 +39,7 @@ use crate::core::utils::antigravity_project::extract_google_project_id;
 
 const PKCE_FLOW_TTL_SECS: i64 = 600;
 const DEVICE_FLOW_TTL_SECS: i64 = 900;
-const CLAUDE_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-const CLAUDE_AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
-const CLAUDE_TOKEN_URL: &str = "https://api.anthropic.com/v1/oauth/token";
-const CLAUDE_SCOPE: &str = "org:create_api_key user:profile user:inference";
+// Claude OAuth identity: crate::oauth::providers (C46 single source).
 const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CODEX_AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
 const CODEX_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
@@ -555,20 +552,6 @@ fn is_device_code_provider(provider: &str) -> bool {
         provider,
         "github" | "kimi-coding" | "kilocode" | "codebuddy" | "codebuddy-cn" | "codebuddy-intl"
     )
-}
-
-fn claude_authorize_url() -> String {
-    std::env::var("OPENPROXY_CLAUDE_AUTHORIZE_URL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| CLAUDE_AUTHORIZE_URL.to_string())
-}
-
-fn claude_token_url() -> String {
-    std::env::var("OPENPROXY_CLAUDE_TOKEN_URL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| CLAUDE_TOKEN_URL.to_string())
 }
 
 fn codex_authorize_url() -> String {
@@ -1383,13 +1366,13 @@ async fn gitlab_pat_auth(
 
 fn build_claude_auth_url(redirect_uri: &str, state: &str, code_challenge: &str) -> String {
     build_query_url(
-        &claude_authorize_url(),
+        &providers::claude_authorize_url(),
         &[
             ("code", "true".to_string()),
-            ("client_id", CLAUDE_CLIENT_ID.to_string()),
+            ("client_id", providers::CLAUDE_CLIENT_ID.to_string()),
             ("response_type", "code".to_string()),
             ("redirect_uri", redirect_uri.to_string()),
-            ("scope", CLAUDE_SCOPE.to_string()),
+            ("scope", providers::CLAUDE_SCOPES.join(" ")),
             ("code_challenge", code_challenge.to_string()),
             ("code_challenge_method", "S256".to_string()),
             ("state", state.to_string()),
@@ -1802,14 +1785,14 @@ async fn exchange_claude_compat(
     };
 
     let response = reqwest::Client::new()
-        .post(claude_token_url())
+        .post(providers::claude_token_url())
         .header("Content-Type", "application/json")
         .header("Accept", "application/json")
         .json(&json!({
             "code": auth_code,
             "state": if code_state.is_empty() { state.unwrap_or_default() } else { code_state },
             "grant_type": "authorization_code",
-            "client_id": CLAUDE_CLIENT_ID,
+            "client_id": providers::CLAUDE_CLIENT_ID,
             "redirect_uri": redirect_uri,
             "code_verifier": code_verifier,
         }))
@@ -1827,6 +1810,14 @@ async fn exchange_claude_compat(
         .await
         .map_err(|error| format!("Token exchange failed: {error}"))?;
 
+    // Best-effort enrichment: email feeds the upsert in
+    // `create_imported_oauth_connection` so repeat logins update the same
+    // connection instead of duplicating it. Any failure resolves to
+    // `(None, None)` — login never fails because enrichment did.
+    let (email, display_name) = fetch_claude_profile(&token_response.access_token)
+        .await
+        .unwrap_or((None, None));
+
     Ok(ProviderConnection {
         provider: "claude".to_string(),
         auth_type: "oauth".to_string(),
@@ -1836,9 +1827,54 @@ async fn exchange_claude_compat(
             .expires_in
             .map(crate::oauth::expires_at_from_seconds),
         scope: token_response.scope,
+        display_name,
+        email,
         test_status: Some("active".to_string()),
         ..Default::default()
     })
+}
+
+/// Best-effort Claude account enrichment after a code exchange.
+///
+/// Unknown endpoint shape, non-success status, or any transport failure
+/// resolves to `Err(())`; the caller treats that as "no enrichment".
+async fn fetch_claude_profile(access_token: &str) -> Result<(Option<String>, Option<String>), ()> {
+    let response = reqwest::Client::new()
+        .get(providers::claude_profile_url())
+        .timeout(std::time::Duration::from_secs(10))
+        .header("Accept", "application/json")
+        .header("anthropic-version", "2023-06-01")
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .header("authorization", format!("Bearer {access_token}"))
+        .send()
+        .await
+        .map_err(|_| ())?;
+
+    if !response.status().is_success() {
+        return Err(());
+    }
+
+    let body: Value = response.json().await.map_err(|_| ())?;
+    let non_empty = |value: Option<&str>| {
+        value
+            .filter(|text| !text.trim().is_empty())
+            .map(str::to_string)
+    };
+    let email = non_empty(
+        body.get("user")
+            .and_then(|user| user.get("email"))
+            .or_else(|| body.get("email"))
+            .or_else(|| body.get("account").and_then(|account| account.get("email")))
+            .and_then(Value::as_str),
+    );
+    let display_name = non_empty(
+        body.get("user")
+            .and_then(|user| user.get("name"))
+            .or_else(|| body.get("name"))
+            .or_else(|| body.get("display_name"))
+            .and_then(Value::as_str),
+    );
+    Ok((email, display_name))
 }
 
 fn extract_codex_account_info(
@@ -2606,6 +2642,19 @@ pub async fn start_oauth_flow(
         }
     };
 
+    // C46: Claude uses only the dashboard authorize+exchange flow (PKCE with
+    // the Claude Code client id and JSON token exchange). The generic
+    // start/callback path cannot serve it (unregistered client id and
+    // form-encoded exchange), so it is explicitly unsupported, not broken.
+    if provider == "claude" {
+        return make_error_response(
+            StatusCode::BAD_REQUEST,
+            "Claude login uses GET /api/oauth/claude/authorize + POST /api/oauth/claude/exchange",
+            "unsupported_flow",
+            &provider,
+        );
+    }
+
     let code_verifier = if provider == "xai" {
         generate_code_verifier_with_len(96)
     } else {
@@ -2664,6 +2713,16 @@ pub async fn oauth_callback(
     Path(provider): Path<String>,
     Query(query): Query<CallbackQuery>,
 ) -> Response {
+    // C46: see start_oauth_flow — Claude has no generic callback path.
+    if provider == "claude" {
+        return make_error_response(
+            StatusCode::BAD_REQUEST,
+            "Claude login uses GET /api/oauth/claude/authorize + POST /api/oauth/claude/exchange",
+            "unsupported_flow",
+            &provider,
+        );
+    }
+
     if let Some(error) = &query.error {
         let desc = query.error_description.as_deref().unwrap_or(error);
         return make_error_response(StatusCode::BAD_REQUEST, desc, error, &provider);

@@ -477,6 +477,12 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         return;
       }
 
+      // Claude shows a bare `code#state` on platform.claude.com instead of redirecting
+      if (provider === "claude" && input && !input.includes("://")) {
+        await exchangeTokens(input, null);
+        return;
+      }
+
       if (provider === "kimchi" && input && !input.includes("://") && !input.includes("?")) {
         await exchangeTokens(input, null);
         return;

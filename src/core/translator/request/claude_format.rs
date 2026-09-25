@@ -388,6 +388,182 @@ pub fn normalize_native_claude_request(body: &mut Value, model: &str) {
     }
 }
 
+// ─── C46 Claude Code harness identity ─────────────────────────────────
+//
+// Relay-parity (Wei-Shaw/claude-relay-service `_processRequestBody`):
+// traffic that is not genuine Claude Code gets the reference identity
+// prompt while the original client instructions relocate to messages as a
+// user/assistant pair. The reference line below matches relay,
+// opencode-claude-auth `SYSTEM_IDENTITY`, and OpenCode v0.6.0
+// `anthropic_spoof.txt` byte-for-byte.
+//
+// Deviations from relay (documented):
+// - `system` is set as a one-element block array, not a bare string, so the
+//   deterministic `prepare_claude_request` cache policy anchors its stable
+//   breakpoint on the reference block (R5: byte-stable prefix ⇒ cache hit).
+// - TTL-strip / 4-block cap are NOT duplicated here: `prepare_claude_request`
+//   already strips every client marker and re-adds its own breakpoints.
+// - Device id is a fixed constant hash (relay-equivalent), never persisted:
+//   the transform is account-independent, so prepared bytes stay shareable
+//   across fallback accounts (C27).
+
+/// Reference Claude Code identity prompt.
+pub const CLAUDE_CODE_REFERENCE_SYSTEM: &str =
+    "You are Claude Code, Anthropic's official CLI for Claude.";
+/// Lowercase marker for the real-CLI similarity check.
+const CLAUDE_CODE_IDENTITY_MARKER: &str = "you are claude code";
+const CLAUDE_HARNESS_INSTRUCTION_PREFIX: &str = "[System Instructions - follow these strictly]\n";
+const CLAUDE_HARNESS_ACK_TEXT: &str = "Understood. I will follow these instructions.";
+/// sha256("openproxy-claude-code-device") — fixed relay-style device id.
+const CLAUDE_HARNESS_DEVICE_ID: &str =
+    "9f1be8d434f86404beb71f0fd9a39f4e9514df0078f980a961e7f23b85174b26";
+
+/// Request-scoped Claude harness context (C46). `None` = passthrough.
+pub struct ClaudeHarnessIdentity {
+    pub session_id: String,
+    pub client_ua: Option<String>,
+}
+
+/// C46 first-party check: `claude`/`anthropic` routed straight to
+/// `api.anthropic.com` — no third-party node, no custom base URL.
+pub fn claude_first_party(
+    provider: &str,
+    custom_base_url: Option<&str>,
+    gateway_node: bool,
+) -> bool {
+    if !(provider == "claude" || provider == "anthropic") {
+        return false;
+    }
+    if gateway_node {
+        return false;
+    }
+    if custom_base_url.is_some_and(|url| !url.trim().is_empty()) {
+        return false;
+    }
+    true
+}
+
+/// C46 gate: first-party `claude`/`anthropic` subscription-OAuth only.
+/// API keys, third-party nodes/gateways, and other providers pass.
+pub fn claude_harness_gated(
+    provider: &str,
+    auth_type: &str,
+    custom_base_url: Option<&str>,
+    gateway_node: bool,
+) -> bool {
+    if auth_type != "oauth" {
+        return false;
+    }
+    claude_first_party(provider, custom_base_url, gateway_node)
+}
+
+/// Relay `_isActualClaudeCodeRequest`: reference identity in system +
+/// `claude-cli/<version> (` UA. Pure function — same input, same verdict.
+pub fn is_real_claude_code_request(system_text: &str, client_ua: Option<&str>) -> bool {
+    let ua_ok = client_ua.is_some_and(|ua| {
+        let lower = ua.to_lowercase();
+        let Some(version) = lower.strip_prefix("claude-cli/") else {
+            return false;
+        };
+        let version_len = version.chars().take_while(|c| !c.is_whitespace()).count();
+        version_len > 0 && lower.contains('(')
+    });
+    ua_ok
+        && system_text
+            .to_lowercase()
+            .contains(CLAUDE_CODE_IDENTITY_MARKER)
+}
+
+fn extract_system_text(system: Option<&Value>) -> String {
+    match system {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(|block| {
+                if block.get("type").and_then(Value::as_str) == Some("text") {
+                    block.get("text").and_then(Value::as_str)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        _ => String::new(),
+    }
+}
+
+/// Apply the C46 harness transform to a Messages body.
+///
+/// Genuine Claude Code traffic passes through byte-unchanged. Anything else
+/// gets the reference system, the relocated instruction pair, and a default
+/// `metadata.user_id` (client values win). Returns true when spoofed.
+///
+/// Must run BEFORE `prepare_claude_request` so its deterministic cache
+/// policy and thinking/order fixes apply uniformly.
+pub fn apply_claude_harness(body: &mut Value, harness: &ClaudeHarnessIdentity) -> bool {
+    let Some(obj) = body.as_object_mut() else {
+        return false;
+    };
+    let original = extract_system_text(obj.get("system"));
+    if is_real_claude_code_request(&original, harness.client_ua.as_deref()) {
+        return false;
+    }
+
+    obj.insert(
+        "system".to_string(),
+        json!([{
+            "type": "text",
+            "text": CLAUDE_CODE_REFERENCE_SYSTEM,
+        }]),
+    );
+
+    if !original.trim().is_empty() {
+        let instruction = json!({
+            "role": "user",
+            "content": [{
+                "type": "text",
+                "text": format!("{CLAUDE_HARNESS_INSTRUCTION_PREFIX}{}", original.trim()),
+            }],
+        });
+        let ack = json!({
+            "role": "assistant",
+            "content": [{ "type": "text", "text": CLAUDE_HARNESS_ACK_TEXT }],
+        });
+        match obj.get_mut("messages").and_then(Value::as_array_mut) {
+            Some(messages) => {
+                messages.insert(0, ack);
+                messages.insert(0, instruction);
+            }
+            None => {
+                obj.insert("messages".to_string(), Value::Array(vec![instruction, ack]));
+            }
+        }
+    }
+
+    let set_user_id = !obj
+        .get("metadata")
+        .and_then(|metadata| metadata.get("user_id"))
+        .and_then(Value::as_str)
+        .is_some_and(|id| !id.is_empty());
+    if set_user_id {
+        let user_id = json!({
+            "device_id": CLAUDE_HARNESS_DEVICE_ID,
+            "account_uuid": "",
+            "session_id": harness.session_id,
+        })
+        .to_string();
+        match obj.get_mut("metadata").and_then(Value::as_object_mut) {
+            Some(metadata) => {
+                metadata.insert("user_id".to_string(), Value::String(user_id));
+            }
+            None => {
+                obj.insert("metadata".to_string(), json!({ "user_id": user_id }));
+            }
+        }
+    }
+    true
+}
+
 // ─── prepareClaudeRequest ───────────────────────────────────────────
 
 /// Prepare a request body for a Claude-format endpoint.
@@ -821,6 +997,131 @@ fn fix_tool_use_ordering(messages: Vec<Value>) -> Vec<Value> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // ─── C46 harness identity ──────────────────────────────────────
+
+    fn harness(session: &str, ua: Option<&str>) -> ClaudeHarnessIdentity {
+        ClaudeHarnessIdentity {
+            session_id: session.to_string(),
+            client_ua: ua.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn harness_gate_only_first_party_oauth() {
+        assert!(claude_harness_gated("claude", "oauth", None, false));
+        assert!(claude_harness_gated("anthropic", "oauth", None, false));
+        assert!(!claude_harness_gated("claude", "apikey", None, false));
+        assert!(!claude_harness_gated(
+            "anthropic",
+            "oauth",
+            Some("https://gateway/x"),
+            false
+        ));
+        assert!(!claude_harness_gated("claude", "oauth", None, true));
+        assert!(!claude_harness_gated("openrouter", "oauth", None, false));
+        assert!(!claude_harness_gated("claude", "none", None, false));
+    }
+
+    #[test]
+    fn real_claude_code_passes_classifier() {
+        let system = "You are Claude Code, Anthropic's official CLI for Claude.\nDo work.";
+        assert!(is_real_claude_code_request(
+            system,
+            Some("claude-cli/2.1.282 (external, cli)")
+        ));
+        assert!(!is_real_claude_code_request(
+            system,
+            Some("opencode/1.18.31")
+        ));
+        assert!(!is_real_claude_code_request(system, None));
+        assert!(!is_real_claude_code_request(
+            "You are a helpful assistant.",
+            Some("claude-cli/2.1.282 (external, cli)")
+        ));
+        assert!(!is_real_claude_code_request(system, Some("claude-cli/")));
+    }
+
+    #[test]
+    fn harness_spoofs_opencode_traffic() {
+        let mut body = json!({
+            "model": "claude-sonnet-4-5",
+            "system": "Be terse.",
+            "messages": [{ "role": "user", "content": "hi" }],
+        });
+        let h = harness("sess-1", Some("opencode/1.18.31"));
+        assert!(apply_claude_harness(&mut body, &h));
+
+        assert_eq!(
+            body["system"],
+            json!([{ "type": "text", "text": CLAUDE_CODE_REFERENCE_SYSTEM }])
+        );
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(
+            messages[0]["content"][0]["text"],
+            "[System Instructions - follow these strictly]\nBe terse."
+        );
+        assert!(messages[0]["content"][0].get("cache_control").is_none());
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(
+            messages[1]["content"][0]["text"],
+            "Understood. I will follow these instructions."
+        );
+        assert_eq!(messages[2]["content"], "hi");
+
+        let user_id: Value =
+            serde_json::from_str(body["metadata"]["user_id"].as_str().unwrap()).unwrap();
+        assert_eq!(user_id["account_uuid"], "");
+        assert_eq!(user_id["session_id"], "sess-1");
+        assert!(!user_id["device_id"].as_str().unwrap().is_empty());
+    }
+
+    #[test]
+    fn harness_leaves_real_claude_code_untouched() {
+        let mut body = json!({
+            "model": "claude-sonnet-4-5",
+            "system": "You are Claude Code, Anthropic's official CLI for Claude.",
+            "messages": [{ "role": "user", "content": "hi" }],
+            "metadata": { "user_id": "real-user" },
+        });
+        let before = body.clone();
+        let h = harness("sess-1", Some("claude-cli/2.1.282 (external, cli)"));
+        assert!(!apply_claude_harness(&mut body, &h));
+        assert_eq!(body, before);
+    }
+
+    #[test]
+    fn harness_keeps_client_user_id_and_handles_missing_system() {
+        let mut body = json!({
+            "model": "claude-sonnet-4-5",
+            "messages": [{ "role": "user", "content": "hi" }],
+            "metadata": { "user_id": "client-user" },
+        });
+        let h = harness("sess-1", None);
+        assert!(apply_claude_harness(&mut body, &h));
+        assert_eq!(body["metadata"]["user_id"], "client-user");
+        // No original instructions: reference system only, no injected pair.
+        assert_eq!(body["messages"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn harness_is_deterministic_per_request() {
+        let make = || {
+            json!({
+                "model": "claude-sonnet-4-5",
+                "system": [{ "type": "text", "text": "Be terse." }],
+                "messages": [{ "role": "user", "content": "hi" }],
+            })
+        };
+        let h = harness("sess-9", None);
+        let mut first = make();
+        let mut second = make();
+        apply_claude_harness(&mut first, &h);
+        apply_claude_harness(&mut second, &h);
+        assert_eq!(first, second);
+    }
 
     // ─── normalize_native_claude_request ───────────────────────────
 

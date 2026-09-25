@@ -136,8 +136,28 @@
      "kind": "llm"
     },
     {
+     "id": "claude-opus-4-8",
+     "name": "Claude Opus 4.8",
+     "kind": "llm"
+    },
+    {
+     "id": "claude-opus-4.8",
+     "name": "Claude Opus 4.8",
+     "kind": "llm"
+    },
+    {
      "id": "claude-opus-5",
      "name": "Claude Opus 5",
+     "kind": "llm"
+    },
+    {
+     "id": "claude-opus-5-5",
+     "name": "Claude Opus 5.5",
+     "kind": "llm"
+    },
+    {
+     "id": "claude-opus-5.5",
+     "name": "Claude Opus 5.5",
      "kind": "llm"
     },
     {

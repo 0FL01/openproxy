@@ -185,7 +185,19 @@
     "native_messages_preconversion": false,
     "routed_model_replacement_preserved": true,
     "documented_adapter_wire_guards_preserved": true,
+    "claude_oauth_harness_identity_carve_out": "C46",
     "incompatible_formats_use_registered_translator": true
+  },
+  "claude_oauth_harness_identity": {
+    "checkpoint": "C46",
+    "scope": "first_party_claude_anthropic_oauth_only",
+    "reference_system_substitution": true,
+    "instruction_relocation_to_messages": true,
+    "stable_device_session_metadata": true,
+    "api_key_connections_unchanged": true,
+    "third_party_nodes_unchanged": true,
+    "client_cache_markers_relocated_with_content": true,
+    "synthetic_blocks_carry_no_markers": true
   },
   "generation_retry_policy": {
     "temporal_retry_owner": "client_or_harness",

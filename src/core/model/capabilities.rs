@@ -199,6 +199,14 @@ static MODEL_CAPABILITIES: LazyLock<HashMap<&'static str, Value>> = LazyLock::ne
             serde_json::json!({ "vision": true, "reasoning": true, "search": true, "thinkingFormat": "claude-adaptive", "contextWindow": 1000000, "maxOutput": 128000 }),
         ),
         (
+            "claude-opus-5-5",
+            serde_json::json!({ "vision": true, "reasoning": true, "search": true, "thinkingFormat": "claude-adaptive", "contextWindow": 1000000, "maxOutput": 128000 }),
+        ),
+        (
+            "claude-opus-5.5",
+            serde_json::json!({ "vision": true, "reasoning": true, "search": true, "thinkingFormat": "claude-adaptive", "contextWindow": 1000000, "maxOutput": 128000 }),
+        ),
+        (
             "claude-opus-4.6",
             serde_json::json!({ "vision": true, "reasoning": true, "search": true, "thinkingFormat": "claude-adaptive", "contextWindow": 1000000, "maxOutput": 128000 }),
         ),

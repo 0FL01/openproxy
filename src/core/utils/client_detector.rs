@@ -106,7 +106,7 @@ mod tests {
 
     #[test]
     fn detects_claude_via_user_agent() {
-        let headers = h(&[("user-agent", "claude-cli/2.1.92")]);
+        let headers = h(&[("user-agent", "claude-cli/2.1.282")]);
         assert_eq!(
             detect_client_tool(&headers, &json!({})),
             Some(ClientTool::Claude)

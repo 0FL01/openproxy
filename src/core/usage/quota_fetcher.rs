@@ -2076,8 +2076,11 @@ pub async fn fetch_claude_quota_from_url(access_token: &str, url: &str) -> Value
     };
 
     let status = response.status();
-    if status.as_u16() == 401 || status.as_u16() == 403 {
-        return json!({ "message": "Invalid or expired Claude token" });
+    if status.as_u16() == 401 {
+        return json!({ "message": "Invalid or expired Claude token. Please re-authorize the connection." });
+    }
+    if status.as_u16() == 403 {
+        return json!({ "message": "Claude account access denied (403). Check the account status; refresh will not help." });
     }
     if !status.is_success() {
         return json!({

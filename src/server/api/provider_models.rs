@@ -991,11 +991,17 @@ async fn fetch_anthropic_models(
     version: Option<&str>,
 ) -> Result<ProviderModelsResponse, RouteError> {
     let client = http_client()?;
-    let mut request = client
-        .get(url)
-        .header(CONTENT_TYPE, "application/json")
-        .header("x-api-key", token)
-        .header(AUTHORIZATION, format!("Bearer {token}"));
+    // C46/R7: one credential, one scheme. Subscription OAuth tokens travel
+    // Bearer-only with the OAuth beta surface; API keys travel x-api-key.
+    // Sending an OAuth token as x-api-key is a false auth branch upstream.
+    let mut request = client.get(url).header(CONTENT_TYPE, "application/json");
+    if connection.auth_type == "oauth" {
+        request = request
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .header("anthropic-beta", "oauth-2025-04-20");
+    } else {
+        request = request.header("x-api-key", token);
+    }
     if let Some(version) = version {
         request = request.header("anthropic-version", version);
     }

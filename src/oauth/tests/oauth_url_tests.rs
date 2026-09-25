@@ -18,7 +18,12 @@ fn expected_auth_url_prefix(provider: &str) -> &'static str {
 
 fn expected_scopes(provider: &str) -> &'static [&'static str] {
     match provider {
-        "claude" => &["org:create_api_key", "user:profile", "user:inference"],
+        "claude" => &[
+            "org:create_api_key",
+            "user:profile",
+            "user:inference",
+            "user:sessions:claude_code",
+        ],
         "codex" => &["openid", "profile", "email", "offline_access"],
         "gitlab" => &["api", "read_user"],
         "github" => &["read:user"],
@@ -40,7 +45,12 @@ fn test_scopes_match_provider_data() {
     let tests: &[(&str, &[&str])] = &[
         (
             "claude",
-            &["org:create_api_key", "user:profile", "user:inference"],
+            &[
+                "org:create_api_key",
+                "user:profile",
+                "user:inference",
+                "user:sessions:claude_code",
+            ],
         ),
         ("codex", &["openid", "profile", "email", "offline_access"]),
         ("gitlab", &["api", "read_user"]),

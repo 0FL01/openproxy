@@ -36,7 +36,8 @@ async fn every_explicit_request_fetches_fresh_and_never_returns_stale_on_error()
 
     let auth_error = fetch_claude_quota_from_url("token-c23", &url).await;
     assert_eq!(
-        auth_error["message"], "Invalid or expired Claude token",
+        auth_error["message"],
+        "Invalid or expired Claude token. Please re-authorize the connection.",
         "a prior success must not be returned as fresh after 401"
     );
     let http_error = fetch_claude_quota_from_url("token-c23", &url).await;

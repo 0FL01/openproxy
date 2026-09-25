@@ -873,7 +873,17 @@ impl DefaultExecutor {
             } else {
                 return Err(ExecutorError::MissingCredentials(self.provider.clone()));
             }
-        } else if self.provider == "anthropic" {
+        } else if matches!(self.provider.as_str(), "claude" | "anthropic")
+            && !is_anthropic_compatible
+            && credentials
+                .runtime_transport
+                .as_ref()
+                .and_then(|transport| transport.base_url.as_deref())
+                .is_none_or(|url| url.trim().is_empty())
+        {
+            // First-party Claude: canonical single scheme per credential
+            // type (C46) — API key via x-api-key, subscription OAuth via
+            // Bearer. Third-party transports keep the generic branch below.
             if let Some(api_key) = credentials.api_key.as_deref() {
                 headers.insert("x-api-key", HeaderValue::from_str(api_key)?);
             } else if let Some(access_token) = credentials.access_token.as_deref() {
@@ -984,26 +994,26 @@ impl DefaultExecutor {
                 );
                 headers.insert("X-IS-MULTIROOT", HeaderValue::from_static("false"));
             }
-            // Per-model Anthropic-Beta flags (9router default.js:167-170 +
-            // shared.js selectAnthropicBeta). anthropic-compatible nodes
-            // serving a real Claude model sit in front of Anthropic itself,
-            // so they need the same flags; the model id gates it so gateways
-            // fronting other models are left untouched. Overwrites the
-            // static default (which only had 2 flags).
-            let is_claude_model = model.starts_with("claude-");
-            if self.provider == "claude"
-                || (self.provider.starts_with("anthropic-compatible") && is_claude_model)
-            {
-                if let Ok(val) = HeaderValue::from_str(&select_anthropic_beta(model)) {
-                    headers.insert("anthropic-beta", val);
-                }
-            }
             if self.provider == "kilocode" {
                 if let Some(org_id) =
                     compatible_value(credentials.provider_specific_data.get("orgId"))
                 {
                     headers.insert("x-kilocode-organizationid", HeaderValue::from_str(org_id)?);
                 }
+            }
+        }
+
+        // Per-model Anthropic-Beta flags (9router default.js:167-170 +
+        // shared.js selectAnthropicBeta). Runs outside the auth chain so the
+        // first-party claude branch above gets the same flags the generic
+        // branch used to provide. Gateway nodes are excluded: the dual-auth
+        // branch strips first-party identity and the client beta wins via
+        // the allowlist below (C04). The old anthropic-compatible arm never
+        // fired (those nodes always take the dual branch) and stays out.
+        // Overwrites the static default (which only had 2 flags).
+        if self.provider == "claude" && !is_anthropic_compatible {
+            if let Ok(val) = HeaderValue::from_str(&select_anthropic_beta(model)) {
+                headers.insert("anthropic-beta", val);
             }
         }
 
@@ -1017,6 +1027,29 @@ impl DefaultExecutor {
                         reqwest::header::HeaderName::from_static(name),
                         HeaderValue::from_str(value)?,
                     );
+                }
+            }
+            // C46: default CLI identity for subscription-OAuth traffic when
+            // the client sent none. Client values above win; API-key
+            // connections keep their own identity.
+            if crate::core::translator::request::claude_format::claude_harness_gated(
+                self.provider.as_str(),
+                credentials.auth_type.as_str(),
+                credentials
+                    .runtime_transport
+                    .as_ref()
+                    .and_then(|transport| transport.base_url.as_deref()),
+                is_anthropic_compatible,
+            ) {
+                if !headers.contains_key("user-agent") {
+                    if let Ok(ua) =
+                        HeaderValue::from_str(&crate::oauth::providers::claude_user_agent())
+                    {
+                        headers.insert("user-agent", ua);
+                    }
+                }
+                if !headers.contains_key("x-app") {
+                    headers.insert("x-app", HeaderValue::from_static("cli"));
                 }
             }
         }
@@ -1759,5 +1792,48 @@ mod tests {
             .build_headers_for_request("gpt-5.6-sol", &credentials, false, &client_headers)
             .unwrap();
         assert!(!headers.contains_key("x-cmd-zdr"));
+    }
+
+    #[test]
+    fn claude_oauth_gets_default_cli_identity() {
+        // C46: subscription-OAuth traffic without client identity headers
+        // gets the canonical CLI defaults; client values always win and
+        // API-key connections keep their own identity.
+        let executor = DefaultExecutor::new("claude", Arc::new(ClientPool::new()), None).unwrap();
+        let mut oauth = ProviderConnection::default();
+        oauth.auth_type = "oauth".to_string();
+        oauth.access_token = Some("sk-ant-oat-test".to_string());
+
+        let headers = executor
+            .build_headers_for_request("claude-sonnet-4-5", &oauth, false, &BTreeMap::new())
+            .unwrap();
+        assert_eq!(
+            headers["user-agent"],
+            crate::oauth::providers::claude_user_agent().as_str()
+        );
+        assert_eq!(headers["x-app"], "cli");
+        assert!(headers
+            .get("anthropic-beta")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|beta| beta.contains("oauth-2025-04-20")));
+
+        let client_headers = BTreeMap::from([(
+            "user-agent".to_string(),
+            "claude-cli/2.1.282 (external, cli)".to_string(),
+        )]);
+        let headers = executor
+            .build_headers_for_request("claude-sonnet-4-5", &oauth, false, &client_headers)
+            .unwrap();
+        assert_eq!(headers["user-agent"], "claude-cli/2.1.282 (external, cli)");
+
+        let mut apikey = ProviderConnection::default();
+        apikey.auth_type = "apikey".to_string();
+        apikey.api_key = Some("sk-ant-test".to_string());
+        let headers = executor
+            .build_headers_for_request("claude-sonnet-4-5", &apikey, false, &BTreeMap::new())
+            .unwrap();
+        assert!(!headers.contains_key("user-agent"));
+        assert!(!headers.contains_key("x-app"));
+        assert_eq!(headers["x-api-key"], "sk-ant-test");
     }
 }

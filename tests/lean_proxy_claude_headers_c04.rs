@@ -77,7 +77,7 @@ async fn alternating_claude_and_opencode_clients_never_inherit_headers() {
     .expect("Claude executor");
 
     let claude_cli = headers(&[
-        ("user-agent", "claude-cli/2.1.92"),
+        ("user-agent", "claude-cli/2.1.282"),
         ("x-app", "cli"),
         ("x-claude-code-session-id", "session-a"),
         ("x-stainless-retry-count", "7"),
@@ -132,7 +132,7 @@ async fn alternating_claude_and_opencode_clients_never_inherit_headers() {
         third
             .get("user-agent")
             .and_then(|value| value.to_str().ok()),
-        Some("claude-cli/2.1.92")
+        Some("claude-cli/2.1.282")
     );
     assert_ne!(
         third

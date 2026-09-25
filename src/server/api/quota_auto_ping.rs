@@ -1385,7 +1385,7 @@ async fn send_claude_ping(state: &AppState, connection: &ProviderConnection) -> 
         .header("anthropic-version", CLAUDE_ANTHROPIC_VERSION)
         .header("anthropic-beta", CLAUDE_ANTHROPIC_BETA)
         .header("anthropic-dangerous-direct-browser-access", "true")
-        .header("user-agent", "claude-cli/2.1.92 (external, sdk-cli)")
+        .header("user-agent", crate::oauth::providers::claude_user_agent())
         .header("x-app", "cli")
         .json(&body)
         .send()

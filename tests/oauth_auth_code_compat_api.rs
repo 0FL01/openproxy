@@ -143,7 +143,7 @@ async fn claude_authorize_matches_openproxy_response_shape() {
     assert_eq!(
         json["authUrl"],
         format!(
-            "https://claude.ai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A4624%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference&code_challenge={code_challenge}&code_challenge_method=S256&state={state}"
+            "https://claude.ai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A4624%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code&code_challenge={code_challenge}&code_challenge_method=S256&state={state}"
         )
     );
 }
@@ -199,6 +199,10 @@ async fn claude_exchange_matches_openproxy_and_saves_connection() {
         "OPENPROXY_CLAUDE_TOKEN_URL",
         &format!("{}/v1/oauth/token", server.uri()),
     );
+    let _profile_url = EnvVarGuard::set(
+        "OPENPROXY_CLAUDE_PROFILE_URL",
+        &format!("{}/api/oauth/profile", server.uri()),
+    );
 
     Mock::given(method("POST"))
         .and(path("/v1/oauth/token"))
@@ -215,6 +219,14 @@ async fn claude_exchange_matches_openproxy_and_saves_connection() {
             "refresh_token": "claude-refresh",
             "expires_in": 3600,
             "scope": "org:create_api_key user:profile user:inference"
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/oauth/profile"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "user": { "email": "op@test.dev", "name": "Op User" }
         })))
         .mount(&server)
         .await;
@@ -238,14 +250,15 @@ async fn claude_exchange_matches_openproxy_and_saves_connection() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["success"], true);
     assert_eq!(json["connection"]["provider"], "claude");
-    assert!(json["connection"].get("email").is_none());
+    assert_eq!(json["connection"]["email"], "op@test.dev");
 
     let snapshot = state.db.snapshot();
     assert_eq!(snapshot.provider_connections.len(), 1);
     let connection = &snapshot.provider_connections[0];
     assert_eq!(connection.provider, "claude");
     assert_eq!(connection.auth_type, "oauth");
-    assert_eq!(connection.name.as_deref(), Some("Account 1"));
+    assert_eq!(connection.name.as_deref(), Some("op@test.dev"));
+    assert_eq!(connection.email.as_deref(), Some("op@test.dev"));
     assert_eq!(connection.access_token.as_deref(), Some("claude-access"));
     assert_eq!(connection.refresh_token.as_deref(), Some("claude-refresh"));
     assert_eq!(
@@ -254,6 +267,41 @@ async fn claude_exchange_matches_openproxy_and_saves_connection() {
     );
     assert_eq!(connection.test_status.as_deref(), Some("active"));
     assert!(connection.expires_at.is_some());
+
+    // Repeat login with the same account must upsert, not duplicate.
+    Mock::given(method("POST"))
+        .and(path("/v1/oauth/token"))
+        .and(body_string_contains("auth-code-2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "claude-access-2",
+            "refresh_token": "claude-refresh-2",
+            "expires_in": 3600,
+            "scope": "org:create_api_key user:profile user:inference"
+        })))
+        .mount(&server)
+        .await;
+
+    let app = openproxy::build_app(state.clone());
+    let response = app
+        .oneshot(post_request(
+            "/api/oauth/claude/exchange",
+            json!({
+                "code": "auth-code-2#fragment-state",
+                "redirectUri": "http://localhost:4624/callback",
+                "codeVerifier": "pkce-verifier",
+                "state": "body-state"
+            }),
+        ))
+        .await
+        .unwrap();
+    let (status, _) = response_json(response).await;
+    assert_eq!(status, StatusCode::OK);
+    let snapshot = state.db.snapshot();
+    assert_eq!(snapshot.provider_connections.len(), 1);
+    assert_eq!(
+        snapshot.provider_connections[0].access_token.as_deref(),
+        Some("claude-access-2")
+    );
 }
 
 #[tokio::test]

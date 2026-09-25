@@ -108,11 +108,8 @@ pub fn oauth_endpoint(provider: &str) -> Option<OAuthEndpoint> {
             auth: "https://auth.openai.com/oauth/authorize",
             device_code: None,
         },
-        "anthropic" => OAuthEndpoint {
-            token: "https://api.anthropic.com/v1/oauth/token",
-            auth: "https://api.anthropic.com/v1/oauth/authorize",
-            device_code: None,
-        },
+        // NOTE: no "anthropic" arm — Claude OAuth identity is owned by
+        // crate::oauth::providers (C46 single source), not this dead map.
         "github" => OAuthEndpoint {
             token: "https://github.com/login/oauth/access_token",
             auth: "https://github.com/login/oauth/authorize",

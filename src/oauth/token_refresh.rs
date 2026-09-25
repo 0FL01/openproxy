@@ -32,6 +32,8 @@ use crate::db::Db;
 use crate::types::ProviderConnection;
 
 use super::TOKEN_EXPIRY_BUFFER_MS;
+// Claude OAuth identity: super::providers (C46 single source).
+use super::providers::{claude_token_url, CLAUDE_CLIENT_ID};
 
 // ---------------------------------------------------------------------------
 // Retry with jittered backoff
@@ -369,7 +371,21 @@ impl ConnectionRefreshCoordinator {
             });
         }
 
-        let refreshed = refresh_fn(canonical).await?;
+        let refreshed = match refresh_fn(canonical).await {
+            Ok(result) => result,
+            Err(error) => {
+                // R6: a permanent Claude rejection (revoked/rotated-out
+                // refresh token) is persisted as visible connection state so
+                // the dashboard shows "re-authorize" instead of silently
+                // retrying a dead refresh every background tick.
+                if (key.provider == "claude" || key.provider == "anthropic")
+                    && is_permanent_oauth_refresh_rejection(&error)
+                {
+                    persist_refresh_rejection(&db, key, &error).await;
+                }
+                return Err(error);
+            }
+        };
         let new_access = refreshed.access_token;
         let new_refresh = refreshed.refresh_token;
         let new_expires_at = refreshed
@@ -493,22 +509,58 @@ pub async fn refresh_unconfigured_connection(
     dispatch_oauth_refresh(provider, refresh_token, provider_specific_data).await
 }
 
-/// Execute the provider-specific refresh wire protocol for a canonical
-/// configured connection. Coordination and persistence remain the caller's
-/// responsibility; production callers normally use `refresh_connection`.
-pub async fn refresh_provider_connection_credentials(
-    connection: &ProviderConnection,
-) -> Result<RefreshResult, String> {
-    let refresh_token = connection
-        .refresh_token
-        .as_deref()
-        .ok_or_else(|| "connection has no refresh token".to_string())?;
-    dispatch_oauth_refresh(
-        &connection.provider,
-        refresh_token,
-        &connection.provider_specific_data,
+// ---------------------------------------------------------------------------
+// R6: permanent refresh-rejection diagnostics (C46)
+// ---------------------------------------------------------------------------
+
+/// Trailing `: CODE` parser for refresh error strings, e.g.
+/// "Refresh request returned HTTP 400: invalid_grant".
+pub(crate) fn oauth_refresh_error_code(error: &str) -> Option<&str> {
+    let (_, code) = error.rsplit_once(": ")?;
+    (!code.is_empty()
+        && code.len() <= 80
+        && code
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')))
+    .then_some(code)
+}
+
+/// Permanent (non-retryable) OAuth refresh rejections. A dead refresh token
+/// never heals — the connection needs re-authorization, not another attempt.
+pub(crate) fn is_permanent_oauth_refresh_rejection(error: &str) -> bool {
+    matches!(
+        oauth_refresh_error_code(error),
+        Some(
+            "invalid_grant"
+                | "refresh_token_reused"
+                | "refresh_token_expired"
+                | "refresh_token_invalidated"
+        )
     )
-    .await
+}
+
+async fn persist_refresh_rejection(db: &Db, key: &ConnectionRefreshKey, error: &str) {
+    let code = oauth_refresh_error_code(error).unwrap_or("invalid_grant");
+    let now = chrono::Utc::now().to_rfc3339();
+    let message = format!(
+        "Claude refresh credential was rejected ({code}). Please re-authorize the connection."
+    );
+    let connection_id = key.connection_id.clone();
+    let provider = key.provider.clone();
+    let _ = db
+        .update(move |state| {
+            let Some(connection) = state
+                .provider_connections
+                .iter_mut()
+                .find(|candidate| candidate.id == connection_id && candidate.provider == provider)
+            else {
+                return;
+            };
+            connection.last_error = Some(message);
+            connection.last_error_at = Some(now);
+            connection.error_code = Some(code.to_string());
+        })
+        .await;
 }
 
 // ---------------------------------------------------------------------------
@@ -523,11 +575,8 @@ pub const REFRESH_LEAD_ANTIGRAVITY_MS: u64 = 5 * 60 * 1000; // 5 minutes
 pub const REFRESH_LEAD_XAI_MS: u64 = 5 * 60 * 1000; // 5 minutes
 
 // ---------------------------------------------------------------------------
-// Constants shared by refresh functions
+// Constants shared by refresh functions (Claude lives in super::providers).
 // ---------------------------------------------------------------------------
-
-const CLAUDE_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-pub(crate) const CLAUDE_TOKEN_URL: &str = "https://api.anthropic.com/v1/oauth/token";
 
 const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CODEX_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
@@ -684,7 +733,8 @@ pub fn should_refresh_credentials(
 
 /// Refresh a Claude OAuth access-token.
 ///
-/// POST JSON to `https://api.anthropic.com/v1/oauth/token`.
+/// POST JSON to the canonical Claude token endpoint (relay-parity default
+/// `platform.claude.com`, `OPENPROXY_CLAUDE_TOKEN_URL` override).
 pub async fn refresh_claude_oauth_token(refresh_token: &str) -> Result<RefreshResult, String> {
     let client = reqwest::Client::new();
     let body = serde_json::json!({
@@ -693,7 +743,7 @@ pub async fn refresh_claude_oauth_token(refresh_token: &str) -> Result<RefreshRe
         "client_id": CLAUDE_CLIENT_ID,
     });
     let resp = client
-        .post(CLAUDE_TOKEN_URL)
+        .post(claude_token_url())
         .header(CONTENT_TYPE, "application/json")
         .header(ACCEPT, "application/json")
         .json(&body)

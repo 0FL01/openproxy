@@ -114,7 +114,7 @@ fn codex_refresh_uses_age_only_without_jwt_expiry() {
 #[test]
 fn test_claude_refresh_body_should_be_json() {
     // The Claude exchange sends JSON:
-    //   POST https://api.anthropic.com/v1/oauth/token
+    //   POST https://platform.claude.com/v1/oauth/token
     //   Content-Type: application/json
     //   {"grant_type": "authorization_code", "code": "...", ...}
     //
@@ -223,4 +223,37 @@ fn test_expires_at_from_seconds_is_rfc3339() {
         chrono::DateTime::parse_from_rfc3339(&s).is_ok(),
         "should produce valid RFC 3339: {s}"
     );
+}
+
+// ─── R6: permanent refresh-rejection classification (C46) ────────────────
+
+#[test]
+fn test_claude_permanent_refresh_rejection_classification() {
+    use crate::oauth::token_refresh::{
+        is_permanent_oauth_refresh_rejection, oauth_refresh_error_code,
+    };
+
+    assert_eq!(
+        oauth_refresh_error_code("Refresh request returned HTTP 400: invalid_grant"),
+        Some("invalid_grant")
+    );
+    assert_eq!(oauth_refresh_error_code("transport failure"), None);
+    assert!(is_permanent_oauth_refresh_rejection(
+        "Refresh request returned HTTP 400: invalid_grant"
+    ));
+    assert!(is_permanent_oauth_refresh_rejection(
+        "x: refresh_token_expired"
+    ));
+    assert!(is_permanent_oauth_refresh_rejection(
+        "x: refresh_token_invalidated"
+    ));
+    assert!(!is_permanent_oauth_refresh_rejection(
+        "Claude refresh request failed: connection reset"
+    ));
+    assert!(!is_permanent_oauth_refresh_rejection(
+        "Refresh request returned HTTP 500"
+    ));
+    assert!(!is_permanent_oauth_refresh_rejection(
+        "Refresh request returned HTTP 429: slow_down"
+    ));
 }

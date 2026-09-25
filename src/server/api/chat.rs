@@ -959,6 +959,8 @@ async fn forward_with_provider_fallback(
     // fields below are normalized. DefaultExecutor transforms and serializes it
     // once, then shares the bounded bytes across eligible account attempts.
     let mut default_prepared_body: Option<PreparedUpstreamBody> = None;
+    // C46 harness session: one per chat request, shared by all attempts.
+    let claude_harness_session = uuid::Uuid::new_v4().to_string();
     let codex_supporters = if provider == "codex" {
         Some(codex_supporters_after_cold_wait(state, model).await?)
     } else {
@@ -1508,6 +1510,9 @@ async fn forward_with_provider_fallback(
                     transport: result.transport,
                 })
             } else {
+                let gateway_node = provider_node
+                    .as_ref()
+                    .is_some_and(|node| node.r#type == "anthropic-compatible");
                 let executor = DefaultExecutor::new(
                     provider.to_string(),
                     state.client_pool.clone(),
@@ -1519,24 +1524,63 @@ async fn forward_with_provider_fallback(
                     retry_after: None,
                     upstream_body: None,
                 })?;
+                let request_headers: BTreeMap<String, String> = client_headers
+                    .into_iter()
+                    .flatten()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect();
                 if default_prepared_body
                     .as_ref()
                     .is_none_or(|prepared| !executor.can_reuse_prepared_body(prepared, model))
                 {
+                    // C46: harness identity applies to the planning-fresh body
+                    // clone before the executor prepares (and shares) upstream
+                    // bytes. Account-independent by construction (fixed device
+                    // id, per-request session), so no per-account re-prepare.
+                    let harness =
+                        if crate::core::translator::request::claude_format::claude_harness_gated(
+                            provider,
+                            connection.auth_type.as_str(),
+                            connection
+                                .runtime_transport
+                                .as_ref()
+                                .and_then(|transport| transport.base_url.as_deref()),
+                            gateway_node,
+                        ) {
+                            Some(
+                            crate::core::translator::request::claude_format::ClaudeHarnessIdentity {
+                                session_id: claude_harness_session.clone(),
+                                client_ua: request_headers
+                                    .iter()
+                                    .find(|(name, _)| name.eq_ignore_ascii_case("user-agent"))
+                                    .map(|(_, value)| value.clone()),
+                            },
+                        )
+                        } else {
+                            None
+                        };
+                    let scoped_body;
+                    let body_for_prepare = match harness.as_ref() {
+                        Some(identity) => {
+                            let mut spoofed = request_body.clone();
+                            crate::core::translator::request::claude_format::apply_claude_harness(
+                                &mut spoofed,
+                                identity,
+                            );
+                            scoped_body = spoofed;
+                            &scoped_body
+                        }
+                        None => &request_body,
+                    };
                     default_prepared_body = Some(
                         executor
-                            .prepare_upstream_body(&request_body, model)
+                            .prepare_upstream_body(body_for_prepare, model)
                             .map_err(|err| err.into_provider_attempt_error())?,
                     );
                 }
                 let prepared = default_prepared_body
                     .as_ref()
                     .expect("prepared body was initialized");
-                let request_headers: BTreeMap<String, String> = client_headers
-                    .into_iter()
-                    .flatten()
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect();
                 let result = executor
                     .execute_prepared(
                         model,

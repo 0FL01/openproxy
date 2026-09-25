@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use crate::core::model::catalog::provider_catalog;
 use crate::core::usage::quota_fetcher::fetch_commandcode_quota;
+use crate::oauth::providers::{claude_token_url, CLAUDE_CLIENT_ID};
 use crate::oauth::token_refresh::{
     connection_credential_generation, CONNECTION_REFRESH_COORDINATOR,
 };
@@ -27,8 +28,7 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
 const PROXY_TEST_TIMEOUT: Duration = Duration::from_secs(8);
 const TOKEN_EXPIRY_BUFFER_SECS: i64 = 5 * 60;
 
-const CLAUDE_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-const CLAUDE_TOKEN_URL: &str = "https://api.anthropic.com/v1/oauth/token";
+// Claude OAuth identity: crate::oauth::providers (C46 single source).
 const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CODEX_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const ANTIGRAVITY_CLIENT_ID: &str =
@@ -1163,7 +1163,7 @@ async fn refresh_oauth_token(
         }
         "claude" => {
             refresh_json_token(
-                CLAUDE_TOKEN_URL,
+                &claude_token_url(),
                 json!({
                     "grant_type": "refresh_token",
                     "refresh_token": refresh_token,

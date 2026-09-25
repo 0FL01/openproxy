@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use tower::util::ServiceExt;
 
 const USER_AGENTS: [Option<&str>; 4] = [
-    Some("claude-cli/2.1.92"),
+    Some("claude-cli/2.1.282"),
     Some("opencode/1.18.31"),
     Some("custom-harness/0.0.0"),
     None,
@@ -245,7 +245,7 @@ async fn incompatible_formats_translate_even_for_recognized_native_client() {
     let response = post(
         &app,
         "/v1/chat/completions",
-        Some("claude-cli/2.1.92"),
+        Some("claude-cli/2.1.282"),
         &json!({
             "model": "ac/claude-sonnet-4",
             "messages": [{"role": "user", "content": "translate me"}],

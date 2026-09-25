@@ -480,6 +480,52 @@ async fn build_models_list(
                     efforts: Some(&entry.reasoning_efforts),
                 }));
             }
+            // C46/R7: static `cc` catalog rows carry no limits; overlay the
+            // capabilities table so the OpenCode plugin keeps
+            // `limit{context,output}`. `overlay` fills gaps only, so catalog
+            // values win where present. Unknown models get nothing — floor
+            // defaults are never fabricated (`known_max_output` is the
+            // known-model signal).
+            if matches!(provider_id, "claude" | "anthropic") {
+                let caps = crate::core::model::capabilities::get_capabilities_for_model(
+                    provider_id,
+                    model_id,
+                );
+                let known_output = crate::core::model::capabilities::known_max_output_for_model(
+                    provider_id,
+                    model_id,
+                )
+                .and_then(|value| u32::try_from(value).ok());
+                if known_output.is_some() {
+                    let mut capabilities = Vec::new();
+                    for (flag, cap) in [
+                        (caps.vision, "vision"),
+                        (caps.pdf, "pdf"),
+                        (caps.audio_input, "audioInput"),
+                        (caps.video_input, "videoInput"),
+                        (caps.image_output, "imageOutput"),
+                        (caps.audio_output, "audioOutput"),
+                        (caps.tools, "tools"),
+                        (caps.reasoning, "reasoning"),
+                    ] {
+                        if flag {
+                            capabilities.push(cap.to_string());
+                        }
+                    }
+                    metadata.overlay(OpenCodeModelConfig::from_facts(ModelMetadataFacts {
+                        name: None,
+                        context: u32::try_from(caps.context_window).ok(),
+                        input: None,
+                        output: known_output,
+                        capabilities: &capabilities,
+                        modalities: None,
+                        attachment: None,
+                        reasoning: caps.reasoning.then_some(true),
+                        tool_call: caps.tools.then_some(true),
+                        efforts: None,
+                    }));
+                }
+            }
             if let Some(custom) = snapshot.custom_models.iter().find(|custom| {
                 custom.id.trim() == model_id
                     && [alias, provider_id, static_alias].contains(&custom.provider_alias.trim())
@@ -888,6 +934,46 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::db::Db::load_from(dir.path()).await.unwrap();
         AppState::new(Arc::new(db))
+    }
+
+    #[tokio::test]
+    async fn claude_static_models_carry_capabilities_limits() {
+        // C46/R7: static `cc` catalog rows carry no limits; the capabilities
+        // overlay must supply limit{context,output} + source for the
+        // OpenCode plugin (which drops `limit` unless both are present).
+        let snapshot = AppDb {
+            provider_connections: vec![ProviderConnection {
+                id: "conn-claude".into(),
+                provider: "claude".into(),
+                auth_type: "oauth".into(),
+                access_token: Some("sk-ant-oat-test".into()),
+                is_active: Some(true),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let models = build_models_list(&test_state().await, &snapshot, &[LLM_KIND]).await;
+        for id in [
+            "cc/claude-sonnet-5",
+            "cc/claude-opus-4-8",
+            "cc/claude-opus-5-5",
+        ] {
+            let model = models
+                .iter()
+                .find(|m| m.id == id)
+                .unwrap_or_else(|| panic!("static cc model {id} should appear in /v1/models"));
+            let metadata = model
+                .opencode
+                .as_ref()
+                .expect("opencode metadata should be present");
+            assert_eq!(metadata.source.as_deref(), Some("claude"));
+            let limit = metadata.limit.as_ref().expect("limit should be present");
+            assert!(
+                limit.context.is_some() && limit.output.is_some(),
+                "limit needs context AND output for the plugin: {id}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -2280,6 +2280,26 @@
         "deployment": "Clean commit 0e0007b1 built as sha256:5ff434404671f93fc3f30f22b3a640321f0aaa9478a54dcdaa30e45fc1391158; Compose healthy and /health status ok.",
         "limitations": "The upstream alpha/search endpoint is undocumented and private; rollback is the two C45 runtime commits."
       }
+    },
+    {
+      "id": "C46",
+      "title": "Claude subscription harness identity carve-out",
+      "status": "active",
+      "depends_on": [
+        "C09",
+        "C45"
+      ],
+      "kind": "product",
+      "evidence": [
+        "owner decision 2026-09-25: relay-parity mimicry required, else subscription Claude is unusable (ban/block)",
+        "live Claude Code 2.1.282 bundle: UA template claude-cli/VERSION (external, cli), x-app cli, beta claude-code-20250219 + oauth-2025-04-20 still shipped"
+      ],
+      "scope": "First-party claude/anthropic OAuth connections only: harness transform, cache-marker relocation rules, OAuth constant consolidation, single login path, refresh diagnostics, discovery union, provider notice. API-key connections and all other providers unchanged.",
+      "change": "Declare the C09/C05 carve-out and implement relay-parity Claude Code identity (reference system, instruction relocation, device/session metadata, CLI UA) behind a deterministic gate; consolidate Claude OAuth constants to relay values.",
+      "tests": "Classifier/gate/relocation unit tests, cache-marker relocation tests, OAuth URL-builder tests, discovery union tests, opencode_models plugin tests, parity_tests.",
+      "acceptance": "R1-R8 of docs/goals/2026-09-25-claude-oauth-replace.md verified; live E2E on a real Claude account.",
+      "rollback": "Revert C46 runtime/config/contracts together; C09 passthrough semantics restore automatically.",
+      "result": {}
     }
   ]
 }

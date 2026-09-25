@@ -59,7 +59,7 @@ pub async fn fetch_oauth_quota(connection: &ProviderConnection) -> Value {
     let psd = &connection.provider_specific_data;
     match provider {
         "github" | "github-copilot" => fetch_github_quota(token, provider).await,
-        "claude" => fetch_claude_quota(token, provider).await,
+        "claude" | "anthropic" => fetch_claude_quota(token, provider).await,
         "codex" => {
             let account_id = codex_account_id(psd);
             fetch_codex_quota(token, account_id.as_deref()).await

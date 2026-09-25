@@ -96,13 +96,68 @@ impl OAuthProviderConfig {
 // Provider definitions
 // ---------------------------------------------------------------------------
 
+/// Claude (Anthropic subscription OAuth, C46): single source of truth.
+/// Identity values verified against the live Claude Code 2.1.282 bundle
+/// (built 2026-09-24): `claude-cli/${VERSION} (external, cli)`,
+/// `x-app: cli`, beta `claude-code-20250219` + `oauth-2025-04-20`.
+///
+/// Bump procedure for [`CLAUDE_CLI_VERSION`]: `npm view @anthropic-ai/claude-code version`.
+/// Official Claude Code OAuth client id.
+pub const CLAUDE_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+/// Subscription OAuth authorize endpoint.
+pub const CLAUDE_AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
+/// Subscription OAuth token endpoint (relay-parity default; env-overridable).
+pub const CLAUDE_TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
+/// Account profile endpoint for email/display-name enrichment (fail-open).
+pub const CLAUDE_PROFILE_URL: &str = "https://api.anthropic.com/api/oauth/profile";
+/// Registered redirect: shows the code for manual copy (`code=true`).
+pub const CLAUDE_REDIRECT_URI: &str = "https://platform.claude.com/oauth/code/callback";
+/// Subscription scopes (relay-parity set).
+pub const CLAUDE_SCOPES: &[&str] = &[
+    "org:create_api_key",
+    "user:profile",
+    "user:inference",
+    "user:sessions:claude_code",
+];
+/// Pinned Claude Code CLI version (single source; see bump procedure above).
+pub const CLAUDE_CLI_VERSION: &str = "2.1.282";
+
+/// Canonical Claude Code CLI User-Agent: `claude-cli/<VERSION> (external, cli)`.
+pub fn claude_user_agent() -> String {
+    format!("claude-cli/{CLAUDE_CLI_VERSION} (external, cli)")
+}
+
+/// Authorize URL (allows `OPENPROXY_CLAUDE_AUTHORIZE_URL` override).
+pub fn claude_authorize_url() -> String {
+    std::env::var("OPENPROXY_CLAUDE_AUTHORIZE_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| CLAUDE_AUTHORIZE_URL.to_string())
+}
+
+/// Token URL (allows `OPENPROXY_CLAUDE_TOKEN_URL` override).
+pub fn claude_token_url() -> String {
+    std::env::var("OPENPROXY_CLAUDE_TOKEN_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| CLAUDE_TOKEN_URL.to_string())
+}
+
+/// Profile URL (allows `OPENPROXY_CLAUDE_PROFILE_URL` override).
+pub fn claude_profile_url() -> String {
+    std::env::var("OPENPROXY_CLAUDE_PROFILE_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| CLAUDE_PROFILE_URL.to_string())
+}
+
 pub fn claude() -> OAuthProviderConfig {
     OAuthProviderConfig {
         id: "claude",
-        client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
-        authorize_url: "https://claude.ai/oauth/authorize",
-        token_url: "https://api.anthropic.com/v1/oauth/token",
-        scopes: &["org:create_api_key", "user:profile", "user:inference"],
+        client_id: CLAUDE_CLIENT_ID,
+        authorize_url: CLAUDE_AUTHORIZE_URL,
+        token_url: CLAUDE_TOKEN_URL,
+        scopes: CLAUDE_SCOPES,
         uses_pkce: true,
         extra_params: &[("code", "true")],
         refresh_lead_ms: 4 * 60 * 60 * 1000,
