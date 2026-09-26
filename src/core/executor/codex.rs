@@ -786,20 +786,22 @@ impl CodexExecutor {
         &self,
         request: CodexExecutionRequest,
     ) -> Result<CodexExecutorResponse, CodexExecutorError> {
-        self.execute_inner(request, false).await
+        self.execute_inner(request, false, None).await
     }
 
     pub(crate) async fn execute_prefetched(
         &self,
         request: CodexExecutionRequest,
+        observation: Option<super::codex_cache::CodexCacheObservation>,
     ) -> Result<CodexExecutorResponse, CodexExecutorError> {
-        self.execute_inner(request, true).await
+        self.execute_inner(request, true, observation).await
     }
 
     async fn execute_inner(
         &self,
         mut request: CodexExecutionRequest,
         images_prefetched: bool,
+        observation: Option<super::codex_cache::CodexCacheObservation>,
     ) -> Result<CodexExecutorResponse, CodexExecutorError> {
         let actual_model = Self::parse_codex_model(&request.model);
         // JS codex.js:394-395 — a body-level `_compact: true` flag (set by the
@@ -859,12 +861,16 @@ impl CodexExecutor {
         ensure_final_request_size(&transformed_body).map_err(CodexExecutorError::ImagePrefetch)?;
 
         let client = self.pool.get("openai", request.proxy.as_ref())?;
-        let response = client
+        let builder = client
             .post(&url)
             .headers(headers.clone())
-            .json(&transformed_body)
-            .send()
-            .await?;
+            .json(&transformed_body);
+        if !url.ends_with("/compact") {
+            if let Some(observation) = observation {
+                observation.sent(&transformed_body, &headers, &url);
+            }
+        }
+        let response = builder.send().await?;
 
         // Preserve non-success responses verbatim for the request-scoped
         // account/auth planner. Successful Codex responses are SSE; inspect at
@@ -978,6 +984,80 @@ mod tests {
         CODEX_CLIENT_VERSION, CODEX_ORIGINATOR, CODEX_USER_AGENT,
     };
     use reqwest::header::USER_AGENT;
+
+    #[tokio::test]
+    async fn codex_cache_send_metadata_uses_transformed_body_and_survives_send_failure() {
+        use super::super::codex_cache::CodexCacheObservation;
+        use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+        let upstream = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400))
+            .mount(&upstream)
+            .await;
+        let url = format!("{}/responses", upstream.uri());
+        let node = ProviderNode {
+            base_url: Some(url.clone()),
+            ..Default::default()
+        };
+        let executor = CodexExecutor::new(Arc::new(ClientPool::new()), Some(node)).unwrap();
+        let observation = CodexCacheObservation::default();
+        let request = || CodexExecutionRequest {
+            model: "gpt-test-high".into(),
+            body: json!({"messages":[{"role":"user","content":"private-prompt"}],"prompt_cache_key":"private-key"}),
+            stream: true,
+            credentials: ProviderConnection {
+                api_key: Some("test-credential".into()),
+                ..Default::default()
+            },
+            proxy: None,
+        };
+        executor
+            .execute_prefetched(request(), Some(observation.clone()))
+            .await
+            .unwrap();
+        let captured = upstream.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&captured[0].body).unwrap();
+        let expected = CodexCacheObservation::default();
+        expected.sent(&body, &Default::default(), &url);
+        let data = observation.snapshot().unwrap();
+        assert_eq!(data["model"], body["model"]);
+        assert_eq!(
+            data["envelopeHmac"],
+            expected.snapshot().unwrap()["envelopeHmac"]
+        );
+        assert!(data["sentAt"].is_string());
+        assert!(!data.to_string().contains("private-"));
+
+        let compact = CodexCacheObservation::default();
+        let mut compact_request = request();
+        compact_request.body["_compact"] = json!(true);
+        executor
+            .execute_prefetched(compact_request, Some(compact.clone()))
+            .await
+            .unwrap();
+        assert!(compact.snapshot().is_none());
+
+        // A closed local listener gives a real transport failure, with no live provider call.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let executor = CodexExecutor::new(
+            Arc::new(ClientPool::new()),
+            Some(ProviderNode {
+                base_url: Some(format!("http://{address}/responses")),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        let failed = CodexCacheObservation::default();
+        assert!(executor
+            .execute_prefetched(request(), Some(failed.clone()))
+            .await
+            .is_err());
+        let data = failed.snapshot().unwrap();
+        assert!(data["sentAt"].is_string());
+        assert!(data["completedAt"].is_null());
+    }
 
     #[test]
     fn test_parse_codex_model_with_prefix() {

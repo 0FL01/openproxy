@@ -48,6 +48,7 @@ async fn request_logs_return_metadata_and_filter_results() {
                         "durationMs": 42,
                         "inputTokens": 10,
                         "outputTokens": 20,
+                        "codexCache": {"accountHmac": "private-fingerprint"},
                         "request": "secret prompt",
                         "response": "secret response"
                     }),
@@ -98,6 +99,8 @@ async fn request_logs_return_metadata_and_filter_results() {
     assert_eq!(payload["requests"][0]["route"], "work");
     assert_eq!(payload["requests"][0]["inputTokens"], 10);
     assert_eq!(payload["requests"][0]["apiKeyId"], "consumer-key-id");
+    assert!(!payload.to_string().contains("codexCache"));
+    assert!(!payload.to_string().contains("private-fingerprint"));
     assert_eq!(payload["requests"][0]["apiKeyName"], "OpenCode");
     let serialized = String::from_utf8_lossy(&body);
     assert!(!serialized.contains(TEST_KEY));

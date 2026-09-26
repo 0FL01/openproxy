@@ -6,6 +6,7 @@ mod client_pool;
 mod codebuddy_cn;
 mod codebuddy_intl;
 mod codex;
+pub(crate) mod codex_cache;
 mod codex_headers;
 mod codex_search;
 mod default;

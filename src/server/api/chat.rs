@@ -1094,7 +1094,11 @@ async fn forward_with_provider_fallback(
         }
 
         let attempt_log = match log_context {
-            Some(context) => context.start_attempt(provider, model).await,
+            Some(context) => {
+                context
+                    .start_connected_attempt(provider, model, Some(&connection.id))
+                    .await
+            }
             None => None,
         };
 
@@ -1147,13 +1151,16 @@ async fn forward_with_provider_fallback(
                         upstream_body: None,
                     })?;
                 let result = executor
-                    .execute_prefetched(CodexExecutionRequest {
-                        model: model.to_string(),
-                        body: request_body.clone(),
-                        stream,
-                        credentials: connection.clone(),
-                        proxy,
-                    })
+                    .execute_prefetched(
+                        CodexExecutionRequest {
+                            model: model.to_string(),
+                            body: request_body.clone(),
+                            stream,
+                            credentials: connection.clone(),
+                            proxy,
+                        },
+                        attempt_log.as_ref().map(AttemptLog::codex_cache),
+                    )
                     .await
                     .map_err(|e| {
                         let status = match &e {
@@ -1883,6 +1890,31 @@ fn is_refreshable_auth_failure(status: StatusCode, body: Option<&[u8]>) -> bool 
     })
 }
 
+// Collected legacy/plain responses already own their body. Observe without
+// changing their conversion, output, or collection/cancellation semantics.
+fn observe_collected_codex_body(log: Option<&AttemptLog>, body: &[u8]) {
+    let Some(observation) = log
+        .map(AttemptLog::codex_cache)
+        .filter(|observation| observation.snapshot().is_some())
+    else {
+        return;
+    };
+    if let Ok(value) = serde_json::from_slice::<Value>(body) {
+        observation.observe(None, Some(&value));
+        return;
+    }
+    let mut framer = SseFramer::new();
+    let mut observe = |event: crate::core::stream_framing::SseEvent<'_>| {
+        let value = event
+            .data()
+            .and_then(|data| serde_json::from_str::<Value>(data).ok());
+        observation.observe(event.event(), value.as_ref());
+    };
+    if framer.feed(body, &mut observe).is_ok() {
+        let _ = framer.finish(observe);
+    }
+}
+
 async fn proxy_dashboard_sse(
     response: UpstreamResponse,
     attempt_log: Option<AttemptLog>,
@@ -1893,6 +1925,7 @@ async fn proxy_dashboard_sse(
         Ok(body) => body,
         Err(error) => return collected_body_failure_response(error, attempt_log).await,
     };
+    observe_collected_codex_body(attempt_log.as_ref(), &body_bytes);
 
     let token_usage = extract_token_usage_from_bytes(&body_bytes);
     if let Some(attempt_log) = attempt_log {
@@ -2065,6 +2098,7 @@ fn feed_forced_sse_chunk(
     chunk: &[u8],
     wire_seen: &mut usize,
     wire_limit: usize,
+    codex_cache: Option<&crate::core::executor::codex_cache::CodexCacheObservation>,
 ) -> Result<(), ForcedSseCollectionError> {
     *wire_seen = wire_seen
         .checked_add(chunk.len())
@@ -2081,6 +2115,12 @@ fn feed_forced_sse_chunk(
     let mut ingest_error = None;
     framer
         .feed(chunk, |event| {
+            if let Some(observation) = codex_cache {
+                let value = event
+                    .data()
+                    .and_then(|data| serde_json::from_str::<Value>(data).ok());
+                observation.observe(event.event(), value.as_ref());
+            }
             if ingest_error.is_none() {
                 ingest_error = accumulator.ingest(&event).err();
             }
@@ -2098,6 +2138,7 @@ fn feed_forced_sse_chunk(
 
 async fn collect_forced_sse(
     response: UpstreamResponse,
+    codex_cache: Option<crate::core::executor::codex_cache::CodexCacheObservation>,
 ) -> Result<ForcedSseCollection, ForcedSseCollectionError> {
     let status = response.status();
     let headers = response.headers().clone();
@@ -2147,6 +2188,7 @@ async fn collect_forced_sse(
                     &chunk,
                     &mut wire_seen,
                     wire_limit,
+                    codex_cache.as_ref(),
                 )?;
                 if accumulator.is_terminal() {
                     break;
@@ -2179,6 +2221,7 @@ async fn collect_forced_sse(
                     &data,
                     &mut wire_seen,
                     wire_limit,
+                    codex_cache.as_ref(),
                 )?;
                 if accumulator.is_terminal() {
                     break;
@@ -2191,6 +2234,12 @@ async fn collect_forced_sse(
         let mut finish_error = None;
         framer
             .finish(|event| {
+                if let Some(observation) = &codex_cache {
+                    let value = event
+                        .data()
+                        .and_then(|data| serde_json::from_str::<Value>(data).ok());
+                    observation.observe(event.event(), value.as_ref());
+                }
                 if finish_error.is_none() {
                     finish_error = accumulator.ingest(&event).err();
                 }
@@ -2201,6 +2250,12 @@ async fn collect_forced_sse(
         }
     }
 
+    if !accumulator.saw_any_event() {
+        if let Some(observation) = &codex_cache {
+            let value = serde_json::from_slice::<Value>(&prefix_raw).ok();
+            observation.observe(None, value.as_ref());
+        }
+    }
     Ok(ForcedSseCollection {
         status,
         accumulator,
@@ -2215,7 +2270,11 @@ async fn proxy_sse_to_json_response(
     plan: &RequestPlan,
     attempt_log: Option<AttemptLog>,
 ) -> Response {
-    let collected = match collect_forced_sse(response).await {
+    let codex_cache = attempt_log
+        .as_ref()
+        .map(AttemptLog::codex_cache)
+        .filter(|observation| observation.snapshot().is_some());
+    let collected = match collect_forced_sse(response, codex_cache).await {
         Ok(collected) => collected,
         Err(ForcedSseCollectionError::Body(error)) => {
             return collected_body_failure_response(error, attempt_log).await;
@@ -2292,6 +2351,7 @@ async fn proxy_response(
         Ok(body) => body,
         Err(error) => return collected_body_failure_response(error, attempt_log).await,
     };
+    observe_collected_codex_body(attempt_log.as_ref(), &body_bytes);
 
     // 9router parity (open-sse/handlers/chatCore/nonStreamingHandler.js +
     // open-sse/shared/clineEnvelope.js unwrapClineEnvelope): unwrap before any
@@ -2625,6 +2685,8 @@ async fn proxy_response_with_pending_tracking(
                     custom_tool_names.as_deref(),
                     stop_on_response_completed,
                 );
+                dispatch.codex_cache = attempt_log.as_ref().map(AttemptLog::codex_cache)
+                    .filter(|observation| observation.snapshot().is_some());
                 loop {
                     let next = tokio::time::timeout(SSE_STALL_TIMEOUT, upstream.try_next()).await;
                     match next {
@@ -2730,6 +2792,8 @@ async fn proxy_response_with_pending_tracking(
                     custom_tool_names2.as_deref(),
                     stop_on_response_completed,
                 );
+                dispatch.codex_cache = attempt_log.as_ref().map(AttemptLog::codex_cache)
+                    .filter(|observation| observation.snapshot().is_some());
                 loop {
                     let next = tokio::time::timeout(SSE_STALL_TIMEOUT, body.frame()).await;
                     let frame_result = match next {
@@ -2842,6 +2906,7 @@ async fn proxy_response_with_pending_tracking(
 }
 
 struct StreamDispatch {
+    codex_cache: Option<crate::core::executor::codex_cache::CodexCacheObservation>,
     framer: Option<TextStreamFramer>,
     stop_on_response_completed: bool,
     usage: Option<TokenUsage>,
@@ -2887,6 +2952,7 @@ impl StreamDispatch {
                 .map(TextStreamFramer::new),
             stop_on_response_completed,
             usage: None,
+            codex_cache: None,
             dashboard_transformer,
             translation_state,
             source,
@@ -2996,6 +3062,16 @@ impl StreamDispatch {
             .then(|| frame.payload())
             .flatten()
             .and_then(|payload| serde_json::from_str::<Value>(payload).ok());
+        if let Some(observation) = &self.codex_cache {
+            let diagnostic_value = if parsed.is_none() {
+                frame
+                    .payload()
+                    .and_then(|payload| serde_json::from_str::<Value>(payload).ok())
+            } else {
+                None
+            };
+            observation.observe(frame.event(), parsed.as_ref().or(diagnostic_value.as_ref()));
+        }
         if let Some(value) = parsed.as_ref() {
             self.observe_response_sequence(value);
             if let Some(usage) = extract_token_usage_from_value(value) {
@@ -4361,6 +4437,75 @@ mod tests {
                 .feed(b"eted\r\ndata: {\"type\":\"response.completed\"}\r\n\r\n: ping\r\n\r\n")
                 .response_completed
         );
+    }
+
+    #[tokio::test]
+    async fn codex_cache_observes_original_native_translated_and_forced_usage() {
+        use crate::core::executor::codex_cache::CodexCacheObservation;
+        let fixture = b"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"output\":[],\"usage\":{\"input_tokens\":100,\"output_tokens\":1,\"input_tokens_details\":{\"cached_tokens\":80}}}}\n\n";
+        for target in [Format::OpenAiResponses, Format::OpenAi] {
+            let observation = CodexCacheObservation::default();
+            observation.sent(
+                &json!({"model":"test","input":[]}),
+                &Default::default(),
+                "https://example.test/responses",
+            );
+            let mut dispatch = StreamDispatch::new(
+                Format::OpenAiResponses,
+                target,
+                "text/event-stream",
+                None,
+                None,
+                false,
+            );
+            dispatch.codex_cache = Some(observation.clone());
+            dispatch.feed(&fixture[..17]);
+            assert!(observation.snapshot().unwrap()["completedAt"].is_null());
+            let batch = dispatch.feed(&fixture[17..]);
+            assert!(batch.error.is_none());
+            assert!(!batch.response_completed); // Logging does not change stop policy.
+            let data = observation.snapshot().unwrap();
+            assert_eq!(data["cachedTokens"], 80);
+            assert!(data["completedAt"].is_string());
+        }
+        let observation = CodexCacheObservation::default();
+        observation.sent(
+            &json!({"model":"test","input":[]}),
+            &Default::default(),
+            "https://example.test/responses",
+        );
+        let mut response = axum::http::Response::new(reqwest::Body::from(fixture.to_vec()));
+        response
+            .headers_mut()
+            .insert("content-type", "text/event-stream".parse().unwrap());
+        let response = super::UpstreamResponse::Reqwest(reqwest::Response::from(response));
+        assert!(
+            super::collect_forced_sse(response, Some(observation.clone()))
+                .await
+                .is_ok()
+        );
+        assert_eq!(observation.snapshot().unwrap()["cachedTokens"], 80);
+
+        // EOF/framing failure after observed usage must not erase it.
+        let observation = CodexCacheObservation::default();
+        observation.sent(
+            &json!({"model":"test","input":[]}),
+            &Default::default(),
+            "https://example.test/responses",
+        );
+        let body = b"data: {\"usage\":{\"input_tokens\":100,\"input_tokens_details\":{\"cached_tokens\":80}}}\n\n\xff";
+        let response = reqwest::Response::from(axum::http::Response::new(reqwest::Body::from(
+            body.to_vec(),
+        )));
+        assert!(super::collect_forced_sse(
+            super::UpstreamResponse::Reqwest(response),
+            Some(observation.clone())
+        )
+        .await
+        .is_err());
+        let data = observation.snapshot().unwrap();
+        assert_eq!(data["cachedTokens"], 80);
+        assert!(data["completedAt"].is_null());
     }
 
     #[test]

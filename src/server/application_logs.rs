@@ -169,6 +169,7 @@ enum LogOpKind {
         timestamp: String,
         provider: String,
         model: String,
+        connection_id: Option<String>,
         api_key_id: String,
         api_key_name: String,
         data: Value,
@@ -193,6 +194,7 @@ fn op_bytes(kind: &LogOpKind) -> usize {
             timestamp,
             provider,
             model,
+            connection_id,
             api_key_id,
             api_key_name,
             data,
@@ -201,6 +203,7 @@ fn op_bytes(kind: &LogOpKind) -> usize {
                 + timestamp.len()
                 + provider.len()
                 + model.len()
+                + connection_id.as_ref().map_or(0, String::len)
                 + api_key_id.len()
                 + api_key_name.len()
                 + serde_json::to_string(data).map(|s| s.len()).unwrap_or(0)
@@ -286,6 +289,7 @@ fn write_op_sync(op: LogOp) {
             timestamp,
             provider,
             model,
+            connection_id,
             api_key_id,
             api_key_name,
             data,
@@ -297,7 +301,7 @@ fn write_op_sync(op: LogOp) {
                     timestamp: &timestamp,
                     provider: Some(&provider),
                     model: Some(&model),
-                    connection_id: None,
+                    connection_id: connection_id.as_deref(),
                     status: "pending",
                     api_key_id: Some(&api_key_id),
                     api_key_name: Some(&api_key_name),
@@ -411,6 +415,16 @@ impl RequestLogContext {
     }
 
     pub async fn start_attempt(&self, provider: &str, model: &str) -> Option<AttemptLog> {
+        self.start_connected_attempt(provider, model, None).await
+    }
+
+    pub(crate) async fn start_connected_attempt(
+        &self,
+        provider: &str,
+        model: &str,
+        connection_id: Option<&str>,
+    ) -> Option<AttemptLog> {
+        let connection_id = connection_id.map(str::to_owned);
         let provider = truncate_field(provider);
         let model = truncate_field(model);
         let id = uuid::Uuid::new_v4().to_string();
@@ -428,6 +442,7 @@ impl RequestLogContext {
                         timestamp,
                         provider,
                         model,
+                        connection_id,
                         api_key_id: self.api_key_id.clone(),
                         api_key_name: self.api_key_name.clone(),
                         data: data.clone(),
@@ -443,6 +458,7 @@ impl RequestLogContext {
                     data,
                     finished: Arc::new(AtomicBool::new(false)),
                     lean: true,
+                    codex_cache: Default::default(),
                 })
             }
             // Durable: synchronous insert before upstream with backpressure.
@@ -465,7 +481,7 @@ impl RequestLogContext {
                                 timestamp: &record_timestamp,
                                 provider: Some(&record_provider),
                                 model: Some(&record_model),
-                                connection_id: None,
+                                connection_id: connection_id.as_deref(),
                                 status: "pending",
                                 api_key_id: Some(&api_key_id),
                                 api_key_name: Some(&api_key_name),
@@ -485,6 +501,7 @@ impl RequestLogContext {
                         data,
                         finished: Arc::new(AtomicBool::new(false)),
                         lean: false,
+                        codex_cache: Default::default(),
                     }),
                     Ok(Err(error)) => {
                         tracing::warn!(target: "openproxy::logs", %error, "failed to start request log");
@@ -527,9 +544,14 @@ pub struct AttemptLog {
     data: Value,
     finished: Arc<AtomicBool>,
     lean: bool,
+    codex_cache: crate::core::executor::codex_cache::CodexCacheObservation,
 }
 
 impl AttemptLog {
+    pub(crate) fn codex_cache(&self) -> crate::core::executor::codex_cache::CodexCacheObservation {
+        self.codex_cache.clone()
+    }
+
     pub async fn finish(
         self,
         status: &'static str,
@@ -564,6 +586,9 @@ impl AttemptLog {
         error_kind: Option<&'static str>,
     ) -> Value {
         let mut data = self.data.as_object().cloned().unwrap_or_else(Map::new);
+        if let Some(observation) = self.codex_cache.snapshot() {
+            data.insert("codexCache".into(), observation);
+        }
         data.insert("statusCode".into(), json!(status_code));
         if let Some(kind) = error_kind {
             data.insert("errorKind".into(), json!(kind));
@@ -806,6 +831,61 @@ fn request_log_from_row(row: request_repo::RequestDetailRow) -> RequestLogRecord
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn codex_cache_attempts_persist_on_finish_and_drop_in_both_modes() {
+        for mode in [RequestLogMode::Durable, RequestLogMode::Lean] {
+            let temp = tempfile::tempdir().unwrap();
+            let db = Arc::new(Db::load_from(temp.path()).await.unwrap());
+            let context = RequestLogContext::new_with_mode(
+                db.clone(),
+                &ApiKey::default(),
+                "codex/test",
+                mode,
+            );
+            for interrupted in [false, true] {
+                let log = context
+                    .start_connected_attempt("codex", "test", Some("configured-id"))
+                    .await
+                    .unwrap();
+                let id = log.id.clone();
+                let observation = log.codex_cache();
+                observation.sent(&json!({"model":"test","input":(0..32).map(|i| json!({"content":format!("private-prompt-{i}")})).collect::<Vec<_>>()}), &Default::default(), "https://example.test/responses");
+                observation.observe(None, Some(&json!({"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":80}}})));
+                let data = log.finished_data(None, None, None);
+                assert!(
+                    op_bytes(&LogOpKind::Finish {
+                        id: id.clone(),
+                        status: "interrupted".into(),
+                        data
+                    }) < LEAN_LOG_MAX_EVENT_BYTES
+                );
+                if interrupted {
+                    drop(log);
+                } else {
+                    log.finish("success", Some(200), None, None).await;
+                }
+                assert!(request_log_flush_with_budget(Duration::from_secs(5)).await);
+                let row = db
+                    .sqlite
+                    .with_conn(|conn| request_repo::get(conn, &id))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(row.connection_id.as_deref(), Some("configured-id"));
+                assert_eq!(
+                    row.status.as_deref(),
+                    Some(if interrupted {
+                        "interrupted"
+                    } else {
+                        "success"
+                    })
+                );
+                assert_eq!(row.data["codexCache"]["cachedTokens"], 80);
+                assert!(row.data["codexCache"]["sentAt"].is_string());
+                assert!(!row.data.to_string().contains("private-prompt"));
+            }
+        }
+    }
 
     #[test]
     fn request_log_exposes_only_metadata() {

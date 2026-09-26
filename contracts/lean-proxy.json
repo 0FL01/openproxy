@@ -700,7 +700,8 @@
       "inputTokens",
       "outputTokens",
       "cachedTokens",
-      "errorKind"
+      "errorKind",
+      "codexCache"
     ],
     "error_kind_checkpoint": "C43",
     "error_kind_values": [
@@ -712,6 +713,16 @@
     ],
     "error_kind_policy": "explicit_literal_per_error_branch_never_inferred_from_status",
     "payload_bodies_stored": false,
+    "codex_cache_diagnostics": {
+      "scope": "private_requestDetails_data_generation_only_not_compact_or_search",
+      "connection_id": "actual_configured_connection",
+      "fingerprint_version": 1,
+      "hmac_secret": "existing_api_key_secret_domain_separated",
+      "input_prefix_boundaries": 16,
+      "public_projection": "unchanged",
+      "cross_request_state": false,
+      "cache_warming": false
+    },
     "config_and_credentials_always_durable": true
   },
   "generation_admission": {

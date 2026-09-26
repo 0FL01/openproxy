@@ -99,6 +99,17 @@ Persisted types intentionally preserve unknown fields through `extra` and `provi
 
 | Claude subscription harness identity | C46 declares a provider-scoped carve-out to C09/C05 for first-party `claude`/`anthropic` connections with `auth_type == "oauth"` targeting `api.anthropic.com` only: the adapter applies Claude Code harness identity (deterministic reference system prompt, original client instructions relocated to messages as a user/assistant pair, stable device/session metadata, `claude-cli` UA, `oauth-2025-04-20` beta). API-key connections, third-party nodes, and all other providers are unchanged. Client `cache_control`/`prompt_cache_key` relocate with their content; synthetic blocks carry no markers; the classifier is a stateless function of UA/system. ToS/ban risk is owner-accepted and surfaced in the provider notice. |
 
+### Private Codex cache telemetry carve-out
+
+The C35/C43 prohibition on correlation internals has one narrow exception:
+generation attempts may store their actual configured `connectionId` and bounded
+private `data.codexCache` HMAC fingerprints, local send/completion times and
+allowlisted original cache-usage scalars. No input/response text, raw account or
+cache keys, credentials, headers, or arbitrary usage extras are stored. The
+existing log queue and public projection are unchanged; no cross-request state,
+replay, warming or new upstream requests are introduced. Compact and search are
+excluded. See [the field semantics and inference limits](codex-cache-diagnostics.md).
+
 ## Version evidence and limitations
 
 - OpenCode installed during C00: `1.18.31`.
