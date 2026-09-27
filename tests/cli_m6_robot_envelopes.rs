@@ -189,52 +189,61 @@ async fn settings_locale_set_emits_envelope() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn settings_version_emits_envelope() {
+async fn retired_settings_commands_are_unknown_without_contacting_server() {
     let server = boot_server().await;
-    Mock::given(method("GET"))
-        .and(path("/api/version"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "currentVersion": "1.0.0",
-            "latestVersion": "1.0.1",
-            "hasUpdate": true,
-        })))
-        .mount(&server)
-        .await;
-
-    let out = op(&server, &["--robot", "settings", "version"]);
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let v = parse_robot(&out.stdout);
-    assert_eq!(v["schema"], "openproxy.v1.settings.version");
-    assert_eq!(v["data"]["currentVersion"], "1.0.0");
-    assert_eq!(v["data"]["hasUpdate"], true);
+    for args in [
+        vec!["settings", "version"],
+        vec!["settings", "update"],
+        vec!["settings", "update", "--check"],
+        vec!["settings", "update", "--apply"],
+    ] {
+        for robot in [false, true] {
+            let mut invocation = args.clone();
+            if robot {
+                invocation.insert(0, "--robot");
+            }
+            let out = op(&server, &invocation);
+            assert_eq!(out.status.code(), Some(2), "args: {invocation:?}");
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(stderr.contains("unrecognized subcommand"), "{stderr}");
+            assert!(out.stdout.is_empty(), "must not emit a success envelope");
+        }
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn settings_update_check_uses_version_endpoint() {
+async fn settings_help_omits_retired_commands_and_general_version_still_works() {
     let server = boot_server().await;
-    Mock::given(method("GET"))
-        .and(path("/api/version"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "currentVersion": "1.0.0",
-            "latestVersion": "1.0.0",
-            "hasUpdate": false,
-        })))
-        .mount(&server)
-        .await;
-
-    let out = op(&server, &["--robot", "settings", "update", "--check"]);
+    let out = op(&server, &["settings", "--help"]);
     assert!(
         out.status.success(),
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let v = parse_robot(&out.stdout);
-    assert_eq!(v["schema"], "openproxy.v1.settings.update.check");
-    assert_eq!(v["data"]["hasUpdate"], false);
+    let help = String::from_utf8_lossy(&out.stdout);
+    for command in ["get", "set", "apply", "proxy-test", "locale"] {
+        assert!(
+            help.lines()
+                .any(|line| line.trim_start().starts_with(&format!("{command} "))),
+            "{help}"
+        );
+    }
+    for command in ["version", "update"] {
+        assert!(
+            !help
+                .lines()
+                .any(|line| line.trim_start().starts_with(&format!("{command} "))),
+            "{help}"
+        );
+    }
+    let out = op(&server, &["--version"]);
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        concat!("openproxy ", env!("CARGO_PKG_VERSION"))
+    );
+    assert!(server.received_requests().await.unwrap().is_empty());
 }
 
 // ─── db ───────────────────────────────────────────────────────────────────
@@ -493,6 +502,24 @@ async fn schema_stability_emits_v1_promise() {
     assert_eq!(v["schema"], "openproxy.v1.schema.stability");
     assert_eq!(v["data"]["namespace"], "openproxy.v1");
     assert_eq!(v["data"]["stability"], "stable");
+    let exception = &v["data"]["exceptions"][0];
+    assert_eq!(exception["id"], "updater-hard-cut");
+    assert_eq!(
+        exception["removedEnvelopes"],
+        json!([
+            "openproxy.v1.settings.version",
+            "openproxy.v1.settings.update.check",
+            "openproxy.v1.settings.update.apply"
+        ])
+    );
+    assert_eq!(
+        exception["removedCommands"],
+        json!(["settings version", "settings update"])
+    );
+    assert_eq!(
+        exception["removedRoutes"],
+        json!(["GET /api/version", "POST /api/version/update"])
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Discussion / Question
-    url: https://github.com/quangdang46/openproxy/discussions
-    about: Ask a question or start a discussion before filing an issue
-  - name: Agent skill (install & wiring)
-    url: https://github.com/quangdang46/openproxy/blob/main/.agents/skills/openproxy/SKILL.md
-    about: OpenProxy agent skill — install, provider apply, CLI wiring
+  - name: Documentation / Setup
+    url: https://github.com/0FL01/openproxy#readme
+    about: Fork build, configuration, and client setup instructions
+  - name: Agent skill (build & wiring)
+    url: https://github.com/0FL01/openproxy/blob/main/.agents/skills/openproxy/SKILL.md
+    about: OpenProxy fork agent skill — source or Compose build, provider setup, client wiring

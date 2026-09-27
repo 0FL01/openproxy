@@ -290,12 +290,13 @@ async fn provider_models_route_normalizes_anthropic_compatible_messages_base_url
     Mock::given(method("GET"))
         .and(path("/models"))
         .and(header("x-api-key", "anthropic-key"))
-        .and(header("authorization", "Bearer anthropic-key"))
+        .and(header("anthropic-version", "2023-06-01"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "data": [
                 { "id": "claude-sonnet-4-5", "display_name": "Claude Sonnet 4.5" }
             ]
         })))
+        .expect(1)
         .mount(&server)
         .await;
 
@@ -319,6 +320,16 @@ async fn provider_models_route_normalizes_anthropic_compatible_messages_base_url
         )
         .await
         .unwrap();
+
+    let requests = server.received_requests().await.expect("received requests");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url.path(), "/models");
+    assert_eq!(requests[0].headers["x-api-key"], "anthropic-key");
+    assert_eq!(requests[0].headers["anthropic-version"], "2023-06-01");
+    assert!(
+        !requests[0].headers.contains_key("authorization"),
+        "Anthropic API-key requests must use x-api-key only"
+    );
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)

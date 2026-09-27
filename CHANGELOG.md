@@ -527,3 +527,9 @@ Initial openproxy release. Single-binary AI router.<!-- keep existing content be
 ## Changes
 - README updates.
 - Antigravity bug fixes.
+# Fork: updater hard cut
+
+- Removed upstream release checks, update UI, installer commands, 9Remote promotion, and remotely fetched upstream changelog.
+- Removed `settings version/update`, `GET /api/version`, and `POST /api/version/update` without compatibility handlers. Local `--version` remains.
+- The three updater-related `openproxy.v1.settings.*` envelopes are removed as the sole declared v1 stability exception, reported by `schema stability`. Retained envelopes remain additive-only.
+- Removed upstream shell/PowerShell installers; build and update this fork using the source or Docker Compose workflow in README. User configuration and credentials are preserved.

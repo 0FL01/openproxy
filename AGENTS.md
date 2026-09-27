@@ -100,7 +100,7 @@ Active fork. Run `cargo test -p openproxy --lib parity_tests stream_flags` for s
 
 ## Schema stability (`openproxy.v1.*`)
 
-The `openproxy.v1.*` envelope namespace is a **frozen, additive-only contract**. Every JSON envelope emitted by `--robot` carries a `schema` field matching `openproxy.v1.<area>.<action>`. Existing fields keep their names, types, and meanings across releases. New fields are additive only — no renames or removals. A new `openproxy.v2.*` namespace will be opened before any breaking change.
+Retained `openproxy.v1.*` envelopes are **frozen, additive-only**. Existing fields keep their names, types, and meanings. The sole declared exception is the fork's updater hard cut: `settings version/update`, their three envelopes, and `/api/version*` are removed without compatibility handlers. `schema stability` lists the exception; other breaking changes require `openproxy.v2.*`.
 
 Run `openproxy schema stability` to see the current stability promise:
 

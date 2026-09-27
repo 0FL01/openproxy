@@ -227,8 +227,6 @@ pub fn routes(state: AppState) -> Router<AppState> {
                 .patch(update_settings_api),
         )
         .route("/api/settings/proxy-test", post(proxy_test_api))
-        .route("/api/version", get(get_version_api))
-        .route("/api/version/update", post(version_update_api))
         .route(
             "/api/settings/database",
             get(settings_database_export_api).post(settings_database_import_api),
@@ -455,116 +453,6 @@ async fn api_catalog(State(state): State<AppState>) -> Response {
     }
 
     Json(catalog).into_response()
-}
-
-async fn get_version_api() -> Response {
-    let current_version = env!("CARGO_PKG_VERSION").to_string();
-    let latest_version = fetch_latest_release_version().await;
-    let has_update = latest_version
-        .as_deref()
-        .map(|latest| compare_semver_like(latest, &current_version) > 0)
-        .unwrap_or(false);
-
-    Json(json!({
-        "currentVersion": current_version,
-        "latestVersion": latest_version,
-        "hasUpdate": has_update,
-        "dashboardVersion": dashboard_package_version(),
-    }))
-    .into_response()
-}
-
-async fn version_update_api() -> Response {
-    (
-        StatusCode::OK,
-        Json(json!({
-            "success": false,
-            "message": "Self-update is handled by the Rust binary. Use cargo install or download the latest release."
-        })),
-    )
-        .into_response()
-}
-
-fn dashboard_package_version() -> &'static str {
-    static PACKAGE_JSON: &str = include_str!("../../../web/package.json");
-    serde_json::from_str::<Value>(PACKAGE_JSON)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("version")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .map(|version| Box::leak(version.into_boxed_str()) as &'static str)
-        .unwrap_or(env!("CARGO_PKG_VERSION"))
-}
-
-async fn fetch_latest_dashboard_version() -> Option<String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(4))
-        .build()
-        .ok()?;
-
-    client
-        .get("https://registry.npmjs.org/openproxy/latest")
-        .send()
-        .await
-        .ok()?
-        .json::<Value>()
-        .await
-        .ok()?
-        .get("version")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-}
-
-async fn fetch_latest_release_version() -> Option<String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(4))
-        .user_agent(concat!("openproxy/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .ok()?;
-
-    let body: Value = client
-        .get("https://api.github.com/repos/quangdang46/openproxy/releases/latest")
-        .send()
-        .await
-        .ok()?
-        .json()
-        .await
-        .ok()?;
-    let tag = body.get("tag_name").and_then(Value::as_str)?;
-    Some(tag.trim_start_matches('v').to_string())
-}
-
-fn compare_semver_like(a: &str, b: &str) -> i32 {
-    let parse = |input: &str| {
-        input
-            .split('.')
-            .take(3)
-            .map(|part| part.parse::<u32>().unwrap_or(0))
-            .collect::<Vec<_>>()
-    };
-
-    let mut a_parts = parse(a);
-    let mut b_parts = parse(b);
-    while a_parts.len() < 3 {
-        a_parts.push(0);
-    }
-    while b_parts.len() < 3 {
-        b_parts.push(0);
-    }
-
-    for (left, right) in a_parts.iter().zip(b_parts.iter()) {
-        if left > right {
-            return 1;
-        }
-        if left < right {
-            return -1;
-        }
-    }
-
-    0
 }
 
 pub(super) fn require_management_api_key(

@@ -7,35 +7,6 @@ export const APP_CONFIG = {
   version: pkg.version,
 } as const;
 
-// GitHub configuration
-export const GITHUB_CONFIG = {
-  changelogUrl:
-    "https://raw.githubusercontent.com/quangdang46/openproxy/refs/heads/main/CHANGELOG.md",
-  repoUrl: "https://github.com/quangdang46/openproxy",
-  docsUrl: "https://github.com/quangdang46/openproxy#readme",
-  licenseUrl: "https://github.com/quangdang46/openproxy/blob/main/LICENSE",
-} as const;
-
-// Updater configuration — binary install via install.sh (not npm)
-export const UPDATER_CONFIG = {
-  npmPackageName: "openproxy",
-  installCmd:
-    "curl -fsSL https://raw.githubusercontent.com/quangdang46/openproxy/main/install.sh | bash",
-  installCmdLatest:
-    "curl -fsSL https://raw.githubusercontent.com/quangdang46/openproxy/main/install.sh | bash",
-  exitDelayMs: 500,
-  statusPort: 4625,
-  statusPollIntervalMs: 1000,
-  statusLogTailLines: 8,
-  installRetries: 3,
-  installRetryDelayMs: 5000,
-  lingerAfterDoneMs: 30000,
-  waitForExitMinMs: 3000,
-  waitForExitMaxMs: 15000,
-  waitForExitCheckMs: 500,
-  appPort: 4623,
-} as const;
-
 // Theme configuration
 export const THEME_CONFIG = {
   storageKey: "theme",

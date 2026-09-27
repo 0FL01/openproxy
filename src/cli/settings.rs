@@ -1,4 +1,4 @@
-//! `openproxy settings *` — manage server settings, locale, version, and self-update.
+//! `openproxy settings *` — manage server settings and locale.
 //!
 //! These commands all run against the live server and emit the
 //! `openproxy.v1.settings.*` envelopes in `--robot` mode. They are the M6
@@ -13,8 +13,6 @@
 //! | `settings apply --from-file <path\|->`  | `/api/settings`                  | PUT    |
 //! | `settings proxy-test --proxy-url <url>` | `/api/settings/proxy-test`       | POST   |
 //! | `settings locale set <lang>`            | `/api/locale`                    | POST   |
-//! | `settings version`                      | `/api/version`                   | GET    |
-//! | `settings update [--check] [--apply]`   | `/api/version`/`/api/version/update` | GET/POST |
 
 use std::path::PathBuf;
 
@@ -75,18 +73,6 @@ pub enum SettingsCmd {
         #[command(subcommand)]
         cmd: LocaleCmd,
     },
-    /// Print the dashboard package version reported by the server.
-    Version,
-    /// Check for an upstream upgrade (`--check`, default) or apply it
-    /// (`--apply`).
-    Update {
-        /// Just probe — never write. This is the default if no flag is set.
-        #[arg(long, conflicts_with = "apply")]
-        check: bool,
-        /// Trigger the server-side self-update.
-        #[arg(long)]
-        apply: bool,
-    },
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -119,8 +105,6 @@ pub async fn run(cmd: SettingsCmd, cfg: &ResolvedConfig, ctx: OutputCtx) -> anyh
         SettingsCmd::Locale { cmd } => match cmd {
             LocaleCmd::Set { lang } => run_locale_set(&rt, ctx, lang).await,
         },
-        SettingsCmd::Version => run_version(&rt, ctx).await,
-        SettingsCmd::Update { check, apply } => run_update(&rt, ctx, check, apply).await,
     }
 }
 
@@ -327,95 +311,6 @@ async fn run_locale_set(rt: &Runtime, ctx: OutputCtx, lang: String) -> anyhow::R
             Ok(0)
         }
         Err(e) => rt_error_to_exit(ctx, e),
-    }
-}
-
-async fn run_version(rt: &Runtime, ctx: OutputCtx) -> anyhow::Result<i32> {
-    match rt.get_json("/api/version").await {
-        Ok(payload) => {
-            if ctx.is_robot() {
-                emit_robot("openproxy.v1.settings.version", payload)?;
-            } else {
-                let cur = payload
-                    .get("currentVersion")
-                    .and_then(Value::as_str)
-                    .unwrap_or("?");
-                let latest = payload
-                    .get("latestVersion")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown");
-                let has = payload
-                    .get("hasUpdate")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                humanln(
-                    ctx,
-                    format!(
-                        "openproxy {cur} (latest: {latest}){}",
-                        if has { " — update available" } else { "" }
-                    ),
-                );
-            }
-            Ok(0)
-        }
-        Err(e) => rt_error_to_exit(ctx, e),
-    }
-}
-
-async fn run_update(
-    rt: &Runtime,
-    ctx: OutputCtx,
-    _check: bool,
-    apply: bool,
-) -> anyhow::Result<i32> {
-    if apply {
-        match rt.post_empty("/api/version/update").await {
-            Ok(payload) => {
-                if ctx.is_robot() {
-                    emit_robot("openproxy.v1.settings.update.apply", payload)?;
-                } else {
-                    let msg = payload
-                        .get("message")
-                        .and_then(Value::as_str)
-                        .unwrap_or("update requested");
-                    humanln(ctx, msg);
-                }
-                Ok(0)
-            }
-            Err(e) => rt_error_to_exit(ctx, e),
-        }
-    } else {
-        // default = `--check` semantics
-        match rt.get_json("/api/version").await {
-            Ok(payload) => {
-                if ctx.is_robot() {
-                    emit_robot("openproxy.v1.settings.update.check", payload)?;
-                } else {
-                    let has = payload
-                        .get("hasUpdate")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false);
-                    let cur = payload
-                        .get("currentVersion")
-                        .and_then(Value::as_str)
-                        .unwrap_or("?");
-                    let latest = payload
-                        .get("latestVersion")
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown");
-                    humanln(
-                        ctx,
-                        if has {
-                            format!("update available: {cur} → {latest}")
-                        } else {
-                            format!("up to date: {cur}")
-                        },
-                    );
-                }
-                Ok(0)
-            }
-            Err(e) => rt_error_to_exit(ctx, e),
-        }
     }
 }
 

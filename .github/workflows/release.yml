@@ -135,8 +135,6 @@ jobs:
           ls -lh "$ARCHIVE" "$ARCHIVE.sha256"
 
       # Windows: .zip with openproxy.exe + LICENSE + README at the top level.
-      # install.ps1 expects this exact layout (`Expand-Archive` + walk to find
-      # openproxy.exe).
       - name: Package (zip)
         if: runner.os == 'Windows'
         shell: pwsh

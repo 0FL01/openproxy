@@ -2,8 +2,6 @@
 import { useState, useEffect, useRef } from "react";
 import { LOCALE_COOKIE, normalizeLocale } from "@/i18n/config";
 import { useTheme } from "@/shared/hooks/useTheme";
-import ChangelogModal from "./ChangelogModal";
-import NineRemotePromoModal from "./NineRemotePromoModal";
 import LanguageSwitcher from "./LanguageSwitcher";
 import React from "react";
 
@@ -91,8 +89,6 @@ interface HeaderMenuProps {
 
 export default function HeaderMenu({ onLogout }: HeaderMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
-  const [changelogOpen, setChangelogOpen] = useState(false);
-  const [remoteOpen, setRemoteOpen] = useState(false);
   const [langOpen, setLangOpen] = useState(false);
   const [locale, setLocale] = useState("en");
   const { toggleTheme, isDark } = useTheme();
@@ -130,11 +126,6 @@ export default function HeaderMenu({ onLogout }: HeaderMenuProps) {
         {isOpen && (
           <div className="absolute right-0 top-full mt-2 w-60 bg-surface border border-black/10 dark:border-white/10 rounded-xl shadow-2xl z-50 animate-in fade-in zoom-in-95 duration-150 overflow-hidden py-1">
             <MenuItem
-              icon="history"
-              label="Change Log"
-              onClick={() => { close(); setChangelogOpen(true); }}
-            />
-            <MenuItem
               icon="language"
               label={LOCALE_INFO[locale]?.name || locale}
               trailing={LOCALE_INFO[locale]?.flag || "🌐"}
@@ -146,11 +137,6 @@ export default function HeaderMenu({ onLogout }: HeaderMenuProps) {
               onClick={() => { toggleTheme(); close(); }}
             />
             <MenuItem
-              icon="computer"
-              label="Remote"
-              onClick={() => { close(); setRemoteOpen(true); }}
-            />
-            <MenuItem
               icon="logout"
               label="Logout"
               danger
@@ -160,8 +146,6 @@ export default function HeaderMenu({ onLogout }: HeaderMenuProps) {
         )}
       </div>
 
-      <ChangelogModal isOpen={changelogOpen} onClose={() => setChangelogOpen(false)} />
-      <NineRemotePromoModal isOpen={remoteOpen} onClose={() => setRemoteOpen(false)} />
       <LanguageSwitcher hideTrigger isOpen={langOpen} onClose={() => setLangOpen(false)} />
     </>
   );

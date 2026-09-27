@@ -16,10 +16,9 @@ boundary.
 
 ## Start this fork
 
-There are **no fork-specific prebuilt releases** yet. The checked-in
-`install.sh` and `install.ps1` download **upstream** `quangdang46/openproxy`
-releases, not this fork. To run the fork, build from this checkout or use Docker
-Compose.
+Build this fork from source or use Docker Compose. Fork-specific prebuilt
+binaries are not guaranteed; the supported setup paths below build from the
+`0FL01/openproxy` checkout.
 
 ### Docker Compose
 
@@ -191,8 +190,7 @@ database operation, not a remote API call. `openproxy --robot server init` can
 mint an initial admin key **before** first startup on an empty data directory;
 store that secret privately and do not use `--force` on existing data. See
 `openproxy <command> --help` and the
-[agent setup skill](.agents/skills/openproxy/SKILL.md) for more CLI details
-(note that its installer path currently targets upstream).
+[agent setup skill](.agents/skills/openproxy/SKILL.md) for more CLI details.
 
 ## Development and provenance
 

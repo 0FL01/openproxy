@@ -20,9 +20,6 @@ importers:
       astro:
         specifier: ^5.18.1
         version: 5.18.1(@types/node@25.7.0)(jiti@1.21.7)(rollup@4.60.4)(terser@5.47.1)(typescript@5.9.3)(yaml@2.9.0)
-      marked:
-        specifier: ^18.0.1
-        version: 18.0.3
       material-symbols:
         specifier: ^0.46.0
         version: 0.46.0
@@ -1655,11 +1652,6 @@ packages:
   marked@14.0.0:
     resolution: {integrity: sha512-uIj4+faQ+MgHgwUW1l2PsPglZLOLOT1uErt06dAPtx2kjteLAkbsd/0FiYg/MGS+i7ZKLb7w2WClxHkzOOuryQ==}
     engines: {node: '>= 18'}
-    hasBin: true
-
-  marked@18.0.3:
-    resolution: {integrity: sha512-7VT90JOkDeaRWpfjOReRGPEKn0ecdARBkDGL+tT1wZY0efPPqkUxLUSmzy/C7TIylQYJC9STISEsCHrqb/7VIA==}
-    engines: {node: '>= 20'}
     hasBin: true
 
   material-symbols@0.46.0:
@@ -4085,8 +4077,6 @@ snapshots:
   markdown-table@3.0.4: {}
 
   marked@14.0.0: {}
-
-  marked@18.0.3: {}
 
   material-symbols@0.46.0: {}
 

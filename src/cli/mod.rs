@@ -228,7 +228,7 @@ pub enum Command {
         #[command(subcommand)]
         cmd: chat::ChatCmd,
     },
-    /// Manage the running server's settings document, locale, and version.
+    /// Manage the running server's settings document and locale.
     Settings {
         #[command(subcommand)]
         cmd: settings::SettingsCmd,
@@ -336,7 +336,8 @@ pub enum SchemaCmd {
         resource: String,
     },
     /// Print the schema namespace + stability contract. As of M6 the
-    /// `openproxy.v1.*` envelopes are declared **stable** (additive-only).
+    /// Retained `openproxy.v1.*` envelopes are stable (additive-only), with
+    /// the explicitly declared updater hard-cut exception.
     Stability,
 }
 

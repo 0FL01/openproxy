@@ -34,7 +34,7 @@ export default function HeroSection() {
             Get Started
           </button>
           <a
-            href="https://github.com/quangdang46/openproxy"
+            href="https://github.com/0FL01/openproxy"
             target="_blank"
             rel="noopener noreferrer"
             className="h-12 px-8 rounded-lg border border-[#3a2f27] bg-[#23180f] hover:bg-[#3a2f27] text-white text-base font-bold transition-all flex items-center gap-2"

@@ -16,7 +16,7 @@ export default function Footer() {
               The unified endpoint for AI generation. Connect, route, and manage your AI providers with ease.
             </p>
             <div className="flex gap-4">
-              <a className="text-gray-400 hover:text-white transition-colors" href="https://github.com/quangdang46/openproxy" target="_blank" rel="noopener noreferrer" aria-label="OpenProxy on GitHub">
+              <a className="text-gray-400 hover:text-white transition-colors" href="https://github.com/0FL01/openproxy" target="_blank" rel="noopener noreferrer" aria-label="OpenProxy on GitHub">
                 <span className="material-symbols-outlined">code</span>
               </a>
             </div>
@@ -27,14 +27,14 @@ export default function Footer() {
             <h4 className="font-bold text-white">Product</h4>
             <a className="text-gray-400 hover:text-[#f97815] text-sm transition-colors" href="#features">Features</a>
             <a className="text-gray-400 hover:text-[#f97815] text-sm transition-colors" href="/dashboard">Dashboard</a>
-            <a className="text-gray-400 hover:text-[#f97815] text-sm transition-colors" href="https://github.com/quangdang46/openproxy/blob/main/CHANGELOG.md" target="_blank" rel="noopener noreferrer">Changelog</a>
+            <a className="text-gray-400 hover:text-[#f97815] text-sm transition-colors" href="https://github.com/0FL01/openproxy/blob/main/CHANGELOG.md" target="_blank" rel="noopener noreferrer">Changelog</a>
           </div>
 
           {/* Resources */}
           <div className="flex flex-col gap-4">
             <h4 className="font-bold text-white">Resources</h4>
-            <a className="text-gray-400 hover:text-[#f97815] text-sm transition-colors" href="https://github.com/quangdang46/openproxy#readme" target="_blank" rel="noopener noreferrer">Documentation</a>
-            <a className="text-gray-400 hover:text-[#f97815] text-sm transition-colors" href="https://github.com/quangdang46/openproxy" target="_blank" rel="noopener noreferrer">GitHub</a>
+            <a className="text-gray-400 hover:text-[#f97815] text-sm transition-colors" href="https://github.com/0FL01/openproxy#readme" target="_blank" rel="noopener noreferrer">Documentation</a>
+            <a className="text-gray-400 hover:text-[#f97815] text-sm transition-colors" href="https://github.com/0FL01/openproxy" target="_blank" rel="noopener noreferrer">GitHub</a>
           </div>
 
           {/* Legal */}
@@ -48,7 +48,7 @@ export default function Footer() {
         <div className="border-t border-[#3a2f27] pt-8 flex flex-col md:flex-row justify-between items-center gap-4">
           <p className="text-gray-600 text-sm">© 2026 OpenProxy. All rights reserved.</p>
           <div className="flex gap-6">
-            <a className="text-gray-600 hover:text-white text-sm transition-colors" href="https://github.com/quangdang46/openproxy" target="_blank" rel="noopener noreferrer">GitHub</a>
+            <a className="text-gray-600 hover:text-white text-sm transition-colors" href="https://github.com/0FL01/openproxy" target="_blank" rel="noopener noreferrer">GitHub</a>
           </div>
         </div>
       </div>
