@@ -704,7 +704,7 @@ export default function ProfilePageClient() {
         {/* ── App Info ────────────────────────────────────────────── */}
         <div className="text-center text-xs sm:text-sm text-muted-soft py-4">
           <p>
-            {APP_CONFIG.name} v{APP_CONFIG.version}
+            {APP_CONFIG.name}
           </p>
           <p className="mt-1">Local Mode &mdash; All data stored on your machine</p>
         </div>

@@ -4,6 +4,8 @@ services:
   openproxy:
     build:
       context: .
+      args:
+        OPENPROXY_BUILD_COMMIT: ${OPENPROXY_BUILD_COMMIT:-}
     image: openproxy:prod
     restart: unless-stopped
     env_file:

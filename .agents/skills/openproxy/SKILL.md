@@ -48,7 +48,7 @@ Use an existing fork checkout instead when available.
 cp .env.example .env.prod
 # Privately edit .env.prod before starting: set strong, stable JWT_SECRET
 # and OPENPROXY_ENCRYPTION_KEY values.
-docker compose up -d --build
+OPENPROXY_BUILD_COMMIT="$(git rev-parse HEAD)" docker compose up -d --build
 curl -fsS http://127.0.0.1:4623/health
 ```
 

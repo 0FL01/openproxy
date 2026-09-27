@@ -1,10 +1,7 @@
-import pkg from "../../../package.json" with { type: "json" };
-
 // App configuration
 export const APP_CONFIG = {
   name: "OpenProxy",
   description: "OpenProxy dashboard",
-  version: pkg.version,
 } as const;
 
 // Theme configuration

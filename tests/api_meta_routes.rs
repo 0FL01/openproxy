@@ -10,7 +10,7 @@ use tower::util::ServiceExt;
 
 const TEST_KEY: &str = "api-meta-test-key";
 
-async fn build_test_app() -> axum::Router {
+async fn build_test_state() -> AppState {
     let temp = tempdir().expect("tempdir");
     let db = Arc::new(Db::load_from(temp.path()).await.expect("db"));
     db.update(|state| {
@@ -27,7 +27,71 @@ async fn build_test_app() -> axum::Router {
     })
     .await
     .expect("seed auth");
-    openproxy::build_app(AppState::new(db))
+    AppState::new(db)
+}
+
+async fn build_test_app() -> axum::Router {
+    openproxy::build_app(build_test_state().await)
+}
+
+#[tokio::test]
+async fn api_build_returns_compile_time_commit_or_null() {
+    let app = build_test_app().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/build")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let commit = env!("OPENPROXY_BUILD_COMMIT");
+    assert_eq!(
+        json,
+        serde_json::json!({"commit": (!commit.is_empty()).then_some(commit)})
+    );
+    if let Some(commit) = json["commit"].as_str() {
+        assert!(matches!(commit.len(), 40 | 64));
+        assert!(commit.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    } else {
+        assert!(json["commit"].is_null());
+    }
+}
+
+#[tokio::test]
+async fn api_build_uses_dashboard_admin_auth_policy() {
+    let state = build_test_state().await;
+    state
+        .db
+        .update(|db| {
+            db.settings.require_login = true;
+            db.settings.password = Some("configured-password-hash".into());
+        })
+        .await
+        .unwrap();
+    let app = openproxy::build_app(state);
+    for (key, status) in [
+        (None, StatusCode::UNAUTHORIZED),
+        (Some("invalid-key"), StatusCode::UNAUTHORIZED),
+        (Some(TEST_KEY), StatusCode::OK),
+    ] {
+        let mut request = Request::builder().uri("/api/build");
+        if let Some(key) = key {
+            request = request.header("authorization", format!("Bearer {key}"));
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+    }
 }
 
 #[tokio::test]

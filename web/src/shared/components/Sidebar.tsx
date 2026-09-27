@@ -2,6 +2,7 @@
 import { useState, useEffect } from "react";
 import { cn } from "@/shared/utils/cn";
 import { APP_CONFIG } from "@/shared/constants/config";
+import { loadBuildCommit } from "@/shared/utils/buildCommit";
 import Button from "./Button";
 import AnthropicSpike from "./AnthropicSpike";
 import { ConfirmModal } from "./Modal";
@@ -54,6 +55,15 @@ interface SidebarProps {
 export default function Sidebar({ onClose }: SidebarProps) {
   const [pathname, setPathname] = useState("");
   const [mounted, setMounted] = useState(false);
+  const [buildCommit, setBuildCommit] = useState<string | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    loadBuildCommit(controller.signal).then(commit => {
+      if (!controller.signal.aborted) setBuildCommit(commit);
+    });
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     setMounted(true);
@@ -104,8 +114,12 @@ export default function Sidebar({ onClose }: SidebarProps) {
               <h1 className="font-serif text-[22px] font-normal tracking-[-0.02em] text-ink">
                 {APP_CONFIG.name}
               </h1>
-              <span className="text-[11px] text-muted-soft tracking-wide">
-                v{APP_CONFIG.version}
+              <span
+                className="font-mono text-[11px] text-muted-soft tracking-wide"
+                title={buildCommit ? `Commit: ${buildCommit}` : "Build commit unavailable"}
+                aria-label={buildCommit ? `Build commit ${buildCommit}` : "Build commit unavailable"}
+              >
+                {buildCommit ? buildCommit.slice(0, 8) : "—"}
               </span>
             </div>
           </a>

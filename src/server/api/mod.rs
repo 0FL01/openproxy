@@ -177,6 +177,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
 
     // ── ADMIN: dashboard session or management API key required ──
     let admin = Router::new()
+        .route("/api/build", get(api_build))
         .route("/api/catalog", get(api_catalog))
         // Credential management (admin-tier — dashboard or API key)
         .route("/api/keys", get(list_keys_api))
@@ -307,6 +308,11 @@ async fn api_health(State(state): State<AppState>) -> Response {
         .health
         .summary_for_connections(&snapshot.provider_connections);
     Json(json!({ "ok": true, "providers": summary })).into_response()
+}
+
+async fn api_build() -> Response {
+    let commit = env!("OPENPROXY_BUILD_COMMIT");
+    Json(json!({ "commit": (!commit.is_empty()).then_some(commit) })).into_response()
 }
 
 async fn api_catalog(State(state): State<AppState>) -> Response {

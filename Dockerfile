@@ -12,8 +12,9 @@
 # Final image is ~80 MB (debian-slim base + the openproxy binary, which
 # already contains the dashboard via rust-embed).
 #
-# Build:    docker build -t openproxy .
-# Run:      docker compose up -d --build
+# Build:    docker build --build-arg OPENPROXY_BUILD_COMMIT="$(git rev-parse HEAD)" -t openproxy .
+# The build context excludes .git; omit the argument for unknown (null) metadata.
+# Run:      OPENPROXY_BUILD_COMMIT="$(git rev-parse HEAD)" docker compose up -d --build
 #
 # ──────────────────────────────────────────────────────────────────────────
 # Reverse-proxy deployment notes
@@ -103,14 +104,13 @@ RUN cargo chef cook --release --locked --no-default-features --recipe-path recip
 
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY src/ ./src/
-# rust-embed reads web/dist/ at compile time; src/server/api/mod.rs also
-# include_str!s web/package.json. Both must exist before `cargo build`.
+# rust-embed reads web/dist/ at compile time.
 COPY --from=web /web/dist/ ./web/dist/
-COPY --from=web /web/package.json ./web/package.json
 
 # Build with the default `embed-web` feature on. build.rs verifies
 # web/dist/index.html exists before invoking rust-embed.
-RUN cargo build --release --locked --bin openproxy
+ARG OPENPROXY_BUILD_COMMIT
+RUN OPENPROXY_BUILD_COMMIT="${OPENPROXY_BUILD_COMMIT}" cargo build --release --locked --bin openproxy
 RUN strip /src/target/release/openproxy
 
 # ──────────────────────────────────────────────────────────────────────────

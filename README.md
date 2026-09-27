@@ -28,7 +28,7 @@ cd openproxy
 cp .env.example .env.prod
 # Edit .env.prod: replace JWT_SECRET and set a strong, stable
 # OPENPROXY_ENCRYPTION_KEY (see Configuration below).
-docker compose up -d --build
+OPENPROXY_BUILD_COMMIT="$(git rev-parse HEAD)" docker compose up -d --build
 curl -fsS http://127.0.0.1:4623/health
 ```
 
