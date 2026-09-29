@@ -260,10 +260,14 @@ fn source_has_one_bounded_prepare_and_no_per_send_serialization() {
     assert!(send_one.contains(".body(body.clone())"));
     assert!(chat.contains("let mut default_prepared_body: Option<PreparedUpstreamBody> = None"));
     assert_eq!(
-        chat.matches("prepare_upstream_body(&request_body, model)")
+        chat.matches("prepare_upstream_body(body_for_prepare, model)")
             .count(),
         1
     );
+    // C46 maps only a scoped clone for first-party OAuth; other requests borrow
+    // the unchanged planning source, and both paths share the bounded preparation.
+    assert!(chat.contains("let mut spoofed = request_body.clone();"));
+    assert!(chat.contains("None => &request_body,"));
     assert!(chat.contains("can_reuse_prepared_body(prepared, model)"));
     assert!(!executor.contains("pub transformed_body: Value"));
     assert!(

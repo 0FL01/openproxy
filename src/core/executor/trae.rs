@@ -32,14 +32,6 @@ const TRAE_BASE_URL: &str = "https://core-normal.trae.ai/api/remote/v1";
 const TRAE_UA: &str =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36";
 
-/// Stream timeout in ms (default 300s per JS `TRAE_STREAM_TIMEOUT_MS`).
-fn stream_timeout_ms() -> u64 {
-    std::env::var("TRAE_STREAM_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(300_000)
-}
-
 /// Flatten OpenAI messages into Trae's query JSON-string of typed content
 /// blocks. Mirrors JS `flattenQuery` (trae.js:22-42).
 fn flatten_query(messages: &[Value]) -> String {

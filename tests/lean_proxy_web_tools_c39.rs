@@ -174,14 +174,8 @@ fn convenience_route_consumers_are_real() {
         cors.contains("/v1/web/fetch"),
         "public CORS contract must keep covering the route"
     );
-    let skills = std::fs::read_to_string(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/shared/constants/skills.ts"),
-    )
-    .expect("skills page constants must exist");
-    assert!(
-        skills.contains("/v1/web/fetch"),
-        "skills discovery must keep advertising the route"
-    );
+    // The fork's setup-skill hard-cut removed per-tool skill advertisements;
+    // the retained API integration, CORS contract and endpoint index are consumers.
     let v1_root = read_src("server/api/mod.rs");
     assert!(
         v1_root.contains("\"/v1/web/fetch\""),

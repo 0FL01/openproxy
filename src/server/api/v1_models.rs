@@ -771,10 +771,6 @@ fn model_card(
     }
 }
 
-fn with_cors_json(status: StatusCode, payload: Value) -> Response {
-    with_cors_response((status, Json(payload)).into_response())
-}
-
 fn with_cors_response(mut response: Response) -> Response {
     let headers = response.headers_mut();
     headers.insert(

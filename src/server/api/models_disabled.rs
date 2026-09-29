@@ -48,20 +48,6 @@ pub(crate) fn disabled_models_from_db(db: &AppDb) -> BTreeMap<String, Vec<String
     serde_json::from_value::<BTreeMap<String, Vec<String>>>(value.clone()).unwrap_or_default()
 }
 
-pub(crate) fn is_model_disabled(db: &AppDb, provider_keys: &[&str], model_id: &str) -> bool {
-    let model_id = model_id.trim();
-    if model_id.is_empty() {
-        return false;
-    }
-
-    let disabled = disabled_models_from_db(db);
-    provider_keys.iter().any(|key| {
-        disabled
-            .get(*key)
-            .is_some_and(|ids| ids.iter().any(|id| id == model_id))
-    })
-}
-
 fn set_disabled_models(db: &mut AppDb, models: &BTreeMap<String, Vec<String>>) {
     if models.is_empty() {
         db.extra.remove("disabledModels");

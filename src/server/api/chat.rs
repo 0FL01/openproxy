@@ -1939,6 +1939,7 @@ async fn proxy_dashboard_sse(
     build_dashboard_sse_response(status, &headers, sse_body)
 }
 
+#[cfg(test)]
 fn select_connection(
     snapshot: &AppDb,
     provider: &str,
@@ -3671,18 +3672,6 @@ fn declared_content_length(headers: &HeaderMap) -> Option<u64> {
         .and_then(|value| value.trim().parse().ok())
 }
 
-fn fallback_error_text(status: StatusCode, text: &str) -> String {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        status
-            .canonical_reason()
-            .unwrap_or("Upstream request failed")
-            .to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
 fn retry_after_from_headers(headers: &HeaderMap) -> Option<DateTime<Utc>> {
     // Standard retry-after header (HTTP/1.1)
     if let Some(value) = headers.get("retry-after").and_then(|v| v.to_str().ok()) {
@@ -3806,10 +3795,6 @@ fn json_error_response(status: StatusCode, message: &str) -> Response {
     let friendly = crate::core::utils::error::friendly_error_message(status.as_u16(), message);
     let body = crate::core::utils::error::build_error_body(status.as_u16(), Some(&friendly));
     with_cors_response((status, Json(body)).into_response())
-}
-
-fn json_success_response(status: StatusCode, data: Value) -> Response {
-    with_cors_response((status, Json(data)).into_response())
 }
 
 fn with_cors_response(mut response: Response) -> Response {

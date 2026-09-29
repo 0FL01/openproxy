@@ -52,8 +52,6 @@ const XAI_CALLBACK_PATH: &str = "/callback";
 const XAI_PROXY_TIMEOUT_MS: u64 = 300_000;
 const XAI_TOKEN_URL_DEFAULT: &str = "https://auth.x.ai/oauth2/token";
 const XAI_AUTHORIZE_URL_DEFAULT: &str = "https://auth.x.ai/oauth2/authorize";
-const GEMINI_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
-const GEMINI_USER_INFO_URL: &str = "https://www.googleapis.com/oauth2/v1/userinfo";
 const ANTIGRAVITY_CLIENT_ID: &str =
     "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
 const ANTIGRAVITY_AUTHORIZE_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -543,10 +541,6 @@ fn get_provider_config(provider: &str) -> Option<OAuthProviderConfig> {
     providers::get_config(provider)
 }
 
-fn is_pkce_provider(provider: &str) -> bool {
-    matches!(provider, "claude" | "codex" | "gitlab" | "xai")
-}
-
 fn is_device_code_provider(provider: &str) -> bool {
     matches!(
         provider,
@@ -566,20 +560,6 @@ fn codex_token_url() -> String {
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| CODEX_TOKEN_URL.to_string())
-}
-
-fn gemini_token_url() -> String {
-    std::env::var("OPENPROXY_GEMINI_TOKEN_URL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| GEMINI_TOKEN_URL.to_string())
-}
-
-fn gemini_user_info_url() -> String {
-    std::env::var("OPENPROXY_GEMINI_USER_INFO_URL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| GEMINI_USER_INFO_URL.to_string())
 }
 
 fn antigravity_token_url() -> String {
@@ -629,13 +609,6 @@ fn build_query_url(base: &str, params: &[(&str, String)]) -> String {
 
 fn antigravity_load_metadata() -> Value {
     crate::core::config::app_constants::agy_load_metadata()
-}
-
-fn first_nonempty_str<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
-    keys.iter()
-        .find_map(|key| value.get(*key).and_then(Value::as_str))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
 }
 
 fn cline_expires_in(expires_at: Option<&str>) -> Option<i64> {
@@ -4337,7 +4310,6 @@ pub fn routes() -> Router<AppState> {
 // ───────────────────────────────────────────────────────────────────────────
 
 const ZED_PROXY_TIMEOUT_MS: u64 = 600_000;
-const ZED_PREFERRED_PORT: u16 = 58443;
 
 #[derive(Clone)]
 pub struct ZedProxyState {
@@ -4355,7 +4327,6 @@ struct ZedPendingLogin {
     state: String,
     private_key_verifier: String,
     status: String,
-    created_at: i64,
     connection_id: Option<String>,
     email: Option<String>,
     error: Option<String>,
@@ -4473,7 +4444,6 @@ impl ZedProxyState {
             state: state.to_string(),
             private_key_verifier: code_verifier.to_string(),
             status: "pending".into(),
-            created_at: chrono::Utc::now().timestamp_millis(),
             connection_id: None,
             email: None,
             error: None,

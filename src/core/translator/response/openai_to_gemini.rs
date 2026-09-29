@@ -278,7 +278,6 @@ fn attach_usage(response: &mut Value, usage: &Value) {
 
 /// Emit finish chunk for usage-only final chunk (when finish was already
 /// emitted as a separate chunk before usage).
-#[allow(dead_code)]
 fn emit_finish(
     chunk_val: Value,
     gs: &mut crate::core::translator::registry::GeminiResponseState,

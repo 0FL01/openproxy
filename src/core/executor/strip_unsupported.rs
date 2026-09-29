@@ -6,11 +6,6 @@
 
 use serde_json::Value;
 
-/// Provider+model parameter filter map.
-///
-/// Returns `true` if the field should be **removed** (stripped) from the body.
-type ParamFilter = fn(provider: &str, model: &str, field: &str) -> bool;
-
 /// Composite filter that checks against all known unsupported-parameter rules.
 fn should_strip(provider: &str, model: &str, field: &str) -> bool {
     // Anthropic-compatible providers (kimi, minimax, glm, etc.)

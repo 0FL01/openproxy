@@ -333,7 +333,6 @@ fn codex_first_event_failure_status(event: &[u8]) -> Option<reqwest::StatusCode>
 }
 
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct CodexExecutor {
     pool: Arc<ClientPool>,
     provider_node: Option<ProviderNode>,

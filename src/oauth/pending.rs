@@ -7,9 +7,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Default TTL for pending OAuth flows in seconds (10 minutes)
-const DEFAULT_TTL_SECS: i64 = 600;
-
 /// Error types for pending flow operations
 #[derive(Debug, Clone)]
 pub enum PendingError {

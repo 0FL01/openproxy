@@ -94,17 +94,6 @@ fn assert_scopes_in_url(url: &str, scopes: &[&str]) {
     }
 }
 
-fn url_decoded_scope(url: &str) -> String {
-    url.split("scope=")
-        .nth(1)
-        .unwrap_or("")
-        .split('&')
-        .next()
-        .unwrap_or("")
-        .replace("%3A", ":")
-        .replace('+', " ")
-}
-
 const ALL_PROVIDERS: &[&str] = &[
     "claude",
     "codex",

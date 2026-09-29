@@ -17,7 +17,6 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Json, Response};
 use serde_json::json;
 
-use crate::server::auth::{require_api_key, AuthError};
 use crate::server::state::AppState;
 
 /// Internal header stamped by the real-IP middleware with the verified TCP
@@ -147,20 +146,4 @@ pub async fn require_local_only(request: Request, next: Next) -> Result<Response
     }
 
     Ok(next.run(request).await)
-}
-
-// ─── Helpers ─────────────────────────────────────────────────────────
-
-fn auth_error_response(error: AuthError) -> Response {
-    (
-        StatusCode::UNAUTHORIZED,
-        Json(json!({
-            "error": {
-                "message": error.message(),
-                "type": "authentication_error",
-                "code": "invalid_api_key",
-            }
-        })),
-    )
-        .into_response()
 }

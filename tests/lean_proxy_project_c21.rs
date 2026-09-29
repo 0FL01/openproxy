@@ -87,7 +87,11 @@ async fn concurrent_warm_generation_never_discovers_or_queues_project_metadata()
     let requests = upstream.requests().await;
     assert_eq!(requests.len(), REQUESTS);
     for recorded in requests {
-        assert_eq!(recorded.path, "/configured/v1internal:generateContent");
+        assert_eq!(
+            recorded.path,
+            "/configured/v1internal:streamGenerateContent"
+        );
+        assert_eq!(recorded.query.as_deref(), Some("alt=sse"));
         let body: Value = serde_json::from_slice(&recorded.body).expect("Antigravity body");
         assert_eq!(body["project"], "");
     }
@@ -149,9 +153,13 @@ async fn canonical_metadata_tracks_identity_and_delete_recreate_without_retained
     legacy
         .provider_specific_data
         .insert("projectId".into(), json!(" projects/legacy-only "));
+    // The IDE hard-cut stopped reading legacy project metadata without deleting it.
+    assert!(antigravity_project_id(&legacy).is_none());
+    let round_trip: ProviderConnection =
+        serde_json::from_value(serde_json::to_value(&legacy).unwrap()).unwrap();
     assert_eq!(
-        antigravity_project_id(&legacy).as_deref(),
-        Some("projects/legacy-only")
+        round_trip.provider_specific_data.get("projectId"),
+        Some(&json!(" projects/legacy-only "))
     );
 }
 

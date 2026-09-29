@@ -16,7 +16,7 @@ fn contract_has_one_owner_for_each_lean_boundary() {
 
     assert_eq!(owners.len(), 2);
     assert_eq!(owners["harness"].as_array().map(Vec::len), Some(5));
-    assert_eq!(owners["proxy"].as_array().map(Vec::len), Some(5));
+    assert_eq!(owners["proxy"].as_array().map(Vec::len), Some(6));
 
     let mut concerns = owners
         .values()
@@ -27,6 +27,12 @@ fn contract_has_one_owner_for_each_lean_boundary() {
     concerns.sort_unstable();
     concerns.dedup();
     assert_eq!(concerns.len(), original_len, "a concern has two owners");
+    assert!(owners["proxy"]
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::json!(
+            "stateless_web_fetch_and_codex_mcp_search"
+        )));
 }
 
 #[test]
@@ -518,8 +524,12 @@ fn contract_freezes_preservation_and_removal_lists() {
         false
     );
     assert_eq!(
+        manifest["incremental_sse_framing"]["native_compat_bypass_has_search_sanitizer"],
+        false
+    );
+    assert_eq!(
         manifest["incremental_sse_framing"]
-            ["native_compat_bypass_preserves_required_search_sanitization"],
+            ["external_codex_native_web_search_rejected_before_upstream"],
         true
     );
     assert_eq!(

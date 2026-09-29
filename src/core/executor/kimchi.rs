@@ -28,16 +28,11 @@ const KIMCHI_BASE_URL: &str = "https://llm.kimchi.dev/openai/v1";
 #[derive(Clone)]
 pub struct KimchiExecutor {
     pool: Arc<ClientPool>,
-    #[allow(dead_code)]
-    provider_node: Option<ProviderNode>,
 }
 
 impl KimchiExecutor {
-    pub fn new(pool: Arc<ClientPool>, provider_node: Option<ProviderNode>) -> Self {
-        Self {
-            pool,
-            provider_node,
-        }
+    pub fn new(pool: Arc<ClientPool>, _provider_node: Option<ProviderNode>) -> Self {
+        Self { pool }
     }
 
     pub fn pool(&self) -> &Arc<ClientPool> {
@@ -250,36 +245,6 @@ fn strip_message_artifacts(value: &mut Value) {
 /// longer than this (real thinking blocks); the 1-char pipeline placeholder is
 /// preserved to avoid re-triggering upstream validation on the next turn.
 const REASONING_PLACEHOLDER_MAX_LEN: usize = 8;
-
-/// Recursively remove `cache_control` from a message value.
-///
-/// Handles:
-/// - Message-level `cache_control` field
-/// - Content block-level `cache_control` field inside `content[]` arrays
-/// - Nested content inside content blocks
-fn remove_cache_control(value: &mut Value) {
-    let Some(obj) = value.as_object_mut() else {
-        return;
-    };
-    obj.remove("cache_control");
-
-    // Handle content blocks (array of parts)
-    if let Some(content) = obj.get_mut("content").and_then(Value::as_array_mut) {
-        for block in content.iter_mut() {
-            if let Some(block_obj) = block.as_object_mut() {
-                block_obj.remove("cache_control");
-                // Handle nested content within blocks
-                if let Some(nested) = block_obj.get_mut("content").and_then(Value::as_array_mut) {
-                    for nested_block in nested.iter_mut() {
-                        if let Some(nb_obj) = nested_block.as_object_mut() {
-                            nb_obj.remove("cache_control");
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 
 #[async_trait]
 impl ProviderExecutor for KimchiExecutor {

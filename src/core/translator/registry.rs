@@ -25,9 +25,6 @@ const VALID_OPENAI_CONTENT_TYPES: &[&str] = &[
     "refusal",
 ];
 
-/// Valid OpenAI message-level roles (mirrors VALID_OPENAI_MESSAGE_TYPES).
-const VALID_OPENAI_MESSAGE_TYPES: &[&str] = &["system", "user", "assistant", "tool"];
-
 /// All supported translation formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Format {

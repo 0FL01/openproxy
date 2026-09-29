@@ -20,7 +20,6 @@ const GITHUB_OAUTH_TOKEN_URL: &str = "https://github.com/login/oauth/access_toke
 #[derive(Clone)]
 pub struct GithubExecutor {
     pool: Arc<ClientPool>,
-    provider_node: Option<ProviderNode>,
 }
 
 #[derive(Debug)]
@@ -98,12 +97,9 @@ pub struct GithubOAuthTokenResponse {
 impl GithubExecutor {
     pub fn new(
         pool: Arc<ClientPool>,
-        provider_node: Option<ProviderNode>,
+        _provider_node: Option<ProviderNode>,
     ) -> Result<Self, GithubExecutorError> {
-        Ok(Self {
-            pool,
-            provider_node,
-        })
+        Ok(Self { pool })
     }
 
     pub fn pool(&self) -> &Arc<ClientPool> {

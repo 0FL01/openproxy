@@ -25,7 +25,6 @@ pub const ZED_CLOUD_BASE_URL: &str = "https://cloud.zed.dev";
 /// JS ZED_HOSTED_CONFIG.defaultNativeAppPort.
 pub const ZED_DEFAULT_NATIVE_APP_PORT: u16 = 58443;
 const PRIVATE_KEY_PREFIX: &str = "zed-rsa-pkcs1:";
-const LLM_TOKEN_TTL_SECS: i64 = 50 * 60;
 
 #[derive(Debug, Clone)]
 pub struct NativeAuthData {

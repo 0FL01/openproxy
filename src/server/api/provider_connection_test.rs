@@ -8,7 +8,6 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::Utc;
-use rand::RngCore;
 use reqwest::{Client, Proxy, RequestBuilder};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -1607,18 +1606,6 @@ fn provider_specific_string(connection: &ProviderConnection, key: &str) -> Optio
         .map(str::to_string)
 }
 
-fn connection_value(connection: &ProviderConnection, key: &str) -> Option<String> {
-    provider_specific_string(connection, key).or_else(|| {
-        connection
-            .extra
-            .get(key)
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-    })
-}
-
 fn is_openai_compatible_provider(provider: &str) -> bool {
     provider.starts_with("openai-compatible-")
 }
@@ -1710,12 +1697,6 @@ fn cline_headers(token: &str, extra_headers: Vec<(String, String)>) -> Vec<(Stri
 /// prefix is never doubled.
 fn cline_access_token(token: &str) -> String {
     crate::core::auth::cline_auth::get_cline_access_token(token)
-}
-
-fn random_hex(len_bytes: usize) -> String {
-    let mut bytes = vec![0u8; len_bytes];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn compatible_result(

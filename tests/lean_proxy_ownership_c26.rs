@@ -19,9 +19,12 @@ fn handler_moves_owned_json_once_and_fallback_keeps_its_required_source() {
         .nth(1)
         .expect("fallback source");
     assert!(fallback.contains("mut request_body: Value"));
-    assert!(
-        fallback.matches("body: request_body.clone()").count() >= 20,
-        "account/provider attempts must retain an immutable request-scoped source"
+    // Retired adapters no longer contribute clones; all 14 surviving specialized
+    // request constructors must still retain the immutable fallback source.
+    assert_eq!(
+        fallback.matches("body: request_body.clone()").count(),
+        14,
+        "specialized account/provider attempts must retain the request-scoped source"
     );
 
     for forbidden in ["unsafe {", "static REQUEST_BODY", "Arc<Value>"] {

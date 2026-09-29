@@ -94,11 +94,9 @@ async fn hundred_generation_requests_never_start_onboarding() {
         assert_eq!(result.response.status(), StatusCode::OK);
     }
     assert_eq!(upstream.request_count().await, 100);
-    assert!(upstream
-        .requests()
-        .await
-        .iter()
-        .all(|request| request.path == "/generation/v1internal:generateContent"));
+    assert!(upstream.requests().await.iter().all(|request| request.path
+        == "/generation/v1internal:streamGenerateContent"
+        && request.query.as_deref() == Some("alt=sse")));
 
     let source = include_str!("../src/core/executor/antigravity.rs");
     let execute = source

@@ -1,5 +1,4 @@
 #![allow(
-    dead_code,
     private_interfaces,
     unused_imports,
     unused_mut,

@@ -130,6 +130,9 @@ default = ["embed-web"]
 # Embed `web/dist/` into the release binary. Disable for headless / sidecar-proxy builds.
 embed-web = []
 
+[lints.rust]
+dead_code = "warn"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

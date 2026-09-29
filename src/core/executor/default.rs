@@ -344,12 +344,6 @@ impl ProviderConfig {
             .push((name.to_string(), value.to_string()));
         self
     }
-
-    #[allow(dead_code)]
-    fn with_fallback(mut self, url: &str) -> Self {
-        self.fallback_urls.push(url.to_string());
-        self
-    }
 }
 
 /// Anthropic beta flags, ported from `selectAnthropicBeta` in
@@ -389,8 +383,9 @@ pub fn merge_anthropic_beta(base: &str, client: Option<&str>) -> String {
         if flag.is_empty()
             || flag.len() > 64
             || !flag
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                .as_bytes()
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-')
         {
             continue;
         }
@@ -1424,11 +1419,6 @@ fn compatible_value(value: Option<&Value>) -> Option<&str> {
 
 fn non_empty_option(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
-}
-
-fn bearer_token(credentials: &ProviderConnection) -> Option<&str> {
-    non_empty_option(credentials.access_token.as_deref())
-        .or_else(|| non_empty_option(credentials.api_key.as_deref()))
 }
 
 /// Z.ai coding/PaaS endpoints require `tool_stream: true` in addition to

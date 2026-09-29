@@ -577,10 +577,6 @@ mod tests {
     use crate::types::AppDb;
     use serde_json::Value;
 
-    fn with_key() -> tempfile::TempDir {
-        tempfile::TempDir::new().unwrap()
-    }
-
     #[test]
     fn encrypt_decrypt_round_trip() {
         let key = "test-key-123";

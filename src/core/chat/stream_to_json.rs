@@ -521,9 +521,8 @@ impl ResponsesForcedState {
     }
 }
 
-/// Feed one complete SSE wire into a fresh accumulator. Test/oracle helper
-/// that shares the incremental ingest path with live streaming.
-#[allow(dead_code)]
+/// Feed one complete SSE wire into a fresh accumulator for buffered conversion
+/// and test oracles, sharing the incremental ingest path with live streaming.
 pub fn accumulate_sse_bytes(
     input: &[u8],
     fallback_model: Option<&str>,

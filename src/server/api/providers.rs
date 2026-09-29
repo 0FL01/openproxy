@@ -147,8 +147,14 @@ async fn get_suggested_models(Query(query): Query<SuggestedModelsQuery>) -> Resp
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ValidateProviderRequest {
+    // Retained public DTO: keep required-string serde validation for compatibility.
+    #[allow(dead_code)]
     provider: String,
+    // Retained public DTO: keep optional-string serde validation for compatibility.
+    #[allow(dead_code)]
     api_key: Option<String>,
+    // Retained public DTO: preserve the optional JSON field for compatibility.
+    #[allow(dead_code)]
     provider_specific_data: Option<Value>,
 }
 
@@ -157,29 +163,6 @@ pub struct ValidateProviderRequest {
 pub struct ValidateProviderResponse {
     pub valid: bool,
     pub error: Option<String>,
-}
-
-async fn validate_provider_credentials(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(req): Json<ValidateProviderRequest>,
-) -> impl IntoResponse {
-    if let Err(response) = require_management_access(&headers, &state) {
-        return response;
-    }
-
-    let api_key = req.api_key.as_deref();
-    let base_url = req
-        .provider_specific_data
-        .as_ref()
-        .and_then(|v| v.get("baseUrl"))
-        .and_then(Value::as_str)
-        .map(String::from);
-
-    let provider = req.provider.as_str();
-    let (valid, error, _) = test_provider_api(provider, api_key, base_url.as_deref()).await;
-
-    Json(ValidateProviderResponse { valid, error }).into_response()
 }
 
 // ============================================================
@@ -512,47 +495,6 @@ fn internal_base_url(_headers: &HeaderMap) -> String {
 // ============================================================
 // Helper Functions
 // ============================================================
-
-/// Reject URLs that point to private/internal networks or non-HTTPS schemes
-/// to prevent SSRF attacks from caller-controlled base_url fields.
-fn is_safe_outbound_url(url: &str) -> Result<(), String> {
-    let parsed = url::Url::parse(url).map_err(|e| format!("Invalid URL: {e}"))?;
-
-    // Only allow http(s) schemes
-    match parsed.scheme() {
-        "http" | "https" => {}
-        _ => return Err("Only http/https URLs allowed".to_string()),
-    }
-
-    // Reject URLs without a host
-    let host_str = parsed.host_str().unwrap_or("").to_lowercase();
-
-    // Block private/internal networks
-    if host_str.is_empty()
-        || host_str == "localhost"
-        || host_str == "127.0.0.1"
-        || host_str == "::1"
-        || host_str.starts_with("10.")
-        || host_str.starts_with("192.168.")
-        || host_str.starts_with("172.16.")
-        || host_str.starts_with("172.17.")
-        || host_str.starts_with("172.18.")
-        || host_str.starts_with("172.19.")
-        || host_str.starts_with("172.2")
-        || host_str.starts_with("172.3")
-        || host_str.starts_with("0.")
-        || host_str.ends_with(".local")
-        || host_str.ends_with(".internal")
-        || host_str.ends_with(".localhost")
-    {
-        return Err(
-            "URLs pointing to private/internal networks are not allowed for provider validation"
-                .to_string(),
-        );
-    }
-
-    Ok(())
-}
 
 /// Test connectivity to a provider's `/v1/models` (or equivalent) endpoint.
 /// Returns `(success, optional error string, optional latency in ms)`.
@@ -981,16 +923,6 @@ pub struct TestBatchResult {
     pub valid: bool,
     pub error: Option<String>,
     pub latency_ms: Option<u64>,
-}
-
-// Wrapper to run async test in a sync context
-fn run_sync_test_provider(
-    provider: &str,
-    api_key: Option<&str>,
-    base_url: Option<&str>,
-) -> (bool, Option<String>, Option<u64>) {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(test_provider_api(provider, api_key, base_url))
 }
 
 async fn test_provider_batch(

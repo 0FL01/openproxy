@@ -5,7 +5,6 @@ use hyper::http::{self as hyper_http, uri::InvalidUri};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use time::Duration;
 
 use crate::core::proxy::ProxyTarget;
 use crate::types::{ProviderConnection, ProviderNode};
@@ -15,7 +14,6 @@ use super::{
     ClientPool, TransportKind, UpstreamResponse,
 };
 
-const VERTEX_AI_BASE_URL: &str = "https://aiplatform.googleapis.com/v2beta";
 const VERTEX_DEFAULT_LOCATION: &str = "us-central1";
 
 /// Environment variable pointing to the GCP ADC credential file.
@@ -24,10 +22,8 @@ const ADC_CREDENTIALS_ENV: &str = "GOOGLE_APPLICATION_CREDENTIALS";
 const ADC_DEFAULT_PATH: &str = ".config/gcloud/application_default_credentials.json";
 
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct VertexExecutor {
     pool: Arc<ClientPool>,
-    provider_node: Option<ProviderNode>,
 }
 
 #[derive(Debug)]
@@ -159,7 +155,6 @@ impl std::fmt::Debug for VertexExecutorResponse {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 struct ServiceAccountJson {
     #[serde(rename = "type")]
     account_type: String,
@@ -176,8 +171,9 @@ struct ServiceAccountJson {
 /// Represents `gcloud auth application-default login` credentials
 /// (type = "authorized_user").
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 struct AuthorizedUserCredential {
+    // Retain required string validation even though ADC dispatch already checks the type.
+    #[allow(dead_code)]
     #[serde(rename = "type")]
     credential_type: String,
     #[serde(rename = "client_id")]
@@ -192,10 +188,8 @@ struct AuthorizedUserCredential {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 struct CachedAccessToken {
     token: String,
-    expires_at: time::OffsetDateTime,
 }
 
 #[derive(Debug, Serialize)]
@@ -210,12 +204,9 @@ struct JwtClaims {
 impl VertexExecutor {
     pub fn new(
         pool: Arc<ClientPool>,
-        provider_node: Option<ProviderNode>,
+        _provider_node: Option<ProviderNode>,
     ) -> Result<Self, VertexExecutorError> {
-        Ok(Self {
-            pool,
-            provider_node,
-        })
+        Ok(Self { pool })
     }
 
     pub fn pool(&self) -> &Arc<ClientPool> {
@@ -307,6 +298,8 @@ impl VertexExecutor {
         #[derive(Deserialize)]
         struct TokenResponse {
             access_token: String,
+            // Retain required u64 wire validation; this result does not cache expiry.
+            #[allow(dead_code)]
             expires_in: u64,
         }
 
@@ -317,12 +310,8 @@ impl VertexExecutor {
             VertexExecutorError::InvalidToken(format!("Failed to parse token response: {}", e))
         })?;
 
-        let expires_at =
-            time::OffsetDateTime::now_utc() + Duration::seconds(token_resp.expires_in as i64);
-
         Ok(CachedAccessToken {
             token: token_resp.access_token,
-            expires_at,
         })
     }
 
@@ -615,7 +604,11 @@ impl VertexExecutor {
         #[derive(Deserialize)]
         struct TokenResponse {
             access_token: String,
+            // Retain optional u64 wire validation without storing token expiry.
+            #[allow(dead_code)]
             expires_in: Option<u64>,
+            // Retain optional string wire validation even though only the token is used.
+            #[allow(dead_code)]
             #[serde(default)]
             scope: Option<String>,
         }

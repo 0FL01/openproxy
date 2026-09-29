@@ -25,16 +25,11 @@ use super::{ClientPool, TransportKind, UpstreamResponse};
 #[derive(Clone)]
 pub struct CodeBuddyCNExecutor {
     pool: Arc<ClientPool>,
-    #[allow(dead_code)]
-    provider_node: Option<ProviderNode>,
 }
 
 impl CodeBuddyCNExecutor {
-    pub fn new(pool: Arc<ClientPool>, provider_node: Option<ProviderNode>) -> Self {
-        Self {
-            pool,
-            provider_node,
-        }
+    pub fn new(pool: Arc<ClientPool>, _provider_node: Option<ProviderNode>) -> Self {
+        Self { pool }
     }
 
     pub fn pool(&self) -> &Arc<ClientPool> {

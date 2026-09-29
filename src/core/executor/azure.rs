@@ -17,7 +17,6 @@ const DEFAULT_DEPLOYMENT: &str = "gpt-4";
 #[derive(Clone)]
 pub struct AzureExecutor {
     pool: Arc<ClientPool>,
-    provider_node: Option<ProviderNode>,
 }
 
 #[derive(Debug)]
@@ -78,12 +77,9 @@ pub struct AzureExecutorResponse {
 impl AzureExecutor {
     pub fn new(
         pool: Arc<ClientPool>,
-        provider_node: Option<ProviderNode>,
+        _provider_node: Option<ProviderNode>,
     ) -> Result<Self, AzureExecutorError> {
-        Ok(Self {
-            pool,
-            provider_node,
-        })
+        Ok(Self { pool })
     }
 
     pub fn pool(&self) -> &Arc<ClientPool> {

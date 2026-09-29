@@ -49,7 +49,6 @@ impl OpenCodeTier {
 #[derive(Clone)]
 pub struct OpenCodeExecutor {
     pool: Arc<ClientPool>,
-    provider_node: Option<ProviderNode>,
 }
 
 #[derive(Debug)]
@@ -114,12 +113,9 @@ pub struct OpenCodeExecutorResponse {
 impl OpenCodeExecutor {
     pub fn new(
         pool: Arc<ClientPool>,
-        provider_node: Option<ProviderNode>,
+        _provider_node: Option<ProviderNode>,
     ) -> Result<Self, OpenCodeExecutorError> {
-        Ok(Self {
-            pool,
-            provider_node,
-        })
+        Ok(Self { pool })
     }
 
     pub fn pool(&self) -> &Arc<ClientPool> {
@@ -306,7 +302,6 @@ impl OpenCodeExecutor {
         &self,
         mut request: OpenCodeExecutionRequest,
     ) -> Result<OpenCodeExecutorResponse, OpenCodeExecutorError> {
-        let _ = &self.provider_node;
         Self::normalize_body(&mut request);
         let url = Self::build_url(request.tier, request.format, &request.model, request.stream)?;
         let headers = Self::build_headers(&request)?;

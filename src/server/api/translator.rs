@@ -366,12 +366,6 @@ pub struct SendLogRequest {
     pub source: Option<String>,
 }
 
-fn format_console_line(req: &SendLogRequest) -> String {
-    let source = req.source.as_deref().unwrap_or("Translator");
-    let level = req.level.as_deref().unwrap_or("info").to_ascii_uppercase();
-    format!("[{}] [{}] {}", source, level, req.message)
-}
-
 #[derive(Debug, serde::Serialize)]
 pub struct SendLogResponse {
     pub success: bool,

@@ -30,6 +30,7 @@ use tokio::sync::mpsc;
 pub struct DevinExecutionRequest {
     pub model: String,
     pub body: Value,
+    // Public request compatibility: ACP execution always returns SSE regardless of this flag.
     #[allow(dead_code)]
     pub stream: bool,
 }
@@ -600,18 +601,16 @@ fn extract_result_text(res: Option<&Value>) -> Option<String> {
 }
 
 #[derive(Clone)]
-pub struct DevinCliExecutor {
-    #[allow(dead_code)]
-    pool: std::sync::Arc<crate::core::executor::ClientPool>,
-}
+pub struct DevinCliExecutor {}
 
 pub const DEVIN_ACP_URL: &str = "devin://acp/stdio";
 
 impl DevinCliExecutor {
+    /// Retains the shared executor constructor contract; ACP uses stdio, not an HTTP pool.
     pub fn new(
-        pool: std::sync::Arc<crate::core::executor::ClientPool>,
+        _pool: std::sync::Arc<crate::core::executor::ClientPool>,
     ) -> Result<Self, std::convert::Infallible> {
-        Ok(Self { pool })
+        Ok(Self {})
     }
 
     pub async fn execute_request(
