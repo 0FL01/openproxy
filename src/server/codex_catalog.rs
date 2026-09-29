@@ -792,6 +792,24 @@ mod tests {
     }
 
     #[test]
+    fn parser_enforces_advertised_client_version() {
+        assert_eq!(CODEX_CLIENT_VERSION, "0.159.0");
+        let models = parse_codex_models(json!({"models": [
+            {"slug":"current","minimal_client_version":"0.159.0"},
+            {"slug":"old","minimal_client_version":"0.157.0"},
+            {"slug":"future","minimal_client_version":"0.160.0"}
+        ]}))
+        .unwrap();
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            ["current", "old"]
+        );
+    }
+
+    #[test]
     fn cached_supporters_do_not_cross_credential_identity() {
         let catalog = CodexModelCatalog::default();
         let connection = ProviderConnection {

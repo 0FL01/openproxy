@@ -20,6 +20,8 @@ use tokio::task::JoinHandle;
 pub struct RecordedRequest {
     #[allow(dead_code)]
     pub path: String,
+    #[allow(dead_code)]
+    pub query: Option<String>,
     pub headers: HeaderMap,
     pub body: Bytes,
 }
@@ -190,12 +192,14 @@ impl Drop for MockUpstream {
 
 async fn mock_handler(State(state): State<MockState>, request: Request<Body>) -> Response<Body> {
     let path = request.uri().path().to_string();
+    let query = request.uri().query().map(str::to_string);
     let headers = request.headers().clone();
     let body = to_bytes(request.into_body(), 32 * 1024 * 1024)
         .await
         .expect("read mock request body");
     state.requests.lock().await.push(RecordedRequest {
         path,
+        query,
         headers,
         body,
     });
