@@ -167,22 +167,44 @@ and custom `headers` as discovery, respecting `disabled_providers` and
 to OpenProxy with a 10-second timeout, a streaming 2 MiB response bound and
 redirects disabled. It polls the proxy
 every 60 seconds; an initial `loading` result gets one retry after 2.5 seconds.
-OpenProxy owns provider credentials and upstream refreshes with **180-second
-freshness**. The client does not contact providers directly.
+OpenProxy owns provider credentials and upstream refreshes; its **180-second
+cache TTL** permits a background refresh rather than indicating a failure. The
+client does not contact providers directly.
 
-Each account is separate, with its label/provider, plan and status, compact
-used-percentage bars, reset countdowns and compact observation ages. Balance-only
-quotas show the remaining amount and supplied unit; count/currency windows also
-show unit-bearing amounts where available. Unknown quotas stay unknown;
-unlimited, loading, unsupported, unavailable and stale states are explicit.
-The response is bounded to 128 accounts; the panel reports when the list is truncated.
-The countdown updates every 30 seconds. On proxy failure or invalid data, the
-last valid response stays visible with `stale (cached)` markers and a sanitized
-failure message. Successful rows also become stale locally after 180 seconds
-from their observation timestamp. Timers and active requests stop when the
-plugin is disposed. Without a backend supporting this endpoint the panel shows
-unavailable. Quit and restart OpenCode after installing or changing either file
-or the TUI config; open a session with its sidebar visible to see the panel.
+The panel shows one block per provider, with a plan only when shared by all its
+connections. Matching quota windows and units are combined: normalized percentage
+quotas show mean usage, real counters sum used/total before calculating the
+percentage, and balances sum remaining amounts. Different units remain separate.
+The reset countdown shows the nearest known reset, when part of the pool renews.
+Unknown values are not counted as zero; incomplete aggregates are marked.
+Provider headings and percentages are bold. Each quota is one compact text row
+with an eight-character thin green bar (`━` filled, `─` empty) and an inline reset
+such as `↻2d3h`. Percentages are green below 70%, yellow from 70% and red from 90%;
+reset details use muted theme colors.
+Connection labels and routine freshness/age text are hidden; warnings identify
+failures, partial, loading, unsupported or unavailable data. A cached `stale`
+result with `error: null` is normal, including while a refresh is pending, and
+does not warn. Any nonnull per-connection `error` appears as a short, sanitized
+message under its provider, including when other connections succeed. Optional
+`errorStatus` adds an HTTP code; `nextRefreshAt` adds a retry countdown, or
+`refreshing: true` shows `retrying` for a failed refresh in progress. These
+diagnostics do not trigger additional polls. Older backends remain supported;
+without an error they cannot distinguish a failed refresh from TTL expiry.
+
+The response is bounded to 128 connections; the panel reports when some limits
+are omitted. Countdown text updates every 30 seconds. On proxy failure or
+invalid data, the last valid response stays visible with a stale warning and a
+sanitized failure message. Retained values also warn after 190 seconds without
+a successful, fully validated proxy read (180 seconds plus the 10-second request
+deadline grace, checked on the countdown tick). This uses the client's receipt
+clock, never the server's `observedAt`, so server clock skew or an old upstream
+observation cannot create false stale warnings. A successful read clears proxy
+failure/silence warnings; an upstream error clears when the backend reports
+`error: null`. Optional diagnostics validate atomically with the whole response.
+Timers and active requests stop when the plugin is disposed. Without a backend
+supporting this endpoint the panel shows unavailable. Quit and restart OpenCode
+after installing or changing either file or the TUI config; open a session with
+its sidebar visible to see the panel.
 
 ## Verification
 
@@ -198,4 +220,4 @@ cargo test --test models_custom_api --test api_auth_and_models
 The CLI smoke tests use temporary HOME/XDG directories and loopback fixtures,
 not your proxy, credentials, or OpenCode config. The TUI smoke test requires
 Python 3 with Unix PTY support and verifies actual rendering and a reactive
-loading-to-fresh update in the installed binary without inference.
+loading-to-cached-refresh update in the installed binary without inference.

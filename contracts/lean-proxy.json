@@ -373,6 +373,9 @@
     "idle_poller": false,
     "explicit_quota_requests_remain_fresh": true,
     "existing_observations_reused": true,
+    "external_observation_failures_do_not_cancel_or_reschedule_collectors": true,
+    "refresh_eligibility_is_not_an_error": true,
+    "additive_refresh_diagnostics": ["refreshing", "nextRefreshAt", "errorStatus"],
     "affects_routing": false,
     "shutdown_cancels_collectors": true
   },

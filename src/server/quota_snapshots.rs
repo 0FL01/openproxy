@@ -31,6 +31,9 @@ pub(crate) struct AccountLimits {
     plan: Option<String>,
     quotas: Value,
     error: Option<&'static str>,
+    error_status: Option<u16>,
+    refreshing: bool,
+    next_refresh_at: Option<String>,
 }
 
 struct Entry {
@@ -123,6 +126,9 @@ impl QuotaSnapshots {
                         plan: None,
                         quotas: json!({}),
                         error: None,
+                        error_status: None,
+                        refreshing: false,
+                        next_refresh_at: None,
                     },
                 });
             if entry.generation != generation {
@@ -137,6 +143,7 @@ impl QuotaSnapshots {
                 entry.limits.observed_at = None;
                 entry.limits.plan = None;
                 entry.limits.error = None;
+                entry.limits.error_status = None;
             }
             entry.limits.provider = clean_string(&connection.provider);
             entry.limits.label = format!("Account {index}");
@@ -203,7 +210,7 @@ impl QuotaSnapshots {
                                 && connection_credential_generation(current)
                                     == connection_credential_generation(&prepared)
                         }) {
-                            owner.complete(&prepared, version, &result, observation.retry_after);
+                            owner.complete(&prepared, version, &result, observation);
                         } else {
                             owner.discard(&connection.id, version);
                         }
@@ -211,6 +218,21 @@ impl QuotaSnapshots {
                     .abort_handle(),
                 );
             }
+        }
+        for connection in &connections {
+            let entry = entries
+                .accounts
+                .get_mut(&connection.id)
+                .expect("registered account");
+            entry.limits.refreshing = entry.task.is_some();
+            entry.limits.next_refresh_at = if usage::supports_quota(connection) {
+                chrono::Duration::from_std(entry.next_attempt.saturating_duration_since(now))
+                    .ok()
+                    .and_then(|delay| chrono::Utc::now().checked_add_signed(delay))
+                    .map(|date| date.to_rfc3339())
+            } else {
+                None
+            };
         }
         (
             connections
@@ -237,7 +259,7 @@ impl QuotaSnapshots {
         connection: &ProviderConnection,
         version: u64,
         result: &Value,
-        retry_after: u64,
+        observation: Observation,
     ) {
         let mut entries = self.entries.lock();
         let Some(entry) = entries
@@ -249,17 +271,24 @@ impl QuotaSnapshots {
         };
         entry.task = None;
         entry.generation = connection_credential_generation(connection);
-        publish(entry, result, retry_after);
+        publish(entry, result, observation);
     }
 
-    /// Reuse observations already paid for by dashboard/opt-in auto-ping. No
-    /// snapshot slot is created until a client has requested it.
+    /// Reuse successful observations already paid for by dashboard/auto-ping.
+    /// Their failures must not cancel collectors or slide the retry deadline.
+    /// No snapshot slot is created until a client has requested it.
     pub(crate) fn observe(
         &self,
         state: &AppState,
         connection: &ProviderConnection,
         result: &Value,
     ) {
+        if project_quotas(result, &connection.provider)
+            .as_object()
+            .is_none_or(|quotas| quotas.is_empty())
+        {
+            return;
+        }
         let canonical = state.db.snapshot();
         if !canonical.provider_connections.iter().any(|current| {
             current.id == connection.id
@@ -288,7 +317,7 @@ impl QuotaSnapshots {
             entry.failures = 0;
         }
         entry.generation = connection_credential_generation(connection);
-        publish(entry, result, 0);
+        publish(entry, result, Observation::default());
     }
 
     pub(crate) fn shutdown(&self) {
@@ -361,7 +390,7 @@ async fn fetch(
     Some((connection, result, observation))
 }
 
-fn publish(entry: &mut Entry, result: &Value, retry_after: u64) {
+fn publish(entry: &mut Entry, result: &Value, observation: Observation) {
     let quotas = project_quotas(result, &entry.limits.provider);
     let now = Instant::now();
     if quotas.as_object().is_some_and(|quotas| !quotas.is_empty()) {
@@ -376,6 +405,7 @@ fn publish(entry: &mut Entry, result: &Value, retry_after: u64) {
         };
         entry.limits.status = "fresh";
         entry.limits.error = None;
+        entry.limits.error_status = None;
         entry.failures = 0;
     } else {
         entry.failures = (entry.failures + 1).min(5);
@@ -384,12 +414,22 @@ fn publish(entry: &mut Entry, result: &Value, retry_after: u64) {
         } else {
             "unavailable"
         };
-        entry.limits.error = Some("Quota temporarily unavailable");
+        entry.limits.error = Some(match observation.status {
+            200..=299 => "Invalid quota response",
+            401 => "Quota authentication failed",
+            403 => "Quota access denied",
+            429 => "Quota rate limited",
+            500..=599 => "Quota provider unavailable",
+            _ => "Quota request failed",
+        });
+        entry.limits.error_status = (100..=599)
+            .contains(&observation.status)
+            .then_some(observation.status);
     }
     let delay = REFRESH_SECONDS * (1 << entry.failures.saturating_sub(1));
     // Check addition so an invalid Retry-After cannot overflow Instant.
     entry.next_attempt = now
-        .checked_add(Duration::from_secs(delay.max(retry_after)))
+        .checked_add(Duration::from_secs(delay.max(observation.retry_after)))
         .unwrap_or(now + Duration::from_secs(delay));
 }
 
@@ -563,7 +603,15 @@ mod tests {
         assert_eq!(owner.read(&state).0[0].status, "stale");
         let version = owner.entries.lock().accounts[&connection.id].version;
         assert_eq!(version, 3);
-        owner.complete(&connection, version, &json!({}), 600);
+        owner.complete(
+            &connection,
+            version,
+            &json!({}),
+            Observation {
+                status: 429,
+                retry_after: 600,
+            },
+        );
         assert_eq!(owner.read(&state).0[0].quotas["5h"]["used"], 25.0);
         tokio::time::advance(Duration::from_secs(599)).await;
         owner.read(&state);
@@ -584,7 +632,7 @@ mod tests {
         assert!(row.quotas.as_object().unwrap().is_empty());
         assert_eq!(row.observed_at, None);
         // A late prior-generation operation cannot republish old account data.
-        owner.complete(&connection, version, &quotas(), 0);
+        owner.complete(&connection, version, &quotas(), Observation::default());
         assert!(owner.read(&state).0[0]
             .quotas
             .as_object()
@@ -599,6 +647,124 @@ mod tests {
         assert!(owner.entries.lock().accounts.is_empty());
         state.signal_shutdown();
         assert_eq!(owner.permits.available_permits(), 4);
+    }
+
+    // Finish a scheduled collector with fixture data, without live quota calls.
+    fn finish(
+        owner: &QuotaSnapshots,
+        connection: &ProviderConnection,
+        result: &Value,
+        observation: Observation,
+    ) {
+        let version = {
+            let mut entries = owner.entries.lock();
+            let entry = entries.accounts.get_mut(&connection.id).unwrap();
+            entry.task.take().unwrap().abort();
+            entry.version
+        };
+        owner.complete(connection, version, result, observation);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn healthy_hour_refreshes_on_schedule_without_errors() {
+        let (_directory, state, connection) = state().await;
+        let owner = &state.quota_snapshots;
+        let mut attempts = 0;
+        for minute in 0..=60 {
+            let row = owner.read(&state).0.remove(0);
+            assert_eq!(row.refreshing, minute % 3 == 0);
+            assert_eq!(row.error, None, "TTL expiry is not a fetch failure");
+            assert_eq!(row.error_status, None);
+            assert!(
+                chrono::DateTime::parse_from_rfc3339(row.next_refresh_at.as_deref().unwrap())
+                    .is_ok()
+            );
+            if row.refreshing {
+                attempts += 1;
+                finish(owner, &connection, &quotas(), Observation::default());
+            }
+            let row = owner.read(&state).0.remove(0);
+            assert_eq!(row.status, "fresh");
+            assert!(!row.refreshing);
+            assert_eq!(row.error, None);
+            assert_eq!(row.quotas["5h"]["used"], 25.0);
+            tokio::time::advance(Duration::from_secs(60)).await;
+        }
+        assert_eq!(
+            attempts, 21,
+            "readers do not increase the 180-second refresh rate"
+        );
+        state.signal_shutdown();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn external_failures_neither_cancel_collectors_nor_slide_recovery() {
+        let (_directory, state, connection) = state().await;
+        let owner = &state.quota_snapshots;
+        owner.read(&state);
+        let version = owner.entries.lock().accounts[&connection.id].version;
+        // An external failure cannot cancel an otherwise successful collector.
+        owner.observe(&state, &connection, &json!({"message":"private failure"}));
+        assert_eq!(
+            owner.entries.lock().accounts[&connection.id].version,
+            version
+        );
+        assert!(!owner.entries.lock().accounts[&connection.id]
+            .task
+            .as_ref()
+            .unwrap()
+            .is_finished());
+        finish(owner, &connection, &quotas(), Observation::default());
+        tokio::time::advance(Duration::from_secs(180)).await;
+        owner.read(&state);
+        finish(
+            owner,
+            &connection,
+            &json!({}),
+            Observation {
+                status: 429,
+                retry_after: 600,
+            },
+        );
+        let (version, deadline) = {
+            let entries = owner.entries.lock();
+            let entry = &entries.accounts[&connection.id];
+            (entry.version, entry.next_attempt)
+        };
+        for _ in 0..10 {
+            owner.observe(
+                &state,
+                &connection,
+                &json!({"message":"another private failure"}),
+            );
+            let row = owner.read(&state).0.remove(0);
+            assert_eq!(row.status, "stale");
+            assert_eq!(row.error, Some("Quota rate limited"));
+            assert_eq!(row.error_status, Some(429));
+            assert_eq!(row.quotas["5h"]["used"], 25.0);
+            assert!(!row.refreshing);
+            let entries = owner.entries.lock();
+            let entry = &entries.accounts[&connection.id];
+            assert_eq!(entry.version, version);
+            assert_eq!(entry.failures, 1);
+            assert_eq!(entry.next_attempt, deadline);
+            drop(entries);
+            tokio::time::advance(Duration::from_secs(60)).await;
+        }
+        let row = owner.read(&state).0.remove(0);
+        assert!(
+            row.refreshing,
+            "retry starts at the original deadline despite recurring external errors"
+        );
+        assert_eq!(row.error_status, Some(429));
+        finish(owner, &connection, &quotas(), Observation::default());
+        let row = owner.read(&state).0.remove(0);
+        assert_eq!(row.status, "fresh");
+        assert_eq!(row.error, None);
+        assert_eq!(row.error_status, None);
+        assert!(!row.refreshing);
+        assert_eq!(owner.entries.lock().accounts[&connection.id].failures, 0);
+        state.signal_shutdown();
     }
 
     #[tokio::test]
@@ -625,6 +791,7 @@ mod tests {
             .quota_snapshots
             .observe(&state, &connection, &quotas());
         let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri("/v1/usage/limits")
@@ -652,6 +819,44 @@ mod tests {
         let body: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["refreshIntervalSeconds"], 180);
         assert_eq!(body["accounts"][0]["status"], "fresh");
+        assert_eq!(body["accounts"][0]["quotas"]["5h"]["used"], 25.0);
+        assert_eq!(body["accounts"][0]["refreshing"], false);
+        assert!(body["accounts"][0]["errorStatus"].is_null());
+        assert!(chrono::DateTime::parse_from_rfc3339(
+            body["accounts"][0]["nextRefreshAt"].as_str().unwrap()
+        )
+        .is_ok());
+        let version = state.quota_snapshots.entries.lock().accounts[&connection.id].version;
+        state.quota_snapshots.complete(
+            &connection,
+            version,
+            &json!({"message":"private upstream failure"}),
+            Observation {
+                status: 429,
+                retry_after: 600,
+            },
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/usage/limits")
+                    .header("authorization", "Bearer reader-fixture")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 2 * 1024 * 1024)
+            .await
+            .unwrap();
+        assert!(!std::str::from_utf8(&body)
+            .unwrap()
+            .contains("private upstream failure"));
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["accounts"][0]["status"], "stale");
+        assert_eq!(body["accounts"][0]["error"], "Quota rate limited");
+        assert_eq!(body["accounts"][0]["errorStatus"], 429);
         assert_eq!(body["accounts"][0]["quotas"]["5h"]["used"], 25.0);
         state.signal_shutdown();
     }

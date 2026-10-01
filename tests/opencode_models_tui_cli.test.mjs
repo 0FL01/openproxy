@@ -29,10 +29,19 @@ test("installed OpenCode TUI supplies lazy UI imports and actually renders react
     requests++
     res.end(JSON.stringify({ refreshIntervalSeconds: 180, accounts: [{
       id: "fixture", provider: "codex", label: "Fixture account", plan: "Pro", error: null,
-      observedAt: new Date().toISOString(), status: requests === 1 ? "loading" : "fresh",
+       observedAt: new Date(Date.now() - 3600000).toISOString(), status: requests === 1 ? "loading" : "stale",
+       refreshing: requests > 1, nextRefreshAt: null, errorStatus: null,
       quotas: requests === 1 ? {} : { Session: {
         used: null, total: null, remaining: null, remainingPercentage: 20,
         resetAt: new Date(Date.now() + 3600000).toISOString(), unlimited: false,
+      } },
+    }, {
+      id: "second", provider: "codex", label: "Second fixture", plan: "Pro", error: null,
+       observedAt: new Date(Date.now() - 3600000).toISOString(), status: requests === 1 ? "loading" : "stale",
+       refreshing: false, nextRefreshAt: null, errorStatus: null,
+      quotas: requests === 1 ? {} : { Session: {
+        used: null, total: null, remaining: null, remainingPercentage: 80,
+        resetAt: new Date(Date.now() + 7200000).toISOString(), unlimited: false,
       } },
     }] }))
   }).listen(0, "127.0.0.1")
@@ -78,7 +87,7 @@ try:
    except OSError: break
    if not data: break
    output += data
-   if b"80% used" in output: break
+   if b"50%" in output: break
 finally:
  os.killpg(child.pid, signal.SIGTERM) if child.poll() is None else None
  try: child.wait(timeout=3)
@@ -91,7 +100,11 @@ sys.stdout.buffer.write(output)
   })
   const rendered = result.stdout.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
   assert.match(rendered, /Usage limits/)
-  assert.match(rendered, /Fixture account · codex/)
-  assert.match(rendered, /80% used/)
+  // Cursor moves can replace spaces between differently styled inline spans.
+  assert.match(rendered, /Codex\s*·\s*Pro/)
+  assert.match(rendered, /50%/)
+  assert.match(rendered, /━{4}─{4}/)
+  assert.match(rendered, /↻1h/)
+   assert.doesNotMatch(rendered, /Fixture account|Second fixture|updated just now|Data stale|retrying/)
   assert.equal(requests, 2)
 })

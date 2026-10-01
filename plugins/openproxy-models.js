@@ -270,6 +270,45 @@ async function OpenProxyModels() {
   }
 }
 
+function sharedLimits(accounts) {
+  const groups = new Map()
+  for (const account of accounts) {
+    if (!groups.has(account.provider)) groups.set(account.provider, { provider: account.provider, accounts: [], windows: new Map() })
+    const group = groups.get(account.provider)
+    group.accounts.push(account)
+    for (const [label, quota] of Object.entries(account.quotas)) {
+      const key = JSON.stringify([label, quota.unit ?? ""])
+      if (!group.windows.has(key)) group.windows.set(key, { label, unit: quota.unit, values: [] })
+      group.windows.get(key).values.push(quota)
+    }
+  }
+  const order = { "session (5h)": 0, session: 0, weekly: 1, monthly: 2 }
+  return [...groups.values()].map((group) => {
+    const plans = new Set(group.accounts.map((account) => account.plan))
+    const quotas = [...group.windows.values()].map(({ label, unit, values }) => {
+      const sum = (rows, key) => rows.reduce((total, row) => total + row[key], 0)
+      // Percent-only providers normalize capacity to 100. Real capacities and
+      // unit-bearing counters instead contribute their actual used/total amounts.
+      const quantitative = values.some((quota) => quota.total > 0 && (unit || quota.total !== 100))
+      const counts = values.filter((quota) => quota.used !== null && quota.total !== null)
+      const percentages = values.map((quota) => quota.remainingPercentage !== null ? 100 - quota.remainingPercentage
+        : quota.used !== null && quota.total > 0 ? quota.used / quota.total * 100 : null).filter((value) => value !== null)
+      const used = quantitative ? sum(counts, "used") : percentages.length ? percentages.reduce((a, b) => a + b, 0) / percentages.length : null
+      const total = quantitative ? sum(counts, "total") : used === null ? null : 100
+      const balances = values.filter((quota) => quota.remaining !== null)
+      const resets = values.map((quota) => quota.resetAt).filter(Boolean).sort((a, b) => Date.parse(a) - Date.parse(b))
+      const known = quantitative ? counts.length : percentages.length || balances.length
+      const unlimited = values.some((quota) => quota.unlimited)
+      return { label, partial: !unlimited && known > 0 && known < values.length, quota: {
+        used, total, remaining: balances.length ? sum(balances, "remaining") : null,
+        remainingPercentage: used !== null && total > 0 ? 100 - Math.max(0, Math.min(100, used / total * 100)) : null,
+        resetAt: resets[0] ?? null, unit, unlimited,
+      } }
+    }).sort((a, b) => (order[a.label.toLowerCase()] ?? 3) - (order[b.label.toLowerCase()] ?? 3))
+    return { provider: group.provider, accounts: group.accounts, plan: plans.size === 1 ? [...plans][0] : null, quotas }
+  })
+}
+
 // TUI-only dependencies are supplied by OpenCode's runtime plugin loader.
 // Discovery (including `opencode models`) never imports them.
 export async function OpenProxySidebar(api) {
@@ -283,6 +322,7 @@ export async function OpenProxySidebar(api) {
   const [failed, setFailed] = createSignal(false)
   const [visible, setVisible] = createSignal(false)
   const [now, setNow] = createSignal(Date.now())
+  const [receivedAt, setReceivedAt] = createSignal()
   let timer, clock, controller, disposeRoot, stopped = false, started = false, warmupRetried = false
   const stop = () => {
     if (stopped) return
@@ -309,10 +349,12 @@ export async function OpenProxySidebar(api) {
       const body = await limitsResponse(response)
       const next = validateLimits(body)
       if (stopped) return
-      setNow(Date.now())
+      const received = Date.now()
+      setReceivedAt(received)
+      setNow(received)
       setAccounts(next)
       setFailed(false)
-      setMessage(body.truncated ? "Showing first 128 accounts" : next.length ? "" : "No accounts")
+      setMessage(body.truncated ? "Some limits omitted" : next.length ? "" : "No limits")
       // One quick retry lets the proxy's background initial refresh complete.
       if (!warmupRetried && next.some((account) => account.status === "loading")) {
         warmupRetried = true
@@ -350,58 +392,66 @@ export async function OpenProxySidebar(api) {
   })
 
   const clean = (value) => value.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, 180)
-  const text = (value, tone = "textMuted", theme = api.theme) => jsx("text", {
+  const span = (value, tone, theme, bold = false) => jsx(bold ? "b" : "span", {
     get fg() { return theme.current[tone] }, children: clean(value),
+  })
+  const text = (value, tone = "textMuted", theme = api.theme, bold = false) => jsx("text", {
+    get fg() { return theme.current[tone] }, children: bold ? span(value, tone, theme, true) : clean(value),
   })
   const reset = (date) => {
     if (!date) return "unknown"
     const minutes = Math.ceil((Date.parse(date) - now()) / 60000)
     if (minutes <= 0) return "due"
     if (minutes < 60) return `${minutes}m`
-    if (minutes < 1440) return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
-    return `${Math.floor(minutes / 1440)}d ${Math.floor(minutes % 1440 / 60)}h`
+    const hours = Math.floor(minutes / 60)
+    if (minutes < 1440) return `${hours}h${minutes % 60 ? `${minutes % 60}m` : ""}`
+    return `${Math.floor(minutes / 1440)}d${hours % 24 ? `${hours % 24}h` : ""}`
   }
-  const quotaView = ([label, quota], theme) => {
+  const quotaView = ({ label, quota }, theme) => {
     const percentage = quota.remainingPercentage !== null ? 100 - quota.remainingPercentage
       : quota.used !== null && quota.total > 0 ? quota.used / quota.total * 100 : null
     const used = percentage === null ? null : Math.max(0, Math.min(100, percentage))
-    const filled = used === null ? 0 : Math.round(used / 10)
-    const bar = used === null ? "??????????" : "━".repeat(filled) + "─".repeat(10 - filled)
+    const filled = used === null ? 0 : Math.round(used * 8 / 100)
     const amount = (value) => `${Number(value.toPrecision(6))}${quota.unit ? ` ${quota.unit}` : ""}`
     const balance = quota.remaining !== null ? `${amount(quota.remaining)} left` : null
-    const usage = used === null ? balance ?? "unknown" : `${bar} ${Math.round(used)}% used`
-    const detail = used !== null && quota.unit
+    const detail = !quota.unlimited && used !== null && quota.unit
       ? balance ?? (quota.used !== null ? `${amount(quota.used)} used` : null) : null
-    return jsxs("box", { flexDirection: "column", children: [
-      text(`${label} · reset ${reset(quota.resetAt)}`, "textMuted", theme),
-      text(quota.unlimited ? "Unlimited" : `${usage}${detail ? ` · ${detail}` : ""}`,
-        used === null || quota.unlimited ? "textMuted" : used >= 90 ? "error" : used >= 75 ? "warning" : "success", theme),
+    const tone = used === null || quota.unlimited ? "text" : used >= 90 ? "error" : used >= 70 ? "warning" : "success"
+    const name = label === "session (5h)" ? "5h" : label[0].toUpperCase() + label.slice(1)
+    return jsxs("text", { children: [span(`${name.padEnd(7)} `, "text", theme),
+      ...(quota.unlimited || used === null ? [span(quota.unlimited ? "Unlimited" : balance ?? "unknown", tone, theme)] : [
+        span("━".repeat(filled), "success", theme), span("─".repeat(8 - filled), "success", theme),
+        span(` ${Math.round(used)}%`, tone, theme, true),
+      ]),
+      ...(quota.resetAt ? [span(` ↻${reset(quota.resetAt)}`, "textMuted", theme)] : []),
+      ...(detail ? [span(` · ${detail}`, "textMuted", theme)] : []),
     ] })
-  }
-  const age = (observedAt) => {
-    if (!observedAt) return "updated unknown"
-    const minutes = Math.max(0, Math.floor((now() - Date.parse(observedAt)) / 60000))
-    if (minutes < 1) return "updated just now"
-    const elapsed = minutes < 60 ? `${minutes}m` : minutes < 1440 ? `${Math.floor(minutes / 60)}h` : `${Math.floor(minutes / 1440)}d`
-    return `updated ${elapsed} ago`
   }
   function Panel({ theme }) {
     return jsx("box", { flexDirection: "column", gap: 1,
       get visible() { return visible() },
       get children() {
-        return [text("Usage limits", "text", theme), ...(message() ? [text(message(), failed() ? "error" : "textMuted", theme)] : []),
-          ...accounts().map((account) => {
-            const stale = failed() || account.status === "stale" ||
-              account.status === "fresh" && (!account.observedAt || now() - Date.parse(account.observedAt) >= 180000)
-            const status = stale && account.status === "fresh" ? "stale" : account.status
-            const tone = status === "unavailable" ? "error" : stale ? "warning" : "textMuted"
-            const cached = failed() ? `${status === "stale" ? "" : " · stale"} (cached)` : ""
+        return [text("Usage limits", "text", theme, true), ...(message() ? [text(message(), failed() ? "error" : "textMuted", theme)] : []),
+          ...sharedLimits(accounts()).map((group) => {
+            const populated = group.accounts.filter((account) => Object.keys(account.quotas).length)
+            // Backend TTL expiry only permits refresh. Measure proxy silence on
+            // our own clock, allowing its 10-second request deadline as grace.
+            const stale = failed() || receivedAt() !== undefined && now() - receivedAt() >= 190000
+            const errors = [...new Set(group.accounts.filter((account) => account.error !== null).map((account) =>
+              `${clean(account.error).trim().slice(0, 80) || "Quota request failed"}${account.errorStatus != null ? ` · HTTP ${account.errorStatus}` : ""}` +
+              (account.refreshing ? " · retrying" : account.nextRefreshAt ? ` · retry ${reset(account.nextRefreshAt)}` : "")))]
+            const partial = populated.length < group.accounts.length || group.quotas.some((row) => row.partial)
+            const warning = populated.length ? stale ? "Data stale" : partial ? "Partial data" : null
+              : group.accounts.some((account) => account.status === "loading") ? "Loading…"
+              : group.accounts.every((account) => account.status === "unsupported") ? "Limits unsupported" : "Limits unavailable"
+            const name = { codex: "Codex", glm: "GLM", "glm-cn": "GLM CN", "opencode-go": "OpenCode Go" }[group.provider] ?? group.provider
             return jsxs("box", { flexDirection: "column", children: [
-              text(`${account.label} · ${account.provider}`, "text", theme),
-              text(`${account.plan ? `${account.plan} · ` : ""}${status}${cached} · ${age(account.observedAt)}`, tone, theme),
-              ...(account.error ? [text(account.error, tone, theme)] : []),
-              ...(!Object.keys(account.quotas).length && ["fresh", "stale"].includes(status) ? [text("Quota unknown", "textMuted", theme)] : []),
-              ...Object.entries(account.quotas).map((entry) => quotaView(entry, theme)),
+              jsxs("text", { children: [span(name, "text", theme, true),
+                ...(group.plan ? [span(` · ${group.plan}`, "textMuted", theme)] : []),
+              ] }),
+              ...(warning ? [text(warning, populated.length ? "warning" : "textMuted", theme)] : []),
+              ...errors.map((error) => text(error, "error", theme)),
+              ...group.quotas.map((row) => quotaView(row, theme)),
             ] })
           }),
         ]
@@ -442,6 +492,10 @@ function validateLimits(body) {
     if (!record(account) || !["id", "provider", "label"].every((key) => typeof account[key] === "string" && account[key].trim()) ||
         ids.has(account.id) || !["loading", "fresh", "stale", "unavailable", "unsupported"].includes(account.status) ||
         !date(account.observedAt) || !nullableString(account.plan) || !nullableString(account.error) || !record(account.quotas)) throw new Error()
+    if (account.refreshing !== undefined && typeof account.refreshing !== "boolean" ||
+        account.nextRefreshAt !== undefined && !date(account.nextRefreshAt) ||
+        account.errorStatus !== undefined && account.errorStatus !== null &&
+          (!Number.isInteger(account.errorStatus) || account.errorStatus < 100 || account.errorStatus > 599)) throw new Error()
     ids.add(account.id)
     if (Object.keys(account.quotas).length > 64) throw new Error()
     for (const [label, quota] of Object.entries(account.quotas)) {
