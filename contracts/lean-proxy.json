@@ -357,6 +357,25 @@
     "quota_auto_ping_requires_connection_opt_in": true,
     "hot_path_chat_ram_reduction_claimed": false
   },
+  "opencode_quota_observations": {
+    "route": "GET /v1/usage/limits",
+    "auth": "active_openproxy_api_key_always_required",
+    "owner": "demand_driven_configured_connection_snapshot",
+    "refresh_interval_seconds": 180,
+    "max_accounts": 128,
+    "max_quota_rows_per_account": 32,
+    "max_concurrent_collectors": 4,
+    "collector_deadline_seconds": 20,
+    "response_body_limit_bytes": 524288,
+    "token_keyed_cache": false,
+    "failed_refresh_returns_explicit_stale_observation": true,
+    "error_backoff_and_retry_after": true,
+    "idle_poller": false,
+    "explicit_quota_requests_remain_fresh": true,
+    "existing_observations_reused": true,
+    "affects_routing": false,
+    "shutdown_cancels_collectors": true
+  },
   "provider_health_diagnostics": {
     "checkpoint": "C24",
     "application_liveness_depends_on_upstream": false,

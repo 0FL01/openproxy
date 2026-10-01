@@ -1,19 +1,39 @@
-# OpenCode model discovery
+# OpenCode model discovery and usage sidebar
 
 `openproxy-models.js` fetches OpenProxy's `/v1/models` when OpenCode loads its
-configuration. Tested with OpenCode **1.18.31**. No npm dependencies, credentials
-in the plugin, generated JSONC, polling, or persistent client cache.
+configuration. `openproxy-tui.js` enables its compact usage-limits sidebar.
+Tested with OpenCode **1.18.34**. Plain JavaScript: no package installation or
+build step, embedded credentials, generated JSONC, or persistent client cache.
+Solid/OpenTUI imports are lazy and supplied by the TUI host; model discovery
+has no new runtime dependencies.
 
 ## Install
 
-From the repository root, copy **only the plugin**, not the tests:
+From the repository root, copy **both plugin files**, not the tests:
 
 ```sh
 mkdir -p ~/.config/opencode/plugins
 cp plugins/openproxy-models.js ~/.config/opencode/plugins/openproxy-models.js
+cp plugins/openproxy-tui.js ~/.config/opencode/plugins/openproxy-tui.mjs
 ```
 
-OpenCode auto-loads this directory; no `plugin` config entry is needed. The
+The wrapper is installed with an `.mjs` extension so OpenCode's server plugin
+auto-discovery (`*.js`/`*.ts`) does not try to load its TUI-only export. Keep the
+two installed files together. In **`~/.config/opencode/tui.json`** (or your
+existing `tui.jsonc`), add the TUI file entry:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "plugin": ["./plugins/openproxy-tui.mjs"]
+}
+```
+
+Preserve other TUI settings and plugins. **Replace** the existing
+`oc-usage-limits-plugin@1.6.1` entry (or another version of that plugin) with
+this file entry to avoid duplicate panels and direct provider polling.
+
+OpenCode auto-loads `openproxy-models.js`; no server `plugin` entry is needed. The
 provider ID is `ludka2`; change `PROVIDER_ID` at the top of the plugin if needed.
 Keep your existing provider options, including the SDK choice:
 
@@ -139,14 +159,43 @@ An empty catalog is treated as a cold-start failure: if it stays empty after
 retries, configured models are retained with a warning, even if the proxy has
 intentionally disabled all models.
 
+## Usage limits sidebar
+
+The sidebar reads the same resolved `provider.ludka2.options.baseURL`, `apiKey`
+and custom `headers` as discovery, respecting `disabled_providers` and
+`enabled_providers`. It sends one authenticated `GET /v1/usage/limits` at a time
+to OpenProxy with a 10-second timeout, a streaming 2 MiB response bound and
+redirects disabled. It polls the proxy
+every 60 seconds; an initial `loading` result gets one retry after 2.5 seconds.
+OpenProxy owns provider credentials and upstream refreshes with **180-second
+freshness**. The client does not contact providers directly.
+
+Each account is separate, with its label/provider, plan and status, compact
+used-percentage bars, reset countdowns and compact observation ages. Balance-only
+quotas show the remaining amount and supplied unit; count/currency windows also
+show unit-bearing amounts where available. Unknown quotas stay unknown;
+unlimited, loading, unsupported, unavailable and stale states are explicit.
+The response is bounded to 128 accounts; the panel reports when the list is truncated.
+The countdown updates every 30 seconds. On proxy failure or invalid data, the
+last valid response stays visible with `stale (cached)` markers and a sanitized
+failure message. Successful rows also become stale locally after 180 seconds
+from their observation timestamp. Timers and active requests stop when the
+plugin is disposed. Without a backend supporting this endpoint the panel shows
+unavailable. Quit and restart OpenCode after installing or changing either file
+or the TUI config; open a session with its sidebar visible to see the panel.
+
 ## Verification
 
 ```sh
 node --test tests/opencode_models.test.mjs
+node --test tests/opencode_models_sidebar.test.mjs
 OPENCODE_BINARY="$(command -v opencode)" node --test tests/opencode_models_cli.test.mjs
+OPENCODE_BINARY="$(command -v opencode)" node --test tests/opencode_models_tui_cli.test.mjs
 cargo test --lib v1_models
 cargo test --test models_custom_api --test api_auth_and_models
 ```
 
-The CLI smoke test uses temporary HOME/XDG directories and a loopback fixture,
-not your proxy, credentials, or OpenCode config.
+The CLI smoke tests use temporary HOME/XDG directories and loopback fixtures,
+not your proxy, credentials, or OpenCode config. The TUI smoke test requires
+Python 3 with Unix PTY support and verifies actual rendering and a reactive
+loading-to-fresh update in the installed binary without inference.

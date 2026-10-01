@@ -43,6 +43,75 @@ fn is_usage_apikey_provider(provider: &str) -> bool {
     )
 }
 
+pub(crate) fn supports_quota(connection: &ProviderConnection) -> bool {
+    match connection.auth_type.as_str() {
+        "oauth" => matches!(
+            connection.provider.as_str(),
+            "github"
+                | "github-copilot"
+                | "claude"
+                | "anthropic"
+                | "codex"
+                | "antigravity"
+                | "ollama"
+                | "kimi"
+                | "kimi-coding"
+        ),
+        "apikey" | "api_key" => {
+            is_usage_apikey_provider(&connection.provider) && connection.provider != "ollama"
+        }
+        _ => false,
+    }
+}
+
+pub(crate) async fn fetch_connection_quota(connection: &ProviderConnection) -> Value {
+    if connection.auth_type == "oauth" {
+        return fetch_oauth_quota(connection).await;
+    }
+    let Some(api_key) = connection
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+    else {
+        return json!({});
+    };
+    let provider = connection.provider.as_str();
+    match provider {
+        "glm" | "glm-cn" => fetch_glm_quota(api_key, provider).await,
+        "minimax" => fetch_minimax_quota(api_key, provider).await,
+        "kimi" => fetch_kimi_usage(api_key).await,
+        "deepseek" => fetch_deepseek_usage(api_key).await,
+        "opencode-go" => fetch_opencode_go_quota(api_key).await,
+        "vercel-ai-gateway" => fetch_vercel_ai_gateway_quota(api_key).await,
+        "codebuddy-cn" | "codebuddy-intl" => fetch_codebuddy_quota(api_key, provider).await,
+        "commandcode" => fetch_commandcode_quota(api_key).await,
+        "a6api" => fetch_a6api_quota(api_key).await,
+        _ => json!({}),
+    }
+}
+
+pub fn snapshot_routes() -> Router<AppState> {
+    Router::new().route("/v1/usage/limits", routing::get(get_limits))
+}
+
+async fn get_limits(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(error) = crate::server::auth::require_api_key_with_reload(&headers, &state.db).await
+    {
+        return super::auth_error_response(error);
+    }
+    let (accounts, truncated) = state.quota_snapshots.read(&state);
+    (
+        [("cache-control", "no-store")],
+        Json(json!({
+            "refreshIntervalSeconds": crate::server::quota_snapshots::REFRESH_SECONDS,
+            "accounts": accounts,
+            "truncated": truncated,
+        })),
+    )
+        .into_response()
+}
+
 /// Dispatch to the correct OAuth quota fetcher for `connection`. Returns
 /// `{}` for providers that don't expose a live quota endpoint.
 pub async fn fetch_oauth_quota(connection: &ProviderConnection) -> Value {
@@ -142,38 +211,24 @@ async fn get_connection_usage(
     let mut live_quotas = serde_json::json!({});
     let mut live_message: Option<String> = None;
     let mut live_status: Option<String> = None;
-    if is_apikey_eligible {
-        if let Some(api_key) = connection
+    if is_apikey_eligible
+        && connection
             .api_key
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
-        {
-            let provider = connection.provider.clone();
-            let result = match provider.as_str() {
-                "glm" | "glm-cn" => fetch_glm_quota(api_key, &provider).await,
-                "minimax" => fetch_minimax_quota(api_key, &provider).await,
-                "kimi" => fetch_kimi_usage(api_key).await,
-                "deepseek" => fetch_deepseek_usage(api_key).await,
-                "opencode-go" => fetch_opencode_go_quota(api_key).await,
-                "vercel-ai-gateway" => fetch_vercel_ai_gateway_quota(api_key).await,
-                "codebuddy-cn" | "codebuddy-intl" => {
-                    fetch_codebuddy_quota(api_key, &provider).await
-                }
-                "commandcode" => fetch_commandcode_quota(api_key).await,
-                "a6api" => fetch_a6api_quota(api_key).await,
-                // Ollama has no live API-key quota fetcher yet.
-                _ => serde_json::json!({}),
-            };
-            if let Some(quotas) = result.get("quotas") {
-                live_quotas = quotas.clone();
-            }
-            if let Some(msg) = result.get("message").and_then(|v| v.as_str()) {
-                live_message = Some(msg.to_string());
-            }
-            if let Some(status) = result.get("status").and_then(Value::as_str) {
-                live_status = Some(status.to_string());
-            }
+            .is_some()
+    {
+        let result = fetch_connection_quota(connection).await;
+        state.quota_snapshots.observe(&state, connection, &result);
+        if let Some(quotas) = result.get("quotas") {
+            live_quotas = quotas.clone();
+        }
+        if let Some(msg) = result.get("message").and_then(|v| v.as_str()) {
+            live_message = Some(msg.to_string());
+        }
+        if let Some(status) = result.get("status").and_then(Value::as_str) {
+            live_status = Some(status.to_string());
         }
     }
 
@@ -290,7 +345,7 @@ struct PreparedCodexConnection {
 /// `refreshAndUpdateCredentials` parity (route.js:23-117). Returns the
 /// original connection untouched on refresh failure (JS keeps the stale
 /// accessToken when one exists).
-async fn refresh_oauth_connection(
+pub(crate) async fn refresh_oauth_connection(
     state: &AppState,
     connection: &ProviderConnection,
     force: bool,
@@ -596,11 +651,13 @@ async fn fetch_oauth_quota_with_refresh(
                 .and_then(|v| v.as_str())
                 .is_none_or(|m| !is_auth_expired_message(m))
             {
+                state.quota_snapshots.observe(state, &retried_conn, &retry);
                 return retry;
             }
         }
     }
 
+    state.quota_snapshots.observe(state, &connection, &result);
     result
 }
 

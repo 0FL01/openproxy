@@ -17,6 +17,7 @@ test("OpenCode auto-loads the plugin and refresh discovers new IDs without rewri
   const configDir = join(directory, "config", "opencode")
   await mkdir(join(configDir, "plugins"), { recursive: true })
   await copyFile(new URL("../plugins/openproxy-models.js", import.meta.url), join(configDir, "plugins", "openproxy-models.js"))
+  await copyFile(new URL("../plugins/openproxy-tui.js", import.meta.url), join(configDir, "plugins", "openproxy-tui.mjs"))
   let id = "cx/first"
   let limit = { context: 628000, input: 450000, output: 128000 }
   let name = "Fixture model"
@@ -51,6 +52,9 @@ test("OpenCode auto-loads the plugin and refresh discovers new IDs without rewri
     } } },
   }, null, 2)}\n`
   await writeFile(configPath, config)
+  await writeFile(join(configDir, "tui.json"), JSON.stringify({
+    $schema: "https://opencode.ai/tui.json", plugin: ["./plugins/openproxy-tui.mjs"],
+  }))
   const env = {
     PATH: process.env.PATH,
     HOME: directory,

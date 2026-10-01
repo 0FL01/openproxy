@@ -2,7 +2,16 @@ import assert from "node:assert/strict"
 import { createServer } from "node:http"
 import { once } from "node:events"
 import { test } from "node:test"
-import OpenProxyModels from "../plugins/openproxy-models.js"
+import discovery, { OpenProxySidebar } from "../plugins/openproxy-models.js"
+import sidebar from "../plugins/openproxy-tui.js"
+const OpenProxyModels = discovery.server
+
+test("target-exclusive v1 exports keep the sidebar out of legacy server discovery", () => {
+  assert.equal(discovery.id, "openproxy.models")
+  assert.deepEqual(Object.keys(discovery), ["id", "server"])
+  assert.equal(typeof discovery.server, "function")
+  assert.deepEqual(sidebar, { id: "openproxy.sidebar", tui: OpenProxySidebar })
+})
 
 test("discovery authenticates, refreshes inventory, preserves options and validates metadata atomically", async (t) => {
   let status = 200

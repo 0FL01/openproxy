@@ -156,6 +156,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
     let protected = Router::new()
         .merge(llm)
         .merge(v1_models::routes())
+        .merge(usage::snapshot_routes())
         .nest(
             "/v1/v1/models",
             Router::new()
@@ -277,6 +278,7 @@ async fn v1_root() -> Response {
             "/v1/mcp",
             "/v1/web/fetch",
             "/v1/models",
+            "/v1/usage/limits",
         ]
     }))
     .into_response()

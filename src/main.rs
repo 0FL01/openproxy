@@ -404,6 +404,7 @@ async fn main() -> anyhow::Result<()> {
     }
     // C22: stop admitting onboarding work and cancel/drain the bounded
     // per-connection lifecycle before the runtime is dropped.
+    state.signal_shutdown();
     state.quota_auto_ping.shutdown().await;
     state.antigravity_onboarding.shutdown().await;
     Ok(())

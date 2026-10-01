@@ -5,5 +5,6 @@ pub mod codex_catalog;
 pub(crate) mod codex_search;
 pub mod console_logs;
 pub mod dashboard;
+pub(crate) mod quota_snapshots;
 pub mod request_logger;
 pub mod state;

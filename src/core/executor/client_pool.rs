@@ -88,12 +88,7 @@ impl ClientPool {
         proxy: Option<&ProxyTarget>,
     ) -> Result<Arc<reqwest::Client>, reqwest::Error> {
         let timeout = self.timeout;
-        let result =
-            self.get_or_insert_with(provider_key, proxy, || build_reqwest_client(proxy, timeout));
-        if result.is_ok() {
-            self.touch(client_key(provider_key, proxy));
-        }
-        result
+        self.get_or_insert_with(provider_key, proxy, || build_reqwest_client(proxy, timeout))
     }
 
     pub fn get_hyper_direct(
@@ -121,7 +116,11 @@ impl ClientPool {
         let key = client_key(provider_key, proxy);
         // Initialize the client while holding the per-key entry so same-key races
         // cannot build duplicate pools and then discard the extras.
-        let entry = self.reqwest_clients.entry(key).or_try_insert_with(build)?;
+        let entry = self
+            .reqwest_clients
+            .entry(key.clone())
+            .or_try_insert_with(build)?;
+        self.touch(key);
         Ok(entry.clone())
     }
 

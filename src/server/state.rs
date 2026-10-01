@@ -17,6 +17,7 @@ use crate::server::api::quota_auto_ping::QuotaAutoPingLifecycle;
 use crate::server::auth::login_limiter::LoginLimiter;
 use crate::server::codex_catalog::CodexModelCatalog;
 use crate::server::console_logs::{shared_console_log_buffer, ConsoleLogBuffer};
+use crate::server::quota_snapshots::QuotaSnapshots;
 
 /// Session info stored server-side
 #[derive(Debug, Clone)]
@@ -79,6 +80,7 @@ pub struct AppState {
     pub codex_models: Arc<CodexModelCatalog>,
     pub antigravity_onboarding: Arc<AntigravityOnboardingCoordinator>,
     pub quota_auto_ping: Arc<QuotaAutoPingLifecycle>,
+    pub quota_snapshots: Arc<QuotaSnapshots>,
     /// C36 early admission: caps concurrently active LLM generations before
     /// JSON extraction. Health/admin routes never take a permit.
     pub llm_admission: Arc<LlmAdmission>,
@@ -109,6 +111,7 @@ impl AppState {
             codex_models: Arc::new(CodexModelCatalog::default()),
             antigravity_onboarding: Arc::new(AntigravityOnboardingCoordinator::new()),
             quota_auto_ping: Arc::new(QuotaAutoPingLifecycle::new()),
+            quota_snapshots: Arc::new(QuotaSnapshots::default()),
             llm_admission: Arc::new(LlmAdmission::from_env()),
         }
     }
@@ -140,6 +143,7 @@ impl AppState {
     /// Trigger graceful shutdown. Notifies all waiters and
     /// signals axum to stop accepting new connections.
     pub fn signal_shutdown(&self) {
+        self.quota_snapshots.shutdown();
         self.shutdown_signal.notify_waiters();
     }
 }

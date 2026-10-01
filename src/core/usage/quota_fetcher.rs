@@ -51,6 +51,7 @@
 use serde_json::{json, Value};
 use std::time::Duration;
 
+use super::http as quota_http;
 use crate::core::executor::read_reqwest_body;
 
 const COMMANDCODE_CREDITS_URL: &str = "https://api.commandcode.ai/alpha/billing/credits";
@@ -78,6 +79,9 @@ const CODEX_RESET_CREDITS_CONSUME_URL: &str =
     "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume";
 
 fn http_client() -> reqwest::Client {
+    if let Some(client) = quota_http::scoped_client() {
+        return client;
+    }
     reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .build()
@@ -109,11 +113,12 @@ async fn fetch_a6api_quota_from_urls(
         });
     }
 
-    let client = match reqwest::Client::builder()
-        .timeout(REQUEST_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-    {
+    let client = match quota_http::scoped_client().map(Ok).unwrap_or_else(|| {
+        reqwest::Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+    }) {
         Ok(client) => client,
         Err(_) => return a6api_fetch_error(A6ApiFetchError::Unavailable),
     };
@@ -149,7 +154,7 @@ async fn fetch_a6api_quota_json(
         .send()
         .await
         .map_err(|_| A6ApiFetchError::Unavailable)?;
-    match response.status().as_u16() {
+    match quota_http::status(&response).as_u16() {
         200..=299 => {}
         401 | 403 => return Err(A6ApiFetchError::Auth),
         429 => return Err(A6ApiFetchError::RateLimited),
@@ -312,7 +317,7 @@ async fn fetch_commandcode_quota_from_url(api_key: &str, url: &str) -> Value {
         }
     };
 
-    let status = response.status();
+    let status = quota_http::status(&response);
     if !status.is_success() {
         let (source_status, message) = match status.as_u16() {
             401 => ("auth_error", "Command Code API key is invalid."),
@@ -517,7 +522,7 @@ pub async fn fetch_glm_quota(api_key: &str, provider: &str) -> Value {
         Err(e) => return json!({ "message": format!("GLM error: {e}") }),
     };
 
-    let status = response.status();
+    let status = quota_http::status(&response);
     if !status.is_success() {
         let msg = if status.as_u16() == 401 {
             "GLM API key invalid or expired.".to_string()
@@ -527,7 +532,7 @@ pub async fn fetch_glm_quota(api_key: &str, provider: &str) -> Value {
         return json!({ "message": msg });
     }
 
-    let body: Value = match response.json().await {
+    let body: Value = match quota_http::json(response).await {
         Ok(v) => v,
         Err(e) => return json!({ "message": format!("GLM error: {e}") }),
     };
@@ -732,8 +737,8 @@ pub async fn fetch_minimax_quota(api_key: &str, _provider: &str) -> Value {
             }
         };
 
-        let status = response.status();
-        let raw_text = response.text().await.unwrap_or_default();
+        let status = quota_http::status(&response);
+        let raw_text = quota_http::text(response).await.unwrap_or_default();
         let payload: Value = if raw_text.is_empty() {
             json!({})
         } else {
@@ -1009,7 +1014,7 @@ pub async fn fetch_opencode_go_quota(api_key: &str) -> Value {
         Err(error) => return json!({ "message": format!("OpenCode Go error: {error}") }),
     };
 
-    let status = response.status();
+    let status = quota_http::status(&response);
     if !status.is_success() {
         let message = match status.as_u16() {
             401 => "OpenCode Go API key invalid or expired.".to_string(),
@@ -1019,7 +1024,7 @@ pub async fn fetch_opencode_go_quota(api_key: &str) -> Value {
         return json!({ "message": message });
     }
 
-    let body: Value = match response.json().await {
+    let body: Value = match quota_http::json(response).await {
         Ok(body) => body,
         Err(error) => return json!({ "message": format!("OpenCode Go error: {error}") }),
     };
@@ -1085,7 +1090,7 @@ pub async fn fetch_github_quota(access_token: &str, _provider: &str) -> Value {
         Err(e) => return json!({ "message": format!("GitHub error: {e}") }),
     };
 
-    let status = resp.status();
+    let status = quota_http::status(&resp);
     if status.as_u16() == 401 || status.as_u16() == 403 {
         return json!({ "message": "GitHub access token invalid or expired." });
     }
@@ -1095,7 +1100,7 @@ pub async fn fetch_github_quota(access_token: &str, _provider: &str) -> Value {
         });
     }
 
-    let body: Value = match resp.json().await {
+    let body: Value = match quota_http::json(resp).await {
         Ok(v) => v,
         Err(e) => return json!({ "message": format!("GitHub error: {e}") }),
     };
@@ -1210,7 +1215,7 @@ pub async fn fetch_codex_quota(access_token: &str, account_id: Option<&str>) -> 
         Err(e) => return json!({ "message": format!("Codex error: {e}") }),
     };
 
-    let status = response.status();
+    let status = quota_http::status(&response);
     if status.as_u16() == 401 || status.as_u16() == 403 {
         return json!({ "message": "Invalid or expired Codex token" });
     }
@@ -1220,7 +1225,7 @@ pub async fn fetch_codex_quota(access_token: &str, account_id: Option<&str>) -> 
         });
     }
 
-    let body: Value = match response.json().await {
+    let body: Value = match quota_http::json(response).await {
         Ok(v) => v,
         Err(e) => return json!({ "message": format!("Codex error: {e}") }),
     };
@@ -1741,8 +1746,8 @@ async fn load_code_assist(
         req = req.header(*k, *v);
     }
     let resp = req.send().await.map_err(|e| e.to_string())?;
-    let status = resp.status();
-    let body: Value = resp.json().await.map_err(|e| e.to_string())?;
+    let status = quota_http::status(&resp);
+    let body: Value = quota_http::json(resp).await?;
     if !status.is_success() {
         return Err(format!("loadCodeAssist returned {status}"));
     }
@@ -1770,12 +1775,12 @@ pub async fn fetch_vercel_ai_gateway_quota(api_key: &str) -> Value {
             return json!({ "message": format!("Vercel AI Gateway error: {e}") });
         }
     };
-    let status = response.status().as_u16();
+    let status = quota_http::status(&response).as_u16();
     if status == 401 || status == 403 {
         return json!({ "message": "Vercel AI Gateway API key invalid or expired." });
     }
     if !(200..300).contains(&status) {
-        let text = response.text().await.unwrap_or_default();
+        let text = quota_http::text(response).await.unwrap_or_default();
         let trimmed: String = text.chars().take(200).collect();
         let suffix = if trimmed.is_empty() {
             String::new()
@@ -1784,7 +1789,9 @@ pub async fn fetch_vercel_ai_gateway_quota(api_key: &str) -> Value {
         };
         return json!({ "message": format!("Vercel AI Gateway credits API error ({status}){suffix}") });
     }
-    let data: Value = response.json().await.unwrap_or_else(|_| json!({}));
+    let data: Value = quota_http::json(response)
+        .await
+        .unwrap_or_else(|_| json!({}));
     let balance = data
         .get("balance")
         .and_then(|v| v.as_str())
@@ -1866,14 +1873,14 @@ pub async fn fetch_codebuddy_quota(token: &str, provider: &str) -> Value {
             return json!({ "message": format!("CodeBuddy ({provider}) error: {e}") });
         }
     };
-    let status = response.status().as_u16();
+    let status = quota_http::status(&response).as_u16();
     if status == 401 || status == 403 {
         return json!({ "message": "CodeBuddy CN credential invalid or expired." });
     }
     if !(200..300).contains(&status) {
         return json!({ "message": format!("CodeBuddy CN quota API error ({status}).") });
     }
-    let json_body: Value = match response.json().await {
+    let json_body: Value = match quota_http::json(response).await {
         Ok(v) => v,
         Err(_) => return json!({ "message": "CodeBuddy CN quota API error." }),
     };
@@ -2075,7 +2082,7 @@ pub async fn fetch_claude_quota_from_url(access_token: &str, url: &str) -> Value
         Err(e) => return json!({ "message": format!("Claude error: {e}") }),
     };
 
-    let status = response.status();
+    let status = quota_http::status(&response);
     if status.as_u16() == 401 {
         return json!({ "message": "Invalid or expired Claude token. Please re-authorize the connection." });
     }
@@ -2088,7 +2095,7 @@ pub async fn fetch_claude_quota_from_url(access_token: &str, url: &str) -> Value
         });
     }
 
-    let body: Value = match response.json().await {
+    let body: Value = match quota_http::json(response).await {
         Ok(v) => v,
         Err(e) => return json!({ "message": format!("Claude error: {e}") }),
     };
@@ -2242,7 +2249,7 @@ pub async fn fetch_antigravity_quota(access_token: &str, _provider: &str) -> Val
         Err(e) => return json!({ "message": format!("Antigravity error: {e}") }),
     };
 
-    let status = models_resp.status();
+    let status = quota_http::status(&models_resp);
     if status.as_u16() == 401 || status.as_u16() == 403 {
         return json!({ "message": "Invalid or expired Antigravity token" });
     }
@@ -2252,7 +2259,7 @@ pub async fn fetch_antigravity_quota(access_token: &str, _provider: &str) -> Val
         });
     }
 
-    let body: Value = match models_resp.json().await {
+    let body: Value = match quota_http::json(models_resp).await {
         Ok(v) => v,
         Err(e) => return json!({ "message": format!("Antigravity error: {e}") }),
     };
@@ -2443,8 +2450,8 @@ pub async fn fetch_kimi_oauth_usage(
             return json!({ "message": format!("Kimi Coding connected. Unable to fetch usage: {e}") });
         }
     };
-    let status = response.status().as_u16();
-    let response_text = response.text().await.unwrap_or_default();
+    let status = quota_http::status(&response).as_u16();
+    let response_text = quota_http::text(response).await.unwrap_or_default();
     if status != 200 {
         return json!({
             "plan": "Kimi Coding",
@@ -2562,8 +2569,8 @@ pub async fn fetch_kimi_usage(api_key: &str) -> Value {
             return json!({ "message": format!("Kimi Coding connected. Unable to fetch usage: {e}") })
         }
     };
-    let status = response.status().as_u16();
-    let response_text = response.text().await.unwrap_or_default();
+    let status = quota_http::status(&response).as_u16();
+    let response_text = quota_http::text(response).await.unwrap_or_default();
 
     if status != 200 {
         return json!({
@@ -2686,14 +2693,14 @@ pub async fn fetch_deepseek_usage(api_key: &str) -> Value {
         Ok(r) => r,
         Err(e) => return json!({ "message": format!("DeepSeek error: {e}") }),
     };
-    let status = response.status().as_u16();
+    let status = quota_http::status(&response).as_u16();
     if status == 401 || status == 403 {
         return json!({
             "plan": "DeepSeek",
             "message": "DeepSeek authentication failed. Check the API key.",
         });
     }
-    let response_text = response.text().await.unwrap_or_default();
+    let response_text = quota_http::text(response).await.unwrap_or_default();
     if status != 200 {
         let snippet: String = response_text.chars().take(120).collect();
         return json!({
@@ -2791,7 +2798,7 @@ pub async fn fetch_ollama_quota(api_key: &str) -> Value {
         Err(e) => return json!({ "message": format!("Ollama Cloud error: {e}") }),
     };
 
-    let status = resp.status();
+    let status = quota_http::status(&resp);
     if status.as_u16() == 401 || status.as_u16() == 403 {
         return json!({ "message": "Ollama Cloud API key invalid or expired." });
     }
@@ -2801,7 +2808,7 @@ pub async fn fetch_ollama_quota(api_key: &str) -> Value {
         });
     }
 
-    let data: Value = match resp.json().await {
+    let data: Value = match quota_http::json(resp).await {
         Ok(v) => v,
         Err(_) => return json!({ "message": "Ollama Cloud usage response was not JSON." }),
     };
@@ -2815,7 +2822,7 @@ pub async fn fetch_ollama_quota(api_key: &str) -> Value {
         .send()
         .await
     {
-        Ok(r) if r.status().is_success() => match r.json::<Value>().await {
+        Ok(r) if quota_http::status(&r).is_success() => match quota_http::json(r).await {
             Ok(me) => me
                 .get("Plan")
                 .and_then(Value::as_str)

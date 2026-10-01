@@ -573,6 +573,7 @@ async fn process_connection(
     }
 
     let usage = fetch_oauth_quota(&connection).await;
+    state.quota_snapshots.observe(state, &connection, &usage);
     let quotas = usage.get("quotas").cloned().unwrap_or_else(|| json!({}));
 
     if is_codex {
@@ -724,6 +725,7 @@ async fn process_glm_connection(
     };
 
     let usage = fetch_glm_quota(api_key, "glm").await;
+    state.quota_snapshots.observe(state, connection, &usage);
     let quotas = usage.get("quotas").cloned().unwrap_or_else(|| json!({}));
     let Some(target) = select_glm_target(&quotas) else {
         return TickOutcome::Skip {
