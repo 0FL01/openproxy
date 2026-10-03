@@ -1,9 +1,5 @@
 # OpenProxy
 
-<div align="center">
-  <img src="openproxy_illustration.webp" alt="OpenProxy — local AI proxy router">
-</div>
-
 **A local AI proxy router for existing clients.** This is the
 [0FL01 fork](https://github.com/0FL01/openproxy) of
 [quangdang46/openproxy](https://github.com/quangdang46/openproxy). It keeps
