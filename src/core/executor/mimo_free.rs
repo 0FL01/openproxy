@@ -452,12 +452,9 @@ impl MimoFreeExecutor {
         let headers = Self::build_headers(&jwt, request.stream, user_agent, &session_id)?;
 
         let client = self.pool.get("mimo-free", request.proxy.as_ref())?;
-        let response = client
-            .post(&url)
-            .headers(headers.clone())
-            .body(body_bytes)
-            .send()
-            .await?;
+        let builder = client.post(&url).headers(headers.clone()).body(body_bytes);
+        super::generation_timing::mark_generation_send();
+        let response = builder.send().await?;
 
         if matches!(response.status().as_u16(), 401 | 403) {
             // C13: invalidate stale derived credentials, but preserve the raw

@@ -289,10 +289,9 @@ impl ZedExecutor {
             .pool
             .get("zed", None)
             .map_err(|e| format!("client pool: {e}"))?;
-        client
-            .post(url)
-            .headers(headers)
-            .json(payload)
+        let builder = client.post(url).headers(headers).json(payload);
+        super::generation_timing::mark_generation_send();
+        builder
             .send()
             .await
             .map_err(|e| format!("Zed completions request failed: {e}"))

@@ -102,7 +102,7 @@ Persisted types intentionally preserve unknown fields through `extra` and `provi
 
 ### Private Codex cache telemetry carve-out
 
-The C35/C43 prohibition on correlation internals has one narrow exception:
+The C35/C43 prohibition on correlation internals admits narrow passive metadata exceptions:
 generation attempts may store their actual configured `connectionId` and bounded
 private `data.codexCache` HMAC fingerprints, local send/completion times and
 allowlisted original cache-usage scalars. No input/response text, raw account or
@@ -110,6 +110,34 @@ cache keys, credentials, headers, or arbitrary usage extras are stored. The
 existing log queue and public projection are unchanged; no cross-request state,
 replay, warming or new upstream requests are introduced. Compact and search are
 excluded. See [the field semantics and inference limits](codex-cache-diagnostics.md).
+
+### Completed-request TPS and private explicit-chat linkage
+
+Generation attempts may also retain one request-local `correlationId` UUID shared
+by the inbound HTTP request's attempts, initial `data.chatSession` (null or
+`{version:1,hmac,source}`), and bounded final `data.upstreamTps` scalars
+(`version:1`, original `generatedOutputTokens`, `elapsedMicros`, and `endKind`:
+`protocol_terminal`, `json_body`, or `clean_eof`). The session identifier comes
+only from inbound `x-opencode-session-id`, `x-opencode-session`, or `x-session-id`.
+Header names are case-insensitive; identifiers must be 1–256 visible ASCII bytes
+without whitespace or commas. Invalid, conflicting or duplicate values are
+unknown, never truncated. Equal aliases share a digest; the first alias in the
+listed order supplies `source`. HMAC-SHA256 uses the stable installation API-key
+secret and length-prefixed explicit-chat v1 domain, authenticated API-key ID and
+identifier; source/model/provider/account do not affect the digest. Raw IDs are
+never logged or persisted, and no body/cache/account fallback is permitted.
+
+This is passive linkage, not session/history ownership or ordered chronology:
+no cross-request maps, replay, worker, migration, index or route is added. Initial
+linkage survives finish/drop; pending recovery marks interruption without
+fabricating finality. Existing queue/event/byte limits, fail-open writes,
+durable/lean cancellation and crash-loss behavior and 30-day retention remain.
+The closed dashboard projection excludes session/correlation/connection and
+arbitrary JSON; it adds only nullable `tokensPerSecond`, `generatedOutputTokens`
+and `upstreamDurationMs`. Only successful rows with valid version/end-kind,
+unsigned original numerator and positive elapsed time qualify; explicit zero is
+preserved, legacy/failed/incomplete rows stay null without old-duration fallback.
+See [TPS semantics](request-tps.md).
 
 ## Version evidence and limitations
 

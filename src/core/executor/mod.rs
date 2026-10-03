@@ -11,6 +11,7 @@ mod codex_headers;
 mod codex_search;
 mod default;
 mod devin_cli;
+pub(crate) mod generation_timing;
 mod github;
 mod kimchi;
 mod mimo_free;

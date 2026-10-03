@@ -499,12 +499,12 @@ impl VertexExecutor {
         }
 
         let client = self.pool.get("vertex", request.proxy.as_ref())?;
-        let response = client
+        let builder = client
             .post(&url)
             .headers(headers.clone())
-            .json(&transformed_body)
-            .send()
-            .await?;
+            .json(&transformed_body);
+        super::generation_timing::mark_generation_send();
+        let response = builder.send().await?;
 
         Ok(VertexExecutorResponse {
             response: UpstreamResponse::Reqwest(response),

@@ -421,6 +421,7 @@ async fn chat_completions_falls_back_to_next_account_on_retryable_error() {
                 .uri("/v1/chat/completions")
                 .header("authorization", "Bearer valid-bearer")
                 .header("content-type", "application/json")
+                .header("x-opencode-session-id", "private-fallback-chat")
                 .body(Body::from(
                     json!({
                         "model": "custom/gpt-4o-mini",
@@ -459,10 +460,32 @@ async fn chat_completions_falls_back_to_next_account_on_retryable_error() {
     assert_eq!(logs[0].status.as_deref(), Some("success"));
     assert_eq!(logs[1].status.as_deref(), Some("error"));
     assert_eq!(logs[0].correlation_id, logs[1].correlation_id);
+    let correlation = logs[0].correlation_id.as_deref().unwrap();
+    assert_eq!(
+        uuid::Uuid::parse_str(correlation)
+            .unwrap()
+            .get_version_num(),
+        4
+    );
+    assert_eq!(logs[0].connection_id.as_deref(), Some("conn-good"));
+    assert_eq!(logs[1].connection_id.as_deref(), Some("conn-bad"));
+    assert_eq!(logs[0].data["chatSession"], logs[1].data["chatSession"]);
+    assert_eq!(logs[0].data["chatSession"]["version"], 1);
+    assert_eq!(
+        logs[0].data["chatSession"]["source"],
+        "x-opencode-session-id"
+    );
+    assert_eq!(
+        logs[0].data["chatSession"]["hmac"].as_str().unwrap().len(),
+        64
+    );
     assert_eq!(logs[0].api_key_id.as_deref(), Some("test-key-id"));
     assert!(!logs
         .iter()
         .any(|log| log.data.to_string().contains("valid-bearer")));
+    assert!(!logs
+        .iter()
+        .any(|log| log.data.to_string().contains("private-fallback-chat")));
 }
 
 #[tokio::test]
@@ -499,10 +522,10 @@ async fn chat_completions_keeps_concurrent_requests_on_preferred_account() {
         ],
     )
     .await;
-    let app = openproxy::build_app(state);
+    let app = openproxy::build_app(state.clone());
 
     let mut tasks = Vec::new();
-    for _ in 0..11 {
+    for index in 0..11 {
         let app = app.clone();
         tasks.push(tokio::spawn(async move {
             app.oneshot(
@@ -511,6 +534,18 @@ async fn chat_completions_keeps_concurrent_requests_on_preferred_account() {
                     .uri("/v1/chat/completions")
                     .header("authorization", "Bearer valid-bearer")
                     .header("content-type", "application/json")
+                    .header(
+                        if index % 2 == 0 {
+                            "x-opencode-session-id"
+                        } else {
+                            "x-session-id"
+                        },
+                        if index < 10 {
+                            "private-concurrent-chat"
+                        } else {
+                            "private-other-chat"
+                        },
+                    )
                     .body(Body::from(
                         json!({
                             "model": "custom/gpt-4o-mini",
@@ -543,6 +578,31 @@ async fn chat_completions_keeps_concurrent_requests_on_preferred_account() {
             .and_then(|value| value.to_str().ok())
             == Some("Bearer preferred-key")
     }));
+    let logs = state
+        .db
+        .sqlite
+        .with_conn(|conn| request_repo::list(conn, &RequestDetailFilter::default(), 20, 0))
+        .unwrap();
+    assert_eq!(logs.len(), 11);
+    let correlations: std::collections::HashSet<_> = logs
+        .iter()
+        .map(|row| {
+            let id = row.correlation_id.as_deref().unwrap();
+            assert_eq!(uuid::Uuid::parse_str(id).unwrap().get_version_num(), 4);
+            id
+        })
+        .collect();
+    assert_eq!(correlations.len(), 11);
+    let mut sessions = std::collections::HashMap::new();
+    for row in &logs {
+        let digest = row.data["chatSession"]["hmac"].as_str().unwrap();
+        *sessions.entry(digest).or_insert(0) += 1;
+        assert!(!row.data.to_string().contains("private-concurrent-chat"));
+        assert!(!row.data.to_string().contains("private-other-chat"));
+    }
+    let mut counts: Vec<_> = sessions.into_values().collect();
+    counts.sort();
+    assert_eq!(counts, vec![1, 10]);
 }
 
 #[tokio::test]

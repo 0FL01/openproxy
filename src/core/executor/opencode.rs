@@ -308,12 +308,12 @@ impl OpenCodeExecutor {
         let client = self
             .pool
             .get(request.tier.pool_key(), request.proxy.as_ref())?;
-        let response = client
+        let builder = client
             .post(&url)
             .headers(headers.clone())
-            .json(&request.body)
-            .send()
-            .await?;
+            .json(&request.body);
+        super::generation_timing::mark_generation_send();
+        let response = builder.send().await?;
 
         tracing::info!(
             target: "openproxy::transport",

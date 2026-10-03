@@ -869,6 +869,7 @@ impl CodexExecutor {
                 observation.sent(&transformed_body, &headers, &url);
             }
         }
+        super::generation_timing::mark_generation_send();
         let response = builder.send().await?;
         tracing::info!(
             target: "openproxy::transport",
@@ -909,6 +910,7 @@ impl CodexExecutor {
         while first_event.len() < CODEX_FIRST_EVENT_MAX_BYTES {
             match upstream.next().await {
                 Some(Ok(chunk)) => {
+                    super::generation_timing::mark_prefix_read(chunk.len());
                     let remaining = CODEX_FIRST_EVENT_MAX_BYTES - first_event.len();
                     first_event.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
                     prefix.push(chunk);
@@ -995,6 +997,72 @@ mod tests {
         CODEX_CLIENT_VERSION, CODEX_ORIGINATOR, CODEX_USER_AGENT,
     };
     use reqwest::header::USER_AGENT;
+
+    #[tokio::test]
+    async fn generation_timing_codex_preserves_terminal_tail_and_bounded_preflight_replay() {
+        use super::super::generation_timing::GenerationTiming;
+        use std::time::Instant;
+        use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+
+        let terminal = "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"output_tokens\":7}}}\n\n";
+        for payload in [
+            format!("{terminal}data: malformed-tail\n\n"),
+            format!(
+                "data: {}\n\n{terminal}",
+                "x".repeat(CODEX_FIRST_EVENT_MAX_BYTES * 2)
+            ),
+        ] {
+            let upstream = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_raw(payload.clone(), "text/event-stream"),
+                )
+                .expect(1)
+                .mount(&upstream)
+                .await;
+            let executor = CodexExecutor::new(
+                Arc::new(ClientPool::new()),
+                Some(ProviderNode {
+                    base_url: Some(format!("{}/responses", upstream.uri())),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+            let timing = GenerationTiming::default();
+            let before = Instant::now();
+            let result = timing
+                .scope(executor.execute(CodexExecutionRequest {
+                    model: "gpt-fixture".into(),
+                    body: json!({"input": "fixture"}),
+                    stream: true,
+                    credentials: ProviderConnection {
+                        api_key: Some("fixture-token".into()),
+                        ..Default::default()
+                    },
+                    proxy: None,
+                }))
+                .await
+                .unwrap();
+            let returned = Instant::now();
+            let started = timing.started().unwrap();
+            let prefix = timing.prefix().unwrap();
+            assert!(before <= started && started <= prefix.last_read_at);
+            assert!(prefix.last_read_at <= returned);
+            assert!(prefix.last_chunk_start < prefix.total_bytes);
+            assert!(prefix.total_bytes <= payload.len() as u64);
+            if payload.len() > CODEX_FIRST_EVENT_MAX_BYTES {
+                assert!(prefix.total_bytes >= CODEX_FIRST_EVENT_MAX_BYTES as u64);
+            }
+            assert_eq!(result.response.status(), reqwest::StatusCode::OK);
+            let bytes = super::super::read_upstream_body(result.response, payload.len())
+                .await
+                .unwrap();
+            assert_eq!(bytes.as_ref(), payload.as_bytes());
+            // Replay/live body reads outside the executor scope never replace the
+            // timestamp of the original prefix read.
+            assert_eq!(timing.prefix().unwrap().last_read_at, prefix.last_read_at);
+        }
+    }
 
     #[tokio::test]
     async fn codex_cache_send_metadata_uses_transformed_body_and_survives_send_failure() {

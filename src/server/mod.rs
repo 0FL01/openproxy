@@ -8,3 +8,4 @@ pub mod dashboard;
 pub(crate) mod quota_snapshots;
 pub mod request_logger;
 pub mod state;
+pub(crate) mod upstream_tps;

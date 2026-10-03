@@ -326,12 +326,9 @@ impl ProviderExecutor for KimchiExecutor {
 
         let body_bytes = serde_json::to_vec(&transformed_body)?;
         let client = self.pool.get("kimchi", request.proxy.as_ref())?;
-        let response = client
-            .post(&url)
-            .headers(headers.clone())
-            .body(body_bytes)
-            .send()
-            .await?;
+        let builder = client.post(&url).headers(headers.clone()).body(body_bytes);
+        super::generation_timing::mark_generation_send();
+        let response = builder.send().await?;
 
         // Pass the upstream response through unchanged for both streaming and
         // non-streaming. 9router kimchi.js does NOT strip reasoning_content from

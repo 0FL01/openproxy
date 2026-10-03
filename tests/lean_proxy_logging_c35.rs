@@ -220,8 +220,10 @@ async fn lean_start_finish_preserves_order_and_metadata_only() {
         row.data.get("cachedTokens").and_then(|v| v.as_u64()),
         Some(4)
     );
-    // Metadata only: no prompt/response bodies, connection secrets, or
-    // correlation internals may reach the log tables.
+    // Metadata only: no prompt/response bodies or connection secrets. The
+    // private correlation column and explicit-chat HMAC are passive metadata.
+    assert!(uuid::Uuid::parse_str(row.correlation_id.as_deref().unwrap()).is_ok());
+    assert!(row.data["chatSession"].is_null());
     let serialized = serde_json::json!({
         "provider": row.provider,
         "model": row.model,
@@ -257,7 +259,9 @@ async fn lean_start_finish_preserves_order_and_metadata_only() {
                 "durationMs",
                 "inputTokens",
                 "outputTokens",
-                "cachedTokens"
+                "cachedTokens",
+                "chatSession",
+                "upstreamTps"
             ]
             .contains(&key.as_str()),
             "unexpected log data key: {key}"

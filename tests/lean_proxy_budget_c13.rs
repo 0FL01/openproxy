@@ -277,7 +277,11 @@ async fn downstream_commit_or_cancellation_never_starts_another_account() {
 
 #[test]
 fn source_has_one_recovery_owner_and_no_hidden_generation_multiplier() {
-    let chat = include_str!("../src/server/api/chat.rs");
+    // Test-only waits model delayed replay; the generation-policy boundary
+    // applies to the production planner, not its mock-upstream fixtures.
+    let (chat, _) = include_str!("../src/server/api/chat.rs")
+        .split_once("\n#[cfg(test)]\nmod tests {")
+        .expect("chat production source followed by test fixtures");
     let default = include_str!("../src/core/executor/default.rs");
     let mimo = include_str!("../src/core/executor/mimo_free.rs");
 

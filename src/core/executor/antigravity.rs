@@ -483,12 +483,12 @@ impl AntigravityExecutor {
         let headers = Self::build_headers(&access_token, &project_id)?;
 
         let client = self.pool.get("antigravity", request.proxy.as_ref())?;
-        let response = client
+        let builder = client
             .post(&url)
             .headers(headers.clone())
-            .json(&request.body)
-            .send()
-            .await?;
+            .json(&request.body);
+        super::generation_timing::mark_generation_send();
+        let response = builder.send().await?;
 
         // C12: this executor owns protocol mapping, not temporal scheduling.
         // Preserve every HTTP response as a live, unconsumed body so the

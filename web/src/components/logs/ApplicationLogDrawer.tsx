@@ -35,6 +35,21 @@ export default function ApplicationLogDrawer({ log, onClose }: Props) {
           </div>
 
           <div className="rounded-lg border border-border bg-bg-subtle p-4">
+            <h3 className="mb-3 text-sm font-semibold text-text-main">Observed throughput</h3>
+            {log.status === "success" && log.tokensPerSecond != null && log.generatedOutputTokens != null && log.upstreamDurationMs != null ? (
+              <>
+                <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+                  <Field label="Generated output" value={log.generatedOutputTokens.toLocaleString()} />
+                  <Field label="Upstream time" value={`${log.upstreamDurationMs} ms`} />
+                  <Field label="TPS" value={log.tokensPerSecond.toFixed(1)} />
+                </div>
+                <p className="mt-3 break-all font-mono text-xs text-text-muted">{log.generatedOutputTokens} ÷ ({log.upstreamDurationMs} / 1000) = {log.tokensPerSecond.toFixed(1)} tokens/s</p>
+              </>
+            ) : <p className="text-sm text-text-muted">— · Final original usage and completion timing are unavailable.</p>}
+            <p className="mt-3 text-xs text-text-muted">Original provider-generated output divided by observed upstream time. Includes network, initial wait and downstream backpressure; this is observed throughput, not GPU decode speed.</p>
+          </div>
+
+          <div className="rounded-lg border border-border bg-bg-subtle p-4">
             <h3 className="mb-3 text-sm font-semibold text-text-main">Tokens</h3>
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
               <Field label="Input" value={(log.inputTokens ?? 0).toLocaleString()} />

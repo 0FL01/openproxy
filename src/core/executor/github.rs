@@ -471,12 +471,9 @@ impl GithubExecutor {
                 "Using /v1/messages route for {}",
                 request.model
             );
-            let response = client
-                .post(&url)
-                .headers(headers.clone())
-                .json(&body)
-                .send()
-                .await?;
+            let builder = client.post(&url).headers(headers.clone()).json(&body);
+            super::generation_timing::mark_generation_send();
+            let response = builder.send().await?;
             return Ok(GithubExecutorResponse {
                 response: UpstreamResponse::Reqwest(response),
                 url,
@@ -496,20 +493,17 @@ impl GithubExecutor {
         let (url, body, response) = if prefer_responses {
             let responses_body = self.to_responses_body(&body, &request.model, request.stream);
             let url = self.responses_url();
-            let response = client
+            let builder = client
                 .post(&url)
                 .headers(headers.clone())
-                .json(&responses_body)
-                .send()
-                .await?;
+                .json(&responses_body);
+            super::generation_timing::mark_generation_send();
+            let response = builder.send().await?;
             (url, responses_body, response)
         } else {
-            let response = client
-                .post(&chat_url)
-                .headers(headers.clone())
-                .json(&body)
-                .send()
-                .await?;
+            let builder = client.post(&chat_url).headers(headers.clone()).json(&body);
+            super::generation_timing::mark_generation_send();
+            let response = builder.send().await?;
 
             // Escalate to /responses on 400 for models that endpoint can serve
             if response.status().as_u16() == 400
@@ -522,12 +516,12 @@ impl GithubExecutor {
                 );
                 let responses_body = self.to_responses_body(&body, &request.model, request.stream);
                 let url = self.responses_url();
-                let response = client
+                let builder = client
                     .post(&url)
                     .headers(headers.clone())
-                    .json(&responses_body)
-                    .send()
-                    .await?;
+                    .json(&responses_body);
+                super::generation_timing::mark_generation_send();
+                let response = builder.send().await?;
                 (url, responses_body, response)
             } else {
                 (chat_url, body, response)

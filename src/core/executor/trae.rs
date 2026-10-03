@@ -332,12 +332,13 @@ impl TraeExecutor {
             "origin": "web",
         });
         let client = self.pool.get("trae", proxy)?;
-        let resp = client
+        let builder = client
             .post(format!("{}/chat_sessions", self.base()))
             .headers(headers.clone())
-            .json(&body)
-            .send()
-            .await?;
+            .json(&body);
+        // The initial message starts generation; the later GET only reads events.
+        super::generation_timing::mark_generation_send();
+        let resp = builder.send().await?;
         let status = resp.status();
         if !status.is_success() {
             let text = String::from_utf8_lossy(

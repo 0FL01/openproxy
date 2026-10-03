@@ -8,9 +8,12 @@ export interface ApplicationLog {
   model: string;
   provider: string;
   durationMs: number;
-  inputTokens?: number;
-  outputTokens?: number;
-  cachedTokens?: number;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  cachedTokens?: number | null;
+  tokensPerSecond: number | null;
+  generatedOutputTokens: number | null;
+  upstreamDurationMs: number | null;
   apiKeyId?: string;
   apiKeyName?: string;
 }

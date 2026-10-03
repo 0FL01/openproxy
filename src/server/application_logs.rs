@@ -14,6 +14,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
+#[path = "chat_session.rs"]
+mod chat_session;
+
 /// Lean logging bounds: one shared pipeline, bounded by events AND bytes.
 pub const LEAN_LOG_QUEUE_EVENTS: usize = 512;
 pub const LEAN_LOG_QUEUE_BYTES: usize = 512 * 1024;
@@ -172,6 +175,7 @@ enum LogOpKind {
         connection_id: Option<String>,
         api_key_id: String,
         api_key_name: String,
+        correlation_id: String,
         data: Value,
     },
     Finish {
@@ -197,6 +201,7 @@ fn op_bytes(kind: &LogOpKind) -> usize {
             connection_id,
             api_key_id,
             api_key_name,
+            correlation_id,
             data,
         } => {
             id.len()
@@ -206,6 +211,7 @@ fn op_bytes(kind: &LogOpKind) -> usize {
                 + connection_id.as_ref().map_or(0, String::len)
                 + api_key_id.len()
                 + api_key_name.len()
+                + correlation_id.len()
                 + serde_json::to_string(data).map(|s| s.len()).unwrap_or(0)
         }
         LogOpKind::Finish { id, status, data } => {
@@ -292,6 +298,7 @@ fn write_op_sync(op: LogOp) {
             connection_id,
             api_key_id,
             api_key_name,
+            correlation_id,
             data,
         } => op.db.sqlite.with_conn(|conn| {
             request_repo::insert(
@@ -305,7 +312,7 @@ fn write_op_sync(op: LogOp) {
                     status: "pending",
                     api_key_id: Some(&api_key_id),
                     api_key_name: Some(&api_key_name),
-                    correlation_id: None,
+                    correlation_id: Some(&correlation_id),
                     data: &data,
                 },
             )
@@ -381,6 +388,9 @@ pub struct RequestLogContext {
     route: String,
     api_key_id: String,
     api_key_name: String,
+    api_key_scope: String,
+    correlation_id: String,
+    chat_session: Value,
     mode: RequestLogMode,
 }
 
@@ -395,12 +405,26 @@ impl RequestLogContext {
             route: truncate_field(route),
             api_key_id: truncate_field(&api_key.id),
             api_key_name: truncate_field(&api_key.name),
+            api_key_scope: api_key.id.clone(),
+            correlation_id: uuid::Uuid::new_v4().to_string(),
+            chat_session: Value::Null,
             mode,
         }
     }
 
     pub fn mode(&self) -> RequestLogMode {
         self.mode
+    }
+
+    /// Extract once from inbound headers before translation, then clone this
+    /// context across fallback/auth recovery attempts of the same HTTP request.
+    pub fn with_chat_session(mut self, headers: &HeaderMap) -> Self {
+        self.chat_session = chat_session::extract(
+            headers,
+            &self.api_key_scope,
+            crate::core::auth::api_key_secret().as_bytes(),
+        );
+        self
     }
 
     fn start_data(&self) -> Value {
@@ -411,6 +435,7 @@ impl RequestLogContext {
             "inputTokens": Value::Null,
             "outputTokens": Value::Null,
             "cachedTokens": Value::Null,
+            "chatSession": self.chat_session,
         })
     }
 
@@ -445,6 +470,7 @@ impl RequestLogContext {
                         connection_id,
                         api_key_id: self.api_key_id.clone(),
                         api_key_name: self.api_key_name.clone(),
+                        correlation_id: self.correlation_id.clone(),
                         data: data.clone(),
                     },
                 );
@@ -459,6 +485,7 @@ impl RequestLogContext {
                     finished: Arc::new(AtomicBool::new(false)),
                     lean: true,
                     codex_cache: Default::default(),
+                    tps: Default::default(),
                 })
             }
             // Durable: synchronous insert before upstream with backpressure.
@@ -471,6 +498,7 @@ impl RequestLogContext {
                 let record_model = model.clone();
                 let api_key_id = self.api_key_id.clone();
                 let api_key_name = self.api_key_name.clone();
+                let correlation_id = self.correlation_id.clone();
                 let record_data = data.clone();
                 let inserted = tokio::task::spawn_blocking(move || {
                     sqlite.with_conn(|conn| {
@@ -485,7 +513,7 @@ impl RequestLogContext {
                                 status: "pending",
                                 api_key_id: Some(&api_key_id),
                                 api_key_name: Some(&api_key_name),
-                                correlation_id: None,
+                                correlation_id: Some(&correlation_id),
                                 data: &record_data,
                             },
                         )
@@ -502,6 +530,7 @@ impl RequestLogContext {
                         finished: Arc::new(AtomicBool::new(false)),
                         lean: false,
                         codex_cache: Default::default(),
+                        tps: Default::default(),
                     }),
                     Ok(Err(error)) => {
                         tracing::warn!(target: "openproxy::logs", %error, "failed to start request log");
@@ -545,9 +574,14 @@ pub struct AttemptLog {
     finished: Arc<AtomicBool>,
     lean: bool,
     codex_cache: crate::core::executor::codex_cache::CodexCacheObservation,
+    tps: crate::server::upstream_tps::UpstreamTpsObservation,
 }
 
 impl AttemptLog {
+    pub(crate) fn tps(&self) -> crate::server::upstream_tps::UpstreamTpsObservation {
+        self.tps.clone()
+    }
+
     pub(crate) fn codex_cache(&self) -> crate::core::executor::codex_cache::CodexCacheObservation {
         self.codex_cache.clone()
     }
@@ -588,6 +622,9 @@ impl AttemptLog {
         let mut data = self.data.as_object().cloned().unwrap_or_else(Map::new);
         if let Some(observation) = self.codex_cache.snapshot() {
             data.insert("codexCache".into(), observation);
+        }
+        if let Some(observation) = self.tps.snapshot() {
+            data.insert("upstreamTps".into(), observation);
         }
         data.insert("statusCode".into(), json!(status_code));
         if let Some(kind) = error_kind {
@@ -706,6 +743,9 @@ struct RequestLogRecord {
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
     cached_tokens: Option<u64>,
+    tokens_per_second: Option<f64>,
+    generated_output_tokens: Option<u64>,
+    upstream_duration_ms: Option<f64>,
     api_key_id: Option<String>,
     api_key_name: Option<String>,
 }
@@ -793,6 +833,7 @@ fn parse_timestamp(value: &str) -> Option<String> {
 }
 
 fn request_log_from_row(row: request_repo::RequestDetailRow) -> RequestLogRecord {
+    let tps = completed_tps(row.status.as_deref(), &row.data);
     RequestLogRecord {
         request_id: row.id,
         timestamp: row.timestamp,
@@ -823,14 +864,208 @@ fn request_log_from_row(row: request_repo::RequestDetailRow) -> RequestLogRecord
         input_tokens: row.data.get("inputTokens").and_then(Value::as_u64),
         output_tokens: row.data.get("outputTokens").and_then(Value::as_u64),
         cached_tokens: row.data.get("cachedTokens").and_then(Value::as_u64),
+        tokens_per_second: tps.map(|(tokens, micros)| tokens as f64 * 1_000_000.0 / micros as f64),
+        generated_output_tokens: tps.map(|(tokens, _)| tokens),
+        upstream_duration_ms: tps.map(|(_, micros)| micros as f64 / 1_000.0),
         api_key_id: row.api_key_id,
         api_key_name: row.api_key_name,
     }
 }
 
+/// Closed versioned projection: a successful legacy row alone proves neither
+/// original output usage nor original completion timing.
+fn completed_tps(status: Option<&str>, data: &Value) -> Option<(u64, u64)> {
+    if status != Some("success") {
+        return None;
+    }
+    let observation = data.get("upstreamTps")?;
+    if observation.get("version")?.as_u64()? != 1
+        || !matches!(
+            observation.get("endKind")?.as_str()?,
+            "protocol_terminal" | "json_body" | "clean_eof"
+        )
+    {
+        return None;
+    }
+    let tokens = observation.get("generatedOutputTokens")?.as_u64()?;
+    let micros = observation.get("elapsedMicros")?.as_u64()?;
+    (micros > 0).then_some((tokens, micros))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn original_tps_snapshot_survives_finish_and_drop_without_changing_legacy_tokens() {
+        use crate::core::executor::generation_timing::mark_generation_send;
+        use crate::core::translator::registry::Format;
+
+        for mode in [RequestLogMode::Durable, RequestLogMode::Lean] {
+            let temp = tempfile::tempdir().unwrap();
+            let db = Arc::new(Db::load_from(temp.path()).await.unwrap());
+            let mut headers = HeaderMap::new();
+            headers.insert("x-opencode-session-id", "private-chat".parse().unwrap());
+            let context =
+                RequestLogContext::new_with_mode(db.clone(), &ApiKey::default(), "test", mode)
+                    .with_chat_session(&headers);
+            for interrupted in [false, true] {
+                let log = context.start_attempt("openai", "test").await.unwrap();
+                let id = log.id.clone();
+                let observation = log.tps();
+                let timing = observation.timing();
+                timing
+                    .scope(async {
+                        mark_generation_send();
+                    })
+                    .await;
+                observation.observe_json(
+                    Format::OpenAi,
+                    &json!({"choices":[{"index":0,"finish_reason":"stop"}],"usage":{"completion_tokens":0}}),
+                    timing.started().unwrap() + Duration::from_micros(1_250_000),
+                );
+                let snapshot = observation.snapshot().unwrap();
+                assert_eq!(
+                    snapshot,
+                    json!({"version":1,"generatedOutputTokens":0,"elapsedMicros":1_250_000,"endKind":"json_body"})
+                );
+                assert!(
+                    op_bytes(&LogOpKind::Finish {
+                        id: id.clone(),
+                        status: "success".into(),
+                        data: log.finished_data(Some(200), None, None)
+                    }) < LEAN_LOG_MAX_EVENT_BYTES
+                );
+                if interrupted {
+                    drop(log);
+                } else {
+                    // Legacy translated usage is intentionally independent.
+                    let usage: TokenUsage =
+                        serde_json::from_value(json!({"completion_tokens":999})).unwrap();
+                    log.finish("success", Some(200), Some(&usage), None).await;
+                }
+                assert!(request_log_flush_with_budget(Duration::from_secs(5)).await);
+                let row = db
+                    .sqlite
+                    .with_conn(|conn| request_repo::get(conn, &id))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(row.data["upstreamTps"], snapshot);
+                assert_eq!(row.data["chatSession"], context.chat_session);
+                assert_eq!(
+                    row.correlation_id.as_deref(),
+                    Some(context.correlation_id.as_str())
+                );
+                let public = serde_json::to_value(request_log_from_row(row)).unwrap();
+                if interrupted {
+                    assert!(public["tokensPerSecond"].is_null());
+                    assert!(public["generatedOutputTokens"].is_null());
+                    assert!(public["upstreamDurationMs"].is_null());
+                } else {
+                    assert_eq!(public["tokensPerSecond"], 0.0);
+                    assert_eq!(public["generatedOutputTokens"], 0);
+                    assert_eq!(public["upstreamDurationMs"], 1250.0);
+                    assert_eq!(public["outputTokens"], 999);
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_chat_and_request_correlation_survive_attempt_lifecycle_and_recovery() {
+        for mode in [RequestLogMode::Durable, RequestLogMode::Lean] {
+            let temp = tempfile::tempdir().unwrap();
+            let db = Arc::new(Db::load_from(temp.path()).await.unwrap());
+            let key = ApiKey {
+                id: "consumer-id".into(),
+                ..Default::default()
+            };
+            let mut headers = HeaderMap::new();
+            headers.insert("x-session-id", "private-chat-raw-id".parse().unwrap());
+            let context = RequestLogContext::new_with_mode(db.clone(), &key, "test", mode)
+                .with_chat_session(&headers);
+            let session = context.chat_session.clone();
+            let correlation = context.correlation_id.clone();
+            let uuid = uuid::Uuid::parse_str(&correlation).unwrap();
+            assert_eq!(uuid.get_version_num(), 4);
+            assert!(session.is_object());
+
+            for outcome in ["success", "error", "interrupted", "recovered"] {
+                // Different routes/providers/connections do not affect the chat
+                // digest or inbound request correlation during fallback.
+                let cloned = context.clone();
+                let log = cloned
+                    .start_connected_attempt("provider", outcome, Some(outcome))
+                    .await
+                    .unwrap();
+                let id = log.id.clone();
+                assert!(request_log_flush_with_budget(Duration::from_secs(5)).await);
+                let pending = db
+                    .sqlite
+                    .with_conn(|conn| request_repo::get(conn, &id))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(pending.status.as_deref(), Some("pending"));
+                assert_eq!(pending.data["chatSession"], session);
+                assert_eq!(
+                    pending.correlation_id.as_deref(),
+                    Some(correlation.as_str())
+                );
+                assert!(pending.data.get("upstreamTps").is_none());
+
+                if outcome == "interrupted" {
+                    drop(log);
+                } else if outcome == "recovered" {
+                    db.sqlite
+                        .with_conn(|conn| request_repo::mark_pending_interrupted(conn))
+                        .unwrap();
+                    let recovered = db
+                        .sqlite
+                        .with_conn(|conn| request_repo::get(conn, &id))
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(recovered.data, pending.data);
+                    assert_eq!(recovered.correlation_id, pending.correlation_id);
+                    assert_eq!(recovered.status.as_deref(), Some("interrupted"));
+                    assert!(completed_tps(recovered.status.as_deref(), &recovered.data).is_none());
+                    drop(log);
+                } else {
+                    log.finish(
+                        outcome,
+                        Some(if outcome == "success" { 200 } else { 502 }),
+                        None,
+                        None,
+                    )
+                    .await;
+                }
+                assert!(request_log_flush_with_budget(Duration::from_secs(5)).await);
+                let row = db
+                    .sqlite
+                    .with_conn(|conn| request_repo::get(conn, &id))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(row.data["chatSession"], session);
+                assert_eq!(row.correlation_id.as_deref(), Some(correlation.as_str()));
+                assert!(!row.data.to_string().contains("private-chat-raw-id"));
+                assert!(row.data.get("upstreamTps").is_none());
+            }
+            let next = RequestLogContext::new_with_mode(db.clone(), &key, "other-route", mode)
+                .with_chat_session(&headers);
+            assert_eq!(next.chat_session["hmac"], session["hmac"]);
+            assert_ne!(next.correlation_id, correlation);
+            let other = RequestLogContext::new_with_mode(
+                db,
+                &ApiKey {
+                    id: "other-key".into(),
+                    ..Default::default()
+                },
+                "test",
+                mode,
+            )
+            .with_chat_session(&headers);
+            assert_ne!(other.chat_session["hmac"], session["hmac"]);
+        }
+    }
 
     #[tokio::test]
     async fn codex_cache_attempts_persist_on_finish_and_drop_in_both_modes() {

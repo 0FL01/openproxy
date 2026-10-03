@@ -135,12 +135,9 @@ impl ProviderExecutor for CodeBuddyCNExecutor {
 
         let body_bytes = serde_json::to_vec(&transformed_body)?;
         let client = self.pool.get("codebuddy-cn", request.proxy.as_ref())?;
-        let response = client
-            .post(&url)
-            .headers(headers.clone())
-            .body(body_bytes)
-            .send()
-            .await?;
+        let builder = client.post(&url).headers(headers.clone()).body(body_bytes);
+        super::generation_timing::mark_generation_send();
+        let response = builder.send().await?;
 
         Ok(ProviderExecutionResponse {
             response: UpstreamResponse::Reqwest(response),

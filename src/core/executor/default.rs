@@ -1325,6 +1325,7 @@ impl DefaultExecutor {
             let uri: Uri = url.parse()?;
             let mut req = HyperRequest::post(uri).body(Full::new(body.clone()))?;
             *req.headers_mut() = headers.clone();
+            super::generation_timing::mark_generation_send();
             let response = client.request(req).await.map_err(ExecutorError::Hyper)?;
             tracing::info!(
                 target: "openproxy::transport",
@@ -1338,13 +1339,9 @@ impl DefaultExecutor {
             Ok(UpstreamResponse::Hyper(response))
         } else {
             let client = self.pool.get(&self.provider, proxy)?;
-            let response = client
-                .post(url)
-                .headers(headers.clone())
-                .body(body.clone())
-                .send()
-                .await
-                .map_err(ExecutorError::Request)?;
+            let builder = client.post(url).headers(headers.clone()).body(body.clone());
+            super::generation_timing::mark_generation_send();
+            let response = builder.send().await.map_err(ExecutorError::Request)?;
             tracing::info!(
                 target: "openproxy::transport",
                 leg = "upstream",
@@ -1574,6 +1571,57 @@ fn convert_openai_tools_to_claude(body: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn generation_timing_default_marks_both_original_transports_after_preparation() {
+        use super::super::generation_timing::GenerationTiming;
+        use std::time::Instant;
+        use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+
+        let upstream = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("original-body"))
+            .expect(2)
+            .mount(&upstream)
+            .await;
+        let executor = DefaultExecutor::new("openai", Arc::new(ClientPool::new()), None).unwrap();
+        let headers = HeaderMap::new();
+        let body = Bytes::from_static(b"{}");
+        for use_hyper in [false, true] {
+            let timing = GenerationTiming::default();
+            let before = Instant::now();
+            let response = timing
+                .scope(executor.send_one(&upstream.uri(), &headers, &body, None, use_hyper))
+                .await
+                .unwrap();
+            let returned = Instant::now();
+            let started = timing.started().unwrap();
+            assert!(before <= started && started <= returned);
+            assert!(timing.prefix().is_none());
+            assert!(matches!(response, UpstreamResponse::Hyper(_)) == use_hyper);
+            assert_eq!(
+                super::super::read_upstream_body(response, 1024)
+                    .await
+                    .unwrap(),
+                "original-body"
+            );
+        }
+
+        let timing = GenerationTiming::default();
+        let error = timing
+            .scope(executor.execute(ExecutionRequest {
+                model: "fixture".into(),
+                body: serde_json::json!({"messages": []}),
+                stream: false,
+                credentials: ProviderConnection::default(),
+                proxy: None,
+                client_headers: Default::default(),
+            }))
+            .await;
+        assert!(error.is_err());
+        assert!(timing.started().is_none());
+        assert!(timing.prefix().is_none());
+    }
 
     #[test]
     fn a6api_uses_the_canonical_chat_completions_endpoint() {

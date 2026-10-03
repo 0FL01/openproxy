@@ -723,7 +723,9 @@
       "outputTokens",
       "cachedTokens",
       "errorKind",
-      "codexCache"
+      "codexCache",
+      "chatSession",
+      "upstreamTps"
     ],
     "error_kind_checkpoint": "C43",
     "error_kind_values": [
@@ -745,7 +747,34 @@
       "cross_request_state": false,
       "cache_warming": false
     },
-    "config_and_credentials_always_durable": true
+    "config_and_credentials_always_durable": true,
+    "request_tps_and_explicit_chat": {
+      "scope": "passive_private_request_attempt_metadata",
+      "correlation_id": "uuid_v4_once_per_inbound_http_request_shared_by_all_attempts",
+      "chat_session": "null_or_version_1_hmac_source_at_insert_preserved_on_finish_drop",
+      "session_header_aliases": ["x-opencode-session-id", "x-opencode-session", "x-session-id"],
+      "session_header_names_case_insensitive": true,
+      "session_id_bytes": [1, 256],
+      "session_id_validation": "visible_ascii_no_whitespace_or_comma_reject_invalid_conflicts_duplicates_never_truncate",
+      "equal_alias_source": "first_alias_in_declared_order",
+      "session_hmac": "sha256_existing_installation_api_key_secret_length_prefixed_explicit_chat_v1_domain_authenticated_api_key_id_identifier",
+      "session_hmac_excludes": ["source", "model", "provider", "account"],
+      "raw_session_ids_stored": false,
+      "session_body_cache_account_fallback": false,
+      "cross_request_state": false,
+      "new_routes_indexes_migrations": false,
+      "upstream_tps_fields": ["version", "generatedOutputTokens", "elapsedMicros", "endKind"],
+      "upstream_tps_version": 1,
+      "upstream_tps_end_kinds": ["protocol_terminal", "json_body", "clean_eof"],
+      "public_nullable_fields": ["tokensPerSecond", "generatedOutputTokens", "upstreamDurationMs"],
+      "public_projection": "closed_whitelist_excludes_session_correlation_connection_arbitrary_json",
+      "public_tps_validation": "success_valid_version_end_kind_u64_numerator_positive_u64_elapsed",
+      "explicit_zero_preserved": true,
+      "legacy_duration_fallback": false,
+      "pending_recovery_fabricates_finality": false,
+      "retention_days": 30,
+      "dashboard_visible_first_page_refresh_ms": 60000
+    }
   },
   "generation_admission": {
     "checkpoint": "C36",

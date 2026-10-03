@@ -318,6 +318,7 @@ async fn negotiated_tls_still_requires_trusted_root_and_matching_hostname() {
 
 #[tokio::test]
 async fn codex_preflight_preserves_negotiated_version_and_cancellation() {
+    use crate::core::executor::generation_timing::GenerationTiming;
     use crate::core::executor::{CodexExecutionRequest, CodexExecutor, UpstreamResponse};
     use crate::types::{ProviderConnection, ProviderNode};
 
@@ -331,9 +332,10 @@ async fn codex_preflight_preserves_negotiated_version_and_cancellation() {
             }),
         )
         .unwrap();
+        let timing = GenerationTiming::default();
         let result = tokio::time::timeout(
             Duration::from_secs(3),
-            executor.execute(CodexExecutionRequest {
+            timing.scope(executor.execute(CodexExecutionRequest {
                 model: "codex/gpt-fixture".into(),
                 body: serde_json::json!({"stream":true,"input":[{"role":"user","content":[{"type":"input_text","text":"fixture"}]}]}),
                 stream: true,
@@ -342,11 +344,16 @@ async fn codex_preflight_preserves_negotiated_version_and_cancellation() {
                     ..Default::default()
                 },
                 proxy: None,
-            }),
+            })),
         )
         .await
         .expect("Codex first-event preflight must not await EOF")
         .unwrap();
+        let prefix_timing = timing.prefix().unwrap();
+        assert!(timing.started().unwrap() <= prefix_timing.last_read_at);
+        assert!(prefix_timing.last_read_at <= std::time::Instant::now());
+        assert!(prefix_timing.total_bytes >= TOOL.len() as u64);
+        assert!(prefix_timing.total_bytes <= (TOOL.len() + USAGE.len()) as u64);
         let UpstreamResponse::Reqwest(response) = result.response else {
             panic!("Codex transport")
         };
@@ -360,6 +367,10 @@ async fn codex_preflight_preserves_negotiated_version_and_cancellation() {
         );
         let mut stream = response.bytes_stream();
         prefix(&mut stream).await;
+        assert_eq!(
+            timing.prefix().unwrap().last_read_at,
+            prefix_timing.last_read_at
+        );
         drop(stream);
         tokio::time::timeout(
             Duration::from_secs(3),

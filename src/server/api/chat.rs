@@ -43,6 +43,7 @@ use crate::oauth::token_refresh::{
 use crate::server::application_logs::{error_kind, AttemptLog, RequestLogContext};
 use crate::server::auth::{extract_api_key, require_api_key, require_api_key_with_reload};
 use crate::server::state::AppState;
+use crate::server::upstream_tps::UpstreamTpsObservation;
 use crate::types::{ApiKey, AppDb, ProviderConnection, TokenUsage};
 
 use super::auth_error_response;
@@ -417,6 +418,7 @@ async fn chat_completions_impl(
             api_key,
             endpoint.unwrap_or("/v1/chat/completions"),
         )
+        .with_chat_session(&headers)
     });
 
     let snapshot = state.db.snapshot();
@@ -1112,7 +1114,12 @@ async fn forward_with_provider_fallback(
         };
 
         let is_codex_model = provider == "codex";
-        let executor_result: Result<ProviderExecutionResponse, ProviderAttemptError> = async {
+        let tps = attempt_log
+            .as_ref()
+            .map(AttemptLog::tps)
+            .unwrap_or_default();
+        exclude_synthetic_tps(provider, &tps);
+        let executor_result: Result<ProviderExecutionResponse, ProviderAttemptError> = tps.timing().scope(async {
             if provider == "vertex" || provider == "vertex-partner" || provider == "vxp" {
                 let executor = VertexExecutor::new(state.client_pool.clone(), provider_node)
                     .map_err(|e| ProviderAttemptError {
@@ -1606,7 +1613,7 @@ async fn forward_with_provider_fallback(
                     transport: result.transport,
                 })
             }
-        }
+        })
         .await;
 
         let execution = executor_result;
@@ -1616,7 +1623,8 @@ async fn forward_with_provider_fallback(
                 let status = result.response.status();
                 if status.is_success() {
                     if dashboard_stream {
-                        let response = proxy_dashboard_sse(result.response, attempt_log).await;
+                        let response =
+                            proxy_dashboard_sse(result.response, plan, attempt_log).await;
                         return Ok(response);
                     }
                     // forceStream + client non-stream → collect SSE → JSON (9router)
@@ -1777,6 +1785,7 @@ async fn forward_with_provider_fallback(
             }
             Err(error) => {
                 if let Some(attempt_log) = attempt_log {
+                    attempt_log.tps().invalidate();
                     let error_kind = match error.status {
                         401 | 403 => error_kind::AUTH_FAILURE,
                         429 => error_kind::RATE_LIMITED,
@@ -1890,42 +1899,180 @@ fn is_refreshable_auth_failure(status: StatusCode, body: Option<&[u8]>) -> bool 
     })
 }
 
-// Collected legacy/plain responses already own their body. Observe without
-// changing their conversion, output, or collection/cancellation semantics.
-fn observe_collected_codex_body(log: Option<&AttemptLog>, body: &[u8]) {
-    let Some(observation) = log
+// Collected paths observe originals during reads, rather than assigning the
+// end-of-collection timestamp to a terminal that arrived earlier.
+/// These executors return adapter-built OpenAI bodies, not source frames.
+/// Devin's counters are local estimates; Zed/Trae have already translated and
+/// collected the provider stream before this boundary can observe it.
+fn exclude_synthetic_tps(provider: &str, tps: &UpstreamTpsObservation) {
+    if matches!(provider, "zed" | "trae" | "devin-cli" | "dv") {
+        tps.invalidate();
+    }
+}
+
+async fn read_original_body(
+    response: UpstreamResponse,
+    format: Format,
+    provider: &str,
+    log: Option<&AttemptLog>,
+) -> Result<Bytes, BoundedBodyError> {
+    let tps = log.map(AttemptLog::tps);
+    let cache = log
         .map(AttemptLog::codex_cache)
-        .filter(|observation| observation.snapshot().is_some())
-    else {
-        return;
-    };
-    if let Ok(value) = serde_json::from_slice::<Value>(body) {
-        observation.observe(None, Some(&value));
-        return;
+        .filter(|observation| observation.snapshot().is_some());
+    let headers = response.headers();
+    let ct = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    let streaming = ct.contains("text/event-stream") || ct.contains("application/x-ndjson");
+    if !streaming || (tps.is_none() && cache.is_none()) {
+        let bytes = read_upstream_body(response, success_body_limit()).await?;
+        let read_at = std::time::Instant::now();
+        if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+            if let Some(tps) = &tps {
+                // A documented native envelope is still original provider
+                // evidence. Borrow its payload before the later legacy unwrap.
+                let original = if matches!(provider, "cline" | "clinepass")
+                    && value.get("success").and_then(Value::as_bool) == Some(true)
+                    && value.get("error").is_none_or(Value::is_null)
+                {
+                    value
+                        .get("data")
+                        .filter(|data| data.is_object())
+                        .unwrap_or(&value)
+                } else {
+                    &value
+                };
+                tps.observe_json(format, original, read_at);
+            }
+            if let Some(cache) = &cache {
+                cache.observe(None, Some(&value));
+            }
+        }
+        return Ok(bytes);
     }
-    let mut framer = SseFramer::new();
-    let mut observe = |event: crate::core::stream_framing::SseEvent<'_>| {
-        let value = event
-            .data()
-            .and_then(|data| serde_json::from_str::<Value>(data).ok());
-        observation.observe(event.event(), value.as_ref());
-    };
-    if framer.feed(body, &mut observe).is_ok() {
-        let _ = framer.finish(observe);
+    let limit = success_body_limit();
+    if is_identity_encoded(headers) {
+        if let Some(declared) =
+            declared_content_length(headers).filter(|length| *length > limit as u64)
+        {
+            return Err(BoundedBodyError::DeclaredTooLarge { declared, limit });
+        }
     }
+    let mut framer = format.text_stream_mode(Some(ct)).map(TextStreamFramer::new);
+    let mut collected = Vec::new();
+    let mut last_read = None;
+    let mut framing_failed = false;
+    let mut accept = |chunk: &[u8], read_at: std::time::Instant| -> Result<(), BoundedBodyError> {
+        collected
+            .len()
+            .checked_add(chunk.len())
+            .filter(|next| *next <= limit)
+            .ok_or(BoundedBodyError::TooLarge { limit })?;
+        collected
+            .try_reserve(chunk.len())
+            .map_err(|_| BoundedBodyError::Capacity { limit })?;
+        collected.extend_from_slice(chunk);
+        if framing_failed {
+            return Ok(());
+        }
+        if let Some(framer) = framer.as_mut() {
+            let mut feed = |segment: &[u8], at| {
+                last_read = at;
+                framer.feed(segment, |frame| {
+                    if let Some(tps) = &tps {
+                        tps.observe_payload(format, frame.event(), frame.payload(), at);
+                    }
+                    if let Some(cache) = &cache {
+                        let value = frame
+                            .payload()
+                            .and_then(|payload| serde_json::from_str::<Value>(payload).ok());
+                        cache.observe(frame.event(), value.as_ref());
+                    }
+                })
+            };
+            let result = match &tps {
+                Some(tps) => tps.feed_segments(chunk, read_at, &mut feed),
+                None => feed(chunk, Some(read_at)),
+            };
+            if result.is_err() {
+                if let Some(tps) = &tps {
+                    tps.invalidate();
+                }
+                // Framing remains observational on collected native paths.
+                framing_failed = true;
+            }
+        }
+        Ok(())
+    };
+    match response {
+        UpstreamResponse::Reqwest(response) => {
+            let mut stream = response.bytes_stream();
+            while let Some(chunk) = stream
+                .try_next()
+                .await
+                .map_err(|error| BoundedBodyError::Transport(error.to_string()))?
+            {
+                let read_at = std::time::Instant::now();
+                accept(&chunk, read_at)?;
+            }
+        }
+        UpstreamResponse::Hyper(response) => {
+            let mut body = response.into_body();
+            while let Some(frame) = body.frame().await {
+                let read_at = std::time::Instant::now();
+                let frame =
+                    frame.map_err(|error| BoundedBodyError::Transport(error.to_string()))?;
+                if let Ok(chunk) = frame.into_data() {
+                    accept(&chunk, read_at)?;
+                }
+            }
+        }
+    }
+    let eof_at = std::time::Instant::now();
+    if let Some(framer) = framer.as_mut().filter(|_| !framing_failed) {
+        let result = framer.finish(|frame| {
+            if let Some(tps) = &tps {
+                tps.observe_payload(format, frame.event(), frame.payload(), last_read);
+            }
+            if let Some(cache) = &cache {
+                let value = frame
+                    .payload()
+                    .and_then(|payload| serde_json::from_str::<Value>(payload).ok());
+                cache.observe(frame.event(), value.as_ref());
+            }
+        });
+        if result.is_err() {
+            if let Some(tps) = &tps {
+                tps.invalidate();
+            }
+        }
+    }
+    if let Some(tps) = &tps {
+        tps.clean_eof(format, eof_at);
+    }
+    Ok(Bytes::from(collected))
 }
 
 async fn proxy_dashboard_sse(
     response: UpstreamResponse,
+    plan: &RequestPlan,
     attempt_log: Option<AttemptLog>,
 ) -> Response {
     let status = response.status();
     let headers = response.headers().clone();
-    let body_bytes = match read_upstream_body(response, success_body_limit()).await {
+    let body_bytes = match read_original_body(
+        response,
+        plan.target_format,
+        &plan.provider,
+        attempt_log.as_ref(),
+    )
+    .await
+    {
         Ok(body) => body,
         Err(error) => return collected_body_failure_response(error, attempt_log).await,
     };
-    observe_collected_codex_body(attempt_log.as_ref(), &body_bytes);
 
     let token_usage = extract_token_usage_from_bytes(&body_bytes);
     if let Some(attempt_log) = attempt_log {
@@ -2100,6 +2247,7 @@ fn feed_forced_sse_chunk(
     wire_seen: &mut usize,
     wire_limit: usize,
     codex_cache: Option<&crate::core::executor::codex_cache::CodexCacheObservation>,
+    tps: Option<(&UpstreamTpsObservation, Format, std::time::Instant)>,
 ) -> Result<(), ForcedSseCollectionError> {
     *wire_seen = wire_seen
         .checked_add(chunk.len())
@@ -2114,8 +2262,11 @@ fn feed_forced_sse_chunk(
         prefix_raw.extend_from_slice(chunk);
     }
     let mut ingest_error = None;
-    framer
-        .feed(chunk, |event| {
+    let mut feed = |segment: &[u8], at| {
+        framer.feed(segment, |event| {
+            if let Some((tps, format, _)) = tps {
+                tps.observe_payload(format, event.event(), event.data(), at);
+            }
             if let Some(observation) = codex_cache {
                 let value = event
                     .data()
@@ -2126,7 +2277,17 @@ fn feed_forced_sse_chunk(
                 ingest_error = accumulator.ingest(&event).err();
             }
         })
-        .map_err(|error| ForcedSseCollectionError::Stream(frame_error_to_stream(error)))?;
+    };
+    let result = match tps {
+        Some((tps, _, read_at)) => tps.feed_segments(chunk, read_at, &mut feed),
+        None => feed(chunk, None),
+    };
+    if result.is_err() || ingest_error.is_some() {
+        if let Some((tps, _, _)) = tps {
+            tps.invalidate();
+        }
+    }
+    result.map_err(|error| ForcedSseCollectionError::Stream(frame_error_to_stream(error)))?;
     if let Some(error) = ingest_error {
         return Err(ForcedSseCollectionError::Stream(error));
     }
@@ -2137,9 +2298,19 @@ fn feed_forced_sse_chunk(
     Ok(())
 }
 
+#[cfg(test)]
 async fn collect_forced_sse(
     response: UpstreamResponse,
     codex_cache: Option<crate::core::executor::codex_cache::CodexCacheObservation>,
+) -> Result<ForcedSseCollection, ForcedSseCollectionError> {
+    collect_forced_sse_observed(response, codex_cache, None, Format::Codex).await
+}
+
+async fn collect_forced_sse_observed(
+    response: UpstreamResponse,
+    codex_cache: Option<crate::core::executor::codex_cache::CodexCacheObservation>,
+    tps: Option<UpstreamTpsObservation>,
+    format: Format,
 ) -> Result<ForcedSseCollection, ForcedSseCollectionError> {
     let status = response.status();
     let headers = response.headers().clone();
@@ -2182,6 +2353,7 @@ async fn collect_forced_sse(
                 let Some(chunk) = chunk else {
                     break;
                 };
+                let read_at = std::time::Instant::now();
                 feed_forced_sse_chunk(
                     &mut framer,
                     &mut accumulator,
@@ -2190,6 +2362,7 @@ async fn collect_forced_sse(
                     &mut wire_seen,
                     wire_limit,
                     codex_cache.as_ref(),
+                    tps.as_ref().map(|tps| (tps, format, read_at)),
                 )?;
                 if accumulator.is_terminal() {
                     break;
@@ -2206,6 +2379,7 @@ async fn collect_forced_sse(
                             "upstream SSE stream stalled".to_string(),
                         ))
                     })?;
+                let read_at = std::time::Instant::now();
                 let Some(frame) = frame else {
                     break;
                 };
@@ -2223,6 +2397,7 @@ async fn collect_forced_sse(
                     &mut wire_seen,
                     wire_limit,
                     codex_cache.as_ref(),
+                    tps.as_ref().map(|tps| (tps, format, read_at)),
                 )?;
                 if accumulator.is_terminal() {
                     break;
@@ -2231,10 +2406,14 @@ async fn collect_forced_sse(
         }
     }
 
+    let eof_at = std::time::Instant::now();
     if !accumulator.is_terminal() {
         let mut finish_error = None;
         framer
             .finish(|event| {
+                if let Some(tps) = &tps {
+                    tps.observe_payload(format, event.event(), event.data(), tps.last_read_at());
+                }
                 if let Some(observation) = &codex_cache {
                     let value = event
                         .data()
@@ -2252,10 +2431,18 @@ async fn collect_forced_sse(
     }
 
     if !accumulator.saw_any_event() {
+        if let Some(tps) = &tps {
+            if let Ok(value) = serde_json::from_slice::<Value>(&prefix_raw) {
+                tps.observe_json(format, &value, eof_at);
+            }
+        }
         if let Some(observation) = &codex_cache {
             let value = serde_json::from_slice::<Value>(&prefix_raw).ok();
             observation.observe(None, value.as_ref());
         }
+    }
+    if let Some(tps) = &tps {
+        tps.clean_eof(format, eof_at);
     }
     Ok(ForcedSseCollection {
         status,
@@ -2275,15 +2462,17 @@ async fn proxy_sse_to_json_response(
         .as_ref()
         .map(AttemptLog::codex_cache)
         .filter(|observation| observation.snapshot().is_some());
-    let collected = match collect_forced_sse(response, codex_cache).await {
-        Ok(collected) => collected,
-        Err(ForcedSseCollectionError::Body(error)) => {
-            return collected_body_failure_response(error, attempt_log).await;
-        }
-        Err(ForcedSseCollectionError::Stream(error)) => {
-            return stream_limit_failure_response(error, attempt_log).await;
-        }
-    };
+    let tps = attempt_log.as_ref().map(AttemptLog::tps);
+    let collected =
+        match collect_forced_sse_observed(response, codex_cache, tps, plan.target_format).await {
+            Ok(collected) => collected,
+            Err(ForcedSseCollectionError::Body(error)) => {
+                return collected_body_failure_response(error, attempt_log).await;
+            }
+            Err(ForcedSseCollectionError::Stream(error)) => {
+                return stream_limit_failure_response(error, attempt_log).await;
+            }
+        };
     let status = collected.status;
     let saw_sse = collected.accumulator.saw_any_event();
     let json_body = match collected.accumulator.finish(Some(model)) {
@@ -2348,11 +2537,17 @@ async fn proxy_response(
 ) -> Response {
     let status = response.status();
     let headers = response.headers().clone();
-    let body_bytes = match read_upstream_body(response, success_body_limit()).await {
+    let body_bytes = match read_original_body(
+        response,
+        plan.target_format,
+        provider,
+        attempt_log.as_ref(),
+    )
+    .await
+    {
         Ok(body) => body,
         Err(error) => return collected_body_failure_response(error, attempt_log).await,
     };
-    observe_collected_codex_body(attempt_log.as_ref(), &body_bytes);
 
     // 9router parity (open-sse/handlers/chatCore/nonStreamingHandler.js +
     // open-sse/shared/clineEnvelope.js unwrapClineEnvelope): unwrap before any
@@ -2404,6 +2599,7 @@ async fn proxy_response(
                 Ok(chunks) => chunks,
                 Err(error) => {
                     if let Some(attempt_log) = attempt_log {
+                        attempt_log.tps().invalidate();
                         attempt_log
                             .finish(
                                 "error",
@@ -2437,6 +2633,7 @@ async fn proxy_response(
             ));
             if let Some(error) = state.failure.clone() {
                 if let Some(attempt_log) = attempt_log {
+                    attempt_log.tps().invalidate();
                     attempt_log
                         .finish(
                             "error",
@@ -2688,6 +2885,7 @@ async fn proxy_response_with_pending_tracking(
                 );
                 dispatch.codex_cache = attempt_log.as_ref().map(AttemptLog::codex_cache)
                     .filter(|observation| observation.snapshot().is_some());
+                dispatch.tps = attempt_log.as_ref().map(AttemptLog::tps);
                 loop {
                     let next = tokio::time::timeout(SSE_STALL_TIMEOUT, upstream.try_next()).await;
                     match next {
@@ -2702,6 +2900,7 @@ async fn proxy_response_with_pending_tracking(
                             );
                             let usage = dispatch.usage.clone();
                             if let Some(log) = attempt_log.take() {
+                                log.tps().invalidate();
                                 log.finish("error", Some(502), usage.as_ref(), Some(error_kind::UPSTREAM_FAILURE)).await;
                             }
                             yield Ok::<Bytes, std::io::Error>(Bytes::from(dispatch.streaming_error(
@@ -2712,7 +2911,8 @@ async fn proxy_response_with_pending_tracking(
                             return;
                         }
                         Ok(Ok(Some(chunk))) => {
-                            let batch = dispatch.feed(&chunk);
+                            let read_at = std::time::Instant::now();
+                            let batch = dispatch.feed_at(&chunk, read_at);
                             // Passthrough bytes are committed before observer
                             // failures; framing is observational on native routes.
                             if passthrough {
@@ -2724,6 +2924,7 @@ async fn proxy_response_with_pending_tracking(
                             if let Some(error) = batch.error {
                                 let usage = dispatch.usage.clone();
                                 if let Some(log) = attempt_log.take() {
+                                    log.tps().invalidate();
                                     log.finish("error", Some(502), usage.as_ref(), Some(error_kind::LOCAL_FAILURE)).await;
                                 }
                                 yield Ok::<Bytes, std::io::Error>(Bytes::from(dispatch.streaming_error(
@@ -2746,6 +2947,7 @@ async fn proxy_response_with_pending_tracking(
                         Ok(Err(_)) => {
                             let usage = dispatch.usage.clone();
                             if let Some(log) = attempt_log.take() {
+                                log.tps().invalidate();
                                 log.finish("error", Some(502), usage.as_ref(), Some(error_kind::UPSTREAM_FAILURE)).await;
                             }
                             yield Ok::<Bytes, std::io::Error>(Bytes::from(dispatch.streaming_error(
@@ -2764,6 +2966,7 @@ async fn proxy_response_with_pending_tracking(
                 if let Some(error) = batch.error {
                     let usage = dispatch.usage.clone();
                     if let Some(log) = attempt_log.take() {
+                        log.tps().invalidate();
                         log.finish("error", Some(502), usage.as_ref(), Some(error_kind::LOCAL_FAILURE)).await;
                     }
                     yield Ok::<Bytes, std::io::Error>(Bytes::from(dispatch.streaming_error(
@@ -2795,8 +2998,10 @@ async fn proxy_response_with_pending_tracking(
                 );
                 dispatch.codex_cache = attempt_log.as_ref().map(AttemptLog::codex_cache)
                     .filter(|observation| observation.snapshot().is_some());
+                dispatch.tps = attempt_log.as_ref().map(AttemptLog::tps);
                 loop {
                     let next = tokio::time::timeout(SSE_STALL_TIMEOUT, body.frame()).await;
+                    let read_at = std::time::Instant::now();
                     let frame_result = match next {
                         Err(_elapsed) => {
                             tracing::warn!(
@@ -2807,6 +3012,7 @@ async fn proxy_response_with_pending_tracking(
                             );
                             let usage = dispatch.usage.clone();
                             if let Some(log) = attempt_log.take() {
+                                log.tps().invalidate();
                                 log.finish("error", Some(502), usage.as_ref(), Some(error_kind::UPSTREAM_FAILURE)).await;
                             }
                             yield Ok::<Bytes, std::io::Error>(Bytes::from(dispatch.streaming_error(
@@ -2822,7 +3028,7 @@ async fn proxy_response_with_pending_tracking(
                     match frame_result {
                         Ok(frame) => {
                             if let Ok(data) = frame.into_data() {
-                                let batch = dispatch.feed(&data);
+                                let batch = dispatch.feed_at(&data, read_at);
                                 if passthrough {
                                     yield Ok::<Bytes, std::io::Error>(data);
                                 }
@@ -2832,6 +3038,7 @@ async fn proxy_response_with_pending_tracking(
                                 if let Some(error) = batch.error {
                                     let usage = dispatch.usage.clone();
                                     if let Some(log) = attempt_log.take() {
+                                        log.tps().invalidate();
                                         log.finish("error", Some(502), usage.as_ref(), Some(error_kind::LOCAL_FAILURE)).await;
                                     }
                                     yield Ok::<Bytes, std::io::Error>(Bytes::from(dispatch.streaming_error(
@@ -2854,6 +3061,7 @@ async fn proxy_response_with_pending_tracking(
                         Err(_) => {
                             let usage = dispatch.usage.clone();
                             if let Some(log) = attempt_log.take() {
+                                log.tps().invalidate();
                                 log.finish("error", Some(502), usage.as_ref(), Some(error_kind::UPSTREAM_FAILURE)).await;
                             }
                             yield Ok::<Bytes, std::io::Error>(Bytes::from(dispatch.streaming_error(
@@ -2872,6 +3080,7 @@ async fn proxy_response_with_pending_tracking(
                 if let Some(error) = batch.error {
                     let usage = dispatch.usage.clone();
                     if let Some(log) = attempt_log.take() {
+                        log.tps().invalidate();
                         log.finish("error", Some(502), usage.as_ref(), Some(error_kind::LOCAL_FAILURE)).await;
                     }
                     yield Ok::<Bytes, std::io::Error>(Bytes::from(dispatch.streaming_error(
@@ -2907,6 +3116,8 @@ async fn proxy_response_with_pending_tracking(
 }
 
 struct StreamDispatch {
+    tps: Option<UpstreamTpsObservation>,
+    frame_read_at: Option<std::time::Instant>,
     codex_cache: Option<crate::core::executor::codex_cache::CodexCacheObservation>,
     framer: Option<TextStreamFramer>,
     stop_on_response_completed: bool,
@@ -2948,6 +3159,8 @@ impl StreamDispatch {
             }
         }
         Self {
+            tps: None,
+            frame_read_at: None,
             framer: source
                 .text_stream_mode(Some(content_type))
                 .map(TextStreamFramer::new),
@@ -2962,7 +3175,36 @@ impl StreamDispatch {
         }
     }
 
+    #[cfg(test)]
     fn feed(&mut self, chunk: &[u8]) -> DispatchBatch {
+        self.feed_at(chunk, std::time::Instant::now())
+    }
+
+    fn feed_at(&mut self, chunk: &[u8], read_at: std::time::Instant) -> DispatchBatch {
+        let mut batch = DispatchBatch::default();
+        if let Some(tps) = self.tps.clone() {
+            let result = tps.feed_segments(chunk, read_at, |segment, at| {
+                self.frame_read_at = at;
+                let next = self.feed_segment(segment);
+                batch.output.extend(next.output);
+                batch.response_completed |= next.response_completed;
+                if let Some(error) = next.error {
+                    return Err(error);
+                }
+                Ok(())
+            });
+            if let Err(error) = result {
+                tps.invalidate();
+                batch.error = Some(error);
+            }
+        } else {
+            self.frame_read_at = Some(read_at);
+            batch = self.feed_segment(chunk);
+        }
+        batch
+    }
+
+    fn feed_segment(&mut self, chunk: &[u8]) -> DispatchBatch {
         let Some(mut framer) = self.framer.take() else {
             if let Some(usage) = extract_token_usage_from_bytes(chunk) {
                 self.usage = Some(usage);
@@ -3006,6 +3248,7 @@ impl StreamDispatch {
     }
 
     fn finish(&mut self) -> DispatchBatch {
+        let eof_at = std::time::Instant::now();
         let mut batch = DispatchBatch::default();
         if let Some(mut framer) = self.framer.take() {
             let mut consumer_error = None;
@@ -3021,7 +3264,12 @@ impl StreamDispatch {
             batch.error = consumer_error.or_else(|| frame_result.err().map(frame_error_to_stream));
         }
         if batch.error.is_none() {
+            if let Some(tps) = &self.tps {
+                tps.clean_eof(self.source, eof_at);
+            }
             self.finish_transforms(&mut batch.output);
+        } else if let Some(tps) = &self.tps {
+            tps.invalidate();
         }
         batch
     }
@@ -3036,6 +3284,11 @@ impl StreamDispatch {
         if let Some(state) = self.translation_state.as_mut() {
             let chunks = registry::global_registry().finish_stream(self.source, self.target, state);
             append_translated_chunks(output, chunks);
+            if state.failure.is_some() {
+                if let Some(tps) = &self.tps {
+                    tps.invalidate();
+                }
+            }
         }
     }
 
@@ -3044,6 +3297,14 @@ impl StreamDispatch {
         frame: TextStreamFrame<'_>,
         batch: &mut DispatchBatch,
     ) -> Result<(), StreamLimitError> {
+        if let Some(tps) = &self.tps {
+            tps.observe_payload(
+                self.source,
+                frame.event(),
+                frame.payload(),
+                self.frame_read_at,
+            );
+        }
         if self.stop_on_response_completed && frame.event() == Some("response.completed") {
             batch.response_completed = true;
         }
@@ -3612,6 +3873,7 @@ async fn collected_body_failure_response(
     attempt_log: Option<AttemptLog>,
 ) -> Response {
     if let Some(attempt_log) = attempt_log {
+        attempt_log.tps().invalidate();
         attempt_log
             .finish(
                 "error",
@@ -3632,6 +3894,7 @@ async fn stream_limit_failure_response(
     attempt_log: Option<AttemptLog>,
 ) -> Response {
     if let Some(attempt_log) = attempt_log {
+        attempt_log.tps().invalidate();
         attempt_log
             .finish(
                 "error",
@@ -3860,6 +4123,227 @@ mod tests {
     use crate::core::translator::registry::Format;
     use crate::core::translator::response_transform::OpenAiTransformer;
     use crate::types::{AppDb, CustomModel, ProviderConnection};
+
+    #[tokio::test]
+    async fn tps_synthetic_executor_bodies_are_excluded_on_every_consumer_path() {
+        use crate::core::executor::generation_timing::mark_generation_send;
+        use crate::server::upstream_tps::UpstreamTpsObservation;
+        let fixture = concat!(
+            "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}\n\n",
+            "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: {\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"completion_tokens\":7}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        for provider in ["zed", "trae", "devin-cli", "dv"] {
+            for mode in 0..5 {
+                let observation = UpstreamTpsObservation::default();
+                observation
+                    .timing()
+                    .scope(async {
+                        mark_generation_send();
+                    })
+                    .await;
+                // Production excludes the shared attempt observation before execute.
+                super::exclude_synthetic_tps(provider, &observation);
+                let consumer = observation.clone();
+                let read_at =
+                    observation.timing().started().unwrap() + std::time::Duration::from_secs(1);
+                if mode == 3 {
+                    let response = axum::http::Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(reqwest::Body::from(fixture))
+                        .unwrap();
+                    assert!(super::collect_forced_sse_observed(
+                        super::UpstreamResponse::Reqwest(reqwest::Response::from(response)),
+                        None,
+                        Some(consumer),
+                        Format::OpenAi
+                    )
+                    .await
+                    .is_ok());
+                } else if mode == 4 {
+                    consumer.observe_json(Format::OpenAi, &json!({"choices":[{"index":0,"finish_reason":"stop"}],"usage":{"completion_tokens":7}}), read_at);
+                } else {
+                    let mut dispatch = StreamDispatch::new(
+                        Format::OpenAi,
+                        if mode == 1 {
+                            Format::OpenAiResponses
+                        } else {
+                            Format::OpenAi
+                        },
+                        "text/event-stream",
+                        if mode == 2 {
+                            super::dashboard_transformer_for_format(Format::OpenAi)
+                        } else {
+                            None
+                        },
+                        None,
+                        false,
+                    );
+                    dispatch.tps = Some(consumer);
+                    let batch = dispatch.feed_at(fixture.as_bytes(), read_at);
+                    assert!(batch.error.is_none());
+                    let tail = dispatch.finish();
+                    assert!(tail.error.is_none());
+                    if mode != 0 {
+                        assert!(
+                            !batch.output.is_empty() || !tail.output.is_empty(),
+                            "{provider} / mode {mode}"
+                        );
+                    }
+                }
+                assert!(observation.snapshot().is_none(), "{provider} / mode {mode}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn tps_codex_real_preflight_replay_retains_actual_terminal_read_time() {
+        use crate::core::executor::{ClientPool, CodexExecutionRequest, CodexExecutor};
+        use crate::server::upstream_tps::UpstreamTpsObservation;
+        use futures_util::TryStreamExt;
+        use std::sync::Arc;
+
+        let fixture = "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{\"output_tokens\":7}}}\n\n";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let upstream = axum::Router::new().fallback(axum::routing::any(move || async move {
+            Response::builder()
+                .header("content-type", "text/event-stream")
+                .body(Body::from(fixture))
+                .unwrap()
+        }));
+        let server = tokio::spawn(async move {
+            axum::serve(listener, upstream).await.unwrap();
+        });
+        let executor = CodexExecutor::new(
+            Arc::new(ClientPool::new()),
+            Some(crate::types::ProviderNode {
+                id: "codex".into(),
+                r#type: "codex".into(),
+                name: "TPS fixture".into(),
+                base_url: Some(format!("http://{address}/backend-api/codex/responses")),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        for mode in 0..3 {
+            let observation = UpstreamTpsObservation::default();
+            let result = observation
+                .timing()
+                .scope(executor.execute(CodexExecutionRequest {
+                    model: "gpt-5".into(),
+                    body: json!({"model":"gpt-5","input":"hello","stream":true}),
+                    stream: true,
+                    credentials: ProviderConnection {
+                        id: "tps-codex-account".into(),
+                        provider: "codex".into(),
+                        auth_type: "oauth".into(),
+                        access_token: Some("fixture-token".into()),
+                        ..Default::default()
+                    },
+                    proxy: None,
+                }))
+                .await
+                .unwrap();
+            let timing = observation.timing();
+            let prefix = timing
+                .prefix()
+                .expect("real Codex preflight recorded prefix timing");
+            let expected_micros = prefix
+                .last_read_at
+                .duration_since(timing.started().unwrap())
+                .as_micros() as u64;
+            // The replay consumer arrives late; this wait must not inflate TPS time.
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            if mode == 2 {
+                assert!(super::collect_forced_sse_observed(
+                    result.response,
+                    None,
+                    Some(observation.clone()),
+                    Format::Codex
+                )
+                .await
+                .is_ok());
+            } else {
+                let mut dispatch = StreamDispatch::new(
+                    Format::Codex,
+                    if mode == 0 {
+                        Format::Codex
+                    } else {
+                        Format::OpenAi
+                    },
+                    "text/event-stream",
+                    None,
+                    None,
+                    false,
+                );
+                dispatch.tps = Some(observation.clone());
+                let super::UpstreamResponse::Reqwest(response) = result.response else {
+                    panic!("Codex uses Reqwest")
+                };
+                let mut stream = response.bytes_stream();
+                while let Some(chunk) = stream.try_next().await.unwrap() {
+                    dispatch.feed_at(&chunk, std::time::Instant::now());
+                }
+                dispatch.finish();
+            }
+            assert_eq!(
+                observation.snapshot().unwrap()["elapsedMicros"],
+                expected_micros
+            );
+            assert_eq!(observation.snapshot().unwrap()["generatedOutputTokens"], 7);
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn tps_dispatch_exact_original_read_time_is_shared_by_all_live_paths() {
+        use crate::core::executor::generation_timing::mark_generation_send;
+        use crate::server::upstream_tps::UpstreamTpsObservation;
+        for mode in 0..3 {
+            let observation = UpstreamTpsObservation::default();
+            observation
+                .timing()
+                .scope(async {
+                    mark_generation_send();
+                })
+                .await;
+            let source = Format::OpenAi;
+            let target = if mode == 1 {
+                Format::OpenAiResponses
+            } else {
+                source
+            };
+            let transformer = if mode == 2 {
+                super::dashboard_transformer_for_format(source)
+            } else {
+                None
+            };
+            let mut dispatch = StreamDispatch::new(
+                source,
+                target,
+                "text/event-stream",
+                transformer,
+                None,
+                false,
+            );
+            dispatch.tps = Some(observation.clone());
+            let started = observation.timing().started().unwrap();
+            dispatch.feed_at(b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}],\"usage\":{\"completion_tokens\":99}}\n\n", started + std::time::Duration::from_secs(1));
+            dispatch.feed_at(b"data: {\"choices\":[{\"index\":0,\"finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens\":7}}\n\ndata: [DONE]\n\n", started + std::time::Duration::from_secs(2));
+            // A downstream yield/late heartbeat cannot replace terminal timing.
+            dispatch.feed_at(
+                b": heartbeat\n\n",
+                started + std::time::Duration::from_secs(9),
+            );
+            dispatch.finish();
+            assert_eq!(
+                observation.snapshot().unwrap(),
+                json!({"version":1,"generatedOutputTokens":7,"elapsedMicros":2_000_000,"endKind":"protocol_terminal"})
+            );
+        }
+    }
 
     #[test]
     fn refresh_guard_skips_claude_policy_rejections() {
