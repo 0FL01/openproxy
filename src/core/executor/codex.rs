@@ -870,6 +870,15 @@ impl CodexExecutor {
             }
         }
         let response = builder.send().await?;
+        tracing::info!(
+            target: "openproxy::transport",
+            leg = "upstream",
+            executor = "codex",
+            transport = "reqwest",
+            http_version = ?response.version(),
+            status = response.status().as_u16(),
+            "HTTP transport"
+        );
 
         // Preserve non-success responses verbatim for the request-scoped
         // account/auth planner. Successful Codex responses are SSE; inspect at
@@ -892,6 +901,7 @@ impl CodexExecutor {
         }
 
         let status = response.status();
+        let version = response.version();
         let response_headers = response.headers().clone();
         let mut upstream = response.bytes_stream();
         let mut prefix = Vec::new();
@@ -920,6 +930,7 @@ impl CodexExecutor {
                 first_event.truncate(event_end);
                 let mut failed = http::Response::new(ReqwestBody::from(first_event));
                 *failed.status_mut() = failure_status;
+                *failed.version_mut() = version;
                 *failed.headers_mut() = response_headers;
                 failed.headers_mut().remove(reqwest::header::CONTENT_LENGTH);
                 return Ok(CodexExecutorResponse {
@@ -935,6 +946,7 @@ impl CodexExecutor {
         let combined = replay.chain(upstream);
         let mut live = http::Response::new(ReqwestBody::wrap_stream(combined));
         *live.status_mut() = status;
+        *live.version_mut() = version;
         *live.headers_mut() = response_headers;
         Ok(CodexExecutorResponse {
             response: UpstreamResponse::Reqwest(reqwest::Response::from(live)),

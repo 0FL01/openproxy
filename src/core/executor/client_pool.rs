@@ -23,7 +23,7 @@ const CLEANUP_INTERVAL: Duration = Duration::from_secs(300); // 5 minutes
 /// Connections unused for longer than this are removed.
 const CLEANUP_MAX_IDLE: Duration = Duration::from_secs(600); // 10 minutes
 
-/// Timeout configuration for HTTP clients built by [`build_reqwest_client`]
+/// Timeout configuration for HTTP clients built by [`reqwest_client_builder`]
 /// and [`build_hyper_client`].
 #[derive(Clone, Copy, Debug)]
 pub struct ClientTimeout {
@@ -52,6 +52,9 @@ pub struct ClientPool {
     /// cleaner to remove stale connections.
     last_accessed: Arc<DashMap<String, Instant>>,
     timeout: ClientTimeout,
+    // Only local fixtures may extend trust; production uses its existing roots.
+    #[cfg(test)]
+    test_roots: Vec<reqwest::Certificate>,
 }
 
 impl Default for ClientPool {
@@ -61,6 +64,8 @@ impl Default for ClientPool {
             hyper_clients: DashMap::new(),
             last_accessed: Arc::new(DashMap::new()),
             timeout: ClientTimeout::default(),
+            #[cfg(test)]
+            test_roots: Vec::new(),
         }
     }
 }
@@ -88,7 +93,14 @@ impl ClientPool {
         proxy: Option<&ProxyTarget>,
     ) -> Result<Arc<reqwest::Client>, reqwest::Error> {
         let timeout = self.timeout;
-        self.get_or_insert_with(provider_key, proxy, || build_reqwest_client(proxy, timeout))
+        self.get_or_insert_with(provider_key, proxy, || {
+            let mut builder = reqwest_client_builder(proxy, timeout)?;
+            #[cfg(test)]
+            for root in &self.test_roots {
+                builder = builder.add_root_certificate(root.clone());
+            }
+            Ok(Arc::new(builder.build()?))
+        })
     }
 
     pub fn get_hyper_direct(
@@ -180,10 +192,10 @@ impl ClientPool {
     }
 }
 
-fn build_reqwest_client(
+fn reqwest_client_builder(
     proxy: Option<&ProxyTarget>,
     timeout: ClientTimeout,
-) -> Result<Arc<reqwest::Client>, reqwest::Error> {
+) -> Result<reqwest::ClientBuilder, reqwest::Error> {
     let mut builder = reqwest::Client::builder()
         .pool_idle_timeout(CLIENT_POOL_IDLE_TIMEOUT)
         .pool_max_idle_per_host(CLIENT_POOL_MAX_IDLE_PER_HOST)
@@ -199,7 +211,9 @@ fn build_reqwest_client(
         }
     }
 
-    Ok(Arc::new(builder.build()?))
+    // Reqwest's http2 feature enables TLS ALPN; never force H2 globally, since
+    // HTTP/1.1-only providers and configured proxies must remain usable.
+    Ok(builder)
 }
 
 fn build_hyper_client(timeout: ClientTimeout) -> Result<Arc<DirectHyperClient>, io::Error> {
@@ -237,3 +251,6 @@ fn client_key(provider_key: &str, proxy: Option<&ProxyTarget>) -> String {
         _ => provider_key.to_string(),
     }
 }
+
+#[cfg(test)]
+mod transport_tests;

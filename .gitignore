@@ -65,6 +65,7 @@ source/*
 docs/*
 !docs/AGENT-PROMPT.md
 !docs/ARCHITECTURE.md
+!docs/backend-http2.md
 !docs/CHECKPOINTS.json
 !docs/integrations/
 !docs/goals/

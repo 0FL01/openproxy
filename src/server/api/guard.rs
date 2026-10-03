@@ -70,6 +70,14 @@ fn trust_proxy_enabled() -> bool {
 /// only the verified peer IP via `x-9r-real-ip` — the spoofable headers
 /// are gone.
 pub async fn real_ip_middleware(mut request: Request, next: Next) -> Result<Response, Response> {
+    // This is the actual nginx→application hop, independent of forwarded
+    // headers or the client's protocol. Do not log URI/header/body data.
+    tracing::info!(
+        target: "openproxy::transport",
+        leg = "inbound",
+        http_version = ?request.version(),
+        "HTTP transport"
+    );
     // 1. Strip client-supplied forwarding headers UNLESS behind a trusted proxy.
     if !trust_proxy_enabled() {
         for &name in SPOOFABLE_FORWARDING_HEADERS {

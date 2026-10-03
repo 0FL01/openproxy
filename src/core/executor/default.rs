@@ -1325,21 +1325,36 @@ impl DefaultExecutor {
             let uri: Uri = url.parse()?;
             let mut req = HyperRequest::post(uri).body(Full::new(body.clone()))?;
             *req.headers_mut() = headers.clone();
-            client
-                .request(req)
-                .await
-                .map_err(ExecutorError::Hyper)
-                .map(UpstreamResponse::Hyper)
+            let response = client.request(req).await.map_err(ExecutorError::Hyper)?;
+            tracing::info!(
+                target: "openproxy::transport",
+                leg = "upstream",
+                executor = "default",
+                transport = "hyper",
+                http_version = ?response.version(),
+                status = response.status().as_u16(),
+                "HTTP transport"
+            );
+            Ok(UpstreamResponse::Hyper(response))
         } else {
             let client = self.pool.get(&self.provider, proxy)?;
-            client
+            let response = client
                 .post(url)
                 .headers(headers.clone())
                 .body(body.clone())
                 .send()
                 .await
-                .map_err(ExecutorError::Request)
-                .map(UpstreamResponse::Reqwest)
+                .map_err(ExecutorError::Request)?;
+            tracing::info!(
+                target: "openproxy::transport",
+                leg = "upstream",
+                executor = "default",
+                transport = "reqwest",
+                http_version = ?response.version(),
+                status = response.status().as_u16(),
+                "HTTP transport"
+            );
+            Ok(UpstreamResponse::Reqwest(response))
         }
     }
 

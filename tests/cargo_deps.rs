@@ -122,6 +122,10 @@ fn http_dependencies_have_required_features() {
     let reqwest_feature_strs: Vec<&str> =
         reqwest_features.iter().filter_map(|v| v.as_str()).collect();
     assert!(
+        reqwest_feature_strs.contains(&"http2"),
+        "reqwest must support negotiated HTTP/2 with HTTP/1.1 fallback"
+    );
+    assert!(
         reqwest_feature_strs.contains(&"json"),
         "reqwest should have json feature"
     );

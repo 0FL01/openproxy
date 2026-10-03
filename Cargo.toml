@@ -18,7 +18,7 @@ hyper-rustls = { version = "0.27", features = ["http2"] }
 rustls = "0.23"
 
 # HTTP client (complex - OAuth, proxy)
-reqwest = { version = "0.12", default-features = false, features = ["json", "cookies", "multipart", "gzip", "brotli", "socks", "stream", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["http2", "json", "cookies", "multipart", "gzip", "brotli", "socks", "stream", "rustls-tls"] }
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
@@ -111,6 +111,9 @@ mime_guess = "2"
 open = "5"
 
 [dev-dependencies]
+# Verified local TLS/ALPN transport fixtures; no production TLS policy override.
+tokio-rustls = "0.26"
+rcgen = { version = "0.14", default-features = false, features = ["ring"] }
 # Compression (tests: lean_proxy bounded/image suites)
 flate2 = "1"
 tempfile = "3"

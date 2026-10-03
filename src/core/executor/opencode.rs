@@ -315,6 +315,15 @@ impl OpenCodeExecutor {
             .send()
             .await?;
 
+        tracing::info!(
+            target: "openproxy::transport",
+            leg = "upstream",
+            executor = "opencode",
+            transport = "reqwest",
+            http_version = ?response.version(),
+            status = response.status().as_u16(),
+            "HTTP transport"
+        );
         Ok(OpenCodeExecutorResponse {
             response: UpstreamResponse::Reqwest(response),
             url,
