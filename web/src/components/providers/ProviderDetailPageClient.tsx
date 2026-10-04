@@ -64,6 +64,7 @@ export default function ProviderDetailPageClient() {
   // Authoritative Available Models list (catalog + live + custom, merged).
   const am = useAvailableModels(providerId);
   const [connections, setConnections] = useState([]);
+  const connectionsRequestRef = useRef(0);
   const [loading, setLoading] = useState(true);
   const [providerNode, setProviderNode] = useState(null);
   const [proxyPools, setProxyPools] = useState([]);
@@ -239,21 +240,34 @@ export default function ProviderDetailPageClient() {
   }, []);
 
   const fetchConnections = useCallback(async () => {
+    if (!providerId) return;
+    const requestId = ++connectionsRequestRef.current;
+    const isCurrent = () => requestId === connectionsRequestRef.current;
+    const connectionsTask = (async () => {
+      try {
+        const res = await fetch("/api/providers", { cache: "no-store" });
+        if (!res.ok) throw new Error(`Failed to load connections: ${res.status}`);
+        const data = await res.json();
+        if (!Array.isArray(data.connections)) throw new Error("Invalid connections response");
+        if (isCurrent()) {
+          setConnections(data.connections.filter(c => c.provider === providerId));
+        }
+      } catch (error) {
+        console.log("Error fetching connections:", error);
+      } finally {
+        if (isCurrent() && !isCompatible) setLoading(false);
+      }
+    })();
     try {
-      const [connectionsRes, nodesRes, proxyPoolsRes, settingsRes] = await Promise.all([
-        fetch("/api/providers", { cache: "no-store" }),
+      const [nodesRes, proxyPoolsRes, settingsRes] = await Promise.all([
         fetch("/api/provider-nodes", { cache: "no-store" }),
         fetch("/api/proxy-pools?isActive=true", { cache: "no-store" }),
         fetch("/api/settings", { cache: "no-store" }),
       ]);
-      const connectionsData = await connectionsRes.json();
       const nodesData = await nodesRes.json();
       const proxyPoolsData = await proxyPoolsRes.json();
       const settingsData = settingsRes.ok ? await settingsRes.json() : {};
-      if (connectionsRes.ok) {
-        const filtered = (connectionsData.connections || []).filter(c => c.provider === providerId);
-        setConnections(filtered);
-      }
+      if (!isCurrent()) return;
       if (proxyPoolsRes.ok) {
         setProxyPools(proxyPoolsData.proxyPools || []);
       }
@@ -278,12 +292,13 @@ export default function ProviderDetailPageClient() {
           }
         }
 
-        setProviderNode(node);
+        if (isCurrent()) setProviderNode(node);
       }
     } catch (error) {
       console.log("Error fetching connections:", error);
     } finally {
-      setLoading(false);
+      await connectionsTask;
+      if (isCurrent() && isCompatible) setLoading(false);
     }
   }, [providerId, isCompatible]);
 
@@ -486,6 +501,7 @@ export default function ProviderDetailPageClient() {
     fetchConnections();
     fetchAliases();
     fetchCustomModels();
+    return () => { connectionsRequestRef.current += 1; };
   }, [fetchConnections, fetchAliases, fetchCustomModels]);
 
   useEffect(() => {
