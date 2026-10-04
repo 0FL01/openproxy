@@ -129,7 +129,7 @@ async fn build_models_list(
                     created,
                     None,
                     model.context_window,
-                    None,
+                    model.max_output,
                 ));
             }
         }
@@ -329,7 +329,9 @@ async fn build_models_list(
                     created,
                     None,
                     ctx_len,
-                    None,
+                    catalog
+                        .find_model(provider_id, &model_id)
+                        .and_then(|model| model.max_output),
                 ));
             }
         }
@@ -1244,6 +1246,14 @@ mod tests {
 
         assert_eq!(flash.context_length, Some(500_000));
         assert_eq!(metadata["limit"]["context"], 500_000);
+        for id in ["glm/glm-5.3", "glm/glm-5.3-flash"] {
+            let model = models.iter().find(|model| model.id == id).unwrap();
+            assert_eq!(model.max_completion_tokens, Some(131_072));
+            assert_eq!(
+                json!(model.opencode)["limit"],
+                json!({"context": 500_000, "output": 131_072})
+            );
+        }
         assert_eq!(metadata["attachment"], true);
         assert_eq!(
             metadata["modalities"]["input"],

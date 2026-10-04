@@ -237,6 +237,7 @@ async function OpenProxyModels() {
           throw error
         }
         failure = "invalid models response"
+        let incompleteLimits = 0
         const entries = body.data.map((row) => {
           const { config: remote, source } = modelConfig(row)
           const local = Object.hasOwn(configuredModels, row.id) ? configuredModels[row.id] : {}
@@ -252,6 +253,7 @@ async function OpenProxyModels() {
           // OpenCode allows omitting limit, but requires context AND output
           // when present. Check after local overrides have filled any gaps.
           if (!positiveInteger(merged.limit?.context) || !positiveInteger(merged.limit?.output)) {
+            if (merged.limit) incompleteLimits++
             delete merged.limit
           }
           if (remote.variants || local.variants) {
@@ -262,6 +264,9 @@ async function OpenProxyModels() {
         // Replace only after the entire response validates. Removed/disabled IDs
         // must not survive as local overrides after a successful discovery.
         provider.models = Object.fromEntries(entries)
+        if (incompleteLimits) {
+          console.warn(`[openproxy-models] ${incompleteLimits} models have incomplete context/output limits; context usage percentage may be unavailable.`)
+        }
       } catch {
         // Never log the request, response body, URL or raw exception (may contain secrets).
         console.warn(`[openproxy-models] ${failure}; keeping configured models.`)

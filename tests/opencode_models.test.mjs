@@ -127,6 +127,31 @@ test("authoritative empty effort list disables SDK reasoning variants", async (t
   assert.equal(Object.hasOwn(config.provider.ludka2.models.unknown, "variants"), false)
 })
 
+test("GLM limits retain context usage while local output fills gaps and incomplete limits warn safely", async (t) => {
+  const warnings = []
+  t.mock.method(console, "warn", (message) => warnings.push(message))
+  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({
+    object: "list", data: [
+      { id: "glm/glm-5.3", context_length: 1048576, max_completion_tokens: 131072 },
+      { id: "local", context_length: 204800 },
+      { id: "fixture-key", context_length: 500000 },
+    ],
+  })))
+  const config = { provider: { ludka2: {
+    options: { baseURL: "https://example.invalid/v1", apiKey: "fixture-key" },
+    models: { local: { limit: { output: 32768 } } },
+  } } }
+  await (await OpenProxyModels()).config(config)
+  const models = config.provider.ludka2.models
+  assert.deepEqual(models["glm/glm-5.3"].limit, { context: 500000, output: 131072 })
+  assert.equal(Math.round(124340 / models["glm/glm-5.3"].limit.context * 100), 25)
+  assert.deepEqual(models.local.limit, { context: 204800, output: 32768 })
+  assert.equal(Object.hasOwn(models["fixture-key"], "limit"), false)
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0], /1 models have incomplete context\/output limits/)
+  assert.ok(!warnings[0].includes("fixture-key"))
+})
+
 test("discovery has its own timeout and preserves local models on network failure", async (t) => {
   t.mock.method(console, "warn", () => {})
   const timeout = t.mock.method(AbortSignal, "timeout")

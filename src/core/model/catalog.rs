@@ -28,6 +28,8 @@ pub struct ProviderCatalogModel {
     pub upstream_model_id: Option<String>,
     #[serde(default, alias = "contextLength")]
     pub context_window: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output: Option<u32>,
     #[serde(default)]
     pub capabilities: Option<Vec<String>>,
     #[serde(default)]
