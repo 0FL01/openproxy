@@ -1439,41 +1439,16 @@ pub fn responses_to_chat_response(
             }
             vec![]
         }
-        Some("error") | Some("response.failed") => {
-            if state.get("finishReasonSent").and_then(|v| v.as_bool()) == Some(true) {
-                return vec![];
-            }
-            let error = data
-                .get("error")
-                .or_else(|| data.get("response").and_then(|r| r.get("error")));
-            if let Some(err) = error {
-                let msg = err
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string)
-                    .unwrap_or_else(|| {
-                        serde_json::to_string(err).unwrap_or_else(|_| "unknown".to_string())
-                    });
-                state.insert("finishReasonSent".to_string(), Value::Bool(true));
-                vec![serde_json::json!({
-                    "id": chat_id,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": model,
-                    "choices": [{
-                        "index": 0,
-                        "delta": {"content": format!("[Error] {}", msg)},
-                        "finish_reason": "stop"
-                    }]
-                })]
-            } else {
-                vec![]
-            }
-        }
         // response.created carries the model name assigned by the backend.
         // Capture it so subsequent chunks emit a meaningful model field instead of "unknown".
         Some("response.created") => {
             if let Some(response) = data.get("response") {
+                if let Some(id) = response.get("id").and_then(Value::as_str) {
+                    state.insert("chatId".to_string(), Value::String(id.to_string()));
+                }
+                if let Some(created) = response.get("created_at").and_then(Value::as_i64) {
+                    state.insert("created".to_string(), Value::from(created));
+                }
                 if let Some(model_name) = response.get("model").and_then(|v| v.as_str()) {
                     if !model_name.is_empty() {
                         state.insert("model".to_string(), Value::String(model_name.to_string()));
@@ -1542,12 +1517,48 @@ pub fn responses_to_chat_streaming(
     chunk: &[u8],
     state: &mut ResponseTransformState,
 ) -> Vec<String> {
-    if chunk == b"[DONE]" {
+    if state.responses.completed_sent || chunk == b"[DONE]" {
         return Vec::new();
     }
     let Ok(val) = serde_json::from_slice::<Value>(chunk) else {
-        return Vec::new();
+        return state.fail(crate::core::translator::limits::StreamLimitError {
+            code: "upstream_stream_invalid_json",
+            message: "Responses stream contains invalid JSON".to_string(),
+        });
     };
+    let event_type = val
+        .get("type")
+        .or_else(|| val.get("event"))
+        .and_then(Value::as_str);
+    let data = val.get("data").unwrap_or(&val);
+    if matches!(
+        event_type,
+        Some("error" | "response.failed" | "response.incomplete")
+    ) {
+        let error = data
+            .get("error")
+            .or_else(|| data.pointer("/response/error"))
+            .unwrap_or(data);
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                data.pointer("/response/incomplete_details/reason")
+                    .and_then(Value::as_str)
+            })
+            .unwrap_or("Upstream Responses generation failed or was incomplete");
+        return state.fail(crate::core::translator::limits::StreamLimitError {
+            code: "upstream_stream_failed",
+            message: message.to_string(),
+        });
+    }
+    let completed = event_type == Some("response.completed");
+    if completed && !data.get("response").is_some_and(Value::is_object) {
+        return state.fail(crate::core::translator::limits::StreamLimitError {
+            code: "upstream_stream_invalid_terminal",
+            message: "Responses completion is missing its response".to_string(),
+        });
+    }
     if let Err(error) = track_responses_accumulation(state, &val) {
         return state.fail(error);
     }
@@ -1556,6 +1567,7 @@ pub fn responses_to_chat_streaming(
     if let Some(error) = take_arithmetic_failure(inner) {
         return state.fail(error);
     }
+    state.responses.completed_sent = completed;
     results
         .into_iter()
         .map(|value| {

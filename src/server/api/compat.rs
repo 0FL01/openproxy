@@ -155,7 +155,18 @@ async fn forward_compat(
         CompatMode::Messages => Format::Claude,
         CompatMode::Responses { .. } => Format::OpenAiResponses,
     };
-    if should_bypass_compat_conversion(native_format, expected_format) {
+    // The chat producer already translates an explicit Messages SSE request
+    // into Claude events. JSON collapse still needs the compat converter.
+    let translated_messages_sse = matches!(mode, CompatMode::Messages)
+        && stream_request
+        && response.status().is_success()
+        && response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.contains("text/event-stream"))
+        && native_format.is_some_and(|formats| formats.client == Format::Claude);
+    if translated_messages_sse || should_bypass_compat_conversion(native_format, expected_format) {
         return with_cors_response(response);
     }
 

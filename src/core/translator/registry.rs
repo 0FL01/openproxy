@@ -830,9 +830,9 @@ impl TranslationRegistry {
                 for mid in &intermediates {
                     transform_openai_intermediate(mid, state, *transform, &mut final_results)?;
                 }
-                if !final_results.is_empty() {
-                    return Ok(final_results);
-                }
+                // Empty output is valid (for example, buffered tool arguments),
+                // not permission to leak the intermediate Chat wire format.
+                return Ok(final_results);
             }
         }
 
@@ -1385,6 +1385,35 @@ pub fn global_registry() -> &'static TranslationRegistry {
 mod parity_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn empty_claude_pivot_output_does_not_leak_chat_arguments() {
+        let mut state = ResponseTransformState::default();
+        let declaration = json!({"type":"response.output_item.added", "item":{
+            "type":"function_call", "id":"fc_probe", "call_id":"call_probe", "name":"echo_probe"
+        }});
+        let output = global_registry()
+            .translate_response_payload(
+                Format::OpenAiResponses,
+                Format::Claude,
+                declaration.to_string().as_bytes(),
+                &mut state,
+            )
+            .unwrap();
+        assert!(output.iter().any(|event| event.contains("tool_use")));
+        let arguments = json!({"type":"response.function_call_arguments.delta",
+            "item_id":"fc_probe", "delta":"{\"nonce\":17}"
+        });
+        assert!(global_registry()
+            .translate_response_payload(
+                Format::OpenAiResponses,
+                Format::Claude,
+                arguments.to_string().as_bytes(),
+                &mut state,
+            )
+            .unwrap()
+            .is_empty());
+    }
 
     #[test]
     fn detect_responses_requires_no_messages() {

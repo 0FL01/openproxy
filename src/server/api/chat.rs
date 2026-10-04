@@ -2794,9 +2794,11 @@ async fn proxy_response_with_pending_tracking(
     let needs_stream_translation = plan.needs_translation();
     let stream_source_format = plan.source_format;
     let stream_target_format = plan.target_format;
-    let stop_on_response_completed =
-        crate::core::model::models_dev::is_opencode_provider(&provider)
-            && stream_target_format == Format::OpenAiResponses;
+    let stop_on_response_completed = stream_target_format == Format::OpenAiResponses
+        && (crate::core::model::models_dev::is_opencode_provider(&provider)
+            || (provider == "codex"
+                && stream_source_format == Format::Claude
+                && !normalize_for_dashboard));
     let status = response.status();
     let headers = response.headers().clone();
 
@@ -2933,9 +2935,6 @@ async fn proxy_response_with_pending_tracking(
                                 return;
                             }
                             if batch.response_completed {
-                                for output in dispatch.finish_after_completed() {
-                                    yield Ok::<Bytes, std::io::Error>(output);
-                                }
                                 let usage = dispatch.usage.clone();
                                 if let Some(log) = attempt_log.take() {
                                     log.finish("success", Some(status.as_u16()), usage.as_ref(), None).await;
@@ -3047,9 +3046,6 @@ async fn proxy_response_with_pending_tracking(
                                     return;
                                 }
                                 if batch.response_completed {
-                                    for output in dispatch.finish_after_completed() {
-                                        yield Ok::<Bytes, std::io::Error>(output);
-                                    }
                                     let usage = dispatch.usage.clone();
                                     if let Some(log) = attempt_log.take() {
                                         log.finish("success", Some(status.as_u16()), usage.as_ref(), None).await;
@@ -3184,6 +3180,9 @@ impl StreamDispatch {
         let mut batch = DispatchBatch::default();
         if let Some(tps) = self.tps.clone() {
             let result = tps.feed_segments(chunk, read_at, |segment, at| {
+                if batch.response_completed {
+                    return Ok(());
+                }
                 self.frame_read_at = at;
                 let next = self.feed_segment(segment);
                 batch.output.extend(next.output);
@@ -3235,7 +3234,7 @@ impl StreamDispatch {
         let mut batch = DispatchBatch::default();
         let mut consumer_error = None;
         let frame_result = framer.feed(chunk, |frame| {
-            if consumer_error.is_some() {
+            if consumer_error.is_some() || batch.response_completed {
                 return;
             }
             if let Err(error) = self.consume_frame(frame, &mut batch) {
@@ -3243,7 +3242,10 @@ impl StreamDispatch {
             }
         });
         self.framer = Some(framer);
-        batch.error = consumer_error.or_else(|| frame_result.err().map(frame_error_to_stream));
+        batch.error = consumer_error;
+        if batch.error.is_none() && !batch.response_completed {
+            batch.error = frame_result.err().map(frame_error_to_stream);
+        }
         batch
     }
 
@@ -3264,32 +3266,40 @@ impl StreamDispatch {
             batch.error = consumer_error.or_else(|| frame_result.err().map(frame_error_to_stream));
         }
         if batch.error.is_none() {
+            if self.source == Format::OpenAiResponses
+                && self.target == Format::Claude
+                && self
+                    .translation_state
+                    .as_ref()
+                    .is_some_and(|state| !state.responses.completed_sent)
+            {
+                batch.error = Some(StreamLimitError {
+                    code: "upstream_stream_truncated",
+                    message: "Responses stream ended without response.completed".to_string(),
+                });
+            } else {
+                batch.error = self.finish_transforms(&mut batch.output);
+            }
+        }
+        if batch.error.is_none() {
             if let Some(tps) = &self.tps {
                 tps.clean_eof(self.source, eof_at);
             }
-            self.finish_transforms(&mut batch.output);
         } else if let Some(tps) = &self.tps {
             tps.invalidate();
         }
         batch
     }
 
-    fn finish_after_completed(&mut self) -> Vec<Bytes> {
-        let mut output = Vec::new();
-        self.finish_transforms(&mut output);
-        output
-    }
-
-    fn finish_transforms(&mut self, output: &mut Vec<Bytes>) {
+    fn finish_transforms(&mut self, output: &mut Vec<Bytes>) -> Option<StreamLimitError> {
         if let Some(state) = self.translation_state.as_mut() {
             let chunks = registry::global_registry().finish_stream(self.source, self.target, state);
-            append_translated_chunks(output, chunks);
-            if state.failure.is_some() {
-                if let Some(tps) = &self.tps {
-                    tps.invalidate();
-                }
+            if let Some(error) = state.failure.clone() {
+                return Some(error);
             }
+            append_translated_chunks(output, chunks);
         }
+        None
     }
 
     fn consume_frame(
@@ -3305,7 +3315,10 @@ impl StreamDispatch {
                 self.frame_read_at,
             );
         }
-        if self.stop_on_response_completed && frame.event() == Some("response.completed") {
+        if self.stop_on_response_completed
+            && self.translation_state.is_none()
+            && frame.event() == Some("response.completed")
+        {
             batch.response_completed = true;
         }
         // Native passthrough has no downstream parser, so parse once here for
@@ -3340,6 +3353,7 @@ impl StreamDispatch {
                 self.usage = Some(usage);
             }
             if self.stop_on_response_completed
+                && self.translation_state.is_none()
                 && value.get("type").and_then(Value::as_str) == Some("response.completed")
             {
                 batch.response_completed = true;
@@ -3372,6 +3386,9 @@ impl StreamDispatch {
                 state,
             )?;
             append_translated_chunks(&mut batch.output, chunks);
+            if self.stop_on_response_completed && state.responses.completed_sent {
+                batch.response_completed = true;
+            }
         }
         if !parse_source {
             // Only inspect output produced for this frame. Re-scanning the
@@ -3415,6 +3432,13 @@ impl StreamDispatch {
                 code.unwrap_or("upstream_stream_error"),
                 &friendly,
             );
+        }
+        if self.target == Format::Claude {
+            let msg = json!({
+                "type": "error",
+                "error": {"type": error_type, "message": friendly, "code": code}
+            });
+            return format!("event: error\ndata: {msg}\n\n");
         }
         let msg = serde_json::json!({
             "error": {
@@ -4123,6 +4147,45 @@ mod tests {
     use crate::core::translator::registry::Format;
     use crate::core::translator::response_transform::OpenAiTransformer;
     use crate::types::{AppDb, CustomModel, ProviderConnection};
+
+    #[test]
+    fn translated_messages_dispatch_is_independent_of_transport_boundaries() {
+        let fixture = concat!(
+            "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_chunk_fixture\",\"model\":\"gpt-6-luna\",\"created_at\":1791072000}}\n\n",
+            "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_a\",\"type\":\"function_call\",\"call_id\":\"call_real_a\",\"name\":\"echo_probe\"}}\n\n",
+            "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_b\",\"type\":\"function_call\",\"call_id\":\"call_real_b\",\"name\":\"echo_secondary\"}}\n\n",
+            "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_b\",\"delta\":\"{\\\"nonce\\\":\"}\n\n",
+            "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_a\",\"delta\":\"{\\\"nonce\\\":17}\"}\n\n",
+            "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_b\",\"delta\":\"29}\"}\n\n",
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":23,\"output_tokens\":7}}}\n\n"
+        );
+        let translate = |chunk_size| {
+            let mut dispatch = StreamDispatch::new(
+                Format::OpenAiResponses,
+                Format::Claude,
+                "text/event-stream",
+                None,
+                None,
+                true,
+            );
+            let mut output = Vec::new();
+            let mut completed = false;
+            for chunk in fixture.as_bytes().chunks(chunk_size) {
+                let batch = dispatch.feed(chunk);
+                assert!(batch.error.is_none(), "{:?}", batch.error);
+                completed |= batch.response_completed;
+                output.extend(batch.output);
+            }
+            let tail = dispatch.finish();
+            assert!(tail.error.is_none(), "{:?}", tail.error);
+            output.extend(tail.output);
+            assert!(completed);
+            output
+        };
+        let coalesced = translate(fixture.len());
+        assert_eq!(translate(1), coalesced);
+        assert_eq!(translate(17), coalesced);
+    }
 
     #[tokio::test]
     async fn tps_synthetic_executor_bodies_are_excluded_on_every_consumer_path() {

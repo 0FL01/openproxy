@@ -878,6 +878,10 @@ impl CodexExecutor {
             transport = "reqwest",
             http_version = ?response.version(),
             status = response.status().as_u16(),
+            reasoning_effort = transformed_body
+                .pointer("/reasoning/effort")
+                .and_then(|effort| effort.as_str())
+                .unwrap_or("unspecified"),
             "HTTP transport"
         );
 
