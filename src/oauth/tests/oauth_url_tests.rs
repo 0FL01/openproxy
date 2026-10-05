@@ -3,7 +3,7 @@ use crate::oauth::providers;
 
 fn expected_auth_url_prefix(provider: &str) -> &'static str {
     match provider {
-        "claude" => "https://claude.ai/oauth/authorize",
+        "claude" => "https://platform.claude.com/oauth/authorize",
         "codex" => "https://auth.openai.com/oauth/authorize",
         "gitlab" => "https://gitlab.com/oauth/authorize",
         "xai" => "https://auth.x.ai/oauth2/authorize",

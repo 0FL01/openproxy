@@ -104,8 +104,11 @@ impl OAuthProviderConfig {
 /// Bump procedure for [`CLAUDE_CLI_VERSION`]: `npm view @anthropic-ai/claude-code version`.
 /// Official Claude Code OAuth client id.
 pub const CLAUDE_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-/// Subscription OAuth authorize endpoint.
-pub const CLAUDE_AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
+/// Subscription OAuth authorize endpoint. Claude Code 2.1.289 pins the
+/// console/manual-code flow to `platform.claude.com` (binary
+/// `CONSOLE_AUTHORIZE_URL`; `claude.ai` remains only behind a bot-wall
+/// redirect for the browser flow). Env override keeps escape hatch.
+pub const CLAUDE_AUTHORIZE_URL: &str = "https://platform.claude.com/oauth/authorize";
 /// Subscription OAuth token endpoint (relay-parity default; env-overridable).
 pub const CLAUDE_TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
 /// Account profile endpoint for email/display-name enrichment (fail-open).
