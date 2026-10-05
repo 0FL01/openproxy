@@ -357,26 +357,35 @@ impl ProviderConfig {
 const ANTHROPIC_BETA_BASE: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,structured-outputs-2025-12-15,fast-mode-2026-02-01";
 const ANTHROPIC_BETA_HEAVY_AGENT: &str = "advanced-tool-use-2025-11-20,effort-2025-11-24";
 
-/// Beta selection mirrors the Claude Code 2.1.289 binary gate
-/// `!canonical.includes("haiku")` for `claude-code-20250219` (matches
-/// `claude-3-5-haiku-*` and routed aliases too). Haiku keeps the
-/// MITM-observed aux flag `redact-thinking-2026-02-12`, which the shared
-/// base no longer carries. Heavy-agent flags stay gated to opus/sonnet.
-pub fn select_anthropic_beta(model: &str) -> String {
+/// Beta selection mirrors the Claude Code 2.1.289 binary gates: the
+/// `claude-code-20250219` flag rides only non-haiku models
+/// (`!canonical.includes("haiku")`, matching `claude-3-5-haiku-*` and
+/// routed aliases), haiku keeps the MITM-observed aux flag
+/// `redact-thinking-2026-02-12` absent from the shared base, and
+/// `oauth-2025-04-20` rides only OAuth connections (binary gate on the
+/// auth/runtime predicate; API-key traffic never carries it).
+/// Heavy-agent flags stay gated to opus/sonnet.
+pub fn select_anthropic_beta(model: &str, is_oauth: bool) -> String {
     let lower = model.to_lowercase();
-    if lower.contains("haiku") {
-        return ANTHROPIC_BETA_BASE
+    let flags: Vec<&str> = if lower.contains("haiku") {
+        ANTHROPIC_BETA_BASE
             .split(',')
-            .filter(|flag| *flag != "claude-code-20250219")
+            .filter(|flag| *flag != "claude-code-20250219" && (is_oauth || *flag != "oauth-2025-04-20"))
             .chain(["redact-thinking-2026-02-12"])
-            .collect::<Vec<_>>()
-            .join(",");
-    }
-    if lower.starts_with("claude-opus") || lower.starts_with("claude-sonnet") {
-        format!("{ANTHROPIC_BETA_BASE},{ANTHROPIC_BETA_HEAVY_AGENT}")
+            .collect()
+    } else if lower.starts_with("claude-opus") || lower.starts_with("claude-sonnet") {
+        ANTHROPIC_BETA_BASE
+            .split(',')
+            .filter(|flag| is_oauth || *flag != "oauth-2025-04-20")
+            .chain(ANTHROPIC_BETA_HEAVY_AGENT.split(','))
+            .collect()
     } else {
-        ANTHROPIC_BETA_BASE.to_string()
-    }
+        ANTHROPIC_BETA_BASE
+            .split(',')
+            .filter(|flag| is_oauth || *flag != "oauth-2025-04-20")
+            .collect()
+    };
+    flags.join(",")
 }
 
 /// Union of adapter base flags with client-supplied extras (dedup,
@@ -1058,8 +1067,10 @@ impl DefaultExecutor {
         // shared.js selectAnthropicBeta). First-party guard mirrors the
         // auth chain above: third-party transports and gateway nodes keep
         // the generic/allowlist path (no harness-beta leak). Union with
-        // client extras (C04 passthrough); ours-first, client cannot
-        // deselect `oauth-2025-04-20`.
+        // client extras (C04 passthrough); ours-first union — a client
+        // may only add flags. `oauth-2025-04-20` enters the base only
+        // for OAuth connections; an API-key client that sends it itself
+        // still passes it through the union.
         // Overwrites the static default (which only had 2 flags).
         if matches!(self.provider.as_str(), "claude" | "anthropic")
             && !is_anthropic_compatible
@@ -1070,7 +1081,7 @@ impl DefaultExecutor {
                 .is_none_or(|url| url.trim().is_empty())
         {
             let merged = merge_anthropic_beta(
-                &select_anthropic_beta(model),
+                &select_anthropic_beta(model, credentials.auth_type == "oauth"),
                 client_headers.get("anthropic-beta").map(String::as_str),
             );
             if let Ok(val) = HeaderValue::from_str(&merged) {
@@ -1958,10 +1969,10 @@ mod tests {
 
     #[test]
     fn beta_base_has_no_non_cli_flags() {
-        // Binary-RECON 2.1.282: neither flag is referenced by the real CLI.
+        // Binary-RECON: neither flag is referenced by the real CLI.
         assert!(!ANTHROPIC_BETA_BASE.contains("token-efficient"));
         assert!(!ANTHROPIC_BETA_BASE.contains("fine-grained"));
-        assert!(!select_anthropic_beta("claude-opus-5-5").contains("token-efficient"));
+        assert!(!select_anthropic_beta("claude-opus-5-5", true).contains("token-efficient"));
     }
 
     #[test]

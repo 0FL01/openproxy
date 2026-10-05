@@ -1265,19 +1265,29 @@ mod tests {
 
     #[test]
     fn select_anthropic_beta_gates_heavy_flags() {
-        // Claude Code 2.1.289 gates claude-code on !includes("haiku");
-        // haiku re-adds the MITM-observed aux flag redact-thinking.
+        // Claude Code 2.1.289 gates claude-code on !includes("haiku") and
+        // oauth-2025-04-20 on the OAuth path; haiku re-adds the
+        // MITM-observed aux flag redact-thinking.
         for haiku in ["claude-haiku-4-5", "claude-3-5-haiku-20241022"] {
-            let base = crate::core::executor::select_anthropic_beta(haiku);
+            let base = crate::core::executor::select_anthropic_beta(haiku, true);
             assert!(!base.contains("claude-code-20250219"), "{haiku}: {base}");
             assert!(base.contains("redact-thinking-2026-02-12"), "{haiku}: {base}");
             assert!(!base.contains("advanced-tool-use-2025-11-20"), "{haiku}: {base}");
+            assert!(base.contains("oauth-2025-04-20"), "{haiku}: {base}");
         }
-        let heavy = crate::core::executor::select_anthropic_beta("claude-sonnet-4-6");
+        let heavy = crate::core::executor::select_anthropic_beta("claude-sonnet-4-6", true);
         assert!(heavy.contains("claude-code-20250219"));
         assert!(heavy.contains("advanced-tool-use-2025-11-20"));
         assert!(heavy.contains("effort-2025-11-24"));
         assert!(!heavy.contains("redact-thinking-2026-02-12"));
+        // API-key connections: base without the OAuth flag.
+        let apikey = crate::core::executor::select_anthropic_beta("claude-sonnet-4-6", false);
+        assert!(!apikey.contains("oauth-2025-04-20"), "{apikey}");
+        assert!(apikey.contains("claude-code-20250219"));
+        let apikey_haiku = crate::core::executor::select_anthropic_beta("claude-haiku-4-5", false);
+        assert!(!apikey_haiku.contains("oauth-2025-04-20"));
+        assert!(!apikey_haiku.contains("claude-code-20250219"));
+        assert!(apikey_haiku.contains("redact-thinking-2026-02-12"));
     }
 
     // ─── is_claude_oauth_policy_rejection ────────────────────────────
