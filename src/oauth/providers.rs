@@ -97,8 +97,9 @@ impl OAuthProviderConfig {
 // ---------------------------------------------------------------------------
 
 /// Claude (Anthropic subscription OAuth, C46): single source of truth.
-/// Identity values verified against the live Claude Code 2.1.282 bundle
-/// (built 2026-09-24): `claude-cli/${VERSION} (external, cli)`,
+/// Identity values verified against the live Claude Code 2.1.289 bundle
+/// (built 2026-10-03; MITM-verified 2026-10-05):
+/// `claude-cli/${VERSION} (external, cli)`,
 /// `x-app: cli`, beta `claude-code-20250219` + `oauth-2025-04-20`.
 ///
 /// Bump procedure for [`CLAUDE_CLI_VERSION`]: `npm view @anthropic-ai/claude-code version`.
@@ -123,7 +124,7 @@ pub const CLAUDE_SCOPES: &[&str] = &[
     "user:sessions:claude_code",
 ];
 /// Pinned Claude Code CLI version (single source; see bump procedure above).
-pub const CLAUDE_CLI_VERSION: &str = "2.1.282";
+pub const CLAUDE_CLI_VERSION: &str = "2.1.289";
 
 /// Canonical Claude Code CLI User-Agent: `claude-cli/<VERSION> (external, cli)`.
 pub fn claude_user_agent() -> String {
