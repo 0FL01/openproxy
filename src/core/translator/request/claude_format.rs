@@ -1271,8 +1271,14 @@ mod tests {
         for haiku in ["claude-haiku-4-5", "claude-3-5-haiku-20241022"] {
             let base = crate::core::executor::select_anthropic_beta(haiku, true);
             assert!(!base.contains("claude-code-20250219"), "{haiku}: {base}");
-            assert!(base.contains("redact-thinking-2026-02-12"), "{haiku}: {base}");
-            assert!(!base.contains("advanced-tool-use-2025-11-20"), "{haiku}: {base}");
+            assert!(
+                base.contains("redact-thinking-2026-02-12"),
+                "{haiku}: {base}"
+            );
+            assert!(
+                !base.contains("advanced-tool-use-2025-11-20"),
+                "{haiku}: {base}"
+            );
             assert!(base.contains("oauth-2025-04-20"), "{haiku}: {base}");
         }
         let heavy = crate::core::executor::select_anthropic_beta("claude-sonnet-4-6", true);

@@ -370,7 +370,9 @@ pub fn select_anthropic_beta(model: &str, is_oauth: bool) -> String {
     let flags: Vec<&str> = if lower.contains("haiku") {
         ANTHROPIC_BETA_BASE
             .split(',')
-            .filter(|flag| *flag != "claude-code-20250219" && (is_oauth || *flag != "oauth-2025-04-20"))
+            .filter(|flag| {
+                *flag != "claude-code-20250219" && (is_oauth || *flag != "oauth-2025-04-20")
+            })
             .chain(["redact-thinking-2026-02-12"])
             .collect()
     } else if lower.starts_with("claude-opus") || lower.starts_with("claude-sonnet") {
@@ -1963,7 +1965,12 @@ mod tests {
 
         for credentials in [&oauth, &apikey] {
             let headers = executor
-                .build_headers_for_request("claude-sonnet-4-5", credentials, false, &BTreeMap::new())
+                .build_headers_for_request(
+                    "claude-sonnet-4-5",
+                    credentials,
+                    false,
+                    &BTreeMap::new(),
+                )
                 .unwrap();
             assert_eq!(headers["anthropic-dangerous-direct-browser-access"], "true");
         }
@@ -1976,7 +1983,10 @@ mod tests {
         let headers = executor
             .build_headers_for_request("claude-sonnet-4-5", &oauth, false, &client_headers)
             .unwrap();
-        assert_eq!(headers["anthropic-dangerous-direct-browser-access"], "false");
+        assert_eq!(
+            headers["anthropic-dangerous-direct-browser-access"],
+            "false"
+        );
 
         // Custom base URL keeps the generic path (C46).
         let headers = executor
