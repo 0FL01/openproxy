@@ -449,7 +449,10 @@ pub struct ExecutionRequest {
 
 /// Claude client identity and protocol metadata that may be forwarded from the
 /// current request. Authentication, cookies, forwarding headers, and arbitrary
-/// extension headers are intentionally excluded.
+/// extension headers are intentionally excluded. Only the names live Claude
+/// Code 2.1.289 actually sends are listed (MITM census); the un-prefixed
+/// `os`/`arch`/`package-version`/`runtime-version` variants never appear on
+/// the wire and were dropped.
 const CLAUDE_REQUEST_HEADER_ALLOWLIST: &[&str] = &[
     "user-agent",
     "anthropic-beta",
@@ -466,10 +469,6 @@ const CLAUDE_REQUEST_HEADER_ALLOWLIST: &[&str] = &[
     "x-stainless-os",
     "x-stainless-timeout",
     "x-claude-code-session-id",
-    "package-version",
-    "runtime-version",
-    "os",
-    "arch",
 ];
 
 pub struct ExecutionResponse {
