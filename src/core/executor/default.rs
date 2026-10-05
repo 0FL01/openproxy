@@ -357,8 +357,22 @@ impl ProviderConfig {
 const ANTHROPIC_BETA_BASE: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,structured-outputs-2025-12-15,fast-mode-2026-02-01";
 const ANTHROPIC_BETA_HEAVY_AGENT: &str = "advanced-tool-use-2025-11-20,effort-2025-11-24";
 
+/// Beta selection mirrors the Claude Code 2.1.289 binary gate
+/// `!canonical.includes("haiku")` for `claude-code-20250219` (matches
+/// `claude-3-5-haiku-*` and routed aliases too). Haiku keeps the
+/// MITM-observed aux flag `redact-thinking-2026-02-12`, which the shared
+/// base no longer carries. Heavy-agent flags stay gated to opus/sonnet.
 pub fn select_anthropic_beta(model: &str) -> String {
-    if model.starts_with("claude-opus") || model.starts_with("claude-sonnet") {
+    let lower = model.to_lowercase();
+    if lower.contains("haiku") {
+        return ANTHROPIC_BETA_BASE
+            .split(',')
+            .filter(|flag| *flag != "claude-code-20250219")
+            .chain(["redact-thinking-2026-02-12"])
+            .collect::<Vec<_>>()
+            .join(",");
+    }
+    if lower.starts_with("claude-opus") || lower.starts_with("claude-sonnet") {
         format!("{ANTHROPIC_BETA_BASE},{ANTHROPIC_BETA_HEAVY_AGENT}")
     } else {
         ANTHROPIC_BETA_BASE.to_string()

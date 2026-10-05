@@ -1265,12 +1265,19 @@ mod tests {
 
     #[test]
     fn select_anthropic_beta_gates_heavy_flags() {
-        let base = crate::core::executor::select_anthropic_beta("claude-haiku-4-5");
-        assert!(base.contains("claude-code-20250219"));
-        assert!(!base.contains("advanced-tool-use-2025-11-20"));
+        // Claude Code 2.1.289 gates claude-code on !includes("haiku");
+        // haiku re-adds the MITM-observed aux flag redact-thinking.
+        for haiku in ["claude-haiku-4-5", "claude-3-5-haiku-20241022"] {
+            let base = crate::core::executor::select_anthropic_beta(haiku);
+            assert!(!base.contains("claude-code-20250219"), "{haiku}: {base}");
+            assert!(base.contains("redact-thinking-2026-02-12"), "{haiku}: {base}");
+            assert!(!base.contains("advanced-tool-use-2025-11-20"), "{haiku}: {base}");
+        }
         let heavy = crate::core::executor::select_anthropic_beta("claude-sonnet-4-6");
+        assert!(heavy.contains("claude-code-20250219"));
         assert!(heavy.contains("advanced-tool-use-2025-11-20"));
         assert!(heavy.contains("effort-2025-11-24"));
+        assert!(!heavy.contains("redact-thinking-2026-02-12"));
     }
 
     // ─── is_claude_oauth_policy_rejection ────────────────────────────

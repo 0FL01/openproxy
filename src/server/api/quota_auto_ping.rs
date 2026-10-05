@@ -64,13 +64,15 @@ const GLM_PING_TIMEOUT: Duration = Duration::from_secs(30);
 
 const CLAUDE_PING_URL: &str = "https://api.anthropic.com/v1/messages?beta=true";
 const CLAUDE_PING_MODEL: &str = "claude-haiku-4-5-20251001";
-const CLAUDE_PING_TEXT: &str = "hi";
+const CLAUDE_PING_TEXT: &str = "quota";
 const CLAUDE_PING_MAX_TOKENS: u32 = 1;
 const CLAUDE_ANTHROPIC_VERSION: &str = "2023-06-01";
-// Explicit resync of ANTHROPIC_BETA_BASE (default.rs) minus
-// token-efficient-tools, plus heavy — kept as a literal on purpose so a
-// shared-helper change cannot silently alter ping behavior.
-const CLAUDE_ANTHROPIC_BETA: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12";
+// Live Claude Code 2.1.289 quota-probe profile (MITM 2026-10-05): the
+// auxiliary haiku probe carries exactly these six flags — no
+// claude-code, no structured-outputs/fast-mode/heavy. Kept as a literal
+// on purpose so a shared-helper change cannot silently alter ping
+// behavior; order matches the observed header.
+const CLAUDE_ANTHROPIC_BETA: &str = "oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05";
 
 const CODEX_PING_TEXT: &str = "hi";
 const CODEX_PING_INSTRUCTIONS: &str = "Reply with OK.";
