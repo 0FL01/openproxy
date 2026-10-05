@@ -1538,30 +1538,28 @@ async fn forward_with_provider_fallback(
                     retry_after: None,
                     upstream_body: None,
                 })?;
-                let request_headers: BTreeMap<String, String> = client_headers
+                let mut request_headers: BTreeMap<String, String> = client_headers
                     .into_iter()
                     .flatten()
                     .map(|(key, value)| (key.clone(), value.clone()))
                     .collect();
-                if default_prepared_body
-                    .as_ref()
-                    .is_none_or(|prepared| !executor.can_reuse_prepared_body(prepared, model))
-                {
-                    // C46: harness identity applies to the planning-fresh body
-                    // clone before the executor prepares (and shares) upstream
-                    // bytes. Account-independent by construction (fixed device
-                    // id, per-request session), so no per-account re-prepare.
-                    let harness =
-                        if crate::core::translator::request::claude_format::claude_harness_gated(
-                            provider,
-                            connection.auth_type.as_str(),
-                            connection
-                                .runtime_transport
-                                .as_ref()
-                                .and_then(|transport| transport.base_url.as_deref()),
-                            gateway_node,
-                        ) {
-                            Some(
+                // C46: harness identity is connection-gated with a per-request
+                // session id. The gate is evaluated on every account attempt
+                // (cheap pure fn) and hoisted above the prepared-body reuse
+                // check, so attempts 2..N keep the session header even when
+                // the spoofed body bytes are shared. Live Claude Code always
+                // pairs the header with `metadata.user_id.session_id`.
+                let harness =
+                    if crate::core::translator::request::claude_format::claude_harness_gated(
+                        provider,
+                        connection.auth_type.as_str(),
+                        connection
+                            .runtime_transport
+                            .as_ref()
+                            .and_then(|transport| transport.base_url.as_deref()),
+                        gateway_node,
+                    ) {
+                        Some(
                             crate::core::translator::request::claude_format::ClaudeHarnessIdentity {
                                 session_id: claude_harness_session.clone(),
                                 client_ua: request_headers
@@ -1570,9 +1568,23 @@ async fn forward_with_provider_fallback(
                                     .map(|(_, value)| value.clone()),
                             },
                         )
-                        } else {
-                            None
-                        };
+                    } else {
+                        None
+                    };
+                apply_harness_session_header(
+                    &mut request_headers,
+                    harness.is_some(),
+                    &claude_harness_session,
+                );
+                if default_prepared_body
+                    .as_ref()
+                    .is_none_or(|prepared| !executor.can_reuse_prepared_body(prepared, model))
+                {
+                    // The harness identity (if any) applies to the
+                    // planning-fresh body clone before the executor prepares
+                    // (and shares) upstream bytes. Account-independent by
+                    // construction (fixed device id, per-request session), so
+                    // no per-account re-prepare.
                     let scoped_body;
                     let body_for_prepare = match harness.as_ref() {
                         Some(identity) => {
@@ -1848,6 +1860,22 @@ async fn codex_supporters_after_cold_wait(
             ));
         }
         tokio::time::sleep_until((now + Duration::from_millis(200)).min(deadline)).await;
+    }
+}
+
+/// C46 harness session header: live Claude Code always pairs
+/// `x-claude-code-session-id` with `metadata.user_id.session_id`. When the
+/// harness transform is active for this connection and the client sent no
+/// session header of its own, inject the request-scoped session id so the
+/// header matches the spoofed body metadata on every account attempt.
+/// Client value wins; no-op for non-harness traffic.
+fn apply_harness_session_header(
+    request_headers: &mut BTreeMap<String, String>,
+    harness_active: bool,
+    session: &str,
+) {
+    if harness_active && !request_headers.contains_key("x-claude-code-session-id") {
+        request_headers.insert("x-claude-code-session-id".to_string(), session.to_string());
     }
 }
 
@@ -4136,10 +4164,10 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::{
-        attempt_error_response, build_dashboard_sse_response, build_proxied_response,
-        has_native_codex_web_search, is_refreshable_auth_failure, select_connection,
-        select_connection_with_supporters, should_prefetch_message_images, tool_image_support,
-        StreamDispatch,
+        apply_harness_session_header, attempt_error_response, build_dashboard_sse_response,
+        build_proxied_response, has_native_codex_web_search, is_refreshable_auth_failure,
+        select_connection, select_connection_with_supporters, should_prefetch_message_images,
+        tool_image_support, StreamDispatch,
     };
     use crate::core::account_fallback::ProviderAttemptError;
     use crate::core::chat::RequestPlan;
@@ -4406,6 +4434,25 @@ mod tests {
                 json!({"version":1,"generatedOutputTokens":7,"elapsedMicros":2_000_000,"endKind":"protocol_terminal"})
             );
         }
+    }
+
+    #[test]
+    fn harness_session_header_injects_when_active_and_client_wins() {
+        // Active harness + no client header → inject the request session.
+        let mut headers = BTreeMap::new();
+        apply_harness_session_header(&mut headers, true, "sess-1");
+        assert_eq!(headers["x-claude-code-session-id"], "sess-1");
+        // Client header wins — never overwritten.
+        let mut headers = BTreeMap::from([(
+            "x-claude-code-session-id".to_string(),
+            "client-sess".to_string(),
+        )]);
+        apply_harness_session_header(&mut headers, true, "sess-2");
+        assert_eq!(headers["x-claude-code-session-id"], "client-sess");
+        // Inactive harness (apikey/third-party) → untouched.
+        let mut headers = BTreeMap::new();
+        apply_harness_session_header(&mut headers, false, "sess-3");
+        assert!(!headers.contains_key("x-claude-code-session-id"));
     }
 
     #[test]
