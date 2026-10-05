@@ -20,7 +20,10 @@
 //! - Proxy is resolved via `resolve_proxy_target` (connection / pool / outbound).
 //!   Per-connection vercel relay is not modeled (same as most OP executors).
 //! - Claude spoof headers are a static subset of 9r `CLAUDE_CLI_SPOOF_HEADERS`
-//!   (version/beta/UA/x-app); stainless arch/os are fixed, not host-mapped.
+//!   (version/beta/UA/x-app/browser-access); no `x-stainless-*` are sent —
+//!   MITM 2.1.289 shows the live aux probe carries all eight, but the probe
+//!   still succeeds without them and synthesizing values we cannot verify
+//!   would add a fingerprint rather than remove one.
 //! - No per-connection concurrent ping mutex beyond the global tick lock.
 
 use axum::extract::State;
