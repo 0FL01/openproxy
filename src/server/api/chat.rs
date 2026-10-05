@@ -4095,29 +4095,36 @@ fn retry_after_from_headers(headers: &HeaderMap) -> Option<DateTime<Utc>> {
 /// window that is actually rejected. Candidates (latest wins):
 /// - `5h-Status: rejected` → `5h-Reset`
 /// - `7d-Status: rejected` → `7d-Reset`
-/// - `Unified-Status: rejected` and (5h or 7d rejected) → `Unified-Reset`
+/// - `Unified-Status: rejected` → `Unified-Reset` (even when the 5h/7d
+///   windows read allowed — live captures show a rejected unified status
+///   with per-window statuses still allowed)
 ///
 /// Reset values parse as a unix epoch (float tolerated) or RFC 3339;
 /// past instants are ignored. Callers gate this on HTTP 429 — window
 /// headers are present on successful responses too, where they describe
 /// utilization, not a wait requirement.
 fn unified_reset_retry_after(headers: &HeaderMap) -> Option<DateTime<Utc>> {
-    let status_is_rejected = |suffix: &str| -> bool {
+    // The unified window has no window token in its header names:
+    // `anthropic-ratelimit-unified-status` / `-reset`, while 5h/7d carry
+    // `-5h-`/`-7d-` between `unified` and the field.
+    let header_name = |window: &str, field: &str| -> String {
+        if window == "unified" {
+            format!("anthropic-ratelimit-unified-{field}")
+        } else {
+            format!("anthropic-ratelimit-unified-{window}-{field}")
+        }
+    };
+    let status_is_rejected = |window: &str| -> bool {
         headers
-            .get(format!("anthropic-ratelimit-unified-{suffix}-status"))
+            .get(header_name(window, "status"))
             .and_then(|value| value.to_str().ok())
             .map(|value| value.trim().eq_ignore_ascii_case("rejected"))
             .unwrap_or(false)
     };
-    let rejected_5h = status_is_rejected("5h");
-    let rejected_7d = status_is_rejected("7d");
-    if !rejected_5h && !rejected_7d {
-        return None;
-    }
 
-    let parse_reset = |name: &str| -> Option<DateTime<Utc>> {
+    let parse_reset = |window: &str| -> Option<DateTime<Utc>> {
         let raw = headers
-            .get(format!("anthropic-ratelimit-unified-{name}"))
+            .get(header_name(window, "reset"))
             .and_then(|value| value.to_str().ok())?
             .trim()
             .to_string();
@@ -4135,14 +4142,10 @@ fn unified_reset_retry_after(headers: &HeaderMap) -> Option<DateTime<Utc>> {
     };
 
     let mut candidates = Vec::with_capacity(3);
-    if rejected_5h {
-        candidates.extend(parse_reset("5h-reset"));
-    }
-    if rejected_7d {
-        candidates.extend(parse_reset("7d-reset"));
-    }
-    if status_is_rejected("unified") {
-        candidates.extend(parse_reset("unified-reset"));
+    for window in ["5h", "7d", "unified"] {
+        if status_is_rejected(window) {
+            candidates.extend(parse_reset(window));
+        }
     }
     candidates.into_iter().max()
 }
@@ -4681,6 +4684,32 @@ mod tests {
             .unwrap(),
         );
         assert!(unified_reset_retry_after(&past).is_none());
+
+        // Unified rejected while both windows read allowed (live capture
+        // shape): the unified reset still yields.
+        let mut unified_only = reqwest::header::HeaderMap::new();
+        unified_only.insert(
+            "anthropic-ratelimit-unified-status",
+            reqwest::header::HeaderValue::from_static("rejected"),
+        );
+        unified_only.insert(
+            "anthropic-ratelimit-unified-5h-status",
+            reqwest::header::HeaderValue::from_static("allowed"),
+        );
+        unified_only.insert(
+            "anthropic-ratelimit-unified-7d-status",
+            reqwest::header::HeaderValue::from_static("allowed"),
+        );
+        unified_only.insert(
+            "anthropic-ratelimit-unified-reset",
+            reqwest::header::HeaderValue::from_str(
+                &(Utc::now() + ChronoDuration::seconds(900))
+                    .timestamp()
+                    .to_string(),
+            )
+            .unwrap(),
+        );
+        assert!(unified_reset_retry_after(&unified_only).is_some());
     }
 
     #[test]
