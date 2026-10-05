@@ -167,35 +167,10 @@ fn codex_refresh_uses_age_only_without_jwt_expiry() {
 }
 
 // ─── Claude refresh body format = JSON ───────────────────────────────────
-// Claude token exchange uses a JSON body (not form-encoded).
-
-#[test]
-fn test_claude_refresh_body_should_be_json() {
-    // The Claude exchange sends JSON:
-    //   POST https://platform.claude.com/v1/oauth/token
-    //   Content-Type: application/json
-    //   {"grant_type": "authorization_code", "code": "...", ...}
-    //
-    // This is a structural test: the RefreshRequest should work with JSON.
-    let req = RefreshRequest {
-        refresh_token: "rt_xyz".to_string(),
-        client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e".to_string(),
-        client_secret: None,
-        scopes: vec!["read".to_string(), "connect".to_string()],
-    };
-    let body = serde_json::json!({
-        "grant_type": "refresh_token",
-        "refresh_token": req.refresh_token,
-        "client_id": req.client_id,
-        "scope": req.scopes.join(" "),
-    });
-    assert!(body.get("grant_type").and_then(|v| v.as_str()) == Some("refresh_token"));
-    assert!(body.get("refresh_token").and_then(|v| v.as_str()) == Some("rt_xyz"));
-    assert!(
-        body.get("client_id").and_then(|v| v.as_str())
-            == Some("9d1c250a-e61b-44d9-88ed-5944d1962f5e")
-    );
-}
+// Claude refresh wire body is pinned by the wiremock tripwire in
+// tests/oauth_claude_refresh_wire.rs (exact JSON body, no scope — RFC
+// 6749 §6 optional, live-verified). The old structural test here never
+// called production code and asserted a fictional body.
 
 // ─── GitHub Copilot token poll ───────────────────────────────────────────
 // exchange_github_copilot_token posts to github.com/copilot_internal/v1/token.
