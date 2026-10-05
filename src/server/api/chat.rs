@@ -1706,6 +1706,10 @@ async fn forward_with_provider_fallback(
                     );
                 let refreshable_auth_failure =
                     is_refreshable_auth_failure(status, upstream_body.as_deref());
+                let oauth_error_code =
+                    crate::core::translator::request::claude_format::claude_oauth_error_code(
+                        upstream_body.as_deref(),
+                    );
                 last_error = Some(ProviderAttemptError {
                     status: status.as_u16(),
                     message: message.clone(),
@@ -1768,6 +1772,41 @@ async fn forward_with_provider_fallback(
                                 Some("claude_oauth_policy_rejection".to_string());
                         })
                         .await;
+                }
+                // Structured `details.error_code` rejections (live fixture:
+                // 403 oauth_scope_insufficient) cannot be fixed by a token
+                // refresh; record them on the credential so the dashboard
+                // shows why. Routing is untouched (C14).
+                if status == StatusCode::FORBIDDEN {
+                    if let Some(code) = oauth_error_code
+                        .as_deref()
+                        .filter(|code| code.starts_with("oauth_"))
+                    {
+                        let scope_db = state.db.clone();
+                        let scope_connection_id = connection.id.clone();
+                        let scope_provider = connection.provider.clone();
+                        let scope_code = code.to_string();
+                        let now = Utc::now().to_rfc3339();
+                        let _ = scope_db
+                            .update(move |snapshot| {
+                                let Some(stored) = snapshot
+                                    .provider_connections
+                                    .iter_mut()
+                                    .find(|candidate| {
+                                        candidate.id == scope_connection_id
+                                            && candidate.provider == scope_provider
+                                    })
+                                else {
+                                    return;
+                                };
+                                stored.last_error = Some(format!(
+                                    "Claude OAuth credential was rejected upstream: {scope_code}. Re-authorize the connection with the required scopes."
+                                ));
+                                stored.last_error_at = Some(now);
+                                stored.error_code = Some(scope_code);
+                            })
+                            .await;
+                    }
                 }
 
                 // C17A: the request-scoped planner is the sole foreground
@@ -1924,6 +1963,7 @@ fn is_refreshable_auth_failure(status: StatusCode, body: Option<&[u8]>) -> bool 
         payload.pointer("/error/code"),
         payload.pointer("/error/type"),
         payload.pointer("/error/status"),
+        payload.pointer("/error/details/error_code"),
         payload.get("code"),
         payload.get("type"),
         payload.get("status"),
@@ -4569,6 +4609,11 @@ mod tests {
             StatusCode::UNAUTHORIZED,
             Some(policy.as_bytes())
         ));
+        // Structured 403 codes now include error.details.error_code; the
+        // live scope fixture must not classify as refreshable (permission,
+        // not expiry — a refresh cannot add scopes).
+        let scope = br#"{"error":{"type":"permission_error","message":"OAuth token does not meet scope requirement any_of(user:ccr_inference, user:profile)","details":{"error_code":"oauth_scope_insufficient"}}}"#;
+        assert!(!is_refreshable_auth_failure(StatusCode::FORBIDDEN, Some(scope)));
         // Plain 401 without policy text still refreshes.
         let plain = r#"{"error":{"message":"invalid token"}}"#;
         assert!(is_refreshable_auth_failure(

@@ -486,6 +486,22 @@ pub fn is_claude_oauth_policy_rejection(status: u16, body: Option<&[u8]>) -> boo
         .any(|(marker, statuses)| statuses.contains(&status) && lower.contains(marker))
 }
 
+/// Structured Claude OAuth rejection code from `error.details.error_code`.
+/// Live 2.1.289 fixture: `oauth_scope_insufficient` on a 403 permission
+/// error whose free text mentions the scope requirement. The code travels
+/// in `details`, a path the generic structured-code candidates miss.
+pub fn claude_oauth_error_code(body: Option<&[u8]>) -> Option<String> {
+    let bytes = body?;
+    let payload = serde_json::from_slice::<Value>(bytes).ok()?;
+    let code = payload.pointer("/error/details/error_code")?.as_str()?;
+    let trimmed = code.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 /// Relay `_isActualClaudeCodeRequest`: reference identity in system +
 /// `claude-cli/<version> (` UA. Pure function — same input, same verdict.
 pub fn is_real_claude_code_request(system_text: &str, client_ua: Option<&str>) -> bool {
@@ -1393,6 +1409,25 @@ mod tests {
     }
 
     // ─── is_claude_oauth_policy_rejection ────────────────────────────
+
+    #[test]
+    fn claude_oauth_error_code_reads_details_path() {
+        // Live 2.1.289 fixture (MITM E14): the structured code travels in
+        // error.details.error_code, not error.code.
+        let scope = br#"{"type":"error","error":{"type":"permission_error","message":"OAuth token does not meet scope requirement any_of(user:ccr_inference, user:profile)","details":{"required_scopes":["user:ccr_inference","user:profile"],"match":"any","error_visibility":"user_facing","error_code":"oauth_scope_insufficient"}},"request_id":"req_01"}"#;
+        assert_eq!(
+            claude_oauth_error_code(Some(scope)),
+            Some("oauth_scope_insufficient".to_string())
+        );
+        // Empty/missing/invalid shapes yield None.
+        assert_eq!(claude_oauth_error_code(Some(br#"{"error":{}}"#)), None);
+        assert_eq!(
+            claude_oauth_error_code(Some(br#"{"error":{"details":{"error_code":"  "}}}"#)),
+            None
+        );
+        assert_eq!(claude_oauth_error_code(None), None);
+        assert_eq!(claude_oauth_error_code(Some(b"not json")), None);
+    }
 
     #[test]
     fn policy_rejection_matches_known_texts_across_statuses() {
