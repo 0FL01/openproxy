@@ -1101,6 +1101,25 @@ impl DefaultExecutor {
                     );
                 }
             }
+            // Claude Code 2.1.289 hardcodes dangerouslyAllowBrowser for
+            // both its api-key and OAuth clients, so every first-party
+            // request carries the browser-access header. Default it only
+            // after the allowlist forward above (client value wins) and
+            // only under the first-party guard (third-party nodes and
+            // custom base URLs stay untouched, C46).
+            if !is_anthropic_compatible
+                && credentials
+                    .runtime_transport
+                    .as_ref()
+                    .and_then(|transport| transport.base_url.as_deref())
+                    .is_none_or(|url| url.trim().is_empty())
+                && !headers.contains_key("anthropic-dangerous-direct-browser-access")
+            {
+                headers.insert(
+                    "anthropic-dangerous-direct-browser-access",
+                    HeaderValue::from_static("true"),
+                );
+            }
             // C46: default CLI identity for subscription-OAuth traffic when
             // the client sent none. Client values above win; API-key
             // connections keep their own identity.
@@ -1922,6 +1941,48 @@ mod tests {
             .build_headers_for_request("gpt-5.6-sol", &credentials, false, &client_headers)
             .unwrap();
         assert!(!headers.contains_key("x-cmd-zdr"));
+    }
+
+    #[test]
+    fn claude_first_party_defaults_browser_access_header() {
+        // Claude Code 2.1.289 hardcodes dangerouslyAllowBrowser for both
+        // auth types; first-party claude/anthropic requests default the
+        // header to true when the client sent none, client value wins,
+        // and custom base URLs / compatible nodes stay untouched.
+        let executor = DefaultExecutor::new("claude", Arc::new(ClientPool::new()), None).unwrap();
+        let mut oauth = ProviderConnection::default();
+        oauth.auth_type = "oauth".to_string();
+        oauth.access_token = Some("sk-ant-oat-test".to_string());
+        let mut apikey = ProviderConnection::default();
+        apikey.auth_type = "apikey".to_string();
+        apikey.api_key = Some("sk-ant-test".to_string());
+        let mut third_party = oauth.clone();
+        third_party.runtime_transport = Some(crate::types::RuntimeTransport {
+            base_url: Some("https://relay.example.com".to_string()),
+        });
+
+        for credentials in [&oauth, &apikey] {
+            let headers = executor
+                .build_headers_for_request("claude-sonnet-4-5", credentials, false, &BTreeMap::new())
+                .unwrap();
+            assert_eq!(headers["anthropic-dangerous-direct-browser-access"], "true");
+        }
+
+        // Client value wins over the default.
+        let client_headers = BTreeMap::from([(
+            "anthropic-dangerous-direct-browser-access".to_string(),
+            "false".to_string(),
+        )]);
+        let headers = executor
+            .build_headers_for_request("claude-sonnet-4-5", &oauth, false, &client_headers)
+            .unwrap();
+        assert_eq!(headers["anthropic-dangerous-direct-browser-access"], "false");
+
+        // Custom base URL keeps the generic path (C46).
+        let headers = executor
+            .build_headers_for_request("claude-sonnet-4-5", &third_party, false, &BTreeMap::new())
+            .unwrap();
+        assert!(!headers.contains_key("anthropic-dangerous-direct-browser-access"));
     }
 
     #[test]
