@@ -4410,7 +4410,7 @@ mod tests {
 
     #[test]
     fn refresh_guard_skips_claude_policy_rejections() {
-        let policy = r#"{"error":{"message":"OAuth authentication is currently not supported."}}"#;
+        let policy = r#"{"error":{"message":"OAuth authentication is currently not allowed for this organization."}}"#;
         assert!(!is_refreshable_auth_failure(
             StatusCode::UNAUTHORIZED,
             Some(policy.as_bytes())

@@ -457,16 +457,19 @@ pub fn claude_harness_gated(
     claude_first_party(provider, custom_base_url, gateway_node)
 }
 
-/// Upstream policy-rejection texts: Anthropic refuses the OAuth credential
-/// for policy/transport reasons where a token refresh cannot help.
-/// Matched on 400|401|403 raw bodies (lowercase-contains); structured
-/// expiry codes stay with the refresh classifier.
-const CLAUDE_OAUTH_POLICY_REJECTION_MARKERS: [&str; 5] = [
-    "oauth authentication is currently not supported",
-    "this organization has been disabled",
-    "oauth authentication is currently not allowed for this organization",
-    "only authorized for use with claude code",
-    "cannot be used for other api requests",
+/// Upstream policy-rejection texts, verified against the Claude Code
+/// 2.1.289 binary: the CLI classifies "not allowed" only on 401/403 and
+/// "organization has been disabled" status-agnostically (observed at
+/// 400). The three January texts ("not supported", "only authorized for
+/// use with claude code", "cannot be used for other api requests") no
+/// longer exist in the client. Structured expiry codes stay with the
+/// refresh classifier; each marker carries its own status set.
+const CLAUDE_OAUTH_POLICY_REJECTION_MARKERS: &[(&str, &[u16])] = &[
+    (
+        "oauth authentication is currently not allowed for this organization",
+        &[401, 403],
+    ),
+    ("organization has been disabled", &[400, 401, 403]),
 ];
 
 /// Single predicate for (a)+(b)+(c): one match point, one test matrix.
@@ -480,7 +483,7 @@ pub fn is_claude_oauth_policy_rejection(status: u16, body: Option<&[u8]>) -> boo
     let lower = String::from_utf8_lossy(bytes).to_ascii_lowercase();
     CLAUDE_OAUTH_POLICY_REJECTION_MARKERS
         .iter()
-        .any(|marker| lower.contains(marker))
+        .any(|(marker, statuses)| statuses.contains(&status) && lower.contains(marker))
 }
 
 /// Relay `_isActualClaudeCodeRequest`: reference identity in system +
@@ -1274,22 +1277,23 @@ mod tests {
 
     #[test]
     fn policy_rejection_matches_known_texts_across_statuses() {
+        // Live binary texts only; each marker owns its status set.
         let cases = [
             (
                 401u16,
-                r#"{"type":"error","error":{"type":"authentication_error","message":"OAuth authentication is currently not supported."}}"#,
+                r#"{"type":"error","error":{"type":"authentication_error","message":"OAuth authentication is currently not allowed for this organization."}}"#,
             ),
             (
-                400u16,
-                r#"{"type":"error","error":{"type":"invalid_request_error","message":"This credential is only authorized for use with Claude Code and cannot be used for other API requests."}}"#,
-            ),
-            (
-                403u16,
+                403,
                 r#"{"type":"error","error":{"type":"forbidden","message":"OAuth authentication is currently not allowed for this organization."}}"#,
             ),
             (
-                400u16,
+                400,
                 r#"{"type":"error","error":{"type":"invalid_request_error","message":"This organization has been disabled."}}"#,
+            ),
+            (
+                401,
+                r#"{"type":"error","error":{"type":"authentication_error","message":"Your organization has been disabled."}}"#,
             ),
         ];
         for (status, body) in cases {
@@ -1301,7 +1305,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_rejection_rejects_expiry_and_other_statuses() {
+    fn policy_rejection_rejects_expiry_dead_texts_and_wrong_statuses() {
         // Structured expiry codes must NOT match: refresh still applies.
         let expiry = r#"{"type":"error","error":{"type":"authentication_error","code":"token_expired","message":"Access token expired"}}"#;
         assert!(!is_claude_oauth_policy_rejection(
@@ -1309,20 +1313,39 @@ mod tests {
             Some(expiry.as_bytes())
         ));
         assert!(!is_claude_oauth_policy_rejection(401, None));
+        // Wrong status for the marker: "not allowed" never rides a 400.
+        let not_allowed = "OAuth authentication is currently not allowed for this organization";
+        assert!(!is_claude_oauth_policy_rejection(
+            400,
+            Some(not_allowed.as_bytes())
+        ));
         // Same text on a non-auth status is not a credential verdict.
-        let body = "OAuth authentication is currently not supported";
         assert!(!is_claude_oauth_policy_rejection(
             429,
-            Some(body.as_bytes())
+            Some(not_allowed.as_bytes())
         ));
         assert!(!is_claude_oauth_policy_rejection(
             200,
-            Some(body.as_bytes())
+            Some(not_allowed.as_bytes())
         ));
-        // Case-insensitive match.
-        let shouty = "ONLY AUTHORIZED FOR USE WITH CLAUDE CODE";
+        // Dead January texts must not classify anymore.
+        for dead in [
+            "OAuth authentication is currently not supported",
+            "This credential is only authorized for use with Claude Code and cannot be used for other API requests",
+        ] {
+            assert!(!is_claude_oauth_policy_rejection(
+                400,
+                Some(dead.as_bytes())
+            ));
+            assert!(!is_claude_oauth_policy_rejection(
+                401,
+                Some(dead.as_bytes())
+            ));
+        }
+        // Case-insensitive match on live text.
+        let shouty = "OAUTH AUTHENTICATION IS CURRENTLY NOT ALLOWED FOR THIS ORGANIZATION";
         assert!(is_claude_oauth_policy_rejection(
-            400,
+            403,
             Some(shouty.as_bytes())
         ));
     }
