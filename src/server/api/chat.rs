@@ -4616,7 +4616,10 @@ mod tests {
         // live scope fixture must not classify as refreshable (permission,
         // not expiry — a refresh cannot add scopes).
         let scope = br#"{"error":{"type":"permission_error","message":"OAuth token does not meet scope requirement any_of(user:ccr_inference, user:profile)","details":{"error_code":"oauth_scope_insufficient"}}}"#;
-        assert!(!is_refreshable_auth_failure(StatusCode::FORBIDDEN, Some(scope)));
+        assert!(!is_refreshable_auth_failure(
+            StatusCode::FORBIDDEN,
+            Some(scope)
+        ));
         // Plain 401 without policy text still refreshes.
         let plain = r#"{"error":{"message":"invalid token"}}"#;
         assert!(is_refreshable_auth_failure(
