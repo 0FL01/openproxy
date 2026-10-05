@@ -32,6 +32,64 @@ async fn refresh_does_not_retry_permanent_http_error() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
+#[tokio::test]
+async fn refresh_does_not_retry_rate_limited_429() {
+    // A rate-limited token endpoint must not be re-hit inside the retry
+    // window: one burst of three calls per trigger is exactly the
+    // amplification the donor blocks per token. We stay state-free
+    // (C16-C18): the immediate error is enough, caller cadences back off.
+    let calls = Arc::new(AtomicUsize::new(0));
+    let attempt = {
+        let calls = calls.clone();
+        move || {
+            let calls = calls.clone();
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Err("Refresh request returned HTTP 429: slow_down".to_string())
+            }
+        }
+    };
+
+    let result = crate::oauth::token_refresh::refresh_with_retry(attempt).await;
+
+    assert!(result.is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "429 must not be retried");
+    assert!(
+        result.unwrap_err().contains("HTTP 429"),
+        "error carries the original 429"
+    );
+}
+
+#[tokio::test]
+async fn refresh_retries_transient_5xx_and_network_errors() {
+    // Regression: 5xx and network failures keep the bounded retry loop —
+    // only 429 joined the immediate-return set.
+    for error in ["Refresh request returned HTTP 503", "connection reset"] {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let attempt = {
+            let calls = calls.clone();
+            let error = error.to_string();
+            move || {
+                let calls = calls.clone();
+                let error = error.clone();
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Err(error.clone())
+                }
+            }
+        };
+
+        let result = crate::oauth::token_refresh::refresh_with_retry(attempt).await;
+
+        assert!(result.is_err(), "{error}: must fail");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "{error}: transient errors keep 3 attempts"
+        );
+    }
+}
+
 // ─── REFRESH_LEAD per provider ────────────────────────────────────────────
 // The lead times are defined in core::config::app_constants::refresh_lead().
 

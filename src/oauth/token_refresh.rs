@@ -45,8 +45,12 @@ const BASE_DELAY_MS: u64 = 500;
 const MAX_DELAY_MS: u64 = 5_000;
 
 /// Retry `refresh_fn` up to `MAX_RETRIES` times with jittered exponential
-/// backoff.  Only retries transient-looking errors (network / 5xx); permanent
-/// errors (4xx) are returned immediately.
+/// backoff.  Only retries transient-looking errors (network / 5xx);
+/// permanent errors (4xx, including 429) are returned immediately — a
+/// rate-limited token endpoint must not be re-hit in a burst (donor
+/// CLIProxyAPI treats refresh-429 as non-retryable for the same reason;
+/// natural caller cadences provide the backoff here, C16-C18 forbid
+/// retained deadline state).
 pub async fn refresh_with_retry<F, Fut>(refresh_fn: F) -> Result<RefreshResult, String>
 where
     F: Fn() -> Fut,
@@ -84,7 +88,10 @@ fn refresh_error_is_transient(error: &str) -> bool {
         .and_then(|value| value.parse::<u16>().ok());
 
     match status {
-        Some(429) => true,
+        // 429 is quota, not a transient server fault: retrying inside the
+        // 2-second window only amplifies load on an already-limited token
+        // endpoint (donor blocks the token; we stay state-free per C16-C18).
+        Some(429) => false,
         Some(400..=499) => false,
         Some(500..=599) => true,
         Some(_) => false,
