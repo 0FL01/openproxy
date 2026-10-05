@@ -118,8 +118,9 @@ name, canonical `source`, limits, modalities, reasoning/tool support, and
 reasoning-effort variants.
 It reuses static, models.dev and Codex metadata. Missing metadata is **not
 guessed** from model names. Input limits and some
-output limits may be unknown. The plugin warns about missing context/output
-limits; retain local overrides until the proxy has the correct values. An older
+output limits may be unknown. The plugin silently omits incomplete context/output
+limits to satisfy OpenCode's config schema; local overrides can fill the gaps.
+Discovery failures still warn and retain configured models. An older
 router still supports ID discovery and optional `context_length` /
 `max_completion_tokens`, but may not supply the richer metadata or consistently
 filter disabled custom models. Deploy the updated backend for those guarantees.

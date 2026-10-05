@@ -100,6 +100,7 @@ test("OpenCode auto-loads the plugin and refresh discovers new IDs without rewri
   assert.ok(discovered, "context-only model must remain discoverable")
   assert.equal(discovered.name, "GPT-5.5 · codex")
   assert.equal(Object.hasOwn(discovered, "limit"), false)
+  assert.ok(!resolved.stderr.includes("[openproxy-models]"), "partial limits must not emit plugin warnings")
   assert.equal(discoveries, 3)
   assert.equal(await readFile(configPath, "utf8"), config)
 })

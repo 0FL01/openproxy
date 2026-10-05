@@ -127,7 +127,7 @@ test("authoritative empty effort list disables SDK reasoning variants", async (t
   assert.equal(Object.hasOwn(config.provider.ludka2.models.unknown, "variants"), false)
 })
 
-test("GLM limits retain context usage while local output fills gaps and incomplete limits warn safely", async (t) => {
+test("GLM limits retain context usage while local output fills gaps and incomplete limits stay silent", async (t) => {
   const warnings = []
   t.mock.method(console, "warn", (message) => warnings.push(message))
   t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({
@@ -147,9 +147,7 @@ test("GLM limits retain context usage while local output fills gaps and incomple
   assert.equal(Math.round(124340 / models["glm/glm-5.3"].limit.context * 100), 25)
   assert.deepEqual(models.local.limit, { context: 204800, output: 32768 })
   assert.equal(Object.hasOwn(models["fixture-key"], "limit"), false)
-  assert.equal(warnings.length, 1)
-  assert.match(warnings[0], /1 models have incomplete context\/output limits/)
-  assert.ok(!warnings[0].includes("fixture-key"))
+  assert.deepEqual(warnings, [])
 })
 
 test("discovery has its own timeout and preserves local models on network failure", async (t) => {
