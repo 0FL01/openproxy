@@ -1122,9 +1122,13 @@ impl DefaultExecutor {
                     HeaderValue::from_static("true"),
                 );
             }
-            // C46: default CLI identity for subscription-OAuth traffic when
-            // the client sent none. Client values above win; API-key
-            // connections keep their own identity.
+            // C46: CLI identity for subscription-OAuth traffic. Client
+            // values win for API-key/third-party paths (gates below), but
+            // on the harness path a CC-shaped spoofed body must ride a CC
+            // user agent: a forwarded `opencode/…` UA next to `x-app: cli`
+            // is a self-inflicted fingerprint mismatch, so a non-CLI UA is
+            // overridden with the pinned CLI UA. Genuine `claude-cli/…`
+            // user agents pass through untouched.
             if crate::core::translator::request::claude_format::claude_harness_gated(
                 self.provider.as_str(),
                 credentials.auth_type.as_str(),
@@ -1134,7 +1138,12 @@ impl DefaultExecutor {
                     .and_then(|transport| transport.base_url.as_deref()),
                 is_anthropic_compatible,
             ) {
-                if !headers.contains_key("user-agent") {
+                let client_ua = client_headers.get("user-agent").map(String::as_str);
+                let keep_client_ua =
+                    crate::core::translator::request::claude_format::is_claude_cli_user_agent(
+                        client_ua,
+                    );
+                if !keep_client_ua {
                     if let Ok(ua) =
                         HeaderValue::from_str(&crate::oauth::providers::claude_user_agent())
                     {
@@ -1943,6 +1952,48 @@ mod tests {
             .build_headers_for_request("gpt-5.6-sol", &credentials, false, &client_headers)
             .unwrap();
         assert!(!headers.contains_key("x-cmd-zdr"));
+    }
+
+    #[test]
+    fn claude_oauth_overrides_non_cli_user_agent_on_harness_path() {
+        // Spoof invariant (MITM-audit M-A1): a CC-shaped spoofed body must
+        // ride a CC user agent. A forwarded `opencode/…` UA next to
+        // `x-app: cli` is a self-inflicted fingerprint mismatch; the
+        // harness path overrides it with the pinned CLI UA. Genuine
+        // `claude-cli/…` UAs pass through; API-key keeps the client UA.
+        let executor = DefaultExecutor::new("claude", Arc::new(ClientPool::new()), None).unwrap();
+        let mut oauth = ProviderConnection::default();
+        oauth.auth_type = "oauth".to_string();
+        oauth.access_token = Some("sk-ant-oat-test".to_string());
+        let mut apikey = ProviderConnection::default();
+        apikey.auth_type = "apikey".to_string();
+        apikey.api_key = Some("sk-ant-test".to_string());
+
+        let opencode_ua = BTreeMap::from([("user-agent".to_string(), "opencode/1.0".to_string())]);
+        let headers = executor
+            .build_headers_for_request("claude-sonnet-4-5", &oauth, false, &opencode_ua)
+            .unwrap();
+        assert_eq!(
+            headers["user-agent"],
+            crate::oauth::providers::claude_user_agent()
+        );
+        assert_eq!(headers["x-app"], "cli");
+
+        // Genuine CLI UA survives untouched.
+        let cli_ua = BTreeMap::from([(
+            "user-agent".to_string(),
+            "claude-cli/2.1.100 (external, cli)".to_string(),
+        )]);
+        let headers = executor
+            .build_headers_for_request("claude-sonnet-4-5", &oauth, false, &cli_ua)
+            .unwrap();
+        assert_eq!(headers["user-agent"], "claude-cli/2.1.100 (external, cli)");
+
+        // API-key path keeps the client UA (no harness gate).
+        let headers = executor
+            .build_headers_for_request("claude-sonnet-4-5", &apikey, false, &opencode_ua)
+            .unwrap();
+        assert_eq!(headers["user-agent"], "opencode/1.0");
     }
 
     #[test]

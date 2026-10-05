@@ -489,18 +489,26 @@ pub fn is_claude_oauth_policy_rejection(status: u16, body: Option<&[u8]>) -> boo
 /// Relay `_isActualClaudeCodeRequest`: reference identity in system +
 /// `claude-cli/<version> (` UA. Pure function — same input, same verdict.
 pub fn is_real_claude_code_request(system_text: &str, client_ua: Option<&str>) -> bool {
-    let ua_ok = client_ua.is_some_and(|ua| {
+    is_claude_cli_user_agent(client_ua)
+        && system_text
+            .to_lowercase()
+            .contains(CLAUDE_CODE_IDENTITY_MARKER)
+}
+
+/// UA half of the CLI classifier: `claude-cli/<version>` with a non-empty
+/// version and a parenthesised variant suffix, e.g.
+/// `claude-cli/2.1.289 (external, cli)`. Used by the executor to keep a
+/// genuine CLI user agent untouched while overriding non-CLI ones on the
+/// harness path (spoof invariant: CC-shaped body must ride a CC UA).
+pub fn is_claude_cli_user_agent(client_ua: Option<&str>) -> bool {
+    client_ua.is_some_and(|ua| {
         let lower = ua.to_lowercase();
         let Some(version) = lower.strip_prefix("claude-cli/") else {
             return false;
         };
         let version_len = version.chars().take_while(|c| !c.is_whitespace()).count();
         version_len > 0 && lower.contains('(')
-    });
-    ua_ok
-        && system_text
-            .to_lowercase()
-            .contains(CLAUDE_CODE_IDENTITY_MARKER)
+    })
 }
 
 fn extract_system_text(system: Option<&Value>) -> String {
