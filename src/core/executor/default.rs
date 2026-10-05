@@ -349,10 +349,12 @@ impl ProviderConfig {
 /// Anthropic beta flags, ported from `selectAnthropicBeta` in
 /// `open-sse/providers/shared.js:51-69`. Heavy-agent flags are gated to
 /// opus/sonnet — cheaper models don't need them. `token-efficient-tools`
-/// is intentionally absent: the official Claude Code 2.1.282 binary does
-/// not reference it (binary-RECON 2026-09-26), nor does it reference
+/// is intentionally absent: the official Claude Code 2.1.289 binary does
+/// not reference it (binary-RECON), nor does it reference
 /// `fine-grained-tool-streaming`, which we therefore do not add.
-const ANTHROPIC_BETA_BASE: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12";
+/// `redact-thinking-2026-02-12` is not in the shared base: MITM 2.1.289
+/// shows it only on haiku auxiliary traffic (see `select_anthropic_beta`).
+const ANTHROPIC_BETA_BASE: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,structured-outputs-2025-12-15,fast-mode-2026-02-01";
 const ANTHROPIC_BETA_HEAVY_AGENT: &str = "advanced-tool-use-2025-11-20,effort-2025-11-24";
 
 pub fn select_anthropic_beta(model: &str) -> String {
