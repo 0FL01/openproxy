@@ -710,6 +710,15 @@ pub fn prepare_claude_request(body: &mut Value, provider: &str) {
         // Pass 1.5: fix tool_use / tool_result ordering
         filtered = fix_tool_use_ordering(filtered);
 
+        // Pass 1.6: undo/edit-message reconciliation. A client harness that
+        // rewinds its history can cut between a tool_use and its tool_result;
+        // Anthropic answers such requests with a 400 the planner treats as
+        // terminal. Drop the dangling half (never synthesize a replacement —
+        // semantic repair belongs to the client harness) and any message left
+        // empty by the drop. Runs after fix_tool_use_ordering so surviving
+        // pairs are already adjacent.
+        filtered = reconcile_tool_pairs(filtered);
+
         // Re-insert messages (we need to work with them for pass 2)
         *messages = filtered;
     }
@@ -1020,6 +1029,85 @@ fn fix_tool_use_ordering(messages: Vec<Value>) -> Vec<Value> {
     }
 
     merged
+}
+
+/// Undo/edit-message reconciliation: after a client-side rewind the history
+/// can contain a `tool_use` whose `tool_result` was cut off (or vice versa).
+/// Anthropic requires every `tool_use` to be answered by a `tool_result` in
+/// the immediately following message and answers orphans with a 400 our
+/// planner treats as terminal. This pass drops the dangling half of each
+/// broken pair and any message left empty; it never synthesizes content
+/// (semantic repair belongs to the client harness per the lean-proxy
+/// contract). Matching is by block type + id across the whole message list:
+/// a `tool_result` pairs with a `tool_use` of the same id anywhere in the
+/// history (multi-turn tool loops fold into one message after
+/// `fix_tool_use_ordering`, so adjacency cannot be assumed).
+fn reconcile_tool_pairs(messages: Vec<Value>) -> Vec<Value> {
+    let has_tool_result: std::collections::HashSet<String> = messages
+        .iter()
+        .filter_map(|m| m.get("content").and_then(Value::as_array))
+        .flatten()
+        .filter(|b| {
+            matches!(
+                b.get("type").and_then(Value::as_str),
+                Some("tool_result") | Some("web_search_tool_result")
+            )
+        })
+        .filter_map(|b| b.get("tool_use_id").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect();
+    let has_tool_use: std::collections::HashSet<String> = messages
+        .iter()
+        .filter(|m| m.get("role").and_then(Value::as_str) == Some("assistant"))
+        .filter_map(|m| m.get("content").and_then(Value::as_array))
+        .flatten()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
+        .filter_map(|b| b.get("id").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect();
+    if has_tool_use.is_empty() && has_tool_result.is_empty() {
+        return messages;
+    }
+
+    let mut reconciled: Vec<Value> = Vec::with_capacity(messages.len());
+    for mut msg in messages {
+        let mut dropped_blocks = false;
+        if let Some(content) = msg.get_mut("content").and_then(Value::as_array_mut) {
+            let before = content.len();
+            content.retain(|block| {
+                let block_type = block.get("type").and_then(Value::as_str).unwrap_or("");
+                match block_type {
+                    // Assistant tool_use whose tool_result was cut off.
+                    "tool_use" => block
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(|id| has_tool_result.contains(id))
+                        .unwrap_or(true),
+                    // Result whose tool_use is gone (rewind mirror case,
+                    // incl. foreign server-tool results).
+                    "tool_result" | "web_search_tool_result" => block
+                        .get("tool_use_id")
+                        .and_then(Value::as_str)
+                        .map(|id| has_tool_use.contains(id))
+                        .unwrap_or(true),
+                    _ => true,
+                }
+            });
+            dropped_blocks = content.len() != before;
+        }
+        // Drop only messages emptied BY this pass: messages that arrived
+        // empty keep their Pass-1 verdict (final-assistant prefill rule).
+        let emptied_by_reconcile = dropped_blocks
+            && msg
+                .get("content")
+                .and_then(Value::as_array)
+                .is_none_or(|c| c.is_empty());
+        if emptied_by_reconcile {
+            continue;
+        }
+        reconciled.push(msg);
+    }
+    reconciled
 }
 
 #[cfg(test)]
@@ -1472,6 +1560,146 @@ mod tests {
         assert!(body["messages"][0]["content"][0]
             .get("cache_control")
             .is_none());
+    }
+
+    // ─── undo/edit-message reconciliation ──────────────────────────
+
+    #[test]
+    fn prepare_reconciles_undo_truncated_tool_pair() {
+        // Client rewinds between the assistant tool_use and its tool_result
+        // (undo/edit-message): the dangling tool_use must be dropped so the
+        // request stays valid; the assistant keeps its text as a prefill.
+        let mut body = json!({
+            "messages": [
+                {"role": "user", "content": "сделай запись в файл"},
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": "записываю"},
+                    {"type": "tool_use", "id": "toolu_a", "name": "Write", "input": {}}
+                ]}
+            ]
+        });
+        prepare_claude_request(&mut body, "claude");
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[1]["role"], "assistant");
+        let content = msgs[1]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "записываю");
+    }
+
+    #[test]
+    fn prepare_reconciles_orphan_tool_result() {
+        // Mirror case: history starts with a tool_result whose tool_use was
+        // rewound away.
+        let mut body = json!({
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_gone", "content": "ok"}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "что дальше?"}
+                ]}
+            ]
+        });
+        prepare_claude_request(&mut body, "claude");
+        let msgs = body["messages"].as_array().unwrap();
+        // fix_tool_use_ordering merges the two user messages; the orphan
+        // result must be gone and the real text kept.
+        assert_eq!(msgs.len(), 1);
+        let content = msgs[0]["content"].as_array().unwrap();
+        assert!(content
+            .iter()
+            .all(|b| b.get("type").and_then(Value::as_str) != Some("tool_result")));
+        assert!(content
+            .iter()
+            .any(|b| b.get("text").and_then(Value::as_str) == Some("что дальше?")));
+    }
+
+    #[test]
+    fn prepare_reconcile_drops_assistant_emptied_by_repair() {
+        // Assistant carried only a tool_use; after the dangling block is
+        // dropped the message is empty and must not survive as a bare turn.
+        let mut body = json!({
+            "messages": [
+                {"role": "user", "content": "запусти тул"},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "toolu_b", "name": "Bash", "input": {}}
+                ]},
+                {"role": "user", "content": "стоп"}
+            ]
+        });
+        prepare_claude_request(&mut body, "claude");
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0]["role"], "user");
+        assert_eq!(msgs[1]["role"], "user");
+    }
+
+    #[test]
+    fn prepare_keeps_intact_tool_pairs() {
+        // Regression: a complete pair survives reconciliation untouched.
+        let mut body = json!({
+            "messages": [
+                {"role": "user", "content": "сделай запись в файл"},
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": "записываю"},
+                    {"type": "tool_use", "id": "toolu_ok", "name": "Write", "input": {"path": "a"}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_ok", "content": "done"}
+                ]},
+                {"role": "user", "content": "теперь ещё одно"}
+            ]
+        });
+        prepare_claude_request(&mut body, "claude");
+        let msgs = body["messages"].as_array().unwrap();
+        let tool_use_present = msgs
+            .iter()
+            .filter(|m| m.get("role").and_then(Value::as_str) == Some("assistant"))
+            .filter_map(|m| m.get("content").and_then(Value::as_array))
+            .flatten()
+            .any(|b| b.get("id").and_then(Value::as_str) == Some("toolu_ok"));
+        let tool_result_present = msgs
+            .iter()
+            .filter_map(|m| m.get("content").and_then(Value::as_array))
+            .flatten()
+            .any(|b| b.get("tool_use_id").and_then(Value::as_str) == Some("toolu_ok"));
+        assert!(tool_use_present, "tool_use of an intact pair must survive");
+        assert!(
+            tool_result_present,
+            "tool_result of an intact pair must survive"
+        );
+    }
+
+    #[test]
+    fn prepare_reconcile_keeps_arrived_empty_final_assistant() {
+        // Pass-1 rule: a final assistant that arrived empty stays a prefill;
+        // reconciliation must not drop messages it did not empty itself.
+        let mut body = json!({
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_pair", "content": "ok"},
+                    {"type": "text", "text": "продолжи"}
+                ]},
+                {"role": "assistant", "content": []}
+            ]
+        });
+        // The tool_result above has no tool_use (rewound): the block is
+        // dropped, the text keeps the user message non-empty, and the
+        // arrived-empty final assistant survives.
+        prepare_claude_request(&mut body, "claude");
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs.last().unwrap()["role"], "assistant");
+        assert!(msgs.last().unwrap()["content"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(msgs[0]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|b| b.get("type").and_then(Value::as_str) != Some("tool_result")));
     }
 
     #[test]
