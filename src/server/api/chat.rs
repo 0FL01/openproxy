@@ -3800,10 +3800,17 @@ fn extract_token_usage_from_value(value: &Value) -> Option<TokenUsage> {
             .or_else(|| usage.get("input_tokens_details"))
             .and_then(|details| details.get("cached_tokens"))
             .and_then(Value::as_u64);
+        // Anthropic names the field `thinking_tokens` inside
+        // `output_tokens_details`; OpenAI-compatible upstreams use
+        // `reasoning_tokens` inside `completion_tokens_details`.
         let nested_reasoning_tokens = usage
             .get("completion_tokens_details")
             .or_else(|| usage.get("output_tokens_details"))
-            .and_then(|details| details.get("reasoning_tokens"))
+            .and_then(|details| {
+                details
+                    .get("reasoning_tokens")
+                    .or_else(|| details.get("thinking_tokens"))
+            })
             .and_then(Value::as_u64);
         return Some(TokenUsage {
             prompt_tokens: extract_u64(usage, "prompt_tokens"),
@@ -4237,9 +4244,10 @@ mod tests {
 
     use super::{
         apply_harness_session_header, attempt_error_response, build_dashboard_sse_response,
-        build_proxied_response, has_native_codex_web_search, is_refreshable_auth_failure,
-        select_connection, select_connection_with_supporters, should_prefetch_message_images,
-        tool_image_support, unified_reset_retry_after, StreamDispatch,
+        build_proxied_response, extract_token_usage_from_value, has_native_codex_web_search,
+        is_refreshable_auth_failure, select_connection, select_connection_with_supporters,
+        should_prefetch_message_images, tool_image_support, unified_reset_retry_after,
+        StreamDispatch,
     };
     use crate::core::account_fallback::ProviderAttemptError;
     use crate::core::chat::RequestPlan;
@@ -4525,6 +4533,33 @@ mod tests {
         let mut headers = BTreeMap::new();
         apply_harness_session_header(&mut headers, false, "sess-3");
         assert!(!headers.contains_key("x-claude-code-session-id"));
+    }
+
+    #[test]
+    fn usage_extraction_reads_anthropic_thinking_tokens() {
+        // Live 2.1.289 usage carries the thinking breakdown as
+        // output_tokens_details.thinking_tokens (MITM E16); the extractor
+        // must surface it as reasoning_tokens alongside the OpenAI shape.
+        let anthropic = json!({
+            "usage": {
+                "input_tokens": 2,
+                "output_tokens": 126,
+                "cache_read_input_tokens": 27149,
+                "output_tokens_details": { "thinking_tokens": 28 }
+            }
+        });
+        let parsed = extract_token_usage_from_value(&anthropic).expect("usage");
+        assert_eq!(parsed.reasoning_tokens, Some(28));
+
+        let openai = json!({
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 20,
+                "completion_tokens_details": { "reasoning_tokens": 5 }
+            }
+        });
+        let parsed = extract_token_usage_from_value(&openai).expect("usage");
+        assert_eq!(parsed.reasoning_tokens, Some(5));
     }
 
     #[test]

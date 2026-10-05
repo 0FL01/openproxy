@@ -264,6 +264,12 @@ pub fn claude_to_openai_response(chunk: &Value, state: &mut Map<String, Value>) 
                 if cache_creation > 0 {
                     tracked["cache_creation_input_tokens"] = Value::from(cache_creation);
                 }
+                // Preserve the thinking breakdown
+                // (output_tokens_details.thinking_tokens) for the final
+                // chunk's completion_tokens_details mapping.
+                if let Some(details) = usage.get("output_tokens_details") {
+                    tracked["output_tokens_details"] = details.clone();
+                }
                 state.insert("usage".into(), tracked);
             }
 
@@ -300,6 +306,18 @@ pub fn claude_to_openai_response(chunk: &Value, state: &mut Map<String, Value>) 
                             );
                         }
                         openai_usage["prompt_tokens_details"] = Value::Object(details);
+                    }
+                    // Surface Anthropic's thinking breakdown under the
+                    // OpenAI slot (`output_tokens_details.thinking_tokens`
+                    // → `completion_tokens_details.reasoning_tokens`).
+                    if let Some(thinking) = usage
+                        .get("output_tokens_details")
+                        .and_then(|details| details.get("thinking_tokens"))
+                        .and_then(Value::as_u64)
+                        .filter(|tokens| *tokens > 0)
+                    {
+                        openai_usage["completion_tokens_details"] =
+                            json!({ "reasoning_tokens": thinking });
                     }
                     if let Some(obj) = final_chunk.as_object_mut() {
                         obj.insert("usage".into(), openai_usage);
@@ -530,6 +548,42 @@ mod tests {
         assert_eq!(out[0]["choices"][0]["delta"]["role"], "assistant");
         assert_eq!(out[0]["id"], "chatcmpl-msg_abc12345");
         assert_eq!(out[0]["model"], "claude-sonnet-4.5");
+    }
+
+    #[test]
+    fn final_chunk_surfaces_thinking_tokens_as_reasoning() {
+        // Live 2.1.289 message_delta usage carries the thinking breakdown
+        // as output_tokens_details.thinking_tokens; the translated final
+        // chunk must expose it as completion_tokens_details.reasoning_tokens.
+        let events = [
+            json!({"type": "message_start", "message": {"id": "m", "model": "claude"}}),
+            json!({
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {
+                    "input_tokens": 2,
+                    "output_tokens": 126,
+                    "cache_read_input_tokens": 27149,
+                    "cache_creation_input_tokens": 2861,
+                    "output_tokens_details": {"thinking_tokens": 28}
+                }
+            }),
+            json!({"type": "message_stop"}),
+        ];
+        let out = run(&events);
+        let final_chunk = out
+            .iter()
+            .rev()
+            .find(|c| c.get("usage").is_some())
+            .expect("final chunk with usage");
+        assert_eq!(
+            final_chunk["usage"]["completion_tokens_details"]["reasoning_tokens"],
+            28
+        );
+        assert_eq!(
+            final_chunk["usage"]["prompt_tokens_details"]["cached_tokens"],
+            27149
+        );
     }
 
     #[test]
