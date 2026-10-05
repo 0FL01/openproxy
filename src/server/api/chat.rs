@@ -1677,7 +1677,22 @@ async fn forward_with_provider_fallback(
                 // 9router parity: retryAfter may come from the Retry-After header
                 // OR the error JSON body (errorBody.retryAfter). Header wins; the
                 // body is the fallback when a provider returns it only in JSON.
-                let header_retry_after = retry_after_from_headers(result.response.headers());
+                // Anthropic unified rate-limit windows (Claude OAuth traffic): the
+                // reset instant rides `anthropic-ratelimit-unified-*-reset` headers
+                // that exist on every /v1/messages response, but a reset only means
+                // "the client must wait" when the corresponding window is actually
+                // rejected — allowed/overage windows on 200s must not synthesize a
+                // Retry-After. Mirrors the donor's ParseClaudeRateLimitReset gate,
+                // reduced to the decision we actually make (advisory client header
+                // only; the planner never sleeps — C13).
+                let header_retry_after = retry_after_from_headers(result.response.headers())
+                    .or_else(|| {
+                        if status.as_u16() == 429 {
+                            unified_reset_retry_after(result.response.headers())
+                        } else {
+                            None
+                        }
+                    });
                 let (message, upstream_body) =
                     extract_upstream_error_with_body(result.response).await;
                 let body_retry_after = upstream_body
@@ -4028,6 +4043,63 @@ fn retry_after_from_headers(headers: &HeaderMap) -> Option<DateTime<Utc>> {
     None
 }
 
+/// Anthropic unified rate-limit reset: derive the advisory retry-after
+/// instant from `anthropic-ratelimit-unified-*` headers, but only for a
+/// window that is actually rejected. Candidates (latest wins):
+/// - `5h-Status: rejected` → `5h-Reset`
+/// - `7d-Status: rejected` → `7d-Reset`
+/// - `Unified-Status: rejected` and (5h or 7d rejected) → `Unified-Reset`
+///
+/// Reset values parse as a unix epoch (float tolerated) or RFC 3339;
+/// past instants are ignored. Callers gate this on HTTP 429 — window
+/// headers are present on successful responses too, where they describe
+/// utilization, not a wait requirement.
+fn unified_reset_retry_after(headers: &HeaderMap) -> Option<DateTime<Utc>> {
+    let status_is_rejected = |suffix: &str| -> bool {
+        headers
+            .get(format!("anthropic-ratelimit-unified-{suffix}-status"))
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.trim().eq_ignore_ascii_case("rejected"))
+            .unwrap_or(false)
+    };
+    let rejected_5h = status_is_rejected("5h");
+    let rejected_7d = status_is_rejected("7d");
+    if !rejected_5h && !rejected_7d {
+        return None;
+    }
+
+    let parse_reset = |name: &str| -> Option<DateTime<Utc>> {
+        let raw = headers
+            .get(format!("anthropic-ratelimit-unified-{name}"))
+            .and_then(|value| value.to_str().ok())?
+            .trim()
+            .to_string();
+        let parsed = raw
+            .parse::<f64>()
+            .ok()
+            .and_then(|epoch| DateTime::<Utc>::from_timestamp(epoch as i64, 0))
+            .or_else(|| {
+                DateTime::parse_from_rfc3339(&raw)
+                    .ok()
+                    .map(|t| t.with_timezone(&Utc))
+            })?;
+        let now = Utc::now();
+        (parsed > now).then_some(parsed)
+    };
+
+    let mut candidates = Vec::with_capacity(3);
+    if rejected_5h {
+        candidates.extend(parse_reset("5h-reset"));
+    }
+    if rejected_7d {
+        candidates.extend(parse_reset("7d-reset"));
+    }
+    if status_is_rejected("unified") {
+        candidates.extend(parse_reset("unified-reset"));
+    }
+    candidates.into_iter().max()
+}
+
 fn is_hop_by_hop_header(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
@@ -4167,7 +4239,7 @@ mod tests {
         apply_harness_session_header, attempt_error_response, build_dashboard_sse_response,
         build_proxied_response, has_native_codex_web_search, is_refreshable_auth_failure,
         select_connection, select_connection_with_supporters, should_prefetch_message_images,
-        tool_image_support, StreamDispatch,
+        tool_image_support, unified_reset_retry_after, StreamDispatch,
     };
     use crate::core::account_fallback::ProviderAttemptError;
     use crate::core::chat::RequestPlan;
@@ -4468,6 +4540,67 @@ mod tests {
             StatusCode::UNAUTHORIZED,
             Some(plain.as_bytes())
         ));
+    }
+
+    #[test]
+    fn unified_reset_headers_yield_retry_after_only_when_rejected() {
+        // 5h window rejected with a future epoch → advisory reset instant.
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "anthropic-ratelimit-unified-5h-status",
+            reqwest::header::HeaderValue::from_static("rejected"),
+        );
+        headers.insert(
+            "anthropic-ratelimit-unified-5h-reset",
+            reqwest::header::HeaderValue::from_str(
+                &(Utc::now() + ChronoDuration::seconds(1800))
+                    .timestamp()
+                    .to_string(),
+            )
+            .unwrap(),
+        );
+        let reset = unified_reset_retry_after(&headers).expect("rejected 5h yields a reset");
+        assert!(reset > Utc::now());
+
+        // 7d window rejected → also yields, RFC 3339 form tolerated.
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "anthropic-ratelimit-unified-7d-status",
+            reqwest::header::HeaderValue::from_static("Rejected"),
+        );
+        headers.insert(
+            "anthropic-ratelimit-unified-7d-reset",
+            reqwest::header::HeaderValue::from_str(
+                &(Utc::now() + ChronoDuration::seconds(3600))
+                    .to_rfc3339()
+                    .to_string(),
+            )
+            .unwrap(),
+        );
+        assert!(unified_reset_retry_after(&headers).is_some());
+
+        // Allowed / absent-status / past-reset headers never synthesize.
+        let allowed = reqwest::header::HeaderMap::from_iter([(
+            reqwest::header::HeaderName::from_static("anthropic-ratelimit-unified-5h-status"),
+            reqwest::header::HeaderValue::from_static("allowed"),
+        )]);
+        assert!(unified_reset_retry_after(&allowed).is_none());
+
+        let mut past = reqwest::header::HeaderMap::new();
+        past.insert(
+            "anthropic-ratelimit-unified-5h-status",
+            reqwest::header::HeaderValue::from_static("rejected"),
+        );
+        past.insert(
+            "anthropic-ratelimit-unified-5h-reset",
+            reqwest::header::HeaderValue::from_str(
+                &(Utc::now() - ChronoDuration::seconds(60))
+                    .timestamp()
+                    .to_string(),
+            )
+            .unwrap(),
+        );
+        assert!(unified_reset_retry_after(&past).is_none());
     }
 
     #[test]

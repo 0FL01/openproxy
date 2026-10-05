@@ -10,7 +10,7 @@
 
 #![allow(clippy::await_holding_lock)]
 use openproxy::core::tls::ensure_rustls_provider;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use once_cell::sync::Lazy;
 use serde_json::json;
