@@ -132,6 +132,17 @@ pub const CLAUDE_STAINLESS_PACKAGE_VERSION: &str = "0.128.0";
 /// Node runtime version the pinned CLI reports (`x-stainless-runtime-version`;
 /// census 628/628). Bump when re-mining the CLI pin from a live capture.
 pub const CLAUDE_STAINLESS_RUNTIME_VERSION: &str = "v26.3.0";
+/// User-Agent the CLI's OAuth stack sends to `platform.claude.com` during
+/// code/token exchange and refresh (live MITM 2026-10-06: `axios/1.15.2`).
+/// Bump together with the CLI pin.
+pub const CLAUDE_OAUTH_EXCHANGE_UA: &str = "axios/1.15.2";
+/// User-Agent the CLI sends when validating a fresh token against the
+/// profile endpoint (live MITM: `claude-code/<version>`).
+pub fn claude_profile_user_agent() -> String {
+    format!("claude-code/{CLAUDE_CLI_VERSION}")
+}
+/// Accept header the CLI's OAuth requests carry (axios default form).
+pub const CLAUDE_OAUTH_ACCEPT: &str = "application/json, text/plain, */*";
 
 /// Canonical Claude Code CLI User-Agent: `claude-cli/<VERSION> (external, cli)`.
 pub fn claude_user_agent() -> String {
@@ -528,5 +539,21 @@ mod tests {
         assert_eq!(cfg.get_param("rsaKeyExchange"), Some("true"));
         // Dispatcher resolves it.
         assert!(get_config("zed").is_some());
+    }
+
+    #[test]
+    fn claude_oauth_identity_pins_match_live_cli() {
+        // Live MITM 2026-10-06 (`claude setup-token` flow, CC 2.1.289):
+        // platform.claude.com exchange/refresh rides axios/1.15.2 with the
+        // axios accept form; the fresh-token profile validation runs as
+        // claude-code/<CLI version>. These pins are consumed by
+        // exchange_claude_compat, refresh_claude_oauth_token,
+        // fetch_claude_profile, and the dashboard-test refresh copy.
+        assert_eq!(CLAUDE_OAUTH_EXCHANGE_UA, "axios/1.15.2");
+        assert_eq!(CLAUDE_OAUTH_ACCEPT, "application/json, text/plain, */*");
+        assert_eq!(
+            claude_profile_user_agent(),
+            format!("claude-code/{CLAUDE_CLI_VERSION}")
+        );
     }
 }

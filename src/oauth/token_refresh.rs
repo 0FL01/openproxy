@@ -33,7 +33,9 @@ use crate::types::ProviderConnection;
 
 use super::TOKEN_EXPIRY_BUFFER_MS;
 // Claude OAuth identity: super::providers (C46 single source).
-use super::providers::{claude_token_url, CLAUDE_CLIENT_ID};
+use super::providers::{
+    claude_token_url, CLAUDE_CLIENT_ID, CLAUDE_OAUTH_ACCEPT, CLAUDE_OAUTH_EXCHANGE_UA,
+};
 
 // ---------------------------------------------------------------------------
 // Retry with jittered backoff
@@ -752,7 +754,10 @@ pub async fn refresh_claude_oauth_token(refresh_token: &str) -> Result<RefreshRe
     let resp = client
         .post(claude_token_url())
         .header(CONTENT_TYPE, "application/json")
-        .header(ACCEPT, "application/json")
+        // Live CLI OAuth stack (MITM 2026-10-06): axios UA + axios accept
+        // on platform.claude.com refreshes.
+        .header("User-Agent", CLAUDE_OAUTH_EXCHANGE_UA)
+        .header(ACCEPT, CLAUDE_OAUTH_ACCEPT)
         .json(&body)
         .send()
         .await

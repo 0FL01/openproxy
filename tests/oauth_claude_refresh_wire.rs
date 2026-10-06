@@ -56,11 +56,20 @@ async fn claude_refresh_posts_exact_wire_body_without_scope() {
 
     // Exact parsed-body equality: the absence of `scope` (and of any other
     // field) is part of the pin. Key order is not asserted (not meaningful).
+    // The live CLI OAuth stack rides axios on platform.claude.com
+    // (MITM 2026-10-06): UA + accept are pinned on the wire too.
     Mock::given(method("POST"))
         .and(path("/v1/oauth/token"))
         .and(wiremock::matchers::header(
             "content-type",
             "application/json",
+        ))
+        .and(wiremock::matchers::header("user-agent", "axios/1.15.2"))
+        // wiremock splits header values on commas before comparing, so the
+        // axios accept form is pinned as its comma-separated segments.
+        .and(wiremock::matchers::headers(
+            "accept",
+            vec!["application/json", "text/plain", "*/*"],
         ))
         .and(wiremock::matchers::body_json(json!({
             "grant_type": "refresh_token",

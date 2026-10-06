@@ -1760,7 +1760,10 @@ async fn exchange_claude_compat(
     let response = reqwest::Client::new()
         .post(providers::claude_token_url())
         .header("Content-Type", "application/json")
-        .header("Accept", "application/json")
+        // Live CLI OAuth stack (MITM 2026-10-06): axios UA + axios accept
+        // on platform.claude.com; reqwest's default identity would stand out.
+        .header("User-Agent", providers::CLAUDE_OAUTH_EXCHANGE_UA)
+        .header("Accept", providers::CLAUDE_OAUTH_ACCEPT)
         .json(&json!({
             "code": auth_code,
             "state": if code_state.is_empty() { state.unwrap_or_default() } else { code_state },
@@ -1815,7 +1818,10 @@ async fn fetch_claude_profile(access_token: &str) -> Result<(Option<String>, Opt
     let response = reqwest::Client::new()
         .get(providers::claude_profile_url())
         .timeout(std::time::Duration::from_secs(10))
-        .header("Accept", "application/json")
+        // Live CLI (MITM 2026-10-06): the fresh-token validation call runs
+        // as `claude-code/<version>` with the axios accept form.
+        .header("User-Agent", providers::claude_profile_user_agent())
+        .header("Accept", providers::CLAUDE_OAUTH_ACCEPT)
         .header("anthropic-version", "2023-06-01")
         .header("anthropic-beta", "oauth-2025-04-20")
         .header("authorization", format!("Bearer {access_token}"))

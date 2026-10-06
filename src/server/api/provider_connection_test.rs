@@ -1157,6 +1157,7 @@ async fn refresh_oauth_token(
                     "refresh_token": refresh_token,
                 }),
                 effective_proxy,
+                None,
             )
             .await
         }
@@ -1169,6 +1170,10 @@ async fn refresh_oauth_token(
                     "client_id": CLAUDE_CLIENT_ID,
                 }),
                 effective_proxy,
+                Some((
+                    crate::oauth::providers::CLAUDE_OAUTH_EXCHANGE_UA,
+                    crate::oauth::providers::CLAUDE_OAUTH_ACCEPT,
+                )),
             )
             .await
         }
@@ -1270,14 +1275,23 @@ async fn refresh_json_token(
     url: &str,
     body: Value,
     effective_proxy: &EffectiveProxy,
+    claude_identity: Option<(&'static str, &'static str)>,
 ) -> Result<RefreshResult, String> {
+    // The claude branch pins the live CLI OAuth identity (axios UA +
+    // axios accept, MITM 2026-10-06); other providers keep the plain JSON
+    // headers.
+    let mut headers = vec![
+        ("Content-Type".to_string(), "application/json".to_string()),
+        ("Accept".to_string(), "application/json".to_string()),
+    ];
+    if let Some((user_agent, accept)) = claude_identity {
+        headers.push(("User-Agent".to_string(), user_agent.to_string()));
+        headers.push(("Accept".to_string(), accept.to_string()));
+    }
     let request = PreparedRequest {
         method: Method::POST,
         url: url.to_string(),
-        headers: vec![
-            ("Content-Type".to_string(), "application/json".to_string()),
-            ("Accept".to_string(), "application/json".to_string()),
-        ],
+        headers,
         body: Some(PreparedBody::Json(body)),
     };
     decode_refresh_response(execute_simple_request(effective_proxy, request).await?).await
