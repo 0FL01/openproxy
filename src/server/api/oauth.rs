@@ -1085,6 +1085,12 @@ fn internal_error_response(message: String) -> Response {
         .into_response()
 }
 
+/// 400 for caller-side problems (malformed body, bad params): the client
+/// can fix these, so they must not surface as 5xx.
+fn bad_request_response(message: String) -> Response {
+    (StatusCode::BAD_REQUEST, Json(json!({ "error": message }))).into_response()
+}
+
 fn next_provider_priority(connections: &[ProviderConnection], provider: &str) -> u32 {
     connections
         .iter()
@@ -1810,30 +1816,77 @@ async fn exchange_claude_compat(
     })
 }
 
-/// Best-effort Claude account enrichment after a code exchange.
+/// Profile lookup outcome for import validation.
 ///
-/// Unknown endpoint shape, non-success status, or any transport failure
-/// resolves to `Err(())`; the caller treats that as "no enrichment".
-async fn fetch_claude_profile(access_token: &str) -> Result<(Option<String>, Option<String>), ()> {
-    let response = reqwest::Client::new()
+/// * `Ok(profile)` — the endpoint accepted the token; profile fields may
+///   still be absent if the payload did not carry them.
+/// * `ScopeLimited` — the token is real but its grant lacks the profile
+///   scopes (live `claude setup-token` flow: every setup token returns
+///   403 `oauth_scope_insufficient`; the CLI tolerates this and logs in).
+///   No email/display_name is obtainable with this token.
+/// * `Rejected` — the endpoint refused the token itself (401 invalid,
+///   404, non-scope 403, …): treat the token as dead.
+/// * `Unreachable` — transport failure: we could not reach Anthropic to
+///   tell valid from invalid.
+enum ClaudeProfileStatus {
+    Ok((Option<String>, Option<String>)),
+    ScopeLimited,
+    Rejected,
+    Unreachable,
+}
+
+/// Fetch the OAuth account profile for `access_token`.
+///
+/// Wire shape mirrors the live CLI validation call (MITM 2026-10-06,
+/// capture c3e429f1): `claude-code/<version>` UA, axios accept form,
+/// `Content-Type: application/json` + `Cache-Control: no-cache`, and no
+/// anthropic-version/anthropic-beta headers.
+async fn fetch_claude_profile_detailed(access_token: &str) -> ClaudeProfileStatus {
+    let response = match reqwest::Client::new()
         .get(providers::claude_profile_url())
         .timeout(std::time::Duration::from_secs(10))
         // Live CLI (MITM 2026-10-06): the fresh-token validation call runs
         // as `claude-code/<version>` with the axios accept form.
         .header("User-Agent", providers::claude_profile_user_agent())
         .header("Accept", providers::CLAUDE_OAUTH_ACCEPT)
-        .header("anthropic-version", "2023-06-01")
-        .header("anthropic-beta", "oauth-2025-04-20")
+        .header("Content-Type", "application/json")
+        .header("Cache-Control", "no-cache")
         .header("authorization", format!("Bearer {access_token}"))
         .send()
         .await
-        .map_err(|_| ())?;
+    {
+        Ok(response) => response,
+        Err(_) => return ClaudeProfileStatus::Unreachable,
+    };
 
+    if response.status() == reqwest::StatusCode::FORBIDDEN {
+        // A 403 with `oauth_scope_insufficient` means the token itself
+        // authenticated fine but its grant cannot read the profile —
+        // exactly what every scope-limited setup token does live. Any
+        // other 403 body is a policy refusal we cannot distinguish
+        // cheaply; treat 403 without a parseable body as rejected only
+        // when it is not the scope error.
+        let body_text = response.text().await.unwrap_or_default();
+        if let Ok(body) = serde_json::from_str::<Value>(&body_text) {
+            let error_code = body
+                .get("error")
+                .and_then(|error| error.get("details"))
+                .and_then(|details| details.get("error_code"))
+                .and_then(Value::as_str);
+            if error_code == Some("oauth_scope_insufficient") {
+                return ClaudeProfileStatus::ScopeLimited;
+            }
+        }
+        return ClaudeProfileStatus::Rejected;
+    }
     if !response.status().is_success() {
-        return Err(());
+        return ClaudeProfileStatus::Rejected;
     }
 
-    let body: Value = response.json().await.map_err(|_| ())?;
+    let body: Value = match response.json().await {
+        Ok(value) => value,
+        Err(_) => return ClaudeProfileStatus::Rejected,
+    };
     let non_empty = |value: Option<&str>| {
         value
             .filter(|text| !text.trim().is_empty())
@@ -1851,9 +1904,28 @@ async fn fetch_claude_profile(access_token: &str) -> Result<(Option<String>, Opt
             .and_then(|user| user.get("name"))
             .or_else(|| body.get("name"))
             .or_else(|| body.get("display_name"))
+            .or_else(|| {
+                body.get("account")
+                    .and_then(|account| account.get("display_name"))
+            })
+            .or_else(|| {
+                body.get("account")
+                    .and_then(|account| account.get("full_name"))
+            })
             .and_then(Value::as_str),
     );
-    Ok((email, display_name))
+    ClaudeProfileStatus::Ok((email, display_name))
+}
+
+/// Best-effort Claude account enrichment after a code exchange.
+///
+/// Unknown endpoint shape, non-success status, or any transport failure
+/// resolves to `Err(())`; the caller treats that as "no enrichment".
+async fn fetch_claude_profile(access_token: &str) -> Result<(Option<String>, Option<String>), ()> {
+    match fetch_claude_profile_detailed(access_token).await {
+        ClaudeProfileStatus::Ok(profile) => Ok(profile),
+        _ => Err(()),
+    }
 }
 
 fn extract_codex_account_info(
@@ -3729,12 +3801,20 @@ fn build_imported_claude_connection(
 /// Import a long-lived (1-year) Claude OAuth token created by
 /// `claude setup-token` as a provider connection.
 ///
-/// The token is strictly validated against the OAuth profile endpoint
-/// before anything is stored: a typo must fail loudly, not silently
-/// create a dead connection. Valid tokens are upserted by account email
-/// via the shared imported-connection path; no refresh token exists, so
-/// the refresh gates (background skip + reactive `is_some()`) keep this
-/// connection on the access token alone until it expires or is revoked.
+/// The token is validated against the OAuth profile endpoint before
+/// anything is stored: a typo must fail loudly, not silently create a
+/// dead connection. Validation mirrors the live CLI flow (MITM
+/// 2026-10-06): a 2xx profile response validates and enriches; a 403
+/// `oauth_scope_insufficient` validates WITHOUT enrichment — every
+/// genuine `claude setup-token` token is scope-limited to inference and
+/// gets exactly this 403, and the CLI logs in anyway; a 401/other
+/// refusal rejects the import; a transport failure is a 502 so the
+/// caller can retry rather than re-paste the token. Valid tokens are
+/// upserted by account email via the shared imported-connection path
+/// (scope-limited imports carry no email and create a fresh connection);
+/// no refresh token exists, so the refresh gates (background skip +
+/// reactive `is_some()`) keep this connection on the access token alone
+/// until it expires or is revoked.
 ///
 /// Body: { accessToken: string, name?: string }
 async fn claude_import_token(
@@ -3743,11 +3823,11 @@ async fn claude_import_token(
 ) -> Response {
     let body = match axum::body::to_bytes(request.into_body(), 64 * 1024).await {
         Ok(bytes) => bytes,
-        Err(error) => return internal_error_response(error.to_string()),
+        Err(error) => return bad_request_response(error.to_string()),
     };
     let body: Value = match serde_json::from_slice(&body) {
         Ok(value) => value,
-        Err(error) => return internal_error_response(error.to_string()),
+        Err(error) => return bad_request_response(error.to_string()),
     };
 
     let Some(access_token) = body.get("accessToken").and_then(Value::as_str) else {
@@ -3767,13 +3847,23 @@ async fn claude_import_token(
     }
 
     // Strict validation: the profile endpoint must accept the token.
-    let (email, display_name) = match fetch_claude_profile(&token).await {
-        Ok(profile) => profile,
-        Err(()) => {
+    let (email, display_name) = match fetch_claude_profile_detailed(&token).await {
+        ClaudeProfileStatus::Ok(profile) => profile,
+        ClaudeProfileStatus::ScopeLimited => (None, None),
+        ClaudeProfileStatus::Rejected => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(json!({
                     "error": "Anthropic rejected this token (profile validation failed). Check the token and try again."
+                })),
+            )
+                .into_response();
+        }
+        ClaudeProfileStatus::Unreachable => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": "Could not reach Anthropic to validate this token. Try again."
                 })),
             )
                 .into_response();

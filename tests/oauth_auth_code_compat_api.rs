@@ -7,7 +7,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use once_cell::sync::Lazy;
 use openproxy::db::Db;
 use openproxy::server::state::AppState;
-use serde_json::json;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tempfile::tempdir;
 use tower::util::ServiceExt;
@@ -373,4 +373,119 @@ async fn codex_exchange_matches_openproxy_and_maps_id_token() {
         connection.provider_specific_data.get("chatgptPlanType"),
         Some(&json!("plus"))
     );
+}
+
+#[tokio::test]
+async fn claude_import_token_accepts_scope_limited_setup_token() {
+    // Live MITM 2026-10-06: every genuine `claude setup-token` token gets
+    // 403 oauth_scope_insufficient from the profile endpoint (its grant is
+    // inference-only) and the CLI logs in anyway. Import must accept it.
+    let _lock = ENV_LOCK.lock().unwrap();
+    let server = MockServer::start().await;
+    let _profile_url = EnvVarGuard::set(
+        "OPENPROXY_CLAUDE_PROFILE_URL",
+        &format!("{}/api/oauth/profile", server.uri()),
+    );
+
+    Mock::given(method("GET"))
+        .and(path("/api/oauth/profile"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+            "error": {
+                "type": "permission_error",
+                "message": "insufficient scope",
+                "details": {
+                    "required_scopes": ["user:profile", "user:office"],
+                    "error_code": "oauth_scope_insufficient"
+                }
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let state = app_state().await;
+    let app = openproxy::build_app(state.clone());
+    let response = app
+        .oneshot(post_request(
+            "/api/oauth/claude/import-token",
+            json!({ "accessToken": "sk-ant-oat01-setup-token", "name": "CICD token" }),
+        ))
+        .await
+        .unwrap();
+
+    let (status, json) = response_json(response).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "scope-limited token must import: {json}"
+    );
+    assert_eq!(json["success"], true);
+    assert_eq!(json["connection"]["provider"], "claude");
+    assert_eq!(json["connection"]["name"], "CICD token");
+    assert_eq!(json["connection"]["email"], Value::Null);
+
+    let snapshot = state.db.snapshot();
+    assert_eq!(snapshot.provider_connections.len(), 1);
+    let connection = &snapshot.provider_connections[0];
+    assert_eq!(connection.auth_type, "oauth");
+    assert_eq!(
+        connection.access_token.as_deref(),
+        Some("sk-ant-oat01-setup-token")
+    );
+    assert_eq!(connection.refresh_token, None);
+    assert_eq!(connection.expires_at, None);
+    assert_eq!(connection.email, None);
+    assert_eq!(connection.test_status.as_deref(), Some("active"));
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn claude_import_token_rejects_invalid_token_with_400() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let server = MockServer::start().await;
+    let _profile_url = EnvVarGuard::set(
+        "OPENPROXY_CLAUDE_PROFILE_URL",
+        &format!("{}/api/oauth/profile", server.uri()),
+    );
+
+    Mock::given(method("GET"))
+        .and(path("/api/oauth/profile"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+            "error": { "type": "authentication_error", "message": "invalid token" }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let state = app_state().await;
+    let app = openproxy::build_app(state);
+    let response = app
+        .oneshot(post_request(
+            "/api/oauth/claude/import-token",
+            json!({ "accessToken": "sk-ant-oat01-typo-token" }),
+        ))
+        .await
+        .unwrap();
+
+    let (status, json) = response_json(response).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(json["error"].as_str().unwrap().contains("rejected"));
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn claude_import_token_maps_broken_body_to_400() {
+    // R1 acceptance: broken body is a client problem (400), not a 500.
+    let _lock = ENV_LOCK.lock().unwrap();
+    let state = app_state().await;
+    let app = openproxy::build_app(state);
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/api/oauth/claude/import-token")
+        .header("authorization", concat!("Bearer ", "oauth-mgmt-test-key"))
+        .header("content-type", "application/json")
+        .body(Body::from("{\"accessToken\":"))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
