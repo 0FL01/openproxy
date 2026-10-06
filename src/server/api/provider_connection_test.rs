@@ -1279,14 +1279,18 @@ async fn refresh_json_token(
 ) -> Result<RefreshResult, String> {
     // The claude branch pins the live CLI OAuth identity (axios UA +
     // axios accept, MITM 2026-10-06); other providers keep the plain JSON
-    // headers.
+    // headers. The axios accept REPLACES the default (headers are applied
+    // with append semantics downstream — a second push would put two
+    // Accept values on the wire).
     let mut headers = vec![
         ("Content-Type".to_string(), "application/json".to_string()),
         ("Accept".to_string(), "application/json".to_string()),
     ];
     if let Some((user_agent, accept)) = claude_identity {
         headers.push(("User-Agent".to_string(), user_agent.to_string()));
-        headers.push(("Accept".to_string(), accept.to_string()));
+        if let Some(accept_header) = headers.iter_mut().find(|(name, _)| name == "Accept") {
+            accept_header.1 = accept.to_string();
+        }
     }
     let request = PreparedRequest {
         method: Method::POST,

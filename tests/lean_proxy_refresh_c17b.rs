@@ -278,3 +278,26 @@ fn control_and_background_refresh_census_has_no_direct_bypass() {
     assert!(!oauth.contains("REFRESH_LOCKS"));
     assert!(!oauth.contains("get_refresh_lock_key"));
 }
+
+#[test]
+fn dashboard_refresh_copy_never_appends_a_second_accept_header() {
+    // The dashboard-test refresh copy (provider_connection_test.rs) applies
+    // headers with append semantics downstream (reqwest builder .header in a
+    // loop), so pushing a claude-identity Accept on top of the default one
+    // puts TWO Accept values on the wire — the live CLI sends exactly one.
+    // Guard: inside refresh_json_token, the claude branch must replace the
+    // seeded Accept (find/assign), never push another Accept entry.
+    let source = include_str!("../src/server/api/provider_connection_test.rs");
+    let start = source
+        .find("async fn refresh_json_token")
+        .expect("refresh_json_token present");
+    let end = source[start..]
+        .find("async fn decode_refresh_response")
+        .map(|offset| start + offset)
+        .unwrap_or(source.len());
+    let body = &source[start..end];
+    assert!(
+        !body.contains("headers.push((\"Accept\""),
+        "refresh_json_token must replace the Accept header, not append: {body}"
+    );
+}
