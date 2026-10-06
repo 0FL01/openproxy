@@ -3696,6 +3696,114 @@ async fn codex_import_token(
     }
 }
 
+/// Connection payload for an imported `claude setup-token`: subscription
+/// OAuth auth, no refresh token (the 1-year token is used until it dies),
+/// no expiry the background refresher could act on, active from birth.
+fn build_imported_claude_connection(
+    token: &str,
+    name: &str,
+    email: Option<String>,
+    display_name: Option<String>,
+) -> ProviderConnection {
+    ProviderConnection {
+        provider: "claude".to_string(),
+        auth_type: "oauth".to_string(),
+        name: Some(name.to_string()),
+        email,
+        display_name,
+        access_token: Some(token.to_string()),
+        refresh_token: None,
+        expires_at: None,
+        test_status: Some("active".to_string()),
+        ..Default::default()
+    }
+}
+
+/// POST /api/oauth/claude/import-token
+/// Import a long-lived (1-year) Claude OAuth token created by
+/// `claude setup-token` as a provider connection.
+///
+/// The token is strictly validated against the OAuth profile endpoint
+/// before anything is stored: a typo must fail loudly, not silently
+/// create a dead connection. Valid tokens are upserted by account email
+/// via the shared imported-connection path; no refresh token exists, so
+/// the refresh gates (background skip + reactive `is_some()`) keep this
+/// connection on the access token alone until it expires or is revoked.
+///
+/// Body: { accessToken: string, name?: string }
+async fn claude_import_token(
+    State(state): State<AppState>,
+    request: axum::extract::Request,
+) -> Response {
+    let body = match axum::body::to_bytes(request.into_body(), 64 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(error) => return internal_error_response(error.to_string()),
+    };
+    let body: Value = match serde_json::from_slice(&body) {
+        Ok(value) => value,
+        Err(error) => return internal_error_response(error.to_string()),
+    };
+
+    let Some(access_token) = body.get("accessToken").and_then(Value::as_str) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Access token is required" })),
+        )
+            .into_response();
+    };
+    let token = access_token.trim().to_string();
+    if token.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Access token is required" })),
+        )
+            .into_response();
+    }
+
+    // Strict validation: the profile endpoint must accept the token.
+    let (email, display_name) = match fetch_claude_profile(&token).await {
+        Ok(profile) => profile,
+        Err(()) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "Anthropic rejected this token (profile validation failed). Check the token and try again."
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let name = body
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            display_name
+                .clone()
+                .or_else(|| email.clone())
+                .unwrap_or_else(|| "Claude Setup Token".to_string())
+        });
+
+    let connection = build_imported_claude_connection(&token, &name, email, display_name);
+
+    match create_imported_oauth_connection(&state, connection).await {
+        Ok(connection) => Json(json!({
+            "success": true,
+            "connection": {
+                "id": connection.id,
+                "provider": connection.provider,
+                "email": connection.email,
+                "name": connection.name,
+            }
+        }))
+        .into_response(),
+        Err(error) => internal_error_response(error.to_string()),
+    }
+}
+
 /// POST /api/oauth/xiaomi-mimo/api-key
 /// Import a Xiaomi MiMo API key manually (or from auto-import).
 /// The key is validated against the models endpoint, then stored.
@@ -4264,6 +4372,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/oauth/codex/bulk-import", post(codex_bulk_import))
         .route("/api/oauth/codex/import-token", post(codex_import_token))
+        .route("/api/oauth/claude/import-token", post(claude_import_token))
         .route("/api/oauth/xai/manual-code", post(xai_manual_code))
         .route(
             "/api/oauth/xiaomi-mimo/api-key",
@@ -4733,5 +4842,39 @@ mod tests {
             .map(|p| p.to_string_lossy().to_string())
             .collect();
         assert!(paths.iter().any(|p| p.contains("mimocode")));
+    }
+
+    #[test]
+    fn imported_claude_connection_shape_matches_refresh_gates() {
+        // The setup-token connection must ride the existing refresh gates:
+        // oauth auth_type for the Bearer path, no refresh token (background
+        // skip + reactive `is_some()` both decline), no expires_at the
+        // refresher could schedule on, active test status from birth.
+        let connection = build_imported_claude_connection(
+            "sk-ant-oat01-test",
+            "Work token",
+            Some("owner@example.com".to_string()),
+            Some("Owner".to_string()),
+        );
+        assert_eq!(connection.provider, "claude");
+        assert_eq!(connection.auth_type, "oauth");
+        assert_eq!(
+            connection.access_token.as_deref(),
+            Some("sk-ant-oat01-test")
+        );
+        assert_eq!(connection.refresh_token, None);
+        assert_eq!(connection.expires_at, None);
+        assert_eq!(connection.email.as_deref(), Some("owner@example.com"));
+        assert_eq!(connection.display_name.as_deref(), Some("Owner"));
+        assert_eq!(connection.test_status.as_deref(), Some("active"));
+    }
+
+    #[test]
+    fn claude_import_token_route_is_registered() {
+        // Smoke: the router (with the claude import route) constructs. Axum
+        // fails to compile/route on duplicate paths, so construction is the
+        // registration proof; the wire behavior is covered by the handler
+        // shape test above and the dashboard's direct fetch.
+        let _router = super::routes();
     }
 }

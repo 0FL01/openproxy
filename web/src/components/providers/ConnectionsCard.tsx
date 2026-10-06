@@ -4,6 +4,7 @@ import { Card, Badge, Button, Modal, Select, Toggle, EditConnectionModal } from 
 import { getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/connectionStatus";
 import { ConfirmModal } from "@/shared/components/Modal";
 import { useNotificationStore } from "@/store/notificationStore";
+import ImportClaudeTokenModal from "./ImportClaudeTokenModal";
 
 // ── ConnectionRow ──────────────────────────────────────────────
 interface ProxyPool {
@@ -281,6 +282,7 @@ export default function ConnectionsCard({ providerId, isOAuth = false }: Connect
   const [proxyPools, setProxyPools] = useState<ProxyPool[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [showAddModal, setShowAddModal] = useState<boolean>(false);
+  const [showImportTokenModal, setShowImportTokenModal] = useState<boolean>(false);
   const [showEditModal, setShowEditModal] = useState<boolean>(false);
   const [selectedConnection, setSelectedConnection] = useState<Connection | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Connection | null>(null);
@@ -374,6 +376,9 @@ export default function ConnectionsCard({ providerId, isOAuth = false }: Connect
       <Card>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
           <h2 className="text-lg font-semibold">Connections</h2>
+          {providerId === "claude" && (
+            <Button size="sm" icon="key" onClick={() => setShowImportTokenModal(true)}>Import Setup Token</Button>
+          )}
         </div>
 
         {connections.length === 0 ? (
@@ -419,6 +424,11 @@ export default function ConnectionsCard({ providerId, isOAuth = false }: Connect
           // and never goes through handleSaveApiKey.
           void fetch_();
         }}
+      />
+      <ImportClaudeTokenModal
+        isOpen={showImportTokenModal}
+        onSuccess={() => void fetch_()}
+        onClose={() => setShowImportTokenModal(false)}
       />
       <EditConnectionModal
         isOpen={showEditModal}
