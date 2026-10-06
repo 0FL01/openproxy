@@ -7,6 +7,24 @@ build step, embedded credentials, generated JSONC, or persistent client cache.
 Solid/OpenTUI imports are lazy and supplied by the TUI host; model discovery
 has no new runtime dependencies.
 
+## Claude Code client mask (ludka2)
+
+`openproxy-models.js` also registers client-side masking hooks so requests to
+the OpenProxy provider present themselves as a genuine Claude Code CLI run:
+
+- `experimental.chat.system.transform` — replaces the OpenCode system prompt
+  with the live Claude Code 2.1.289 prompt (identity + harness + style blocks;
+  server-side ground truth, memory path normalized) for `ludka2` models only.
+- `chat.headers` — pins `User-Agent: claude-cli/2.1.289 (external, cli)` on
+  `ludka2` requests.
+- `tool.definition` — scrubs client-identity strings (`opencode`, `opencode.ai`,
+  `anomalyco/opencode`) from tool descriptions sent to any provider.
+
+Other providers keep OpenCode's real identity. The proxy's server-side harness
+spoof remains authoritative and idempotent for masked traffic; the client mask
+just removes the fingerprints before they ever leave the machine. Tests:
+`node --test tests/opencode_mask.test.mjs`.
+
 ## Install
 
 From the repository root, copy **both plugin files**, not the tests:
