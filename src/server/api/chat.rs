@@ -962,7 +962,30 @@ async fn forward_with_provider_fallback(
     // once, then shares the bounded bytes across eligible account attempts.
     let mut default_prepared_body: Option<PreparedUpstreamBody> = None;
     // C46 harness session: one per chat request, shared by all attempts.
-    let claude_harness_session = uuid::Uuid::new_v4().to_string();
+    // Deterministic per (api key, UTC date) — live CC keeps one session id
+    // for a whole CLI run (census: 3 unique ids across 628 requests); a
+    // fresh UUID per request was itself a fingerprint. Prompt-id is stable
+    // per hour (live: one per agent task, reused up to 167 requests), and
+    // client-request-id is unique per chat request like the live CLI.
+    // Without an authenticated key (require_api_key=false) each id falls
+    // back to a fresh v4 UUID — the pre-change behavior.
+    let harness_key_id =
+        log_context.map(crate::server::application_logs::RequestLogContext::api_key_id);
+    let claude_harness_session = match &harness_key_id {
+        Some(key_id) => derive_harness_uuid(&format!(
+            "openproxy:claude-harness:session:{key_id}:{}",
+            chrono::Utc::now().format("%Y-%m-%d")
+        )),
+        None => uuid::Uuid::new_v4().to_string(),
+    };
+    let claude_harness_prompt_id = match &harness_key_id {
+        Some(key_id) => derive_harness_uuid(&format!(
+            "openproxy:claude-harness:prompt:{key_id}:{}",
+            chrono::Utc::now().format("%Y-%m-%dT%H")
+        )),
+        None => uuid::Uuid::new_v4().to_string(),
+    };
+    let claude_harness_request_id = uuid::Uuid::new_v4().to_string();
     let codex_supporters = if provider == "codex" {
         Some(codex_supporters_after_cold_wait(state, model).await?)
     } else {
@@ -1576,6 +1599,16 @@ async fn forward_with_provider_fallback(
                     harness.is_some(),
                     &claude_harness_session,
                 );
+                apply_harness_prompt_id(
+                    &mut request_headers,
+                    harness.is_some(),
+                    &claude_harness_prompt_id,
+                );
+                apply_harness_request_id(
+                    &mut request_headers,
+                    harness.is_some(),
+                    &claude_harness_request_id,
+                );
                 if default_prepared_body
                     .as_ref()
                     .is_none_or(|prepared| !executor.can_reuse_prepared_body(prepared, model))
@@ -1930,6 +1963,42 @@ fn apply_harness_session_header(
 ) {
     if harness_active && !request_headers.contains_key("x-claude-code-session-id") {
         request_headers.insert("x-claude-code-session-id".to_string(), session.to_string());
+    }
+}
+
+/// Deterministic, v4-shaped UUID for harness identities. Live Claude Code
+/// session/prompt ids are UUIDv4 (census 625/625); a plain UUIDv5 would show
+/// a version-5 nibble on every spoofed request, so the derived bytes are
+/// re-stamped to the v4 version/variant layout.
+fn derive_harness_uuid(seed: &str) -> String {
+    let mut bytes = *uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, seed.as_bytes()).as_bytes();
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    uuid::Uuid::from_bytes(bytes).to_string()
+}
+
+/// C46 harness prompt-id: live CC pairs a stable per-task prompt UUID with
+/// its requests (612/628, reused up to 167 times); insert-if-missing keeps
+/// a genuine client's own value.
+fn apply_harness_prompt_id(
+    request_headers: &mut BTreeMap<String, String>,
+    harness_active: bool,
+    prompt_id: &str,
+) {
+    if harness_active && !request_headers.contains_key("x-claude-code-prompt-id") {
+        request_headers.insert("x-claude-code-prompt-id".to_string(), prompt_id.to_string());
+    }
+}
+
+/// C46 harness client-request-id: unique per chat request (live 628/628),
+/// stable across account-fallback attempts; insert-if-missing.
+fn apply_harness_request_id(
+    request_headers: &mut BTreeMap<String, String>,
+    harness_active: bool,
+    request_id: &str,
+) {
+    if harness_active && !request_headers.contains_key("x-client-request-id") {
+        request_headers.insert("x-client-request-id".to_string(), request_id.to_string());
     }
 }
 
@@ -4286,8 +4355,9 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::{
-        apply_harness_session_header, attempt_error_response, build_dashboard_sse_response,
-        build_proxied_response, extract_token_usage_from_value, has_native_codex_web_search,
+        apply_harness_prompt_id, apply_harness_request_id, apply_harness_session_header,
+        attempt_error_response, build_dashboard_sse_response, build_proxied_response,
+        derive_harness_uuid, extract_token_usage_from_value, has_native_codex_web_search,
         is_refreshable_auth_failure, select_connection, select_connection_with_supporters,
         should_prefetch_message_images, tool_image_support, unified_reset_retry_after,
         StreamDispatch,
@@ -4576,6 +4646,61 @@ mod tests {
         let mut headers = BTreeMap::new();
         apply_harness_session_header(&mut headers, false, "sess-3");
         assert!(!headers.contains_key("x-claude-code-session-id"));
+    }
+
+    #[test]
+    fn harness_prompt_and_request_id_headers_inject_when_active() {
+        // Same insert-if-missing contract as the session header: inject on
+        // the harness path, client value wins, no-op otherwise.
+        let mut headers = BTreeMap::new();
+        apply_harness_prompt_id(&mut headers, true, "prompt-1");
+        apply_harness_request_id(&mut headers, true, "request-1");
+        assert_eq!(headers["x-claude-code-prompt-id"], "prompt-1");
+        assert_eq!(headers["x-client-request-id"], "request-1");
+
+        let mut headers = BTreeMap::from([
+            (
+                "x-claude-code-prompt-id".to_string(),
+                "client-p".to_string(),
+            ),
+            ("x-client-request-id".to_string(), "client-r".to_string()),
+        ]);
+        apply_harness_prompt_id(&mut headers, true, "prompt-2");
+        apply_harness_request_id(&mut headers, true, "request-2");
+        assert_eq!(headers["x-claude-code-prompt-id"], "client-p");
+        assert_eq!(headers["x-client-request-id"], "client-r");
+
+        let mut headers = BTreeMap::new();
+        apply_harness_prompt_id(&mut headers, false, "prompt-3");
+        apply_harness_request_id(&mut headers, false, "request-3");
+        assert!(!headers.contains_key("x-claude-code-prompt-id"));
+        assert!(!headers.contains_key("x-client-request-id"));
+    }
+
+    #[test]
+    fn harness_uuid_derivation_is_deterministic_and_v4_shaped() {
+        // Same seed → same id; different seed → different id; the output is
+        // a v4-shaped UUID (version nibble 4, RFC-4122 variant) like every
+        // live CC session/prompt id, hiding the deterministic derivation.
+        let a = derive_harness_uuid("openproxy:claude-harness:session:key-1:2026-10-06");
+        let b = derive_harness_uuid("openproxy:claude-harness:session:key-1:2026-10-06");
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 36);
+        let other_key = derive_harness_uuid("openproxy:claude-harness:session:key-2:2026-10-06");
+        let other_day = derive_harness_uuid("openproxy:claude-harness:session:key-1:2026-10-07");
+        assert_ne!(a, other_key);
+        assert_ne!(a, other_day);
+        for id in [a, other_key, other_day] {
+            let uuid = uuid::Uuid::parse_str(&id).expect("valid uuid");
+            assert_eq!(uuid.get_version_num(), 4, "version nibble must be 4");
+            assert_eq!(uuid.get_variant(), uuid::Variant::RFC4122);
+        }
+        // Prompt seeds derive independently from session seeds.
+        let prompt = derive_harness_uuid("openproxy:claude-harness:prompt:key-1:2026-10-06T22");
+        assert_ne!(
+            prompt,
+            derive_harness_uuid("openproxy:claude-harness:session:key-1:2026-10-06")
+        );
     }
 
     #[test]

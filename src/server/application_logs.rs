@@ -416,6 +416,12 @@ impl RequestLogContext {
         self.mode
     }
 
+    /// Opaque id of the API key that authenticated this request; used as
+    /// derivation input for stable harness identities (never the secret).
+    pub fn api_key_id(&self) -> &str {
+        &self.api_key_id
+    }
+
     /// Extract once from inbound headers before translation, then clone this
     /// context across fallback/auth recovery attempts of the same HTTP request.
     pub fn with_chat_session(mut self, headers: &HeaderMap) -> Self {
