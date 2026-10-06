@@ -2303,6 +2303,49 @@ mod tests {
     }
 
     #[test]
+    fn claude_harness_id_headers_reach_upstream_map() {
+        // Plumbing lock: the chat-level harness ids (session, prompt,
+        // client-request) are inserted into the client header map and must
+        // survive the allowlist forward into the upstream request — this is
+        // the regression the prompt-id/client-request-id allowlist entries
+        // exist for.
+        let executor = DefaultExecutor::new("claude", Arc::new(ClientPool::new()), None).unwrap();
+        let mut oauth = ProviderConnection::default();
+        oauth.auth_type = "oauth".to_string();
+        oauth.access_token = Some("sk-ant-oat-test".to_string());
+
+        let client_headers = BTreeMap::from([
+            (
+                "x-claude-code-session-id".to_string(),
+                "b4442fe8-a39b-4d05-906e-de046b708b1f".to_string(),
+            ),
+            (
+                "x-claude-code-prompt-id".to_string(),
+                "d011f325-2670-47e1-994f-48e9d59801db".to_string(),
+            ),
+            (
+                "x-client-request-id".to_string(),
+                "0b6e6a5a-9d5e-4f3a-8c2b-1f0d2a3b4c5d".to_string(),
+            ),
+        ]);
+        let headers = executor
+            .build_headers_for_request("claude-sonnet-4-5", &oauth, true, &client_headers)
+            .unwrap();
+        assert_eq!(
+            headers["x-claude-code-session-id"],
+            "b4442fe8-a39b-4d05-906e-de046b708b1f"
+        );
+        assert_eq!(
+            headers["x-claude-code-prompt-id"],
+            "d011f325-2670-47e1-994f-48e9d59801db"
+        );
+        assert_eq!(
+            headers["x-client-request-id"],
+            "0b6e6a5a-9d5e-4f3a-8c2b-1f0d2a3b4c5d"
+        );
+    }
+
+    #[test]
     fn beta_base_has_no_non_cli_flags() {
         // Binary-RECON: neither flag is referenced by the real CLI.
         assert!(!ANTHROPIC_BETA_BASE.contains("token-efficient"));
