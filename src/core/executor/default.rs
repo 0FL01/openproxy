@@ -458,7 +458,9 @@ const CLAUDE_REQUEST_HEADER_ALLOWLIST: &[&str] = &[
     "anthropic-beta",
     "anthropic-version",
     "anthropic-dangerous-direct-browser-access",
+    "anthropic-dispatch-id",
     "x-app",
+    "x-client-request-id",
     "x-stainless-helper-method",
     "x-stainless-retry-count",
     "x-stainless-runtime-version",
@@ -469,6 +471,11 @@ const CLAUDE_REQUEST_HEADER_ALLOWLIST: &[&str] = &[
     "x-stainless-os",
     "x-stainless-timeout",
     "x-claude-code-session-id",
+    "x-claude-code-prompt-id",
+    "x-claude-code-request-class",
+    "x-claude-code-agent-id",
+    "x-claude-code-agent-type",
+    "x-claude-code-prev-tool-durations",
 ];
 
 pub struct ExecutionResponse {
@@ -1090,6 +1097,16 @@ impl DefaultExecutor {
             }
         }
 
+        let claude_harness = crate::core::translator::request::claude_format::claude_harness_gated(
+            self.provider.as_str(),
+            credentials.auth_type.as_str(),
+            credentials
+                .runtime_transport
+                .as_ref()
+                .and_then(|transport| transport.base_url.as_deref()),
+            is_anthropic_compatible,
+        );
+
         if matches!(self.provider.as_str(), "claude" | "anthropic") {
             for name in CLAUDE_REQUEST_HEADER_ALLOWLIST {
                 if !headers.contains_key(*name) {
@@ -1128,15 +1145,7 @@ impl DefaultExecutor {
             // is a self-inflicted fingerprint mismatch, so a non-CLI UA is
             // overridden with the pinned CLI UA. Genuine `claude-cli/…`
             // user agents pass through untouched.
-            if crate::core::translator::request::claude_format::claude_harness_gated(
-                self.provider.as_str(),
-                credentials.auth_type.as_str(),
-                credentials
-                    .runtime_transport
-                    .as_ref()
-                    .and_then(|transport| transport.base_url.as_deref()),
-                is_anthropic_compatible,
-            ) {
+            if claude_harness {
                 let client_ua = client_headers.get("user-agent").map(String::as_str);
                 let keep_client_ua =
                     crate::core::translator::request::claude_format::is_claude_cli_user_agent(
@@ -1152,6 +1161,43 @@ impl DefaultExecutor {
                 if !headers.contains_key("x-app") {
                     headers.insert("x-app", HeaderValue::from_static("cli"));
                 }
+                // Fill the client-telemetry identity a non-CC client cannot
+                // supply: the SDK's x-stainless-* set, the CLI's
+                // request-class marker, and its constant dispatch tag. Every
+                // value is insert-if-missing, so a genuine CC client's own
+                // (allowlisted) values always win. Census CC 2.1.289:
+                // lang=js, package=0.128.0, runtime=node, retry=0, timeout=600,
+                // request-class main on every main-class request, dispatch-id
+                // the literal `v2d` (constant across both capture trees).
+                for (name, value) in [
+                    ("x-stainless-lang", "js"),
+                    (
+                        "x-stainless-package-version",
+                        crate::oauth::providers::CLAUDE_STAINLESS_PACKAGE_VERSION,
+                    ),
+                    ("x-stainless-runtime", "node"),
+                    (
+                        "x-stainless-runtime-version",
+                        crate::oauth::providers::CLAUDE_STAINLESS_RUNTIME_VERSION,
+                    ),
+                    ("x-stainless-retry-count", "0"),
+                    ("x-stainless-timeout", "600"),
+                    ("x-stainless-os", Self::stainless_os()),
+                    ("x-stainless-arch", Self::stainless_arch()),
+                    ("x-claude-code-request-class", "main"),
+                    ("anthropic-dispatch-id", "v2d"),
+                ] {
+                    if !headers.contains_key(name) {
+                        if let Ok(value) = HeaderValue::from_str(value) {
+                            headers.insert(name, value);
+                        }
+                    }
+                }
+                // Live CC sends `accept: application/json` on every request,
+                // streaming included (SSE is selected by the body `stream`
+                // field, not Accept; census 628/628). The generic
+                // text/event-stream insert below is skipped for this path.
+                headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
             }
         }
 
@@ -1161,11 +1207,32 @@ impl DefaultExecutor {
             headers.insert("x-cmd-zdr", HeaderValue::from_static("1"));
         }
 
-        if stream {
+        if stream && !claude_harness {
             headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
         }
 
         Ok(headers)
+    }
+
+    /// Host OS in the stainless convention the Anthropic SDK uses
+    /// (`normalizePlatform`): Linux/MacOS/Windows, `Other` for the rest.
+    /// `MacOS` spelling is SDK-inferred (the census machine was Linux).
+    fn stainless_os() -> &'static str {
+        match std::env::consts::OS {
+            "linux" => "Linux",
+            "macos" => "MacOS",
+            "windows" => "Windows",
+            _ => "Other",
+        }
+    }
+
+    /// Host arch in the stainless convention: x64/arm64, `Other` for the rest.
+    fn stainless_arch() -> &'static str {
+        match std::env::consts::ARCH {
+            "x86_64" => "x64",
+            "aarch64" => "arm64",
+            _ => "Other",
+        }
     }
 
     pub fn transform_request(&self, body: &Value, model: &str) -> Value {
@@ -2086,6 +2153,153 @@ mod tests {
         assert!(!headers.contains_key("user-agent"));
         assert!(!headers.contains_key("x-app"));
         assert_eq!(headers["x-api-key"], "sk-ant-test");
+    }
+
+    #[test]
+    fn claude_oauth_synthesizes_pinned_cli_telemetry() {
+        // Harness path with a bare client: the full census CC 2.1.289 client
+        // identity is synthesized — SDK stainless set, request-class marker,
+        // constant dispatch tag. Everything is insert-if-missing, so genuine
+        // CC client values win (next case).
+        let executor = DefaultExecutor::new("claude", Arc::new(ClientPool::new()), None).unwrap();
+        let mut oauth = ProviderConnection::default();
+        oauth.auth_type = "oauth".to_string();
+        oauth.access_token = Some("sk-ant-oat-test".to_string());
+
+        let headers = executor
+            .build_headers_for_request("claude-sonnet-4-5", &oauth, true, &BTreeMap::new())
+            .unwrap();
+        assert_eq!(headers["x-stainless-lang"], "js");
+        assert_eq!(
+            headers["x-stainless-package-version"],
+            crate::oauth::providers::CLAUDE_STAINLESS_PACKAGE_VERSION
+        );
+        assert_eq!(headers["x-stainless-runtime"], "node");
+        assert_eq!(
+            headers["x-stainless-runtime-version"],
+            crate::oauth::providers::CLAUDE_STAINLESS_RUNTIME_VERSION
+        );
+        assert_eq!(headers["x-stainless-retry-count"], "0");
+        assert_eq!(headers["x-stainless-timeout"], "600");
+        assert_eq!(headers["x-stainless-os"], "Linux");
+        assert_eq!(headers["x-stainless-arch"], "x64");
+        assert_eq!(headers["x-claude-code-request-class"], "main");
+        assert_eq!(headers["anthropic-dispatch-id"], "v2d");
+        // Live CC sends application/json even while streaming.
+        assert_eq!(headers[reqwest::header::ACCEPT], "application/json");
+    }
+
+    #[test]
+    fn claude_harness_accept_json_on_both_stream_modes() {
+        // Census: accept is application/json on 628/628 requests, streaming
+        // included — SSE is chosen by the body stream field, not Accept.
+        let executor = DefaultExecutor::new("claude", Arc::new(ClientPool::new()), None).unwrap();
+        let mut oauth = ProviderConnection::default();
+        oauth.auth_type = "oauth".to_string();
+        oauth.access_token = Some("sk-ant-oat-test".to_string());
+
+        for stream in [true, false] {
+            let headers = executor
+                .build_headers_for_request("claude-sonnet-4-5", &oauth, stream, &BTreeMap::new())
+                .unwrap();
+            assert_eq!(headers[reqwest::header::ACCEPT], "application/json");
+        }
+    }
+
+    #[test]
+    fn claude_harness_client_telemetry_wins_over_synthesis() {
+        // A genuine CC client's own allowlisted values are never replaced by
+        // the pinned synthesis, and previously-dropped CC telemetry headers
+        // (request-class, prompt-id, client-request-id, dispatch-id,
+        // prev-tool-durations, agent identity) now forward.
+        let executor = DefaultExecutor::new("claude", Arc::new(ClientPool::new()), None).unwrap();
+        let mut oauth = ProviderConnection::default();
+        oauth.auth_type = "oauth".to_string();
+        oauth.access_token = Some("sk-ant-oat-test".to_string());
+
+        let client_headers = BTreeMap::from([
+            (
+                "user-agent".to_string(),
+                "claude-cli/2.1.100 (external, cli)".to_string(),
+            ),
+            (
+                "x-stainless-package-version".to_string(),
+                "9.9.9".to_string(),
+            ),
+            ("x-stainless-retry-count".to_string(), "7".to_string()),
+            (
+                "x-claude-code-request-class".to_string(),
+                "subagent".to_string(),
+            ),
+            (
+                "x-claude-code-prompt-id".to_string(),
+                "d011f325-2670-47e1-994f-48e9d59801db".to_string(),
+            ),
+            (
+                "x-client-request-id".to_string(),
+                "0b6e6a5a-9d5e-4f3a-8c2b-1f0d2a3b4c5d".to_string(),
+            ),
+            (
+                "anthropic-dispatch-id".to_string(),
+                "client-value".to_string(),
+            ),
+            (
+                "x-claude-code-agent-id".to_string(),
+                "a13686a89fec8b643".to_string(),
+            ),
+            (
+                "x-claude-code-agent-type".to_string(),
+                "Explore".to_string(),
+            ),
+        ]);
+        let headers = executor
+            .build_headers_for_request("claude-sonnet-4-5", &oauth, true, &client_headers)
+            .unwrap();
+        assert_eq!(headers["x-stainless-package-version"], "9.9.9");
+        assert_eq!(headers["x-stainless-retry-count"], "7");
+        assert_eq!(headers["x-claude-code-request-class"], "subagent");
+        assert_eq!(
+            headers["x-claude-code-prompt-id"],
+            "d011f325-2670-47e1-994f-48e9d59801db"
+        );
+        assert_eq!(
+            headers["x-client-request-id"],
+            "0b6e6a5a-9d5e-4f3a-8c2b-1f0d2a3b4c5d"
+        );
+        assert_eq!(headers["anthropic-dispatch-id"], "client-value");
+        assert_eq!(headers["x-claude-code-agent-id"], "a13686a89fec8b643");
+        assert_eq!(headers["x-claude-code-agent-type"], "Explore");
+        // Non-provided identity fields still fill in around the client's.
+        assert_eq!(headers["x-stainless-lang"], "js");
+        assert_eq!(headers["x-stainless-os"], "Linux");
+    }
+
+    #[test]
+    fn non_claude_stream_accept_unchanged() {
+        // The generic text/event-stream accept stays for non-harness paths;
+        // the harness gate is claude/anthropic OAuth first-party only.
+        let executor = DefaultExecutor::new("glm", Arc::new(ClientPool::new()), None).unwrap();
+        let mut oauth = ProviderConnection::default();
+        oauth.auth_type = "oauth".to_string();
+        oauth.access_token = Some("token".to_string());
+        let headers = executor
+            .build_headers_for_request("glm-4.7", &oauth, true, &BTreeMap::new())
+            .unwrap();
+        assert_eq!(headers[reqwest::header::ACCEPT], "text/event-stream");
+    }
+
+    #[test]
+    fn claude_apikey_stream_accept_unchanged() {
+        // API-key claude connections do not take the harness gate: the
+        // spoofed-CLI accept contract does not apply to them.
+        let executor = DefaultExecutor::new("claude", Arc::new(ClientPool::new()), None).unwrap();
+        let mut apikey = ProviderConnection::default();
+        apikey.auth_type = "apikey".to_string();
+        apikey.api_key = Some("sk-ant-test".to_string());
+        let headers = executor
+            .build_headers_for_request("claude-sonnet-4-5", &apikey, true, &BTreeMap::new())
+            .unwrap();
+        assert_eq!(headers[reqwest::header::ACCEPT], "text/event-stream");
     }
 
     #[test]

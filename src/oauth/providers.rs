@@ -125,6 +125,13 @@ pub const CLAUDE_SCOPES: &[&str] = &[
 ];
 /// Pinned Claude Code CLI version (single source; see bump procedure above).
 pub const CLAUDE_CLI_VERSION: &str = "2.1.289";
+/// `@anthropic-ai/sdk` version that Claude Code `CLAUDE_CLI_VERSION` bundles
+/// (`x-stainless-package-version`; MITM census 628/628). Bump together with
+/// the CLI pin: `npm view @anthropic-ai/sdk version` inside the pinned CLI.
+pub const CLAUDE_STAINLESS_PACKAGE_VERSION: &str = "0.128.0";
+/// Node runtime version the pinned CLI reports (`x-stainless-runtime-version`;
+/// census 628/628). Bump when re-mining the CLI pin from a live capture.
+pub const CLAUDE_STAINLESS_RUNTIME_VERSION: &str = "v26.3.0";
 
 /// Canonical Claude Code CLI User-Agent: `claude-cli/<VERSION> (external, cli)`.
 pub fn claude_user_agent() -> String {
