@@ -574,6 +574,85 @@ fn extract_system_text(system: Option<&Value>) -> String {
     }
 }
 
+/// Client→Claude Code tool-name aliases for the harness spoof. Live CC
+/// 2.1.289 carries capitalized tool names (MITM corpus: Bash, Read, Edit,
+/// Write, Glob, Grep, LS, Agent, Skill, AskUserQuestion, WebFetch, …);
+/// OpenCode sends lowercase ones. On the harness path both the tool
+/// declarations and any historical `tool_use` blocks are renamed so the
+/// upstream sees a single consistent CLI. Unknown names pass through — a
+/// wrong rename would break the tool loop harder than a lowercase name
+/// leaks.
+pub const CLAUDE_CODE_TOOL_ALIASES: &[(&str, &str)] = &[
+    ("bash", "Bash"),
+    ("edit", "Edit"),
+    ("read", "Read"),
+    ("write", "Write"),
+    ("glob", "Glob"),
+    ("grep", "Grep"),
+    ("list", "LS"),
+    ("webfetch", "WebFetch"),
+    ("websearch", "WebSearch"),
+    ("todowrite", "TodoWrite"),
+    ("todoread", "TodoRead"),
+    ("task", "Agent"),
+    ("question", "AskUserQuestion"),
+    ("killshell", "KillShell"),
+    ("skill", "Skill"),
+];
+
+/// Map a client tool name to its Claude Code form, if aliased.
+pub fn map_tool_name_to_claude_code(name: &str) -> Option<&'static str> {
+    CLAUDE_CODE_TOOL_ALIASES
+        .iter()
+        .find(|(client, _)| *client == name)
+        .map(|(_, cc)| *cc)
+}
+
+/// Rename tool declarations and historical `tool_use` blocks to their
+/// Claude Code forms. Returns the reverse map (Claude Code → client) for
+/// the response path when any name changed.
+pub fn apply_claude_code_tool_aliases(body: &mut Value) -> Option<serde_json::Map<String, Value>> {
+    let mut reverse = serde_json::Map::new();
+    if let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) {
+        for tool in tools.iter_mut() {
+            if let Some(name) = tool.get("name").and_then(Value::as_str) {
+                if let Some(cc) = map_tool_name_to_claude_code(name) {
+                    reverse.insert(cc.to_string(), Value::String(name.to_string()));
+                    if let Some(obj) = tool.as_object_mut() {
+                        obj.insert("name".to_string(), Value::String(cc.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    if let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) {
+        for message in messages.iter_mut() {
+            let Some(blocks) = message.get_mut("content").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for block in blocks.iter_mut() {
+                if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+                    continue;
+                }
+                let Some(name) = block.get("name").and_then(Value::as_str) else {
+                    continue;
+                };
+                if let Some(cc) = map_tool_name_to_claude_code(name) {
+                    reverse.insert(cc.to_string(), Value::String(name.to_string()));
+                    if let Some(obj) = block.as_object_mut() {
+                        obj.insert("name".to_string(), Value::String(cc.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    if reverse.is_empty() {
+        None
+    } else {
+        Some(reverse)
+    }
+}
+
 /// Apply the C46 harness transform to a Messages body.
 ///
 /// Genuine Claude Code traffic passes through byte-unchanged. Anything
@@ -1254,6 +1333,104 @@ mod tests {
             "no instruction/ack pair injected"
         );
         assert!(body.get("metadata").is_none(), "no user_id synthesized");
+    }
+
+    #[test]
+    fn claude_code_tool_aliases_rename_declarations_and_history() {
+        let mut body = json!({
+            "tools": [
+                {"name": "bash", "description": "run"},
+                {"name": "read", "description": "read"},
+                {"name": "customthing", "description": "unknown"},
+            ],
+            "messages": [
+                {"role": "user", "content": "go"},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "tu_1", "name": "bash", "input": {"cmd": "ls"}},
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "tu_1", "content": "ok"},
+                ]},
+            ],
+        });
+        let reverse = apply_claude_code_tool_aliases(&mut body);
+        // Declarations renamed to CC forms; unknown passes through.
+        assert_eq!(body["tools"][0]["name"], "Bash");
+        assert_eq!(body["tools"][1]["name"], "Read");
+        assert_eq!(body["tools"][2]["name"], "customthing");
+        // Historical tool_use renamed consistently.
+        assert_eq!(body["messages"][1]["content"][0]["name"], "Bash");
+        // tool_use_id untouched (random ids, not names).
+        assert_eq!(body["messages"][1]["content"][0]["id"], "tu_1");
+        assert_eq!(body["messages"][2]["content"][0]["tool_use_id"], "tu_1");
+        // Reverse map for the response path.
+        let map = reverse.expect("reverse map present");
+        assert_eq!(map.get("Bash").and_then(Value::as_str), Some("bash"));
+        assert_eq!(map.get("Read").and_then(Value::as_str), Some("read"));
+        assert!(!map.contains_key("customthing"));
+    }
+
+    #[test]
+    fn claude_code_tool_aliases_no_tools_yields_none() {
+        let mut body = json!({"messages": [{"role": "user", "content": "hi"}]});
+        assert!(apply_claude_code_tool_aliases(&mut body).is_none());
+    }
+
+    #[test]
+    fn harness_tool_alias_round_trip_restores_client_names() {
+        // End-to-end C46 tool-loop guarantee: the harness spoof renames a
+        // client tool to its Claude Code form on the request, and the
+        // reverse map restores the client name on the Claude→OpenAI
+        // streaming response (toolNameMap contract).
+        let mut body = json!({
+            "system": "Be terse.",
+            "tools": [{"name": "bash", "description": "run"}],
+            "messages": [
+                {"role": "user", "content": "run ls"},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "tu_9", "name": "bash", "input": {"cmd": "ls"}},
+                ]},
+            ],
+        });
+        let h = harness("sess-rt", Some("opencode/1.18.31"));
+        assert!(apply_claude_harness(&mut body, &h));
+        let reverse = apply_claude_code_tool_aliases(&mut body);
+        assert_eq!(body["tools"][0]["name"], "Bash");
+
+        let map = reverse.expect("reverse map");
+        let mut state = crate::core::translator::registry::ResponseTransformState::default();
+        state
+            .anthropic
+            .claude_state
+            .insert("toolNameMap".to_string(), Value::Object(map));
+        let events = [
+            json!({"type": "message_start", "message": {"id": "m", "model": "claude"}}),
+            json!({"type": "content_block_start", "index": 0, "content_block": {
+                "type": "tool_use", "id": "tu_new", "name": "Bash"
+            }}),
+        ];
+        let mut out = Vec::new();
+        for event in &events {
+            let bytes = serde_json::to_vec(event).unwrap();
+            out.extend(
+                crate::core::translator::response::claude_to_openai::claude_to_openai_streaming(
+                    &bytes, &mut state,
+                ),
+            );
+        }
+        // The client sees its own lowercase tool name back.
+        let call_line = out
+            .iter()
+            .find(|line| line.contains("tool_calls"))
+            .expect("tool_call chunk emitted");
+        assert!(
+            call_line.contains("bash"),
+            "client name restored: {call_line}"
+        );
+        assert!(
+            !call_line.contains("Bash"),
+            "CC alias must not leak: {call_line}"
+        );
     }
 
     #[test]

@@ -954,6 +954,10 @@ async fn forward_with_provider_fallback(
     client_headers: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<Response, ProviderAttemptError> {
     let mut excluded = HashSet::new();
+    // C46 reverse tool-name map (Claude Code → client), set when the
+    // harness spoof renamed tool declarations; threaded to the streaming
+    // response path so tool_calls return under the client's names.
+    let mut harness_tool_name_map: Option<serde_json::Map<String, serde_json::Value>> = None;
     let mut last_error: Option<ProviderAttemptError> = None;
     let mut reloaded = false;
     let mut auth_recovery_used = false;
@@ -1626,6 +1630,12 @@ async fn forward_with_provider_fallback(
                                 &mut spoofed,
                                 identity,
                             );
+                            // C46 tool aliasing: rename client tool names to
+                            // their Claude Code forms on the spoofed body and
+                            // remember the reverse map for the response path
+                            // (CC name → client name), so tool loops survive
+                            // the round trip. Unknown names pass through.
+                            harness_tool_name_map = crate::core::translator::request::claude_format::apply_claude_code_tool_aliases(&mut spoofed);
                             scoped_body = spoofed;
                             &scoped_body
                         }
@@ -1700,6 +1710,7 @@ async fn forward_with_provider_fallback(
                         normalize_for_dashboard,
                         plan,
                         custom_tool_names.clone(),
+                        harness_tool_name_map.clone(),
                         attempt_log,
                     )
                     .await;
@@ -2940,6 +2951,7 @@ async fn proxy_response_with_pending_tracking(
     normalize_for_dashboard: bool,
     plan: &RequestPlan,
     custom_tool_names: Option<String>,
+    tool_name_map: Option<serde_json::Map<String, serde_json::Value>>,
     mut attempt_log: Option<AttemptLog>,
 ) -> Response {
     // Extract formats before stream closure to avoid lifetime issues
@@ -3026,6 +3038,7 @@ async fn proxy_response_with_pending_tracking(
             let provider = provider.clone();
             let model = model.clone();
             let custom_tool_names = custom_tool_names.clone();
+            let tool_name_map = tool_name_map.clone();
             let mut attempt_log = attempt_log;
             let stream = async_stream::stream! {
                 let mut upstream = response.bytes_stream();
@@ -3035,6 +3048,7 @@ async fn proxy_response_with_pending_tracking(
                     &ct,
                     transformer,
                     custom_tool_names.as_deref(),
+                    tool_name_map,
                     stop_on_response_completed,
                 );
                 dispatch.codex_cache = attempt_log.as_ref().map(AttemptLog::codex_cache)
@@ -3137,6 +3151,7 @@ async fn proxy_response_with_pending_tracking(
             let provider = provider.clone();
             let model = model.clone();
             let custom_tool_names2 = custom_tool_names.clone();
+            let tool_name_map2 = tool_name_map.clone();
             let mut attempt_log = attempt_log;
             let stream = async_stream::stream! {
                 let mut dispatch = StreamDispatch::new(
@@ -3145,6 +3160,7 @@ async fn proxy_response_with_pending_tracking(
                     &ct,
                     transformer,
                     custom_tool_names2.as_deref(),
+                    tool_name_map2,
                     stop_on_response_completed,
                 );
                 dispatch.codex_cache = attempt_log.as_ref().map(AttemptLog::codex_cache)
@@ -3294,6 +3310,7 @@ impl StreamDispatch {
             Box<dyn crate::core::translator::response_transform::StreamingTransformer>,
         >,
         custom_tool_names: Option<&str>,
+        tool_name_map: Option<serde_json::Map<String, serde_json::Value>>,
         stop_on_response_completed: bool,
     ) -> Self {
         let mut translation_state = (dashboard_transformer.is_none() && source != target)
@@ -3304,6 +3321,18 @@ impl StreamDispatch {
                     "customToolNames".to_string(),
                     Value::String(names.to_string()),
                 );
+            }
+        }
+        // C46 harness reverse tool-name map: Claude Code name → client
+        // name. The Claude→OpenAI response transform reads this as
+        // `toolNameMap` in the per-stream Claude state, restoring the
+        // client's tool names on tool_calls.
+        if let (Some(state), Some(map)) = (translation_state.as_mut(), tool_name_map) {
+            if !map.is_empty() {
+                state
+                    .anthropic
+                    .claude_state
+                    .insert("toolNameMap".to_string(), Value::Object(map));
             }
         }
         Self {
@@ -4387,6 +4416,7 @@ mod tests {
                 "text/event-stream",
                 None,
                 None,
+                None,
                 true,
             );
             let mut output = Vec::new();
@@ -4461,6 +4491,7 @@ mod tests {
                         } else {
                             None
                         },
+                        None,
                         None,
                         false,
                     );
@@ -4560,6 +4591,7 @@ mod tests {
                     "text/event-stream",
                     None,
                     None,
+                    None,
                     false,
                 );
                 dispatch.tps = Some(observation.clone());
@@ -4609,6 +4641,7 @@ mod tests {
                 target,
                 "text/event-stream",
                 transformer,
+                None,
                 None,
                 false,
             );
@@ -5378,6 +5411,7 @@ mod tests {
             "text/event-stream",
             None,
             None,
+            None,
             true,
         );
         assert!(!observer.feed(b"event: response.compl").response_completed);
@@ -5403,6 +5437,7 @@ mod tests {
                 Format::OpenAiResponses,
                 target,
                 "text/event-stream",
+                None,
                 None,
                 None,
                 false,
@@ -5467,6 +5502,7 @@ mod tests {
                 "text/event-stream",
                 None,
                 None,
+                None,
                 false,
             );
             usage.feed(&fixture[..split]);
@@ -5481,6 +5517,7 @@ mod tests {
                 Format::OpenAi,
                 "text/event-stream",
                 Some(Box::new(OpenAiTransformer::new())),
+                None,
                 None,
                 false,
             );
@@ -5504,6 +5541,7 @@ mod tests {
             Format::OpenAi,
             Format::Gemini,
             "text/event-stream",
+            None,
             None,
             None,
             false,
@@ -5542,6 +5580,7 @@ mod tests {
                 "application/x-ndjson",
                 super::transformer_for_provider("ollama"),
                 None,
+                None,
                 false,
             );
             let mut output = dashboard.feed(&fixture.as_bytes()[..split]).output;
@@ -5564,6 +5603,7 @@ mod tests {
                 Format::OpenAi,
                 "text/event-stream",
                 super::dashboard_transformer_for_format(source),
+                None,
                 None,
                 false,
             );
