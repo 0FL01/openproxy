@@ -425,6 +425,12 @@ pub const CLAUDE_CODE_REFERENCE_SYSTEM: &str =
     "You are Claude Code, Anthropic's official CLI for Claude.";
 /// Lowercase marker for the real-CLI similarity check.
 const CLAUDE_CODE_IDENTITY_MARKER: &str = "you are claude code";
+/// Lowercase marker of a genuine Claude Code subagent task prompt: the
+/// Agent SDK template every `x-claude-code-request-class: subagent`
+/// request carries (MITM 2026-10-06: 123/123 live subagent hits). Without
+/// it the harness predicate false-negatives and spoofs genuine CLI
+/// subagent traffic (which also forwards `x-claude-code-agent-id`).
+const CLAUDE_CODE_SUBAGENT_MARKER: &str = "you are a claude agent";
 const CLAUDE_HARNESS_INSTRUCTION_PREFIX: &str = "[System Instructions - follow these strictly]\n";
 const CLAUDE_HARNESS_ACK_TEXT: &str = "Understood. I will follow these instructions.";
 /// sha256("openproxy-claude-code-device") — fixed relay-style device id.
@@ -516,12 +522,15 @@ pub fn claude_oauth_error_code(body: Option<&[u8]>) -> Option<String> {
 }
 
 /// Relay `_isActualClaudeCodeRequest`: reference identity in system +
-/// `claude-cli/<version> (` UA. Pure function — same input, same verdict.
+/// `claude-cli/<version> (` UA. The main CLI identity and the Agent SDK
+/// subagent template both count — a genuine CLI subagent must never be
+/// harness-spoofed. Pure function — same input, same verdict.
 pub fn is_real_claude_code_request(system_text: &str, client_ua: Option<&str>) -> bool {
-    is_claude_cli_user_agent(client_ua)
-        && system_text
-            .to_lowercase()
-            .contains(CLAUDE_CODE_IDENTITY_MARKER)
+    if !is_claude_cli_user_agent(client_ua) {
+        return false;
+    }
+    let lower = system_text.to_lowercase();
+    lower.contains(CLAUDE_CODE_IDENTITY_MARKER) || lower.contains(CLAUDE_CODE_SUBAGENT_MARKER)
 }
 
 /// UA half of the CLI classifier: `claude-cli/<version>` with a non-empty
@@ -1194,6 +1203,50 @@ mod tests {
             Some("claude-cli/2.1.282 (external, cli)")
         ));
         assert!(!is_real_claude_code_request(system, Some("claude-cli/")));
+    }
+
+    #[test]
+    fn genuine_cli_subagent_passes_classifier_and_is_not_spoofed() {
+        // Live MITM 2026-10-06: every CC subagent request rides the CLI UA
+        // and the Agent SDK system template (123/123 hits). Old predicate
+        // required the main-CLI marker only → genuine subagent traffic was
+        // harness-spoofed (system replaced + instruction/ack pair injected)
+        // while its x-claude-code-agent-id headers still forwarded.
+        let subagent_system = "You are an agent for Claude Code, Anthropic's official CLI for Claude.\nYou are a Claude agent, built on Anthropic's Claude Agent SDK.\nAccomplish the task independently.";
+        let ua = Some("claude-cli/2.1.289 (external, cli)");
+        assert!(is_real_claude_code_request(subagent_system, ua));
+        // Non-CLI UA must still fail even with the SDK template.
+        assert!(!is_real_claude_code_request(
+            subagent_system,
+            Some("opencode/1.18.31")
+        ));
+
+        // End-to-end: apply_claude_harness must leave the genuine
+        // subagent body untouched.
+        let harness = ClaudeHarnessIdentity {
+            client_ua: ua.map(str::to_string),
+            session_id: "11111111-1111-4111-8111-111111111111".to_string(),
+        };
+        let original_system = json!([{
+            "type": "text",
+            "text": subagent_system,
+        }]);
+        let mut body = json!({
+            "system": original_system,
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "text", "text": "explore the repo"}]
+            }]
+        });
+        let spoofed = apply_claude_harness(&mut body, &harness);
+        assert!(!spoofed, "genuine subagent must not be spoofed");
+        assert_eq!(body["system"], original_system, "system untouched");
+        assert_eq!(
+            body["messages"].as_array().unwrap().len(),
+            1,
+            "no instruction/ack pair injected"
+        );
+        assert!(body.get("metadata").is_none(), "no user_id synthesized");
     }
 
     #[test]
