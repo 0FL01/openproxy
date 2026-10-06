@@ -89,6 +89,8 @@ pub fn strip_model_context_marker(model: &str) -> (String, Option<&'static str>)
 /// Mirrors `CLAUDE_SERVER_TOOL_USE_ID` in `open-sse/translator/formats/claude.js:124`.
 /// Claude thinking-signature validation, ported from
 /// `open-sse/utils/claudeSignature.js` (itself from CLIProxyAPI).
+/// C-form: single-layer base64, decoded[0] == 0x08 (live Anthropic
+/// generation, MITM 2026-10-06: 5447/5447 captured signatures).
 /// E-form: single-layer base64, decoded[0] == 0x12. R-form: double-layer
 /// base64, outer decoded[0] == 'E', inner decoded[0] == 0x12.
 /// Cache prefix `...#sig` is stripped before validation.
@@ -105,15 +107,26 @@ fn strip_cache_prefix(raw: &str) -> &str {
 
 fn is_valid_claude_signature(raw: Option<&str>) -> bool {
     const MAX_LEN: usize = 32 * 1024 * 1024;
-    const MARKER: u8 = 0x12;
+    const C_MARKER: u8 = 0x08;
+    const E_MARKER: u8 = 0x12;
     let sig = strip_cache_prefix(raw.unwrap_or(""));
     if sig.is_empty() || sig.len() > MAX_LEN {
         return false;
     }
     let bytes = sig.as_bytes();
-    if bytes[0] == b'E' {
+    if bytes[0] == b'C' {
+        // Live Anthropic signature generation (2025+): a protobuf-ish
+        // payload whose first field tag is 0x08. Every signature in the
+        // MITM corpus (request thinking blocks and SSE signature_delta)
+        // is this form; rejecting it dropped all thinking from genuine
+        // Claude Code history on native passthrough.
         match base64::engine::general_purpose::STANDARD.decode(sig) {
-            Ok(d) => !d.is_empty() && d[0] == MARKER,
+            Ok(d) => !d.is_empty() && d[0] == C_MARKER,
+            Err(_) => false,
+        }
+    } else if bytes[0] == b'E' {
+        match base64::engine::general_purpose::STANDARD.decode(sig) {
+            Ok(d) => !d.is_empty() && d[0] == E_MARKER,
             Err(_) => false,
         }
     } else if bytes[0] == b'R' {
@@ -129,7 +142,7 @@ fn is_valid_claude_signature(raw: Option<&str>) -> bool {
             Err(_) => return false,
         };
         match base64::engine::general_purpose::STANDARD.decode(inner_str.trim()) {
-            Ok(d) => !d.is_empty() && d[0] == MARKER,
+            Ok(d) => !d.is_empty() && d[0] == E_MARKER,
             Err(_) => false,
         }
     } else {
@@ -1373,6 +1386,67 @@ mod tests {
             content.iter().any(|b| b["type"] == "thinking"),
             "placeholder thinking injected: {content:?}"
         );
+    }
+
+    #[test]
+    fn passthrough_keeps_live_c_form_thinking_signatures() {
+        // Live MITM 2026-10-06: every one of 5447 captured request
+        // thinking signatures is C-form base64 (decoded[0] == 0x08).
+        // The old validator only accepted E/R forms and silently dropped
+        // ALL thinking blocks from genuine Claude Code history — Anthropic
+        // requires thinking preservation on tool_use turns, so this must
+        // never regress. Verbatim live signature below.
+        let live_signature = "CAQSoAUKEAgSGAI4AUIIdGhpbmtpbmcSDPmgChla+9Zj6iLM6BoM/PfAPpCyALhB3B6QIjCs1baOM/iwjb0LdGGwFbsow4tsFaRoXsmB2gSu+RiFPSqQc1fFYzKu/oP4t60sYSIqvQQDKS7gl/gOW7AJivT84QU36h+Dop3/nrXMBVwMEeau77lWE8rhW6yRnnIjzZQckir67yIGAwTZ2fYePlz/7twfmZ7WFrguLtah87BALsReTZfFPyfqAYyRoaZ3hOQ3UC9+thnXoq0C28npA34Ds6ayFL8szDrv1QBDh3dE86K3u13BwoB5XDhvxEuB+5O5YBik0DktRBnouccGmXb2CzTE7MTwbjHP4CIr8asb1nM9eh5L3X9TmtCKskTa3EHiygWU8fXl7IjQQce0EcVgvQcNiF0GsuPzbhPBPA3uRwUvZrevF7/DMg1oS79Vdel62taakbr3E1tZp1jhXvL8MeiEE0Osa4ykn2TtIIBkE8/kklALeGbGz8ENHvEqpiyHxjRn/AmkrGKegbnVIbmcuQcArp2qcExErSUphqzLHZrTevfsDRNWBuNRxSDFykoU1+auMCGvjfOFyLXuHTqWtTyyG9zfeiiVnUoAvK8ZlO5Wl3oYVvIPKwx/Di4fqRJPqSUgFvKVk8EExvhMfRmRkt4raJ6zjYrk1NN3t44e9Sj321yfZIEnNlSsr2qJqxBHJO7gfJgBBT/18WUpW6fZtZpnIJMpk+R+M8ZoDY/11ieopvbNFJGa+yrlpRP3GP8Ko8S/lhj0SJC2MMpWLGpRfahw5O8aFK5ZlAW3hyWN5NANb5FSQ/3SrWrFj5s5Ym5c1ARZGzaB0SvTf1mFNoXKl9liTfE9dJZ/BZiiJ5bBtL/D85r0VPxlaDSraVf9H/wYAQ==";
+        let mut body = json!({
+            "thinking": {"type": "adaptive"},
+            "messages": [{
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": "I should call the tool.",
+                        "signature": live_signature
+                    },
+                    {"type": "tool_use", "id": "toolu_1", "name": "f", "input": {}}
+                ]
+            }]
+        });
+        normalize_native_claude_request(&mut body, "claude-opus-5-5");
+        let content = body["messages"][0]["content"].as_array().unwrap();
+        let kept = content
+            .iter()
+            .find(|b| b["type"] == "thinking")
+            .expect("live C-form thinking must survive passthrough");
+        assert_eq!(kept["signature"].as_str(), Some(live_signature));
+        // Adaptive thinking (the live CC default) must not gain a
+        // placeholder either — the real block was kept.
+        assert_eq!(content.len(), 2, "no extra blocks: {content:?}");
+    }
+
+    #[test]
+    fn signature_validator_accepts_e_and_r_forms_and_rejects_garbage() {
+        // E-form: base64 decoding to 0x12 first byte.
+        let e_form = {
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
+            STANDARD.encode([0x12, 0x00, 0x01])
+        };
+        assert!(is_valid_claude_signature(Some(&e_form)));
+        // C-form: base64 decoding to 0x08 first byte.
+        let c_form = {
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
+            STANDARD.encode([0x08, 0x04, 0x12])
+        };
+        assert!(is_valid_claude_signature(Some(&c_form)));
+        // C-prefixed but wrong payload marker → rejected.
+        let c_wrong = {
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
+            STANDARD.encode([0x07, 0x04, 0x12])
+        };
+        assert!(!is_valid_claude_signature(Some(&c_wrong)));
+        // Garbage and empty stay rejected.
+        assert!(!is_valid_claude_signature(Some("bogus")));
+        assert!(!is_valid_claude_signature(Some("")));
+        assert!(!is_valid_claude_signature(None));
     }
 
     #[test]
