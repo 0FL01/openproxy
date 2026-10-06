@@ -1136,7 +1136,14 @@ async fn create_imported_oauth_connection(
                     existing.scope = connection.scope.clone();
                     existing.id_token = connection.id_token.clone();
                     existing.project_id = connection.project_id.clone();
-                    existing.provider_specific_data = connection.provider_specific_data.clone();
+                    // Preserve user-managed per-connection settings (e.g. a
+                    // bound proxyPoolId) when the import carries none of its
+                    // own — token imports never set provider_specific_data,
+                    // and overwriting with the empty map silently dropped
+                    // the binding. An import that DOES carry data wins.
+                    if !connection.provider_specific_data.is_empty() {
+                        existing.provider_specific_data = connection.provider_specific_data.clone();
+                    }
                     existing.updated_at = Some(now.clone());
                     saved = Some(existing.clone());
                     return;

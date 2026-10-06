@@ -141,7 +141,9 @@ pub const CLAUDE_OAUTH_EXCHANGE_UA: &str = "axios/1.15.2";
 pub fn claude_profile_user_agent() -> String {
     format!("claude-code/{CLAUDE_CLI_VERSION}")
 }
-/// Accept header the CLI's OAuth requests carry (axios default form).
+/// Accept header the CLI's OAuth requests carry (axios default form;
+/// exchange/refresh captured live, refresh body shape verified against
+/// the CLI binary — no refresh capture exists in the corpus).
 pub const CLAUDE_OAUTH_ACCEPT: &str = "application/json, text/plain, */*";
 
 /// Canonical Claude Code CLI User-Agent: `claude-cli/<VERSION> (external, cli)`.

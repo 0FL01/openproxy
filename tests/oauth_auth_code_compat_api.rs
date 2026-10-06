@@ -204,8 +204,18 @@ async fn claude_exchange_matches_openproxy_and_saves_connection() {
         &format!("{}/api/oauth/profile", server.uri()),
     );
 
+    // Live wire pins (MITM 2026-10-06): the token exchange rides the axios
+    // identity; the profile validation runs as claude-code/<version> with
+    // the axios accept + Cache-Control: no-cache and no anthropic-* headers.
+    // wiremock splits header values on commas, so multi-segment values are
+    // pinned via `headers(key, vec![...])`.
     Mock::given(method("POST"))
         .and(path("/v1/oauth/token"))
+        .and(wiremock::matchers::header("user-agent", "axios/1.15.2"))
+        .and(wiremock::matchers::headers(
+            "accept",
+            vec!["application/json", "text/plain", "*/*"],
+        ))
         .and(body_json(json!({
             "code": "auth-code",
             "state": "fragment-state",
@@ -225,8 +235,24 @@ async fn claude_exchange_matches_openproxy_and_saves_connection() {
 
     Mock::given(method("GET"))
         .and(path("/api/oauth/profile"))
+        .and(wiremock::matchers::header(
+            "user-agent",
+            "claude-code/2.1.289",
+        ))
+        .and(wiremock::matchers::headers(
+            "accept",
+            vec!["application/json", "text/plain", "*/*"],
+        ))
+        .and(wiremock::matchers::header("cache-control", "no-cache"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "user": { "email": "op@test.dev", "name": "Op User" }
+            // Live CLI zod shape: account.display_name / account.full_name.
+            "account": {
+                "uuid": "u-1",
+                "email": "op@test.dev",
+                "display_name": "Op User",
+                "full_name": "Op Full User"
+            },
+            "organization": { "uuid": "o-1" }
         })))
         .mount(&server)
         .await;
@@ -267,6 +293,10 @@ async fn claude_exchange_matches_openproxy_and_saves_connection() {
     );
     assert_eq!(connection.test_status.as_deref(), Some("active"));
     assert!(connection.expires_at.is_some());
+    // Live account.* fallbacks: display_name must enrich from the
+    // account.display_name field of the live zod shape.
+    assert_eq!(connection.display_name.as_deref(), Some("Op User"));
+    assert_eq!(connection.email.as_deref(), Some("op@test.dev"));
 
     // Repeat login with the same account must upsert, not duplicate.
     Mock::given(method("POST"))
@@ -488,4 +518,87 @@ async fn claude_import_token_maps_broken_body_to_400() {
         .unwrap();
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn claude_import_token_preserves_existing_proxy_pool_binding() {
+    // D1 regression: importing a setup token over an existing interactive
+    // OAuth connection for the same email must not wipe user-managed
+    // provider_specific_data (e.g. a bound proxyPoolId). The import carries
+    // no data of its own, so the existing map must survive. Refresh token
+    // and expiry ARE replaced — that is the documented import semantic.
+    let _lock = ENV_LOCK.lock().unwrap();
+    let server = MockServer::start().await;
+    let _profile_url = EnvVarGuard::set(
+        "OPENPROXY_CLAUDE_PROFILE_URL",
+        &format!("{}/api/oauth/profile", server.uri()),
+    );
+
+    Mock::given(method("GET"))
+        .and(path("/api/oauth/profile"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "user": { "email": "owner@example.com", "name": "Owner" }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let state = app_state().await;
+    // Seed an interactive OAuth connection with a bound proxy pool.
+    state
+        .db
+        .update(|db| {
+            db.provider_connections
+                .push(openproxy::types::ProviderConnection {
+                    id: "existing-1".into(),
+                    provider: "claude".into(),
+                    auth_type: "oauth".into(),
+                    name: Some("Interactive login".into()),
+                    email: Some("owner@example.com".into()),
+                    display_name: Some("Owner".into()),
+                    access_token: Some("old-access".into()),
+                    refresh_token: Some("keep-out-refresh".into()),
+                    expires_at: Some("2099-01-01T00:00:00Z".into()),
+                    test_status: Some("active".into()),
+                    provider_specific_data: [("proxyPoolId".to_string(), json!("pool-7"))]
+                        .into_iter()
+                        .collect(),
+                    ..Default::default()
+                });
+        })
+        .await
+        .unwrap();
+
+    let app = openproxy::build_app(state.clone());
+    let response = app
+        .oneshot(post_request(
+            "/api/oauth/claude/import-token",
+            json!({ "accessToken": "sk-ant-oat01-new-setup-token" }),
+        ))
+        .await
+        .unwrap();
+    let (status, json) = response_json(response).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+
+    let snapshot = state.db.snapshot();
+    assert_eq!(
+        snapshot.provider_connections.len(),
+        1,
+        "upsert, not duplicate"
+    );
+    let connection = &snapshot.provider_connections[0];
+    assert_eq!(connection.id, "existing-1");
+    assert_eq!(
+        connection.provider_specific_data.get("proxyPoolId"),
+        Some(&json!("pool-7")),
+        "user proxy pool binding must survive a data-less import"
+    );
+    // Import semantics: the fresh setup token replaces the credential set.
+    assert_eq!(
+        connection.access_token.as_deref(),
+        Some("sk-ant-oat01-new-setup-token")
+    );
+    assert_eq!(connection.refresh_token, None);
+    assert_eq!(connection.email.as_deref(), Some("owner@example.com"));
+    server.verify().await;
 }
