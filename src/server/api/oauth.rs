@@ -1144,6 +1144,17 @@ async fn create_imported_oauth_connection(
                     if !connection.provider_specific_data.is_empty() {
                         existing.provider_specific_data = connection.provider_specific_data.clone();
                     }
+                    // The claude login path manages `scopeWarning` itself
+                    // (set on a scope-limited grant, absent on a full one);
+                    // a fresh full-grant login must clear a stale warning
+                    // from a previous limited login instead of keeping it.
+                    if connection.provider == "claude"
+                        && !connection
+                            .provider_specific_data
+                            .contains_key("scopeWarning")
+                    {
+                        existing.provider_specific_data.remove("scopeWarning");
+                    }
                     existing.updated_at = Some(now.clone());
                     saved = Some(existing.clone());
                     return;
@@ -1807,6 +1818,31 @@ async fn exchange_claude_compat(
         .await
         .unwrap_or((None, None));
 
+    // Surface a scope-limited grant at login instead of letting it surface
+    // as a runtime 403. The authorize URL requests all CLAUDE_SCOPES; the
+    // server may still issue fewer (consent checkboxes, subscription-gated
+    // scopes). Persist the warning so it survives refreshes (an inert data
+    // key — it never feeds error/degrade mechanics).
+    let granted_scope = token_response.scope.clone();
+    let missing = providers::missing_claude_scopes(granted_scope.as_deref());
+    let mut provider_specific_data = std::collections::BTreeMap::new();
+    if !missing.is_empty() {
+        let missing_joined = missing.join(" ");
+        tracing::warn!(
+            granted = granted_scope.as_deref().unwrap_or_default(),
+            missing = %missing_joined,
+            "claude login received a scope-limited grant; inference and quota calls will 403 until re-authorized with all consent scopes"
+        );
+        provider_specific_data.insert(
+            "scopeWarning".to_string(),
+            json!({
+                "granted": granted_scope,
+                "missing": missing,
+                "message": "Re-authorize the connection and approve all requested scopes; refresh cannot widen a grant."
+            }),
+        );
+    }
+
     Ok(ProviderConnection {
         provider: "claude".to_string(),
         auth_type: "oauth".to_string(),
@@ -1819,6 +1855,7 @@ async fn exchange_claude_compat(
         display_name,
         email,
         test_status: Some("active".to_string()),
+        provider_specific_data,
         ..Default::default()
     })
 }
@@ -2666,6 +2703,16 @@ async fn exchange_oauth_compat(
     }
     if let Some(display_name) = saved.display_name {
         response_connection.insert("displayName".to_string(), Value::String(display_name));
+    }
+    // Additive (frozen v1 envelope): surface a scope-limited claude grant
+    // in the login response so the dashboard/user sees it immediately.
+    if let Some(warning) = saved
+        .provider_specific_data
+        .get("scopeWarning")
+        .cloned()
+        .filter(|value| !value.is_null())
+    {
+        response_connection.insert("scopeWarning".to_string(), warning);
     }
 
     Json(json!({

@@ -146,6 +146,22 @@ pub fn claude_profile_user_agent() -> String {
 /// the CLI binary — no refresh capture exists in the corpus).
 pub const CLAUDE_OAUTH_ACCEPT: &str = "application/json, text/plain, */*";
 
+/// Scopes the authorize URL requests that the issued grant is missing.
+///
+/// The server may issue a strictly narrower grant than requested
+/// (consent checkboxes, subscription-gated scopes). A grant missing
+/// `user:inference` cannot chat; missing scopes must be visible at
+/// login/refresh time, not discovered as a runtime 403.
+pub fn missing_claude_scopes(granted: Option<&str>) -> Vec<&'static str> {
+    let granted_set: std::collections::HashSet<&str> =
+        granted.unwrap_or_default().split_whitespace().collect();
+    CLAUDE_SCOPES
+        .iter()
+        .filter(|scope| !granted_set.contains(*scope))
+        .copied()
+        .collect()
+}
+
 /// Canonical Claude Code CLI User-Agent: `claude-cli/<VERSION> (external, cli)`.
 pub fn claude_user_agent() -> String {
     format!("claude-cli/{CLAUDE_CLI_VERSION} (external, cli)")
@@ -557,5 +573,24 @@ mod tests {
             claude_profile_user_agent(),
             format!("claude-code/{CLAUDE_CLI_VERSION}")
         );
+    }
+
+    #[test]
+    fn missing_claude_scopes_diffs_requested_vs_granted() {
+        // Full grant → nothing missing.
+        assert!(missing_claude_scopes(Some(
+            "org:create_api_key user:profile user:inference user:sessions:claude_code"
+        ))
+        .is_empty());
+        // The live 2026-10-06 incident shape: only two of four scopes issued.
+        let missing = missing_claude_scopes(Some("org:create_api_key user:profile"));
+        assert_eq!(missing, vec!["user:inference", "user:sessions:claude_code"]);
+        // Order-insensitive / extra granted scopes tolerated.
+        let missing = missing_claude_scopes(Some(
+            "user:sessions:claude_code user:inference org:create_api_key user:profile user:office",
+        ));
+        assert!(missing.is_empty());
+        // Absent scope string = nothing granted.
+        assert_eq!(missing_claude_scopes(None), CLAUDE_SCOPES.to_vec());
     }
 }

@@ -335,6 +335,124 @@ async fn claude_exchange_matches_openproxy_and_saves_connection() {
 }
 
 #[tokio::test]
+async fn claude_exchange_surfaces_scope_limited_grant() {
+    // Live 2026-10-06 incident: the authorize URL requests 4 scopes but the
+    // server issued only `org:create_api_key user:profile`. The connection
+    // logged in as active and the gap surfaced later as a runtime quota 403.
+    // The exchange must warn and persist the gap at login time.
+    let _lock = ENV_LOCK.lock().unwrap();
+    let server = MockServer::start().await;
+    let _token_url = EnvVarGuard::set(
+        "OPENPROXY_CLAUDE_TOKEN_URL",
+        &format!("{}/v1/oauth/token", server.uri()),
+    );
+    let _profile_url = EnvVarGuard::set(
+        "OPENPROXY_CLAUDE_PROFILE_URL",
+        &format!("{}/api/oauth/profile", server.uri()),
+    );
+
+    Mock::given(method("POST"))
+        .and(path("/v1/oauth/token"))
+        .and(body_string_contains("auth-code-limited"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "claude-limited",
+            "refresh_token": "claude-limited-refresh",
+            "expires_in": 3600,
+            "scope": "org:create_api_key user:profile"
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/oauth/profile"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "account": { "email": "limited@test.dev", "display_name": "Limited" }
+        })))
+        .mount(&server)
+        .await;
+
+    let state = app_state().await;
+    let app = openproxy::build_app(state.clone());
+    let response = app
+        .oneshot(post_request(
+            "/api/oauth/claude/exchange",
+            json!({
+                "code": "auth-code-limited",
+                "redirectUri": "http://localhost:4624/callback",
+                "codeVerifier": "pkce-verifier",
+                "state": "body-state"
+            }),
+        ))
+        .await
+        .unwrap();
+
+    let (status, json) = response_json(response).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    let warning = &json["connection"]["scopeWarning"];
+    assert_eq!(
+        warning["missing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["user:inference", "user:sessions:claude_code"],
+        "login response must list the missing scopes: {json}"
+    );
+
+    let snapshot = state.db.snapshot();
+    let connection = &snapshot.provider_connections[0];
+    assert_eq!(
+        connection
+            .provider_specific_data
+            .get("scopeWarning")
+            .and_then(|w| w.pointer("/missing")),
+        Some(&json!(["user:inference", "user:sessions:claude_code"])),
+        "warning must persist in provider_specific_data"
+    );
+
+    // Re-login with a FULL grant must clear the stale warning (upsert path).
+    Mock::given(method("POST"))
+        .and(path("/v1/oauth/token"))
+        .and(body_string_contains("auth-code-full"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "claude-full",
+            "refresh_token": "claude-full-refresh",
+            "expires_in": 3600,
+            "scope": "org:create_api_key user:profile user:inference user:sessions:claude_code"
+        })))
+        .mount(&server)
+        .await;
+
+    let app = openproxy::build_app(state.clone());
+    let response = app
+        .oneshot(post_request(
+            "/api/oauth/claude/exchange",
+            json!({
+                "code": "auth-code-full",
+                "redirectUri": "http://localhost:4624/callback",
+                "codeVerifier": "pkce-verifier",
+                "state": "body-state"
+            }),
+        ))
+        .await
+        .unwrap();
+    let (status, json) = response_json(response).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert!(
+        json["connection"].get("scopeWarning").is_none(),
+        "full grant must not carry a warning: {json}"
+    );
+    let snapshot = state.db.snapshot();
+    let connection = &snapshot.provider_connections[0];
+    assert!(
+        !connection
+            .provider_specific_data
+            .contains_key("scopeWarning"),
+        "full-grant re-login must clear the stale warning"
+    );
+}
+
+#[tokio::test]
 async fn codex_exchange_matches_openproxy_and_maps_id_token() {
     let _lock = ENV_LOCK.lock().unwrap();
     let server = MockServer::start().await;

@@ -456,6 +456,23 @@ impl ConnectionRefreshCoordinator {
                 )
             })?;
 
+        // A refresh never widens a grant (RFC 6749 §6: absent `scope`, the
+        // original grant is preserved). Keep a scope-limited claude grant
+        // visible on every rotation while it persists.
+        if (connection.provider == "claude" || connection.provider == "anthropic")
+            && let Some(scope) = connection.scope.as_deref()
+        {
+            let missing = crate::oauth::providers::missing_claude_scopes(Some(scope));
+            if !missing.is_empty() {
+                tracing::warn!(
+                    connection_id = %connection.id,
+                    granted = %scope,
+                    missing = %missing.join(" "),
+                    "claude connection still has a scope-limited grant after refresh; inference and quota calls will 403 until re-authorized"
+                );
+            }
+        }
+
         Ok(CoordinatedRefreshResult {
             connection,
             refreshed: applied.load(Ordering::Acquire),

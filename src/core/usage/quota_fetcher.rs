@@ -2065,9 +2065,9 @@ fn classify_claude_quota_forbidden(body: Option<&str>) -> String {
     };
     let bytes = body.map(str::as_bytes);
     let code = claude_oauth_error_code(bytes);
-    tracing::debug!(
+    tracing::warn!(
         error_code = code.as_deref().unwrap_or("none"),
-        "claude quota 403"
+        "claude quota fetch rejected (403)"
     );
     if code.as_deref() == Some("oauth_scope_insufficient") {
         return "Claude token lacks the quota scope (oauth_scope_insufficient). Re-authorize the connection and approve all requested scopes; refresh will not help.".to_string();
