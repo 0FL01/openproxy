@@ -260,6 +260,12 @@ async fn get_connection_usage(
                     "Quota appears here after the first request through the proxy".to_string(),
                 );
             }
+            // Subscription tier (Pro / Max x5 / …) is captured at login from
+            // the profile payload; surface it on the dashboard card.
+            live_plan = connection
+                .provider_specific_data
+                .get("subscription")
+                .cloned();
         } else {
             // 9router route.js:158-183 — refresh credentials before the quota
             // call and force-retry once on an auth-expired message.

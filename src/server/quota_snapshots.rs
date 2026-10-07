@@ -155,6 +155,17 @@ impl QuotaSnapshots {
             let passive_snapshot = if connection.auth_type == "oauth"
                 && matches!(connection.provider.as_str(), "claude" | "anthropic")
             {
+                // Subscription tier (Pro / Max x5 / …) is captured at login
+                // from the profile payload the login already fetches — no
+                // extra upstream call — and lives in the connection
+                // settings. It renders beside the provider name regardless
+                // of whether a quota snapshot exists yet.
+                entry.limits.plan = connection
+                    .provider_specific_data
+                    .get("subscription")
+                    .and_then(Value::as_str)
+                    .map(clean_string)
+                    .filter(|plan| !plan.trim().is_empty());
                 snapshot
                     .settings
                     .extra
@@ -172,7 +183,6 @@ impl QuotaSnapshots {
                 if quotas.as_object().is_some_and(|quotas| !quotas.is_empty()) {
                     entry.limits.quotas = quotas;
                     entry.limits.observed_at = observed_at;
-                    entry.limits.plan = None;
                     entry.limits.error = None;
                     entry.limits.error_status = None;
                     entry.limits.status = "fresh";
@@ -972,9 +982,16 @@ mod tests {
     async fn claude_state(
         snapshot: Option<Value>,
     ) -> (tempfile::TempDir, AppState, ProviderConnection) {
+        claude_state_with_plan(snapshot, None).await
+    }
+
+    async fn claude_state_with_plan(
+        snapshot: Option<Value>,
+        subscription: Option<&str>,
+    ) -> (tempfile::TempDir, AppState, ProviderConnection) {
         let directory = tempfile::tempdir().unwrap();
         let db = Arc::new(Db::load_from(directory.path()).await.unwrap());
-        let connection = ProviderConnection {
+        let mut connection = ProviderConnection {
             id: "claude-fixture".into(),
             provider: "claude".into(),
             auth_type: "oauth".into(),
@@ -982,6 +999,11 @@ mod tests {
             is_active: Some(true),
             ..Default::default()
         };
+        if let Some(subscription) = subscription {
+            connection
+                .provider_specific_data
+                .insert("subscription".into(), json!(subscription));
+        }
         db.update(|db| {
             db.settings.require_api_key = false;
             db.settings.require_login = false;
@@ -1017,11 +1039,13 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn claude_passive_snapshot_is_served_without_a_collector() {
-        let (_directory, state, connection) = claude_state(Some(passive_snapshot())).await;
+        let (_directory, state, connection) =
+            claude_state_with_plan(Some(passive_snapshot()), Some("Max x5")).await;
         let (accounts, _truncated) = state.quota_snapshots.read(&state);
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].provider, "claude");
         assert_eq!(accounts[0].status, "fresh");
+        assert_eq!(accounts[0].plan.as_deref(), Some("Max x5"));
         assert_eq!(
             accounts[0].observed_at.as_deref(),
             Some("2026-10-07T17:53:37Z")
@@ -1078,6 +1102,17 @@ mod tests {
             .quotas
             .as_object()
             .is_some_and(|quotas| quotas.is_empty()));
+        state.signal_shutdown();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn claude_subscription_plan_renders_before_any_traffic() {
+        // The login-time profile tier must show up on the sidebar even when
+        // no quota snapshot exists yet — the plan does not depend on traffic.
+        let (_directory, state, _connection) = claude_state_with_plan(None, Some("Max x5")).await;
+        let (accounts, _truncated) = state.quota_snapshots.read(&state);
+        assert_eq!(accounts[0].status, "loading");
+        assert_eq!(accounts[0].plan.as_deref(), Some("Max x5"));
         state.signal_shutdown();
     }
 }

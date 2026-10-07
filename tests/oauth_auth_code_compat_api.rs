@@ -252,7 +252,11 @@ async fn claude_exchange_matches_openproxy_and_saves_connection() {
                 "display_name": "Op User",
                 "full_name": "Op Full User"
             },
-            "organization": { "uuid": "o-1" }
+            "organization": {
+                "uuid": "o-1",
+                "organization_type": "claude_max",
+                "rate_limit_tier": "default_max_5x"
+            }
         })))
         .mount(&server)
         .await;
@@ -297,6 +301,11 @@ async fn claude_exchange_matches_openproxy_and_saves_connection() {
     // account.display_name field of the live zod shape.
     assert_eq!(connection.display_name.as_deref(), Some("Op User"));
     assert_eq!(connection.email.as_deref(), Some("op@test.dev"));
+    // Subscription tier rides the profile payload into provider_specific_data.
+    assert_eq!(
+        connection.provider_specific_data.get("subscription"),
+        Some(&json!("Max x5"))
+    );
 
     // Repeat login with the same account must upsert, not duplicate.
     Mock::given(method("POST"))
@@ -331,6 +340,14 @@ async fn claude_exchange_matches_openproxy_and_saves_connection() {
     assert_eq!(
         snapshot.provider_connections[0].access_token.as_deref(),
         Some("claude-access-2")
+    );
+    // The upsert replaced the connection wholesale; the fresh login profile
+    // re-carries the subscription label.
+    assert_eq!(
+        snapshot.provider_connections[0]
+            .provider_specific_data
+            .get("subscription"),
+        Some(&json!("Max x5"))
     );
 }
 

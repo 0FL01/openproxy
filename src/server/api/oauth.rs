@@ -1846,15 +1846,16 @@ async fn exchange_claude_compat(
     // connection instead of duplicating it. Any failure resolves to
     // `(None, None)` — login never fails because enrichment did.
     let profile = fetch_claude_profile_detailed(&token_response.access_token).await;
-    let (email, display_name) = match &profile {
-        ClaudeProfileStatus::Ok((email, display_name)) => {
+    let (email, display_name, subscription) = match &profile {
+        ClaudeProfileStatus::Ok((email, display_name, subscription)) => {
             tracing::info!(
                 target: "openproxy::oauth",
                 email = email.as_deref().map(mask_email).unwrap_or_default(),
                 display_name = display_name.as_deref().unwrap_or_default(),
+                subscription = subscription.as_deref().unwrap_or_default(),
                 "claude profile enrichment succeeded"
             );
-            (email.clone(), display_name.clone())
+            (email.clone(), display_name.clone(), subscription.clone())
         }
         ClaudeProfileStatus::ScopeLimited => {
             // Expected for inference-only grants (e.g. setup tokens): the
@@ -1865,21 +1866,21 @@ async fn exchange_claude_compat(
                 target: "openproxy::oauth",
                 "claude profile fetch refused with oauth_scope_insufficient; email enrichment unavailable, repeat logins will not upsert by email"
             );
-            (None, None)
+            (None, None, None)
         }
         ClaudeProfileStatus::Rejected => {
             tracing::warn!(
                 target: "openproxy::oauth",
                 "claude profile fetch rejected the token; email enrichment unavailable"
             );
-            (None, None)
+            (None, None, None)
         }
         ClaudeProfileStatus::Unreachable => {
             tracing::warn!(
                 target: "openproxy::oauth",
                 "claude profile fetch unreachable; email enrichment unavailable"
             );
-            (None, None)
+            (None, None, None)
         }
     };
 
@@ -1913,6 +1914,9 @@ async fn exchange_claude_compat(
             "claude login received the full requested grant"
         );
     }
+    if let Some(subscription) = subscription {
+        provider_specific_data.insert("subscription".to_string(), json!(subscription));
+    }
 
     Ok(ProviderConnection {
         provider: "claude".to_string(),
@@ -1944,10 +1948,62 @@ async fn exchange_claude_compat(
 /// * `Unreachable` — transport failure: we could not reach Anthropic to
 ///   tell valid from invalid.
 enum ClaudeProfileStatus {
-    Ok((Option<String>, Option<String>)),
+    Ok((Option<String>, Option<String>, Option<String>)),
     ScopeLimited,
     Rejected,
     Unreachable,
+}
+
+/// Human subscription label from a profile payload (live CLI
+/// `fetchProfileInfo` mapping): `organization.organization_type` picks the
+/// plan and `organization.rate_limit_tier` may carry the Max multiplier
+/// (donor examples like `default_max_20x` → `Max x20`). Short labels: the
+/// provider name already precedes them in every surface (`Claude · Pro`,
+/// dashboard badge next to the "Claude" heading).
+fn claude_subscription_label(body: &Value) -> Option<String> {
+    let organization = body.get("organization")?;
+    let tier = organization
+        .get("rate_limit_tier")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|tier| !tier.is_empty());
+    let base = match organization
+        .get("organization_type")
+        .and_then(Value::as_str)?
+    {
+        "claude_pro" => "Pro".to_string(),
+        "claude_max" => {
+            let multiplier = tier.and_then(tier_multiplier);
+            multiplier
+                .map(|multiplier| format!("Max x{multiplier}"))
+                .unwrap_or_else(|| "Max".to_string())
+        }
+        "claude_enterprise" => "Enterprise".to_string(),
+        "claude_team" => "Team".to_string(),
+        _ => return None,
+    };
+    Some(base)
+}
+
+/// First `<digits>x` sequence in a rate-limit tier string
+/// (`default_max_20x` → 20, `max_5x` → 5).
+fn tier_multiplier(tier: &str) -> Option<u32> {
+    let bytes = tier.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index].is_ascii_digit() {
+            let start = index;
+            while index < bytes.len() && bytes[index].is_ascii_digit() {
+                index += 1;
+            }
+            if index < bytes.len() && bytes[index].eq_ignore_ascii_case(&b'x') {
+                return tier[start..index].parse().ok();
+            }
+        } else {
+            index += 1;
+        }
+    }
+    None
 }
 
 /// Fetch the OAuth account profile for `access_token`.
@@ -2029,7 +2085,7 @@ async fn fetch_claude_profile_detailed(access_token: &str) -> ClaudeProfileStatu
             })
             .and_then(Value::as_str),
     );
-    ClaudeProfileStatus::Ok((email, display_name))
+    ClaudeProfileStatus::Ok((email, display_name, claude_subscription_label(&body)))
 }
 
 /// Mask an email for logs: keep the first character of the local part and
@@ -3985,9 +4041,9 @@ async fn claude_import_token(
     }
 
     // Strict validation: the profile endpoint must accept the token.
-    let (email, display_name) = match fetch_claude_profile_detailed(&token).await {
+    let (email, display_name, subscription) = match fetch_claude_profile_detailed(&token).await {
         ClaudeProfileStatus::Ok(profile) => profile,
-        ClaudeProfileStatus::ScopeLimited => (None, None),
+        ClaudeProfileStatus::ScopeLimited => (None, None, None),
         ClaudeProfileStatus::Rejected => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -4021,7 +4077,12 @@ async fn claude_import_token(
                 .unwrap_or_else(|| "Claude Setup Token".to_string())
         });
 
-    let connection = build_imported_claude_connection(&token, &name, email, display_name);
+    let mut connection = build_imported_claude_connection(&token, &name, email, display_name);
+    if let Some(subscription) = subscription {
+        connection
+            .provider_specific_data
+            .insert("subscription".to_string(), json!(subscription));
+    }
 
     match create_imported_oauth_connection(&state, connection).await {
         Ok(connection) => Json(json!({
@@ -5110,5 +5171,62 @@ mod tests {
         // registration proof; the wire behavior is covered by the handler
         // shape test above and the dashboard's direct fetch.
         let _router = super::routes();
+    }
+
+    #[test]
+    fn claude_subscription_label_maps_live_profile_shapes() {
+        // Live CLI fetchProfileInfo mapping: organization_type picks the
+        // plan; rate_limit_tier carries the Max multiplier.
+        let profile = |org_type: &str, tier: Option<&str>| {
+            let mut organization = json!({ "organization_type": org_type });
+            if let Some(tier) = tier {
+                organization["rate_limit_tier"] = json!(tier);
+            }
+            json!({ "organization": organization })
+        };
+        assert_eq!(
+            claude_subscription_label(&profile("claude_pro", None)).as_deref(),
+            Some("Pro")
+        );
+        assert_eq!(
+            claude_subscription_label(&profile("claude_max", Some("default_max_5x"))).as_deref(),
+            Some("Max x5")
+        );
+        assert_eq!(
+            claude_subscription_label(&profile("claude_max", Some("MAX_10X"))).as_deref(),
+            Some("Max x10")
+        );
+        assert_eq!(
+            claude_subscription_label(&profile("claude_max", Some("max"))).as_deref(),
+            Some("Max")
+        );
+        assert_eq!(
+            claude_subscription_label(&profile("claude_max", None)).as_deref(),
+            Some("Max")
+        );
+        assert_eq!(
+            claude_subscription_label(&profile("claude_enterprise", None)).as_deref(),
+            Some("Enterprise")
+        );
+        assert_eq!(
+            claude_subscription_label(&profile("claude_team", None)).as_deref(),
+            Some("Team")
+        );
+        assert_eq!(
+            claude_subscription_label(&profile("claude_unknown_tier", None)),
+            None
+        );
+        // No organization block at all (legacy/foreign shapes): no label.
+        assert_eq!(claude_subscription_label(&json!({"account": {}})), None);
+    }
+
+    #[test]
+    fn tier_multiplier_parses_digits_before_x() {
+        assert_eq!(tier_multiplier("default_max_20x"), Some(20));
+        assert_eq!(tier_multiplier("max_5x"), Some(5));
+        assert_eq!(tier_multiplier("MAX_10X"), Some(10));
+        assert_eq!(tier_multiplier("x"), None);
+        assert_eq!(tier_multiplier("max_"), None);
+        assert_eq!(tier_multiplier(""), None);
     }
 }

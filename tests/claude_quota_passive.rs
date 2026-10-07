@@ -33,17 +33,30 @@ fn active_key(key: &str) -> ApiKey {
 async fn app_state_with_claude_connection(
     snapshot: Option<serde_json::Value>,
 ) -> (AppState, tempfile::TempDir) {
+    app_state_with_claude_connection_and_plan(snapshot, None).await
+}
+
+async fn app_state_with_claude_connection_and_plan(
+    snapshot: Option<serde_json::Value>,
+    subscription: Option<&str>,
+) -> (AppState, tempfile::TempDir) {
     let directory = tempfile::tempdir().expect("tempdir");
     let db = Arc::new(Db::load_from(directory.path()).await.expect("db"));
     let mut app_db: AppDb = (*db.snapshot()).clone();
     app_db.api_keys.push(active_key("usage-mgmt-key"));
-    app_db.provider_connections.push(ProviderConnection {
+    let mut connection = ProviderConnection {
         id: "claude-conn-1".into(),
         provider: "claude".into(),
         auth_type: "oauth".into(),
         access_token: Some("stored-access-token".into()),
         ..Default::default()
-    });
+    };
+    if let Some(subscription) = subscription {
+        connection
+            .provider_specific_data
+            .insert("subscription".into(), json!(subscription));
+    }
+    app_db.provider_connections.push(connection);
     if let Some(snapshot) = snapshot {
         app_db
             .settings
@@ -114,4 +127,16 @@ async fn claude_usage_without_snapshot_names_the_live_traffic_source() {
         message.contains("first request"),
         "must point at the passive source: {message}"
     );
+}
+
+#[tokio::test]
+async fn claude_usage_surfaces_the_subscription_plan_from_login() {
+    // The tier is captured once at login (profile organization_type +
+    // rate_limit_tier) and stored on the connection; the usage endpoint
+    // must surface it for the dashboard plan badge without any upstream
+    // call.
+    let (state, _directory) = app_state_with_claude_connection_and_plan(None, Some("Max x5")).await;
+    let (status, json) = usage_response(&state).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["plan"], "Max x5");
 }

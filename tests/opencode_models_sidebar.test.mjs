@@ -440,7 +440,7 @@ test("claude passive quota windows render under the Claude name", async (t) => {
     refreshIntervalSeconds: 180,
     accounts: [observed ? {
       id: "claude-1", provider: "claude", label: "Account 1", status: "fresh",
-      observedAt: new Date(now).toISOString(), plan: null,
+      observedAt: new Date(now).toISOString(), plan: "Max x5",
       quotas: {
         "session (5h)": { used: 0, total: 100, remaining: 100, remainingPercentage: 100, resetAt: new Date(now + 170 * 60000).toISOString(), unlimited: false },
         "weekly (7d)": { used: 22, total: 100, remaining: 78, remainingPercentage: 78, resetAt: new Date(now + 73 * 3600000).toISOString(), unlimited: false },
@@ -455,7 +455,7 @@ test("claude passive quota windows render under the Claude name", async (t) => {
   api.ready()
   await flush()
   let render = api.render()
-  assert.match(render, /Claude\n5h/)
+  assert.match(render, /Claude · Max x5\n5h/)
   assert.match(render, /5h\s+─{8} 0%/)
   assert.match(render, /Weekly\s+━{2}─{6} 22% ↻3d1h/)
   assert.ok(!render.includes("claude\n"), "raw provider id must not render")
