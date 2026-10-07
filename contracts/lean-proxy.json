@@ -101,16 +101,26 @@
     "kiro": {
       "status": "retired",
       "provider_target_format": "kiro",
-      "retired_request_transforms": ["claude->kiro", "openai->kiro"],
-      "retired_response_transforms": ["kiro->claude", "kiro->openai"],
+      "retired_request_transforms": [
+        "claude->kiro",
+        "openai->kiro"
+      ],
+      "retired_response_transforms": [
+        "kiro->claude",
+        "kiro->openai"
+      ],
       "history_preserved": true,
       "note": "remove kiro provider (retired); frozen provider_target_formats and registered transform entries above are retained unchanged for history"
     },
     "cursor": {
       "status": "retired",
       "provider_target_format": "cursor",
-      "retired_request_transforms": ["openai->cursor"],
-      "retired_response_transforms": ["cursor->openai"],
+      "retired_request_transforms": [
+        "openai->cursor"
+      ],
+      "retired_response_transforms": [
+        "cursor->openai"
+      ],
       "history_preserved": true,
       "note": "remove cursor provider (retired); frozen provider_target_formats and registered transform entries above are retained unchanged for history"
     },
@@ -342,19 +352,18 @@
   },
   "claude_quota_retrieval": {
     "checkpoint": "C23",
-    "owner": "explicit_control_plane_request",
-    "access_token_keyed_cache": false,
-    "completed_result_cache": false,
+    "owner": "passive_response_header_observation",
+    "usage_endpoint_polled": false,
+    "observation_source": "anthropic-ratelimit-unified-* response headers on live generation traffic",
+    "snapshot_semantics": "replace_on_new_observation",
     "stale_success_returned_after_error": false,
-    "unfinished_in_flight_entries": 0,
-    "historical_token_entries": 0,
     "singleflight_enabled": false,
-    "concurrent_request_behavior": "one_upstream_request_per_explicit_caller",
-    "caller_cancellation_retains_state": false,
+    "concurrent_request_behavior": "not_applicable_no_upstream_call",
     "refresh_owner": "connection_refresh_coordinator",
     "dashboard_poll_interval_seconds": 60,
     "dashboard_hidden_page_polling": false,
     "quota_auto_ping_requires_connection_opt_in": true,
+    "claude_auto_ping_removed": true,
     "hot_path_chat_ram_reduction_claimed": false
   },
   "opencode_quota_observations": {
@@ -375,7 +384,11 @@
     "existing_observations_reused": true,
     "external_observation_failures_do_not_cancel_or_reschedule_collectors": true,
     "refresh_eligibility_is_not_an_error": true,
-    "additive_refresh_diagnostics": ["refreshing", "nextRefreshAt", "errorStatus"],
+    "additive_refresh_diagnostics": [
+      "refreshing",
+      "nextRefreshAt",
+      "errorStatus"
+    ],
     "affects_routing": false,
     "shutdown_cancels_collectors": true
   },
@@ -752,21 +765,46 @@
       "scope": "passive_private_request_attempt_metadata",
       "correlation_id": "uuid_v4_once_per_inbound_http_request_shared_by_all_attempts",
       "chat_session": "null_or_version_1_hmac_source_at_insert_preserved_on_finish_drop",
-      "session_header_aliases": ["x-opencode-session-id", "x-opencode-session", "x-session-id"],
+      "session_header_aliases": [
+        "x-opencode-session-id",
+        "x-opencode-session",
+        "x-session-id"
+      ],
       "session_header_names_case_insensitive": true,
-      "session_id_bytes": [1, 256],
+      "session_id_bytes": [
+        1,
+        256
+      ],
       "session_id_validation": "visible_ascii_no_whitespace_or_comma_reject_invalid_conflicts_duplicates_never_truncate",
       "equal_alias_source": "first_alias_in_declared_order",
       "session_hmac": "sha256_existing_installation_api_key_secret_length_prefixed_explicit_chat_v1_domain_authenticated_api_key_id_identifier",
-      "session_hmac_excludes": ["source", "model", "provider", "account"],
+      "session_hmac_excludes": [
+        "source",
+        "model",
+        "provider",
+        "account"
+      ],
       "raw_session_ids_stored": false,
       "session_body_cache_account_fallback": false,
       "cross_request_state": false,
       "new_routes_indexes_migrations": false,
-      "upstream_tps_fields": ["version", "generatedOutputTokens", "elapsedMicros", "endKind"],
+      "upstream_tps_fields": [
+        "version",
+        "generatedOutputTokens",
+        "elapsedMicros",
+        "endKind"
+      ],
       "upstream_tps_version": 1,
-      "upstream_tps_end_kinds": ["protocol_terminal", "json_body", "clean_eof"],
-      "public_nullable_fields": ["tokensPerSecond", "generatedOutputTokens", "upstreamDurationMs"],
+      "upstream_tps_end_kinds": [
+        "protocol_terminal",
+        "json_body",
+        "clean_eof"
+      ],
+      "public_nullable_fields": [
+        "tokensPerSecond",
+        "generatedOutputTokens",
+        "upstreamDurationMs"
+      ],
       "public_projection": "closed_whitelist_excludes_session_correlation_connection_arbitrary_json",
       "public_tps_validation": "success_valid_version_end_kind_u64_numerator_positive_u64_elapsed",
       "explicit_zero_preserved": true,

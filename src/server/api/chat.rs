@@ -106,6 +106,40 @@ fn strip_forwarding_headers(headers: &mut HeaderMap) {
 /// Anthropic every ~60s, Gemini every ~30s — 180s is well past any of them).
 const SSE_STALL_TIMEOUT: Duration = Duration::from_secs(180);
 
+/// Persist a passively observed Claude quota snapshot for a connection.
+///
+/// Stored under `settings.extra["claudeQuotaSnapshot:<connectionId>"]` and
+/// read by the usage endpoint as the claude quota source (no upstream call).
+/// Fire-and-forget on the generation path: a persistence failure is logged
+/// and otherwise ignored — quota display must never affect generation.
+async fn observe_claude_quota_snapshot(
+    state: &AppState,
+    connection: &ProviderConnection,
+    snapshot: Value,
+) {
+    let key = format!("claudeQuotaSnapshot:{}", connection.id);
+    let was_new = {
+        let current = state.db.snapshot();
+        let unchanged = current.settings.extra.get(&key).is_some_and(|existing| {
+            // Skip the write when only the observation timestamp moved.
+            existing.get("quotas") == snapshot.get("quotas")
+        });
+        !unchanged
+    };
+    if !was_new {
+        return;
+    }
+    let db = state.db.clone();
+    let result = db
+        .update_settings(move |settings| {
+            settings.extra.insert(key, snapshot);
+        })
+        .await;
+    if let Err(error) = result {
+        tracing::debug!("claude quota snapshot persist failed: {error}");
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct RoutedResponseFormats {
     pub client: Format,
@@ -1676,6 +1710,23 @@ async fn forward_with_provider_fallback(
         match execution {
             Ok(result) => {
                 let status = result.response.status();
+                // Passive Claude quota observation (donor parity): every
+                // upstream /v1/messages response carries
+                // `anthropic-ratelimit-unified-*` utilization watermarks.
+                // Riding the existing traffic replaces usage-endpoint
+                // polling entirely — scope-limited grants (setup tokens)
+                // can never authorize the usage endpoint anyway. Runs on
+                // success and error statuses alike (429s still carry the
+                // windows); failures never break generation.
+                if matches!(provider, "claude" | "anthropic") {
+                    if let Some(snapshot) =
+                        crate::core::usage::quota_headers::claude_quota_snapshot_from_headers(
+                            result.response.headers(),
+                        )
+                    {
+                        observe_claude_quota_snapshot(state, &connection, snapshot).await;
+                    }
+                }
                 if status.is_success() {
                     if dashboard_stream {
                         let response =

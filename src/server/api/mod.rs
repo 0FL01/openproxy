@@ -1697,9 +1697,12 @@ async fn update_settings_api(
                 db.settings.client_ping_any = v;
             }
             // Persist auto-ping maps into settings.extra (camelCase keys match
-            // the web UI PATCH body).
-            if let Some(v) = req.claude_auto_ping {
-                db.settings.extra.insert("claudeAutoPing".into(), v);
+            // the web UI PATCH body). Claude auto-ping was removed (quota is
+            // passively observed from response headers now); the request
+            // field stays accepted-but-ignored so older dashboards' PATCHes
+            // don't fail.
+            if let Some(_v) = req.claude_auto_ping {
+                db.settings.extra.remove("claudeAutoPing");
             }
             if let Some(v) = req.codex_auto_ping {
                 db.settings.extra.insert("codexAutoPing".into(), v);

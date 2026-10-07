@@ -1,6 +1,6 @@
 //! Quota auto-ping (9router `quotaAutoPing` parity).
 //!
-//! Keeps the settings contract (`claudeAutoPing` / `codexAutoPing` / `glmAutoPing` in settings
+//! Keeps the settings contract (`codexAutoPing` / `glmAutoPing` in settings
 //! extra) and runs a 60s tick only while at least one configured connection is
 //! explicitly enabled (dashboard POST remains available independently).
 //!
@@ -64,18 +64,6 @@ const GLM_MIN_PING_INTERVAL_MS: i64 = 600_000;
 const GLM_PING_MODEL: &str = "glm-5.3-flash";
 const GLM_PENDING_KEY: &str = "glmAutoPingPending";
 const GLM_PING_TIMEOUT: Duration = Duration::from_secs(30);
-
-const CLAUDE_PING_URL: &str = "https://api.anthropic.com/v1/messages?beta=true";
-const CLAUDE_PING_MODEL: &str = "claude-haiku-4-5-20251001";
-const CLAUDE_PING_TEXT: &str = "quota";
-const CLAUDE_PING_MAX_TOKENS: u32 = 1;
-const CLAUDE_ANTHROPIC_VERSION: &str = "2023-06-01";
-// Live Claude Code 2.1.289 quota-probe profile (MITM 2026-10-05): the
-// auxiliary haiku probe carries exactly these six flags — no
-// claude-code, no structured-outputs/fast-mode/heavy. Kept as a literal
-// on purpose so a shared-helper change cannot silently alter ping
-// behavior; order matches the observed header.
-const CLAUDE_ANTHROPIC_BETA: &str = "oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05";
 
 const CODEX_PING_TEXT: &str = "hi";
 const CODEX_PING_INSTRUCTIONS: &str = "Reply with OK.";
@@ -207,11 +195,6 @@ struct ProviderPingConfig {
     quota_key: &'static str,
 }
 
-const CLAUDE_CFG: ProviderPingConfig = ProviderPingConfig {
-    settings_key: "claudeAutoPing",
-    quota_key: "session (5h)",
-};
-
 const CODEX_CFG: ProviderPingConfig = ProviderPingConfig {
     settings_key: "codexAutoPing",
     quota_key: "session",
@@ -257,20 +240,16 @@ async fn tick_handler(State(state): State<AppState>, headers: HeaderMap) -> Resp
 /// True only when an active configured connection is explicitly enabled in
 /// its provider's persisted per-connection auto-ping map.
 pub fn quota_auto_ping_enabled(db: &AppDb) -> bool {
-    [
-        ("claude", CLAUDE_CFG),
-        ("codex", CODEX_CFG),
-        ("glm", GLM_CFG),
-    ]
-    .into_iter()
-    .any(|(provider, cfg)| {
-        let enabled = auto_ping_connections(&db.settings, cfg.settings_key);
-        !enabled.is_empty()
-            && db.provider_connections.iter().any(|connection| {
-                auto_ping_connection_matches(provider, connection)
-                    && enabled.get(&connection.id) == Some(&true)
-            })
-    })
+    [("codex", CODEX_CFG), ("glm", GLM_CFG)]
+        .into_iter()
+        .any(|(provider, cfg)| {
+            let enabled = auto_ping_connections(&db.settings, cfg.settings_key);
+            !enabled.is_empty()
+                && db.provider_connections.iter().any(|connection| {
+                    auto_ping_connection_matches(provider, connection)
+                        && enabled.get(&connection.id) == Some(&true)
+                })
+        })
 }
 
 /// Start the bounded worker at boot only when an explicit target exists.
@@ -359,11 +338,7 @@ async fn run_tick_inner(state: &AppState) -> Value {
     let mut ping_attempts = 0u32;
     let mut ping_successes = 0u32;
 
-    for (provider, cfg) in [
-        ("claude", CLAUDE_CFG),
-        ("codex", CODEX_CFG),
-        ("glm", GLM_CFG),
-    ] {
+    for (provider, cfg) in [("codex", CODEX_CFG), ("glm", GLM_CFG)] {
         let enabled_map = auto_ping_connections(settings, cfg.settings_key);
         if enabled_map.is_empty() {
             continue;
@@ -448,7 +423,7 @@ async fn run_tick_inner(state: &AppState) -> Value {
             "ok": true,
             "targets": 0,
             "results": [],
-            "note": "No claudeAutoPing/codexAutoPing/glmAutoPing connections enabled",
+            "note": "No codexAutoPing/glmAutoPing connections enabled",
         });
     }
 
@@ -648,10 +623,9 @@ async fn process_connection(
         };
     }
 
-    let ping_result = match provider {
-        "claude" => send_claude_ping(state, &connection).await,
-        _ => Err("unsupported provider".into()),
-    };
+    // Only codex/glm remain eligible; any other provider reaching here is
+    // misconfigured.
+    let ping_result: Result<(), String> = Err("unsupported provider".into());
 
     match ping_result {
         Ok(()) => {
@@ -1367,51 +1341,6 @@ async fn persist_pending(
         .map_err(|error| error.to_string())
 }
 
-async fn send_claude_ping(state: &AppState, connection: &ProviderConnection) -> Result<(), String> {
-    let token = connection
-        .access_token
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "missing access token".to_string())?;
-
-    let snapshot = state.db.snapshot();
-    let proxy = resolve_proxy_target(&snapshot, connection, &snapshot.settings);
-    let client = state
-        .client_pool
-        .get("claude-auto-ping", proxy.as_ref())
-        .map_err(|e| format!("client pool: {e}"))?;
-
-    let body = json!({
-        "model": CLAUDE_PING_MODEL,
-        "max_tokens": CLAUDE_PING_MAX_TOKENS,
-        "messages": [{ "role": "user", "content": CLAUDE_PING_TEXT }],
-    });
-
-    let response = client
-        .post(CLAUDE_PING_URL)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("content-type", "application/json")
-        .header("anthropic-version", CLAUDE_ANTHROPIC_VERSION)
-        .header("anthropic-beta", CLAUDE_ANTHROPIC_BETA)
-        .header("anthropic-dangerous-direct-browser-access", "true")
-        .header("user-agent", crate::oauth::providers::claude_user_agent())
-        .header("x-app", "cli")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("claude ping request failed: {e}"))?;
-
-    let status = response.status();
-    // Drain body so the connection is reusable.
-    let _ = response.bytes().await;
-    if status.is_success() {
-        Ok(())
-    } else {
-        Err(format!("claude ping HTTP {}", status.as_u16()))
-    }
-}
-
 async fn send_codex_ping(
     state: &AppState,
     connection: &ProviderConnection,
@@ -1688,7 +1617,7 @@ mod tests {
     }
 
     #[test]
-    fn should_ping_claude_near_reset() {
+    fn should_ping_for_reset_windows() {
         let now = chrono::Utc::now().timestamp_millis();
         let reset = chrono::DateTime::from_timestamp_millis(now + 1_000)
             .unwrap()

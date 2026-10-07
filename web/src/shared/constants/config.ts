@@ -64,19 +64,16 @@ export {
 
 /**
  * Quota auto-ping settings contract (9router parity).
- * Persistence: PATCH /api/settings { claudeAutoPing | codexAutoPing | glmAutoPing }.
+ * Persistence: PATCH /api/settings { codexAutoPing | glmAutoPing }.
  * Scheduler: Rust POST /api/quota/auto-ping/tick (+ boot interval).
  * Warm-ping sends a tiny provider request after a quota reset.
+ * Claude was removed: its quota is passively observed from
+ * anthropic-ratelimit-unified-* headers on live traffic.
  */
 export const QUOTA_AUTOPING_CONFIG = {
   tickIntervalMs: 60_000,
   pingLeadMs: 5_000,
   providers: {
-    claude: {
-      settingsKey: "claudeAutoPing",
-      quotaKey: "session (5h)",
-      pingModel: "claude-haiku-4-5-20251001",
-    },
     codex: {
       settingsKey: "codexAutoPing",
       quotaKeys: ["session", "weekly"],
@@ -91,7 +88,6 @@ export const QUOTA_AUTOPING_CONFIG = {
 } as const;
 
 export const AUTO_PING_SETTINGS_KEYS = {
-  claude: "claudeAutoPing",
   codex: "codexAutoPing",
   glm: "glmAutoPing",
 } as const;
@@ -113,7 +109,6 @@ export function getAutoPingProviderForAuth(
 }
 
 export const AUTO_PING_TOOLTIPS: Record<AutoPingProvider, string> = {
-  claude: "When your 5h quota runs out, auto-sends a request the moment it resets so a new window starts right away.",
   codex: "Auto-starts the next available Codex quota window after reset with a tiny gpt-6-luna request. Consumes a small amount of quota.",
   glm: "Auto-starts the next GLM 5-hour window after reset with a tiny glm-5.3-flash request. Consumes a small amount of Coding Plan quota.",
 };

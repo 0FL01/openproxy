@@ -98,11 +98,31 @@ pub(super) async fn json(response: Response) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::usage::quota_fetcher::fetch_claude_quota_from_url;
+    use serde_json::json;
     use wiremock::{
         matchers::{method, path},
         Mock, MockServer, ResponseTemplate,
     };
+
+    /// Minimal quota-shaped fetch built on the shared transport, replacing
+    /// the removed claude fetch as the transport fixture.
+    async fn fixture_fetch(client: Client, url: &str) -> Value {
+        let response = match client.get(url).bearer_auth("fixture-token").send().await {
+            Ok(response) => response,
+            Err(error) => return json!({ "message": format!("Claude error: {error}") }),
+        };
+        let status = status(&response);
+        if status.as_u16() == 401 || status.as_u16() == 403 {
+            return json!({ "message": "Invalid token" });
+        }
+        if !status.is_success() {
+            return json!({ "message": format!("Claude quota API error ({}).", status.as_u16()) });
+        }
+        match json(response).await {
+            Ok(value) => value,
+            Err(error) => json!({ "message": format!("Claude error: {error}") }),
+        }
+    }
 
     #[tokio::test]
     async fn scoped_transport_captures_retry_after_and_bounds_provider_bodies() {
@@ -125,17 +145,15 @@ mod tests {
             .await;
         let (_, observation) = fetch_with_client(
             client.clone(),
-            fetch_claude_quota_from_url("fixture-token", &format!("{}/quota", server.uri())),
+            fixture_fetch(client.clone(), &format!("{}/quota", server.uri())),
         )
         .await;
         assert_eq!(observation.status, 429);
         assert!((898..=900).contains(&observation.retry_after));
         let requests = server.received_requests().await.unwrap();
-        // The claude quota fetch pins the live claude-code UA per request,
-        // which overrides the scoped client's fixture UA.
         assert_eq!(
             requests[0].headers["user-agent"].to_str().unwrap(),
-            crate::oauth::providers::claude_profile_user_agent()
+            "quota-transport-fixture"
         );
         Mock::given(method("GET"))
             .and(path("/oversized"))
@@ -145,7 +163,7 @@ mod tests {
             .await;
         let (result, _) = fetch_with_client(
             client.clone(),
-            fetch_claude_quota_from_url("fixture-token", &format!("{}/oversized", server.uri())),
+            fixture_fetch(client.clone(), &format!("{}/oversized", server.uri())),
         )
         .await;
         assert!(result.get("quotas").is_none());
@@ -161,14 +179,15 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
+
         Mock::given(path("/redirected"))
             .respond_with(ResponseTemplate::new(200))
             .expect(0)
             .mount(&server)
             .await;
         let (_, observation) = fetch_with_client(
-            client,
-            fetch_claude_quota_from_url("fixture-token", &format!("{}/redirect", server.uri())),
+            client.clone(),
+            fixture_fetch(client, &format!("{}/redirect", server.uri())),
         )
         .await;
         assert_eq!(observation.status, 302);

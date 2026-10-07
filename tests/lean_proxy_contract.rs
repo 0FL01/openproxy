@@ -272,24 +272,20 @@ fn contract_freezes_preservation_and_removal_lists() {
         true
     );
     assert_eq!(
-        manifest["claude_quota_retrieval"]["access_token_keyed_cache"],
+        manifest["claude_quota_retrieval"]["usage_endpoint_polled"],
         false
     );
     assert_eq!(
-        manifest["claude_quota_retrieval"]["completed_result_cache"],
-        false
+        manifest["claude_quota_retrieval"]["owner"],
+        "passive_response_header_observation"
     );
     assert_eq!(
         manifest["claude_quota_retrieval"]["stale_success_returned_after_error"],
         false
     );
     assert_eq!(
-        manifest["claude_quota_retrieval"]["historical_token_entries"],
-        0
-    );
-    assert_eq!(
-        manifest["claude_quota_retrieval"]["singleflight_enabled"],
-        false
+        manifest["claude_quota_retrieval"]["claude_auto_ping_removed"],
+        true
     );
     assert_eq!(
         manifest["claude_quota_retrieval"]["dashboard_poll_interval_seconds"],
