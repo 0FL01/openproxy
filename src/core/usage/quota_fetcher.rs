@@ -2053,6 +2053,32 @@ fn codebuddy_base_package(acc: &serde_json::Map<String, Value>) -> serde_json::M
         .unwrap_or_default()
 }
 
+/// Classify a 403 from the Claude OAuth usage endpoint so the dashboard
+/// can tell an under-scoped grant from a real account problem.
+/// `oauth_scope_insufficient` (the live setup-token/limited-grant shape)
+/// means re-authorize and approve all scopes; org/policy markers mean a
+/// genuine account refusal. Only the parsed error_code is logged — never
+/// the response body.
+fn classify_claude_quota_forbidden(body: Option<&str>) -> String {
+    use crate::core::translator::request::claude_format::{
+        claude_oauth_error_code, is_claude_oauth_policy_rejection,
+    };
+    let bytes = body.map(str::as_bytes);
+    let code = claude_oauth_error_code(bytes);
+    tracing::debug!(
+        error_code = code.as_deref().unwrap_or("none"),
+        "claude quota 403"
+    );
+    if code.as_deref() == Some("oauth_scope_insufficient") {
+        return "Claude token lacks the quota scope (oauth_scope_insufficient). Re-authorize the connection and approve all requested scopes; refresh will not help.".to_string();
+    }
+    if is_claude_oauth_policy_rejection(403, bytes) {
+        return "Claude organization or policy refusal (403). Check the account status; refresh will not help.".to_string();
+    }
+    "Claude account access denied (403). Check the account status; refresh will not help."
+        .to_string()
+}
+
 pub async fn fetch_claude_quota(access_token: &str, _provider: &str) -> Value {
     fetch_claude_quota_from_url(access_token, "https://api.anthropic.com/api/oauth/usage").await
 }
@@ -2072,6 +2098,11 @@ pub async fn fetch_claude_quota_from_url(access_token: &str, url: &str) -> Value
     let response = match client
         .get(url)
         .bearer_auth(access_token)
+        // Live CC usage pings ride the claude-code UA (C2 identity pins).
+        .header(
+            "User-Agent",
+            crate::oauth::providers::claude_profile_user_agent(),
+        )
         .header("anthropic-version", "2023-06-01")
         .header("anthropic-beta", "oauth-2025-04-20")
         .header("Accept", "application/json")
@@ -2087,7 +2118,8 @@ pub async fn fetch_claude_quota_from_url(access_token: &str, url: &str) -> Value
         return json!({ "message": "Invalid or expired Claude token. Please re-authorize the connection." });
     }
     if status.as_u16() == 403 {
-        return json!({ "message": "Claude account access denied (403). Check the account status; refresh will not help." });
+        let body = quota_http::text(response).await.ok();
+        return json!({ "message": classify_claude_quota_forbidden(body.as_deref()) });
     }
     if !status.is_success() {
         return json!({
@@ -2911,6 +2943,102 @@ mod tests {
         let rendered = format!("{error:?}");
         assert!(!rendered.contains("sentinel-access-token"));
         assert!(!rendered.contains("sensitive upstream detail"));
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn claude_quota_403_scope_gap_names_reauth() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/usage"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+                "error": {
+                    "type": "permission_error",
+                    "message": "This credential is missing a required scope",
+                    "details": {
+                        "required_scopes": ["user:profile"],
+                        "error_code": "oauth_scope_insufficient"
+                    }
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let result = fetch_claude_quota_from_url(
+            "sentinel-access-token",
+            &format!("{}/usage", server.uri()),
+        )
+        .await;
+        let message = result["message"].as_str().unwrap();
+        assert!(
+            message.contains("oauth_scope_insufficient") && message.contains("Re-authorize"),
+            "scope gap must name re-auth, got: {message}"
+        );
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests[0].headers["user-agent"].to_str().unwrap(),
+            crate::oauth::providers::claude_profile_user_agent()
+        );
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn claude_quota_403_policy_refusal_names_account_status() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/usage"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+                "error": {
+                    "type": "permission_error",
+                    "message": "This organization has been disabled"
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let result = fetch_claude_quota_from_url(
+            "sentinel-access-token",
+            &format!("{}/usage", server.uri()),
+        )
+        .await;
+        let message = result["message"].as_str().unwrap();
+        assert!(
+            message.contains("organization or policy"),
+            "policy refusal must name the account, got: {message}"
+        );
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn claude_quota_403_unknown_shape_keeps_legacy_message() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/usage"))
+            .respond_with(ResponseTemplate::new(403).set_body_string("forbidden"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let result = fetch_claude_quota_from_url(
+            "sentinel-access-token",
+            &format!("{}/usage", server.uri()),
+        )
+        .await;
+        assert_eq!(
+            result["message"].as_str().unwrap(),
+            "Claude account access denied (403). Check the account status; refresh will not help."
+        );
         server.verify().await;
     }
 

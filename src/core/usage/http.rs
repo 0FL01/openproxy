@@ -131,7 +131,12 @@ mod tests {
         assert_eq!(observation.status, 429);
         assert!((898..=900).contains(&observation.retry_after));
         let requests = server.received_requests().await.unwrap();
-        assert_eq!(requests[0].headers["user-agent"], "quota-transport-fixture");
+        // The claude quota fetch pins the live claude-code UA per request,
+        // which overrides the scoped client's fixture UA.
+        assert_eq!(
+            requests[0].headers["user-agent"].to_str().unwrap(),
+            crate::oauth::providers::claude_profile_user_agent()
+        );
         Mock::given(method("GET"))
             .and(path("/oversized"))
             .respond_with(ResponseTemplate::new(200).set_body_string(" ".repeat(512 * 1024 + 1)))
