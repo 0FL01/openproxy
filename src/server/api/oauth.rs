@@ -1156,6 +1156,13 @@ async fn create_imported_oauth_connection(
                         existing.provider_specific_data.remove("scopeWarning");
                     }
                     existing.updated_at = Some(now.clone());
+                    tracing::info!(
+                        target: "openproxy::oauth",
+                        connection_id = %existing.id,
+                        email = existing.email.as_deref().map(mask_email).unwrap_or_default(),
+                        provider = %provider,
+                        "oauth login updated an existing connection (upsert)"
+                    );
                     saved = Some(existing.clone());
                     return;
                 }
@@ -1197,6 +1204,13 @@ async fn create_imported_oauth_connection(
             connection.updated_at = Some(now.clone());
 
             db.provider_connections.push(connection.clone());
+            tracing::info!(
+                target: "openproxy::oauth",
+                connection_id = %connection.id,
+                email = connection.email.as_deref().map(mask_email).unwrap_or_default(),
+                provider = %provider,
+                "oauth login created a new connection"
+            );
             saved = Some(connection.clone());
         })
         .await?;
@@ -1801,7 +1815,16 @@ async fn exchange_claude_compat(
         .map_err(|error| error.to_string())?;
 
     if !response.status().is_success() {
+        let status = response.status().as_u16();
         let error = response.text().await.unwrap_or_default();
+        // The token endpoint error body is Anthropic's own response (no
+        // client secrets echo back); keep a truncated form for the log.
+        tracing::warn!(
+            target: "openproxy::oauth",
+            status,
+            body = %truncate_for_log(&error, 300),
+            "claude token exchange rejected"
+        );
         return Err(format!("Token exchange failed: {error}"));
     }
 
@@ -1810,13 +1833,55 @@ async fn exchange_claude_compat(
         .await
         .map_err(|error| format!("Token exchange failed: {error}"))?;
 
+    tracing::info!(
+        target: "openproxy::oauth",
+        granted_scope = token_response.scope.as_deref().unwrap_or_default(),
+        expires_in = ?token_response.expires_in,
+        has_refresh_token = token_response.refresh_token.is_some(),
+        "claude token exchange succeeded"
+    );
+
     // Best-effort enrichment: email feeds the upsert in
     // `create_imported_oauth_connection` so repeat logins update the same
     // connection instead of duplicating it. Any failure resolves to
     // `(None, None)` — login never fails because enrichment did.
-    let (email, display_name) = fetch_claude_profile(&token_response.access_token)
-        .await
-        .unwrap_or((None, None));
+    let profile = fetch_claude_profile_detailed(&token_response.access_token).await;
+    let (email, display_name) = match &profile {
+        ClaudeProfileStatus::Ok((email, display_name)) => {
+            tracing::info!(
+                target: "openproxy::oauth",
+                email = email.as_deref().map(mask_email).unwrap_or_default(),
+                display_name = display_name.as_deref().unwrap_or_default(),
+                "claude profile enrichment succeeded"
+            );
+            (email.clone(), display_name.clone())
+        }
+        ClaudeProfileStatus::ScopeLimited => {
+            // Expected for inference-only grants (e.g. setup tokens): the
+            // profile endpoint needs its own scopes. Without an email the
+            // upsert below cannot match, so repeat logins create a new
+            // connection — say so instead of failing silently.
+            tracing::warn!(
+                target: "openproxy::oauth",
+                "claude profile fetch refused with oauth_scope_insufficient; email enrichment unavailable, repeat logins will not upsert by email"
+            );
+            (None, None)
+        }
+        ClaudeProfileStatus::Rejected => {
+            tracing::warn!(
+                target: "openproxy::oauth",
+                "claude profile fetch rejected the token; email enrichment unavailable"
+            );
+            (None, None)
+        }
+        ClaudeProfileStatus::Unreachable => {
+            tracing::warn!(
+                target: "openproxy::oauth",
+                "claude profile fetch unreachable; email enrichment unavailable"
+            );
+            (None, None)
+        }
+    };
 
     // Surface a scope-limited grant at login instead of letting it surface
     // as a runtime 403. The authorize URL requests all CLAUDE_SCOPES; the
@@ -1829,6 +1894,7 @@ async fn exchange_claude_compat(
     if !missing.is_empty() {
         let missing_joined = missing.join(" ");
         tracing::warn!(
+            target: "openproxy::oauth",
             granted = granted_scope.as_deref().unwrap_or_default(),
             missing = %missing_joined,
             "claude login received a scope-limited grant; inference and quota calls will 403 until re-authorized with all consent scopes"
@@ -1840,6 +1906,11 @@ async fn exchange_claude_compat(
                 "missing": missing,
                 "message": "Re-authorize the connection and approve all requested scopes; refresh cannot widen a grant."
             }),
+        );
+    } else {
+        tracing::info!(
+            target: "openproxy::oauth",
+            "claude login received the full requested grant"
         );
     }
 
@@ -1961,15 +2032,28 @@ async fn fetch_claude_profile_detailed(access_token: &str) -> ClaudeProfileStatu
     ClaudeProfileStatus::Ok((email, display_name))
 }
 
-/// Best-effort Claude account enrichment after a code exchange.
-///
-/// Unknown endpoint shape, non-success status, or any transport failure
-/// resolves to `Err(())`; the caller treats that as "no enrichment".
-async fn fetch_claude_profile(access_token: &str) -> Result<(Option<String>, Option<String>), ()> {
-    match fetch_claude_profile_detailed(access_token).await {
-        ClaudeProfileStatus::Ok(profile) => Ok(profile),
-        _ => Err(()),
+/// Mask an email for logs: keep the first character of the local part and
+/// the domain (`andrej***@gmail.com`). Logs must not carry full PII.
+fn mask_email(email: &str) -> String {
+    let Some((local, domain)) = email.split_once('@') else {
+        return "***".to_string();
+    };
+    let mut chars = local.chars();
+    match chars.next() {
+        Some(first) if domain.contains('.') => {
+            format!("{first}***@{domain}")
+        }
+        _ => "***".to_string(),
     }
+}
+
+/// Truncate an upstream error body for log output (char boundary safe).
+fn truncate_for_log(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let truncated: String = text.chars().take(max_chars).collect();
+    format!("{truncated}…[truncated]")
 }
 
 fn extract_codex_account_info(
