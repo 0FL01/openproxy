@@ -34,7 +34,7 @@ import BulkImportCodexModal from "./BulkImportCodexModal";
 
 const ONE_BY_ONE_DELAY_MS = 1000;
 
-const CONTEXT_LIMIT_PROVIDERS = new Set(["opencode-zen", "opencode-go", "glm", "codex"]);
+const CONTEXT_LIMIT_PROVIDERS = new Set(["opencode-zen", "opencode-go", "glm", "codex", "claude"]);
 const DEFAULT_CONTEXT_LIMIT = 500000;
 const MAX_CONTEXT_LIMIT = 1000000;
 

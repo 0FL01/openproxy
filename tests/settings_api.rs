@@ -81,6 +81,7 @@ async fn get_settings_requires_auth_and_redacts_password() {
     assert_eq!(json["providerContextLimits"]["opencode-go"], 500000);
     assert_eq!(json["providerContextLimits"]["glm"], 500000);
     assert_eq!(json["providerContextLimits"]["codex"], 500000);
+    assert_eq!(json["providerContextLimits"]["claude"], 500000);
     assert!(json.get("password").is_none());
     assert!(json.get("clientSecret").is_none());
 }
@@ -109,7 +110,8 @@ async fn patch_settings_updates_values_and_rejects_password_fields() {
                             "opencode-zen": 450000,
                             "opencode-go": 500000,
                             "glm": 200000,
-                            "codex": 500000
+                            "codex": 500000,
+                            "claude": 300000
                         },
                     })
                     .to_string(),
@@ -131,6 +133,7 @@ async fn patch_settings_updates_values_and_rejects_password_fields() {
     assert_eq!(json["glmAutoPing"]["connections"]["glm-1"], true);
     assert_eq!(json["providerContextLimits"]["opencode-zen"], 450000);
     assert_eq!(json["providerContextLimits"]["glm"], 200000);
+    assert_eq!(json["providerContextLimits"]["claude"], 300000);
     assert_eq!(json["hasPassword"], true);
 
     let rejected_context_limit = app

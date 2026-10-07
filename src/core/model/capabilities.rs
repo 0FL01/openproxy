@@ -246,6 +246,22 @@ static MODEL_CAPABILITIES: LazyLock<HashMap<&'static str, Value>> = LazyLock::ne
             "claude-sonnet-4-6",
             serde_json::json!({ "vision": true, "reasoning": true, "search": true, "thinkingFormat": "claude-adaptive", "contextWindow": 1000000, "maxOutput": 128000 }),
         ),
+        // 4.5 family: exact entries so the provider-context cap (2026-10-07)
+        // never advertises 500k on a 200k-native model. Values match the
+        // signed Anthropic model catalog + models.dev (opus/haiku 200k,
+        // sonnet 4.5 1M-native → capped to the standard 500k at discovery).
+        (
+            "claude-opus-4-5-20251101",
+            serde_json::json!({ "vision": true, "reasoning": true, "search": true, "thinkingFormat": "claude-budget", "contextWindow": 200000, "maxOutput": 64000 }),
+        ),
+        (
+            "claude-sonnet-4-5-20250929",
+            serde_json::json!({ "vision": true, "reasoning": true, "search": true, "thinkingFormat": "claude-budget", "contextWindow": 1000000, "maxOutput": 64000 }),
+        ),
+        (
+            "claude-haiku-4-5-20251001",
+            serde_json::json!({ "vision": true, "reasoning": true, "search": true, "thinkingFormat": "claude-budget", "contextWindow": 200000, "maxOutput": 64000 }),
+        ),
         (
             "claude-sonnet-5",
             serde_json::json!({ "vision": true, "reasoning": true, "search": true, "thinkingFormat": "claude-adaptive", "contextWindow": 1000000, "maxOutput": 128000 }),

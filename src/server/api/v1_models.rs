@@ -939,6 +939,8 @@ mod tests {
         // C46/R7: static `cc` catalog rows carry no limits; the capabilities
         // overlay must supply limit{context,output} + source for the
         // OpenCode plugin (which drops `limit` unless both are present).
+        // 2026-10-07: claude joined providerContextLimits, so 1M-native rows
+        // are advertised at the standard 500k cap with output preserved.
         let snapshot = AppDb {
             provider_connections: vec![ProviderConnection {
                 id: "conn-claude".into(),
@@ -970,6 +972,44 @@ mod tests {
             assert!(
                 limit.context.is_some() && limit.output.is_some(),
                 "limit needs context AND output for the plugin: {id}"
+            );
+            assert_eq!(
+                limit.context.map(std::num::NonZeroU32::get),
+                Some(500_000),
+                "1M-native cc rows advertise the standard 500k cap: {id}"
+            );
+            assert_eq!(
+                limit.output.map(std::num::NonZeroU32::get),
+                Some(128_000),
+                "cap must not drop the output limit: {id}"
+            );
+        }
+
+        // 4.5 family keeps its exact native windows (200k/64k, sonnet 4.5 1M
+        // capped to 500k) instead of the fabricated 500k/128k pair.
+        for (id, context) in [
+            ("cc/claude-opus-4-5-20251101", 200_000),
+            ("cc/claude-sonnet-4-5-20250929", 500_000),
+            ("cc/claude-haiku-4-5-20251001", 200_000),
+        ] {
+            let model = models
+                .iter()
+                .find(|m| m.id == id)
+                .unwrap_or_else(|| panic!("4.5 cc model {id} should appear in /v1/models"));
+            let limit = model
+                .opencode
+                .as_ref()
+                .and_then(|metadata| metadata.limit.as_ref())
+                .expect("4.5 limit should be present");
+            assert_eq!(
+                limit.context.map(std::num::NonZeroU32::get),
+                Some(context),
+                "4.5 native context must survive the cap: {id}"
+            );
+            assert_eq!(
+                limit.output.map(std::num::NonZeroU32::get),
+                Some(64_000),
+                "4.5 output must be the native 64k: {id}"
             );
         }
     }

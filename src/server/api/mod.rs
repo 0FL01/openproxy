@@ -1652,7 +1652,7 @@ async fn update_settings_api(
                 StatusCode::BAD_REQUEST,
                 Json(json!({
                     "error": format!(
-                        "Invalid context limit for {provider}; supported providers are opencode-zen, opencode-go, glm, codex and values must be 1..=1000000"
+                        "Invalid context limit for {provider}; supported providers are opencode-zen, opencode-go, glm, codex, claude and values must be 1..=1000000"
                     )
                 })),
             )

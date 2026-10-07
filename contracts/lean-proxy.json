@@ -178,7 +178,7 @@
   },
   "context_limit_transition": {
     "setting": "settings.providerContextLimits",
-    "missing_or_empty_meaning": "default_500000_for_four_legacy_providers",
+    "missing_or_empty_meaning": "default_500000_for_five_legacy_providers",
     "context_management_owner": "client",
     "proxy_memory_limit_unit": "bytes",
     "default_rejection_reader_removed_by": "C08",
