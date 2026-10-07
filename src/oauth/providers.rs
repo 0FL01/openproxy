@@ -105,23 +105,32 @@ impl OAuthProviderConfig {
 /// Bump procedure for [`CLAUDE_CLI_VERSION`]: `npm view @anthropic-ai/claude-code version`.
 /// Official Claude Code OAuth client id.
 pub const CLAUDE_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-/// Subscription OAuth authorize endpoint. Claude Code 2.1.289 pins the
-/// console/manual-code flow to `platform.claude.com` (binary
-/// `CONSOLE_AUTHORIZE_URL`; `claude.ai` remains only behind a bot-wall
-/// redirect for the browser flow). Env override keeps escape hatch.
-pub const CLAUDE_AUTHORIZE_URL: &str = "https://platform.claude.com/oauth/authorize";
-/// Subscription OAuth token endpoint (relay-parity default; env-overridable).
+/// Subscription OAuth authorize endpoint (CC 2.1.289 binary
+/// `CLAUDE_AI_AUTHORIZE_URL`; the live CLI posts Max/Pro subscription
+/// logins here — anthropics/claude-code#58020 shows the current wire).
+/// `platform.claude.com/oauth/authorize` is the CONSOLE flow
+/// (`CONSOLE_AUTHORIZE_URL`): it honors only console scopes
+/// (`org:create_api_key user:profile`) and silently drops subscription
+/// scopes, which stranded the 2026-10-07 grant without `user:inference`.
+/// Env override keeps the escape hatch.
+pub const CLAUDE_AUTHORIZE_URL: &str = "https://claude.com/cai/oauth/authorize";
+/// Subscription token endpoint (relay-parity default; env-overridable).
 pub const CLAUDE_TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
 /// Account profile endpoint for email/display-name enrichment (fail-open).
 pub const CLAUDE_PROFILE_URL: &str = "https://api.anthropic.com/api/oauth/profile";
 /// Registered redirect: shows the code for manual copy (`code=true`).
 pub const CLAUDE_REDIRECT_URI: &str = "https://platform.claude.com/oauth/code/callback";
-/// Subscription scopes (relay-parity set).
+/// Subscription scopes (CC 2.1.289 binary `tno()` = console `c` +
+/// subscription `r`; live wire in anthropics/claude-code#58020). The
+/// subscription half carries `user:inference`, without which every
+/// generation call 403s with `oauth_scope_insufficient`.
 pub const CLAUDE_SCOPES: &[&str] = &[
     "org:create_api_key",
     "user:profile",
     "user:inference",
     "user:sessions:claude_code",
+    "user:mcp_servers",
+    "user:file_upload",
 ];
 /// Pinned Claude Code CLI version (single source; see bump procedure above).
 pub const CLAUDE_CLI_VERSION: &str = "2.1.289";
@@ -577,17 +586,27 @@ mod tests {
 
     #[test]
     fn missing_claude_scopes_diffs_requested_vs_granted() {
-        // Full grant → nothing missing.
+        // Full grant (live tno() set) → nothing missing.
         assert!(missing_claude_scopes(Some(
-            "org:create_api_key user:profile user:inference user:sessions:claude_code"
+            "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
         ))
         .is_empty());
-        // The live 2026-10-06 incident shape: only two of four scopes issued.
+        // The live 2026-10-07 incident shape: the CONSOLE authorize flow
+        // issued only its own two scopes, stranding the grant without
+        // `user:inference` (every generation call 403s).
         let missing = missing_claude_scopes(Some("org:create_api_key user:profile"));
-        assert_eq!(missing, vec!["user:inference", "user:sessions:claude_code"]);
+        assert_eq!(
+            missing,
+            vec![
+                "user:inference",
+                "user:sessions:claude_code",
+                "user:mcp_servers",
+                "user:file_upload"
+            ]
+        );
         // Order-insensitive / extra granted scopes tolerated.
         let missing = missing_claude_scopes(Some(
-            "user:sessions:claude_code user:inference org:create_api_key user:profile user:office",
+            "user:file_upload user:sessions:claude_code user:inference org:create_api_key user:profile user:mcp_servers user:office",
         ));
         assert!(missing.is_empty());
         // Absent scope string = nothing granted.

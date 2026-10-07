@@ -143,7 +143,7 @@ async fn claude_authorize_matches_openproxy_response_shape() {
     assert_eq!(
         json["authUrl"],
         format!(
-            "https://platform.claude.com/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A4624%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code&code_challenge={code_challenge}&code_challenge_method=S256&state={state}"
+            "https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A4624%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload&code_challenge={code_challenge}&code_challenge_method=S256&state={state}"
         )
     );
 }
@@ -228,7 +228,7 @@ async fn claude_exchange_matches_openproxy_and_saves_connection() {
             "access_token": "claude-access",
             "refresh_token": "claude-refresh",
             "expires_in": 3600,
-            "scope": "org:create_api_key user:profile user:inference"
+            "scope": "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
         })))
         .mount(&server)
         .await;
@@ -289,7 +289,7 @@ async fn claude_exchange_matches_openproxy_and_saves_connection() {
     assert_eq!(connection.refresh_token.as_deref(), Some("claude-refresh"));
     assert_eq!(
         connection.scope.as_deref(),
-        Some("org:create_api_key user:profile user:inference")
+        Some("org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload")
     );
     assert_eq!(connection.test_status.as_deref(), Some("active"));
     assert!(connection.expires_at.is_some());
@@ -306,7 +306,7 @@ async fn claude_exchange_matches_openproxy_and_saves_connection() {
             "access_token": "claude-access-2",
             "refresh_token": "claude-refresh-2",
             "expires_in": 3600,
-            "scope": "org:create_api_key user:profile user:inference"
+            "scope": "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
         })))
         .mount(&server)
         .await;
@@ -336,10 +336,11 @@ async fn claude_exchange_matches_openproxy_and_saves_connection() {
 
 #[tokio::test]
 async fn claude_exchange_surfaces_scope_limited_grant() {
-    // Live 2026-10-06 incident: the authorize URL requests 4 scopes but the
-    // server issued only `org:create_api_key user:profile`. The connection
-    // logged in as active and the gap surfaced later as a runtime quota 403.
-    // The exchange must warn and persist the gap at login time.
+    // Live 2026-10-07 incident: the CONSOLE authorize flow issued only its
+    // own two scopes (`org:create_api_key user:profile`), stranding the
+    // grant without `user:inference`. The connection logged in as active
+    // and the gap surfaced later as a runtime 403. The exchange must warn
+    // and persist the gap at login time.
     let _lock = ENV_LOCK.lock().unwrap();
     let server = MockServer::start().await;
     let _token_url = EnvVarGuard::set(
@@ -395,7 +396,12 @@ async fn claude_exchange_surfaces_scope_limited_grant() {
             .iter()
             .map(|v| v.as_str().unwrap())
             .collect::<Vec<_>>(),
-        vec!["user:inference", "user:sessions:claude_code"],
+        vec![
+            "user:inference",
+            "user:sessions:claude_code",
+            "user:mcp_servers",
+            "user:file_upload"
+        ],
         "login response must list the missing scopes: {json}"
     );
 
@@ -406,7 +412,12 @@ async fn claude_exchange_surfaces_scope_limited_grant() {
             .provider_specific_data
             .get("scopeWarning")
             .and_then(|w| w.pointer("/missing")),
-        Some(&json!(["user:inference", "user:sessions:claude_code"])),
+        Some(&json!([
+            "user:inference",
+            "user:sessions:claude_code",
+            "user:mcp_servers",
+            "user:file_upload"
+        ])),
         "warning must persist in provider_specific_data"
     );
 
@@ -418,7 +429,7 @@ async fn claude_exchange_surfaces_scope_limited_grant() {
             "access_token": "claude-full",
             "refresh_token": "claude-full-refresh",
             "expires_in": 3600,
-            "scope": "org:create_api_key user:profile user:inference user:sessions:claude_code"
+            "scope": "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
         })))
         .mount(&server)
         .await;

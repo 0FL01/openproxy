@@ -3,7 +3,7 @@ use crate::oauth::providers;
 
 fn expected_auth_url_prefix(provider: &str) -> &'static str {
     match provider {
-        "claude" => "https://platform.claude.com/oauth/authorize",
+        "claude" => "https://claude.com/cai/oauth/authorize",
         "codex" => "https://auth.openai.com/oauth/authorize",
         "gitlab" => "https://gitlab.com/oauth/authorize",
         "xai" => "https://auth.x.ai/oauth2/authorize",
@@ -23,6 +23,8 @@ fn expected_scopes(provider: &str) -> &'static [&'static str] {
             "user:profile",
             "user:inference",
             "user:sessions:claude_code",
+            "user:mcp_servers",
+            "user:file_upload",
         ],
         "codex" => &["openid", "profile", "email", "offline_access"],
         "gitlab" => &["api", "read_user"],
@@ -50,6 +52,8 @@ fn test_scopes_match_provider_data() {
                 "user:profile",
                 "user:inference",
                 "user:sessions:claude_code",
+                "user:mcp_servers",
+                "user:file_upload",
             ],
         ),
         ("codex", &["openid", "profile", "email", "offline_access"]),
