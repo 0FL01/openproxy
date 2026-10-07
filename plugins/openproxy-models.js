@@ -505,7 +505,7 @@ export async function OpenProxySidebar(api) {
             const warning = populated.length ? stale ? "Data stale" : partial ? "Partial data" : null
               : group.accounts.some((account) => account.status === "loading") ? "Loading…"
               : group.accounts.every((account) => account.status === "unsupported") ? "Limits unsupported" : "Limits unavailable"
-            const name = { codex: "Codex", glm: "GLM", "glm-cn": "GLM CN", "opencode-go": "OpenCode Go" }[group.provider] ?? group.provider
+            const name = { codex: "Codex", claude: "Claude", anthropic: "Anthropic", glm: "GLM", "glm-cn": "GLM CN", "opencode-go": "OpenCode Go" }[group.provider] ?? group.provider
             return jsxs("box", { flexDirection: "column", children: [
               jsxs("text", { children: [span(name, "text", theme, true),
                 ...(group.plan ? [span(` · ${group.plan}`, "textMuted", theme)] : []),

@@ -201,7 +201,10 @@ with an eight-character thin green bar (`━` filled, `─` empty) and an inline
 such as `↻2d3h`. Percentages are green below 70%, yellow from 70% and red from 90%;
 reset details use muted theme colors.
 Connection labels and routine freshness/age text are hidden; warnings identify
-failures, partial, loading, unsupported or unavailable data. A cached `stale`
+failures, partial, loading, unsupported or unavailable data. Claude connections
+report passively observed `5h`/`weekly (7d)` windows from the proxy's stored
+header snapshots (never a usage-endpoint poll); before the first request
+through the proxy the block reads `Loading…`. A cached `stale`
 result with `error: null` is normal, including while a refresh is pending, and
 does not warn. Any nonnull per-connection `error` appears as a short, sanitized
 message under its provider, including when other connections succeed. Optional

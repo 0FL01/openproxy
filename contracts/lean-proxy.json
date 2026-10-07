@@ -364,6 +364,7 @@
     "dashboard_hidden_page_polling": false,
     "quota_auto_ping_requires_connection_opt_in": true,
     "claude_auto_ping_removed": true,
+    "opencode_limits_route_serves_snapshot": true,
     "hot_path_chat_ram_reduction_claimed": false
   },
   "opencode_quota_observations": {

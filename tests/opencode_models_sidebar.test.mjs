@@ -425,3 +425,47 @@ test("optional quota diagnostics validate atomically with the complete response"
   assert.match(api.render(), /25%/)
   assert.doesNotMatch(api.render(), /Invalid|stale/)
 })
+
+test("claude passive quota windows render under the Claude name", async (t) => {
+  const now = Date.now()
+  t.mock.method(Date, "now", () => now)
+  const scheduled = new Map()
+  let handle = 0
+  t.mock.method(globalThis, "setTimeout", (fn, ms) => { const id = ++handle; scheduled.set(id, { fn, ms }); return id })
+  t.mock.method(globalThis, "clearTimeout", (id) => scheduled.delete(id))
+  t.mock.method(globalThis, "setInterval", () => ++handle)
+  t.mock.method(globalThis, "clearInterval", () => {})
+  let observed = true
+  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({
+    refreshIntervalSeconds: 180,
+    accounts: [observed ? {
+      id: "claude-1", provider: "claude", label: "Account 1", status: "fresh",
+      observedAt: new Date(now).toISOString(), plan: null,
+      quotas: {
+        "session (5h)": { used: 0, total: 100, remaining: 100, remainingPercentage: 100, resetAt: new Date(now + 170 * 60000).toISOString(), unlimited: false },
+        "weekly (7d)": { used: 22, total: 100, remaining: 78, remainingPercentage: 78, resetAt: new Date(now + 73 * 3600000).toISOString(), unlimited: false },
+      }, error: null,
+    } : {
+      id: "claude-1", provider: "claude", label: "Account 1", status: "loading",
+      observedAt: null, plan: null, quotas: {}, error: null,
+    }],
+  })))
+  const api = host(t)
+  await OpenProxySidebar(api)
+  api.ready()
+  await flush()
+  let render = api.render()
+  assert.match(render, /Claude\n5h/)
+  assert.match(render, /5h\s+─{8} 0%/)
+  assert.match(render, /Weekly \(7d\)\s+━{2}─{6} 22% ↻3d1h/)
+  assert.ok(!render.includes("claude\n"), "raw provider id must not render")
+  assert.doesNotMatch(render, /Limits unsupported|Loading|unavailable/)
+  // Before the first observed snapshot the group says it is waiting.
+  observed = false
+  const poll = [...scheduled.entries()].find(([, value]) => value.ms === 60000)
+  scheduled.delete(poll[0]); poll[1].fn()
+  await flush()
+  render = api.render()
+  assert.match(render, /Claude\nLoading…/)
+  api.dispose()
+})

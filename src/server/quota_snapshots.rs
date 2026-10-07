@@ -147,24 +147,67 @@ impl QuotaSnapshots {
             }
             entry.limits.provider = clean_string(&connection.provider);
             entry.limits.label = format!("Account {index}");
-            entry.limits.status = if !usage::supports_quota(connection) {
-                "unsupported"
-            } else if entry
-                .observed
-                .is_some_and(|time| now.duration_since(time) < Duration::from_secs(REFRESH_SECONDS))
+            // Claude/anthropic quota is passively observed from response
+            // headers on live generation traffic (see `quota_headers`) and
+            // persisted under `settings.extra["claudeQuotaSnapshot:<id>"]`.
+            // Mirror it here — the limits route serves it without ever
+            // spawning a usage-endpoint collector for these providers.
+            let passive_snapshot = if connection.auth_type == "oauth"
+                && matches!(connection.provider.as_str(), "claude" | "anthropic")
             {
-                if entry.limits.error.is_some() {
-                    "stale"
-                } else {
-                    "fresh"
-                }
-            } else if entry.observed.is_some() {
-                "stale"
-            } else if entry.failures > 0 {
-                "unavailable"
+                snapshot
+                    .settings
+                    .extra
+                    .get(&format!("claudeQuotaSnapshot:{}", connection.id))
+                    .cloned()
             } else {
-                "loading"
+                None
             };
+            if let Some(observed) = passive_snapshot {
+                let quotas = project_quotas(&observed, &connection.provider);
+                let observed_at = observed
+                    .get("observedAt")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                if quotas.as_object().is_some_and(|quotas| !quotas.is_empty()) {
+                    entry.limits.quotas = quotas;
+                    entry.limits.observed_at = observed_at;
+                    entry.limits.plan = None;
+                    entry.limits.error = None;
+                    entry.limits.error_status = None;
+                    entry.limits.status = "fresh";
+                } else {
+                    // A snapshot without usable windows is no better than no
+                    // snapshot; keep waiting for live traffic.
+                    entry.limits.status = "loading";
+                }
+            } else {
+                entry.limits.status = if connection.auth_type == "oauth"
+                    && matches!(connection.provider.as_str(), "claude" | "anthropic")
+                {
+                    // No observed traffic yet: the snapshot appears after the
+                    // first request through the proxy. That is waiting, not
+                    // a failure — and never "unsupported", which would render
+                    // as "Limits unsupported" in clients.
+                    "loading"
+                } else if !usage::supports_quota(connection) {
+                    "unsupported"
+                } else if entry.observed.is_some_and(|time| {
+                    now.duration_since(time) < Duration::from_secs(REFRESH_SECONDS)
+                }) {
+                    if entry.limits.error.is_some() {
+                        "stale"
+                    } else {
+                        "fresh"
+                    }
+                } else if entry.observed.is_some() {
+                    "stale"
+                } else if entry.failures > 0 {
+                    "unavailable"
+                } else {
+                    "loading"
+                };
+            }
         }
         // Oldest due accounts go first; a large configured set cannot starve
         // behind the same first four accounts on every read.
@@ -924,5 +967,117 @@ mod tests {
         assert_eq!(balance["Balance (USD)"]["unit"], "USD");
         assert_eq!(balance["Balance (USD)"]["unlimited"], false);
         assert!(balance["Balance (USD)"]["remainingPercentage"].is_null());
+    }
+
+    async fn claude_state(
+        snapshot: Option<Value>,
+    ) -> (tempfile::TempDir, AppState, ProviderConnection) {
+        let directory = tempfile::tempdir().unwrap();
+        let db = Arc::new(Db::load_from(directory.path()).await.unwrap());
+        let connection = ProviderConnection {
+            id: "claude-fixture".into(),
+            provider: "claude".into(),
+            auth_type: "oauth".into(),
+            access_token: Some("stored-access-token".into()),
+            is_active: Some(true),
+            ..Default::default()
+        };
+        db.update(|db| {
+            db.settings.require_api_key = false;
+            db.settings.require_login = false;
+            db.provider_connections.push(connection.clone());
+            if let Some(snapshot) = snapshot {
+                db.settings
+                    .extra
+                    .insert("claudeQuotaSnapshot:claude-fixture".into(), snapshot);
+            }
+        })
+        .await
+        .unwrap();
+        (directory, AppState::new(db), connection)
+    }
+
+    fn passive_snapshot() -> Value {
+        json!({
+            "quotas": {
+                "session (5h)": {
+                    "used": 0.0, "total": 100.0, "remaining": 100.0,
+                    "remainingPercentage": 100.0, "unlimited": false,
+                    "resetAt": "2026-10-07T22:50:00+00:00"
+                },
+                "weekly (7d)": {
+                    "used": 22.0, "total": 100.0, "remaining": 78.0,
+                    "remainingPercentage": 78.0, "unlimited": false,
+                    "resetAt": "2026-10-10T19:00:00+00:00"
+                }
+            },
+            "observedAt": "2026-10-07T17:53:37Z"
+        })
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn claude_passive_snapshot_is_served_without_a_collector() {
+        let (_directory, state, connection) = claude_state(Some(passive_snapshot())).await;
+        let (accounts, _truncated) = state.quota_snapshots.read(&state);
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].provider, "claude");
+        assert_eq!(accounts[0].status, "fresh");
+        assert_eq!(
+            accounts[0].observed_at.as_deref(),
+            Some("2026-10-07T17:53:37Z")
+        );
+        assert_eq!(accounts[0].quotas["session (5h)"]["used"], 0.0);
+        assert_eq!(accounts[0].quotas["weekly (7d)"]["used"], 22.0);
+        assert_eq!(
+            accounts[0].quotas["weekly (7d)"]["remainingPercentage"],
+            78.0
+        );
+        assert_eq!(
+            accounts[0].quotas["session (5h)"]["resetAt"],
+            "2026-10-07T22:50:00+00:00"
+        );
+        // Passive observation never spawns a usage-endpoint collector.
+        assert!(
+            state.quota_snapshots.entries.lock().accounts[&connection.id]
+                .task
+                .is_none()
+        );
+        assert_eq!(accounts[0].next_refresh_at, None);
+        assert!(!accounts[0].refreshing);
+        state.signal_shutdown();
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn claude_without_a_snapshot_waits_for_live_traffic() {
+        let (_directory, state, _connection) = claude_state(None).await;
+        let (accounts, _truncated) = state.quota_snapshots.read(&state);
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].status, "loading");
+        assert!(accounts[0]
+            .quotas
+            .as_object()
+            .is_some_and(|quotas| quotas.is_empty()));
+        assert_eq!(accounts[0].observed_at, None);
+        // A snapshot whose windows project to nothing is no better than none.
+        let empty = json!({"quotas": {}, "observedAt": "2026-10-07T17:53:37Z"});
+        state
+            .db
+            .update(|db| {
+                db.settings
+                    .extra
+                    .insert("claudeQuotaSnapshot:claude-fixture".into(), empty);
+            })
+            .await
+            .unwrap();
+        let (accounts, _truncated) = state.quota_snapshots.read(&state);
+        assert_eq!(accounts[0].status, "loading");
+        assert!(accounts[0]
+            .quotas
+            .as_object()
+            .is_some_and(|quotas| quotas.is_empty()));
+        state.signal_shutdown();
     }
 }
