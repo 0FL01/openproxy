@@ -1,4 +1,5 @@
 // Auto-loaded from ~/.config/opencode/plugins/. The key stays in provider.options.
+import os from "node:os"
 const PROVIDER_ID = "ludka2"
 // Stay above OpenProxy's ~10-second upstream discovery timeout on cold starts.
 const DISCOVERY_ATTEMPT_TIMEOUT_MS = 15000
@@ -222,10 +223,12 @@ function providerRequest(provider, resource) {
 // Anthropic-side scanners flag non-Claude-Code clients on OAuth accounts.
 // OpenProxy's server already rewrites harness traffic, but the client can
 // do its part BEFORE anything leaves the machine: present the live Claude
-// Code 2.1.289 system prompt (verbatim from the operator's MITM corpus,
-// memory path normalized), pin the CLI User-Agent, and strip client
-// identity strings from tool descriptions. Gated to the OpenProxy provider
-// (ludka2) so every other provider keeps OpenCode's real identity.
+// Code 2.1.289 system prompt (verbatim from the operator's MITM corpus),
+// pin the CLI User-Agent, and strip client identity strings from tool
+// descriptions. Gated to the OpenProxy provider (ludka2) so every other
+// provider keeps OpenCode's real identity. Host-specific paths never
+// leave as placeholders: the memory path and the environment block are
+// rebuilt from the real session working directory and home directory.
 const MASK_PROVIDER_ID = PROVIDER_ID // "ludka2"
 const CLAUDE_MASK_VERSION = "2.1.289"
 const CLAUDE_MASK_UA = `claude-cli/${CLAUDE_MASK_VERSION} (external, cli)`
@@ -241,6 +244,24 @@ const CLAUDE_MASK_TOOL_DESCRIPTION_SCRUB = [
   [/\bopencode\b/gi, "Claude Code"],
 ]
 
+// Host-specific absolute path in the corpus-derived style block; replaced
+// at runtime with the real session path so no placeholder ever leaves.
+const CLAUDE_MASK_MEMORY_PLACEHOLDER = "/home/user/.claude/projects/-home-user-project/memory/"
+// Claude Code project directories are the working directory with every
+// path separator turned into a dash (live CC: /tmp/space -> -tmp-space).
+const claudeProjectSlug = (directory) => directory.replace(/\/+$/, "").replaceAll("/", "-")
+const claudeMemoryPath = (directory) => `${os.homedir()}/.claude/projects/${claudeProjectSlug(directory)}/memory/`
+const claudeShellName = () => process.env.SHELL?.split("/").pop() || "bash"
+// Mirrors the live CC environment block; OpenCode's own directory facts
+// are reused, never re-derived from this process.
+const claudeEnvironmentBlock = (directory, project) =>
+  "# Environment\nYou have been invoked in the following environment:\n" +
+  ` - Primary working directory: ${directory}\n` +
+  ` - Is a git repository: ${project?.vcs === "git" ? "true" : "false"}\n` +
+  ` - Platform: ${process.platform}\n` +
+  ` - Shell: ${claudeShellName()}\n` +
+  ` - OS Version: ${os.type()} ${os.release()}`
+
 function maskedModel(input) {
   return input?.model?.providerID === MASK_PROVIDER_ID || input?.provider?.info?.id === MASK_PROVIDER_ID
 }
@@ -254,17 +275,41 @@ function scrubToolDescription(description) {
   return scrubbed
 }
 
-function claudeMaskHooks() {
+function claudeMaskHooks({ directory, project, client } = {}) {
+  const instanceDirectory = typeof directory === "string" && directory.trim() ? directory : os.homedir()
+  const sessionDirectories = new Map()
+  // Per-request working directory: OpenCode's own session record when the
+  // request carries a sessionID, the instance directory otherwise. Failures
+  // never surface — they fall back to the instance value.
+  async function sessionDirectory(sessionID) {
+    if (!sessionID || typeof client?.session?.get !== "function") return instanceDirectory
+    if (!sessionDirectories.has(sessionID)) {
+      sessionDirectories.set(sessionID, client.session.get({ path: { id: sessionID } })
+        .then((session) => typeof session?.directory === "string" && session.directory.trim() ? session.directory : instanceDirectory)
+        .catch(() => instanceDirectory))
+    }
+    return sessionDirectories.get(sessionID)
+  }
+  const maskedStyles = new Map()
+  const maskedStyle = (directory) => {
+    let style = maskedStyles.get(directory)
+    if (style === undefined) {
+      style = CLAUDE_MASK_STYLE.split(CLAUDE_MASK_MEMORY_PLACEHOLDER).join(claudeMemoryPath(directory))
+      maskedStyles.set(directory, style)
+    }
+    return style
+  }
   return {
     "chat.headers"(input, output) {
       if (!maskedModel(input)) return
       output.headers["User-Agent"] = CLAUDE_MASK_UA
     },
-    "experimental.chat.system.transform"(input, output) {
+    async "experimental.chat.system.transform"(input, output) {
       if (!maskedModel(input)) return
       // Full replacement, mirroring the server-side harness spoof: the
       // client's own system text never reaches the masked provider.
-      output.system = [CLAUDE_MASK_IDENTITY, CLAUDE_MASK_HARNESS, CLAUDE_MASK_STYLE]
+      const directory = await sessionDirectory(input.sessionID)
+      output.system = [CLAUDE_MASK_IDENTITY, CLAUDE_MASK_HARNESS, maskedStyle(directory), claudeEnvironmentBlock(directory, project)]
     },
     "tool.definition"(input, output) {
       // Tool definitions are provider-agnostic; scrub unconditionally so
@@ -275,8 +320,8 @@ function claudeMaskHooks() {
   }
 }
 
-async function OpenProxyModels() {
-  const mask = claudeMaskHooks()
+async function OpenProxyModels(input) {
+  const mask = claudeMaskHooks(input)
   return {
     async config(config) {
       const provider = configuredProvider(config)

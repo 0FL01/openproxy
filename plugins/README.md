@@ -14,7 +14,15 @@ the OpenProxy provider present themselves as a genuine Claude Code CLI run:
 
 - `experimental.chat.system.transform` — replaces the OpenCode system prompt
   with the live Claude Code 2.1.289 prompt (identity + harness + style blocks;
-  server-side ground truth, memory path normalized) for `ludka2` models only.
+  server-side ground truth) plus a Claude Code-shaped `# Environment` block,
+  for `ludka2` models only. Host-specific paths are rebuilt at runtime from
+  the real machine: the memory path is
+  `<home>/.claude/projects/<working-directory-with-dashes>/memory/` and the
+  environment block carries OpenCode's own session working directory, git
+  status, platform, shell and OS version, so no corpus placeholder (e.g.
+  `/home/user/...`) ever reaches the provider. The per-session working
+  directory comes from OpenCode's session record (`client.session.get`) with
+  the plugin instance directory as fallback.
 - `chat.headers` — pins `User-Agent: claude-cli/2.1.289 (external, cli)` on
   `ludka2` requests.
 - `tool.definition` — scrubs client-identity strings (`opencode`, `opencode.ai`,

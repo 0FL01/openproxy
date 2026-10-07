@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import os from "node:os"
 import { test } from "node:test"
 import discovery from "../plugins/openproxy-models.js"
 
@@ -25,12 +26,18 @@ const maskCases = () => [
     },
     output: { system: ["You are opencode, an interactive CLI tool that helps users with software engineering tasks.", "extra block"] },
     check: (output) => {
-      assert.equal(output.system.length, 3)
+      assert.equal(output.system.length, 4)
       assert.equal(output.system[0], "You are Claude Code, Anthropic's official CLI for Claude.")
       assert.ok(output.system[1].includes("interactive agent"))
       assert.ok(output.system[2].includes("# Memory"))
+      assert.ok(output.system[2].includes(`${os.homedir()}/.claude/projects/-tmp-x/memory/`))
+      assert.ok(output.system[3].startsWith("# Environment"))
+      assert.ok(output.system[3].includes("Primary working directory: /tmp/x"))
+      assert.ok(output.system[3].includes(`Platform: ${process.platform}`))
+      assert.ok(output.system[3].includes(`OS Version: ${os.type()} ${os.release()}`))
       const joined = output.system.join("\n").toLowerCase()
       assert.ok(!joined.includes("opencode"), "client identity must not survive")
+      assert.ok(!joined.includes("/home/user/"), "placeholder path must not survive")
     },
   },
   {
@@ -95,6 +102,17 @@ const maskCases = () => [
   },
 ]
 
+function sessionClientStub(directory, fail = false) {
+  return {
+    session: {
+      get() {
+        if (fail) return Promise.reject(new Error("boom"))
+        return Promise.resolve({ directory })
+      },
+    },
+  }
+}
+
 test("server module exposes the claude mask hooks", async () => {
   const hooks = await OpenProxyModels(stubInput())
   assert.equal(typeof hooks["chat.headers"], "function")
@@ -120,7 +138,7 @@ test("mask system prompt carries no client identity markers", async () => {
     output,
   )
   const joined = output.system.join("\n").toLowerCase()
-  for (const marker of ["opencode", "anomalyco", "opencode.ai", "sst/"]) {
+  for (const marker of ["opencode", "anomalyco", "opencode.ai", "sst/", "/home/user/"]) {
     assert.ok(!joined.includes(marker), `marker ${marker} must not appear`)
   }
   // Provider-context gating also works when only provider.info.id is present.
@@ -135,4 +153,26 @@ test("mask system prompt carries no client identity markers", async () => {
     output2,
   )
   assert.equal(output2.system[0], "You are Claude Code, Anthropic's official CLI for Claude.")
+})
+
+test("mask resolves the session working directory through the client", async () => {
+  const hooks = await OpenProxyModels({ ...stubInput(), client: sessionClientStub("/tmp/deep/dir/") })
+  const output = { system: ["original"] }
+  await hooks["experimental.chat.system.transform"](
+    { sessionID: "sess-1", model: { providerID: "ludka2", modelID: "x" } },
+    output,
+  )
+  assert.ok(output.system[2].includes(`${os.homedir()}/.claude/projects/-tmp-deep-dir/memory/`))
+  assert.ok(output.system[3].includes("Primary working directory: /tmp/deep/dir"))
+})
+
+test("mask falls back to the instance directory when the session lookup fails", async () => {
+  const hooks = await OpenProxyModels({ ...stubInput(), client: sessionClientStub("/unreachable", true) })
+  const output = { system: ["original"] }
+  await hooks["experimental.chat.system.transform"](
+    { sessionID: "sess-2", model: { providerID: "ludka2", modelID: "x" } },
+    output,
+  )
+  assert.ok(output.system[2].includes(`${os.homedir()}/.claude/projects/-tmp-x/memory/`))
+  assert.ok(output.system[3].includes("Primary working directory: /tmp/x"))
 })
