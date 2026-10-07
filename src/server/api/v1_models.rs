@@ -975,6 +975,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn claude_cc_catalog_has_no_duplicate_rows() {
+        // 2026-10-07: b89f3bb8 added both dashed and dotted opus spellings
+        // (claude-opus-4-8 + claude-opus-4.8, claude-opus-5-5 + 5.5), which
+        // surfaced as two indistinguishable picker rows. The dashed id is the
+        // canonical live one (CC traffic 620/620, signed Anthropic catalog).
+        let snapshot = AppDb {
+            provider_connections: vec![ProviderConnection {
+                id: "conn-claude".into(),
+                provider: "claude".into(),
+                auth_type: "oauth".into(),
+                access_token: Some("sk-ant-oat-test".into()),
+                is_active: Some(true),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let models = build_models_list(&test_state().await, &snapshot, &[LLM_KIND]).await;
+        let cc_rows: Vec<&ModelCard> = models.iter().filter(|m| m.id.starts_with("cc/")).collect();
+        assert!(!cc_rows.is_empty(), "cc rows should be listed");
+
+        let mut names = std::collections::HashMap::new();
+        for row in &cc_rows {
+            assert!(
+                !row.id.contains('.'),
+                "dotted cc model id must not be listed: {}",
+                row.id
+            );
+            let name = row
+                .opencode
+                .as_ref()
+                .and_then(|metadata| metadata.name.clone())
+                .unwrap_or_else(|| row.id.clone());
+            assert!(
+                names.insert(name.clone(), row.id.clone()).is_none(),
+                "duplicate cc display name {name:?}: {:?} and {:?}",
+                names.get(&name),
+                row.id
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn custom_models_appear_without_connections() {
         // Issue #156 regression: custom models must appear in /v1/models
         // even when there are no provider connections.
