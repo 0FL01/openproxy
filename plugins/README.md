@@ -216,12 +216,10 @@ without an error they cannot distinguish a failed refresh from TTL expiry.
 The response is bounded to 128 connections; the panel reports when some limits
 are omitted. Countdown text updates every 30 seconds. On proxy failure or
 invalid data, the last valid response stays visible with a stale warning and a
-sanitized failure message. Retained values also warn after 190 seconds without
-a successful, fully validated proxy read (180 seconds plus the 10-second request
-deadline grace, checked on the countdown tick). This uses the client's receipt
-clock, never the server's `observedAt`, so server clock skew or an old upstream
-observation cannot create false stale warnings. A successful read clears proxy
-failure/silence warnings; an upstream error clears when the backend reports
+sanitized failure message. Aged quota values never warn: the client keeps
+polling in the background and refreshes silently, and neither server clock skew
+nor an old upstream observation can create stale warnings. A successful read
+clears proxy failure warnings; an upstream error clears when the backend reports
 `error: null`. Optional diagnostics validate atomically with the whole response.
 Timers and active requests stop when the plugin is disposed. Without a backend
 supporting this endpoint the panel shows unavailable. Quit and restart OpenCode

@@ -370,7 +370,7 @@ test("proxy errors retain last quotas and clear only on a validated successful r
   }
 })
 
-test("receipt silence warns after request grace regardless of server clock skew, then recovers", async (t) => {
+test("proxy silence and server clock skew never add a stale warning to retained quotas", async (t) => {
   const clock = pollingClock(t)
   let reads = 0, finish
   const fetch = t.mock.method(globalThis, "fetch", () => {
@@ -389,13 +389,15 @@ test("receipt silence warns after request grace regardless of server clock skew,
   await clock.poll()
   assert.doesNotMatch(api.render(), /stale/)
   await clock.poll()
-  clock.advance(129999)
-  assert.doesNotMatch(api.render(), /stale/)
-  clock.advance(1)
-  assert.match(api.render(), /Data stale[\s\S]*25%/)
+  // The third read is still in flight; however long it takes, retained rows
+  // stay quiet — aged values refresh silently in the background.
+  clock.advance(130000)
+  assert.match(api.render(), /25%/)
+  assert.doesNotMatch(api.render(), /stale|unavailable|retry/)
   assert.equal(fetch.mock.callCount(), 3)
   finish()
   await flush()
+  assert.match(api.render(), /25%/)
   assert.doesNotMatch(api.render(), /stale/)
 })
 

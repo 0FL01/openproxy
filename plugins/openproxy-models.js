@@ -383,7 +383,6 @@ export async function OpenProxySidebar(api) {
   const [failed, setFailed] = createSignal(false)
   const [visible, setVisible] = createSignal(false)
   const [now, setNow] = createSignal(Date.now())
-  const [receivedAt, setReceivedAt] = createSignal()
   let timer, clock, controller, disposeRoot, stopped = false, started = false, warmupRetried = false
   const stop = () => {
     if (stopped) return
@@ -410,9 +409,7 @@ export async function OpenProxySidebar(api) {
       const body = await limitsResponse(response)
       const next = validateLimits(body)
       if (stopped) return
-      const received = Date.now()
-      setReceivedAt(received)
-      setNow(received)
+      setNow(Date.now())
       setAccounts(next)
       setFailed(false)
       setMessage(body.truncated ? "Some limits omitted" : next.length ? "" : "No limits")
@@ -495,9 +492,9 @@ export async function OpenProxySidebar(api) {
         return [text("Usage limits", "text", theme, true), ...(message() ? [text(message(), failed() ? "error" : "textMuted", theme)] : []),
           ...sharedLimits(accounts()).map((group) => {
             const populated = group.accounts.filter((account) => Object.keys(account.quotas).length)
-            // Backend TTL expiry only permits refresh. Measure proxy silence on
-            // our own clock, allowing its 10-second request deadline as grace.
-            const stale = failed() || receivedAt() !== undefined && now() - receivedAt() >= 190000
+            // Aged quota values refresh silently in the background; the
+            // warning is reserved for an unreachable or failing proxy.
+            const stale = failed()
             const errors = [...new Set(group.accounts.filter((account) => account.error !== null).map((account) =>
               `${clean(account.error).trim().slice(0, 80) || "Quota request failed"}${account.errorStatus != null ? ` · HTTP ${account.errorStatus}` : ""}` +
               (account.refreshing ? " · retrying" : account.nextRefreshAt ? ` · retry ${reset(account.nextRefreshAt)}` : "")))]
