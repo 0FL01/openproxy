@@ -478,7 +478,7 @@ export async function OpenProxySidebar(api) {
     const detail = !quota.unlimited && used !== null && quota.unit
       ? balance ?? (quota.used !== null ? `${amount(quota.used)} used` : null) : null
     const tone = used === null || quota.unlimited ? "text" : used >= 90 ? "error" : used >= 70 ? "warning" : "success"
-    const name = label === "session (5h)" ? "5h" : label[0].toUpperCase() + label.slice(1)
+    const name = label === "session (5h)" ? "5h" : label === "weekly (7d)" ? "Weekly" : label[0].toUpperCase() + label.slice(1)
     return jsxs("text", { children: [span(`${name.padEnd(7)} `, "text", theme),
       ...(quota.unlimited || used === null ? [span(quota.unlimited ? "Unlimited" : balance ?? "unknown", tone, theme)] : [
         span("━".repeat(filled), "success", theme), span("─".repeat(8 - filled), "success", theme),

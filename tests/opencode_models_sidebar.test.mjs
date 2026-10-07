@@ -457,7 +457,7 @@ test("claude passive quota windows render under the Claude name", async (t) => {
   let render = api.render()
   assert.match(render, /Claude\n5h/)
   assert.match(render, /5h\s+─{8} 0%/)
-  assert.match(render, /Weekly \(7d\)\s+━{2}─{6} 22% ↻3d1h/)
+  assert.match(render, /Weekly\s+━{2}─{6} 22% ↻3d1h/)
   assert.ok(!render.includes("claude\n"), "raw provider id must not render")
   assert.doesNotMatch(render, /Limits unsupported|Loading|unavailable/)
   // Before the first observed snapshot the group says it is waiting.
