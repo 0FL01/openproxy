@@ -461,6 +461,49 @@ async fn claude_exchange_surfaces_scope_limited_grant() {
             .contains_key("scopeWarning"),
         "full-grant re-login must clear the stale warning"
     );
+
+    // Re-login with the LIVE subscription grant (2026-10-07 re-login: the
+    // claude.ai flow never issues the console `org:create_api_key`) must
+    // also be warning-free — a working grant must not cry wolf.
+    Mock::given(method("POST"))
+        .and(path("/v1/oauth/token"))
+        .and(body_string_contains("auth-code-subscription"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "claude-subscription",
+            "refresh_token": "claude-subscription-refresh",
+            "expires_in": 3600,
+            "scope": "user:file_upload user:inference user:mcp_servers user:profile user:sessions:claude_code"
+        })))
+        .mount(&server)
+        .await;
+
+    let app = openproxy::build_app(state.clone());
+    let response = app
+        .oneshot(post_request(
+            "/api/oauth/claude/exchange",
+            json!({
+                "code": "auth-code-subscription",
+                "redirectUri": "http://localhost:4624/callback",
+                "codeVerifier": "pkce-verifier",
+                "state": "body-state"
+            }),
+        ))
+        .await
+        .unwrap();
+    let (status, json) = response_json(response).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert!(
+        json["connection"].get("scopeWarning").is_none(),
+        "subscription grant (no console scope) must not carry a warning: {json}"
+    );
+    let snapshot = state.db.snapshot();
+    let connection = &snapshot.provider_connections[0];
+    assert!(
+        !connection
+            .provider_specific_data
+            .contains_key("scopeWarning"),
+        "subscription-grant re-login must clear any stale warning"
+    );
 }
 
 #[tokio::test]

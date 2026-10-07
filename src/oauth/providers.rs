@@ -155,16 +155,41 @@ pub fn claude_profile_user_agent() -> String {
 /// the CLI binary — no refresh capture exists in the corpus).
 pub const CLAUDE_OAUTH_ACCEPT: &str = "application/json, text/plain, */*";
 
-/// Scopes the authorize URL requests that the issued grant is missing.
+/// Scopes a **subscription** grant must carry for the proxy to work.
 ///
-/// The server may issue a strictly narrower grant than requested
-/// (consent checkboxes, subscription-gated scopes). A grant missing
-/// `user:inference` cannot chat; missing scopes must be visible at
-/// login/refresh time, not discovered as a runtime 403.
+/// The authorize URL requests the full CLI set ([`CLAUDE_SCOPES`] =
+/// console `c` + subscription `r`), but the two halves come from
+/// mutually exclusive flows: the console flow never issues subscription
+/// scopes and vice versa (CC 2.1.289 binary; live 2026-10-07 re-login
+/// granted the full subscription set with no `org:create_api_key`).
+/// Warning on a half that a flow can never issue is noise. The CLI's own
+/// switch is `user:inference` (`Dxn` = scopes includes `user:inference`)
+/// — without it every generation call 403s with
+/// `oauth_scope_insufficient`.
+pub const CLAUDE_SUBSCRIPTION_REQUIRED_SCOPES: &[&str] = &[
+    "user:inference",
+    "user:profile",
+    "user:sessions:claude_code",
+];
+
+/// Scopes the issued grant is missing, judged against the required set of
+/// the flow that issued it. See [`CLAUDE_SUBSCRIPTION_REQUIRED_SCOPES`]:
+/// a grant carrying `user:inference` is judged against the subscription
+/// set; anything else (console grants) falls back to the full requested
+/// set so the warning still fires loudly for the 2026-10-07 incident
+/// shape (`org:create_api_key user:profile` only).
 pub fn missing_claude_scopes(granted: Option<&str>) -> Vec<&'static str> {
-    let granted_set: std::collections::HashSet<&str> =
-        granted.unwrap_or_default().split_whitespace().collect();
-    CLAUDE_SCOPES
+    let granted_scopes: Vec<&str> = granted
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    let required: &[&str] = if granted_scopes.contains(&"user:inference") {
+        CLAUDE_SUBSCRIPTION_REQUIRED_SCOPES
+    } else {
+        CLAUDE_SCOPES
+    };
+    let granted_set: std::collections::HashSet<&str> = granted_scopes.iter().copied().collect();
+    required
         .iter()
         .filter(|scope| !granted_set.contains(*scope))
         .copied()
@@ -591,6 +616,16 @@ mod tests {
             "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
         ))
         .is_empty());
+        // The live 2026-10-07 re-login shape: the subscription flow grants
+        // its full set and NEVER the console half — a working grant must
+        // not warn (the CLI's own switch is user:inference).
+        let missing = missing_claude_scopes(Some(
+            "user:file_upload user:inference user:mcp_servers user:profile user:sessions:claude_code",
+        ));
+        assert!(
+            missing.is_empty(),
+            "subscription grant must not warn about console-only scopes: {missing:?}"
+        );
         // The live 2026-10-07 incident shape: the CONSOLE authorize flow
         // issued only its own two scopes, stranding the grant without
         // `user:inference` (every generation call 403s).
@@ -604,6 +639,9 @@ mod tests {
                 "user:file_upload"
             ]
         );
+        // A subscription grant missing the CLI session scope still warns.
+        let missing = missing_claude_scopes(Some("user:inference user:profile"));
+        assert_eq!(missing, vec!["user:sessions:claude_code"]);
         // Order-insensitive / extra granted scopes tolerated.
         let missing = missing_claude_scopes(Some(
             "user:file_upload user:sessions:claude_code user:inference org:create_api_key user:profile user:mcp_servers user:office",
