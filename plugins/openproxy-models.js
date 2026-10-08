@@ -231,6 +231,8 @@ function providerRequest(provider, resource) {
 // rebuilt from the real session working directory and home directory.
 // The permission-mode block mirrors the active OpenCode agent profile:
 // plan mode for the Plan agent, bypass permissions for everything else.
+// Project instructions survive the replacement: OpenCode's AGENTS.md/
+// CLAUDE.md sections are repacked with the live CC wrapper text.
 const MASK_PROVIDER_ID = PROVIDER_ID // "ludka2"
 const CLAUDE_MASK_VERSION = "2.1.289"
 const CLAUDE_MASK_UA = `claude-cli/${CLAUDE_MASK_VERSION} (external, cli)`
@@ -270,6 +272,57 @@ const claudeEnvironmentBlock = (directory, project) =>
   ` - Platform: ${process.platform}\n` +
   ` - Shell: ${claudeShellName()}\n` +
   ` - OS Version: ${os.type()} ${os.release()}`
+
+// OpenCode delivers project instructions (AGENTS.md/CLAUDE.md/CONTEXT.md
+// and globals) as `Instructions from: <path>` sections inside the joined
+// system string; the wholesale mask replacement would drop them. Real CC
+// wraps the same content verbatim, so the sections are extracted before
+// replacement and repacked with the live CC wrapper.
+const CLAUDE_MASK_INSTRUCTIONS_PREAMBLE = "Codebase and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written."
+const CLAUDE_MASK_INSTRUCTION_PREFIX = "Instructions from: "
+const CLAUDE_MASK_PROJECT_SUFFIX = " (project instructions, checked into the codebase)"
+const CLAUDE_MASK_USER_SUFFIX = " (user's private global instructions for all projects)"
+// Sections end where the next instruction section or a later system
+// section (mcp/skills) begins — the observed join order.
+const CLAUDE_MASK_INSTRUCTION_STOP = /^\s*(<mcp_instructions>|Skills provide specialized instructions)/
+
+function claudeInstructionSections(systemText) {
+  const lines = systemText.split("\n")
+  const sections = []
+  let current = null
+  for (const line of lines) {
+    if (line.startsWith(CLAUDE_MASK_INSTRUCTION_PREFIX)) {
+      if (current) sections.push(current)
+      current = { path: line.slice(CLAUDE_MASK_INSTRUCTION_PREFIX.length).trim(), content: [] }
+      continue
+    }
+    if (current) {
+      if (CLAUDE_MASK_INSTRUCTION_STOP.test(line)) {
+        sections.push(current)
+        current = null
+        continue
+      }
+      current.content.push(line)
+    }
+  }
+  if (current) sections.push(current)
+  return sections
+    .map(({ path, content }) => ({ path, content: content.join("\n").trim() }))
+    .filter(({ path, content }) => path && content)
+}
+
+function claudeInstructionsBlock(sections) {
+  if (!sections.length) return null
+  const home = os.homedir()
+  const configRoot = `${home}/.config/opencode`
+  const claudeRoot = `${home}/.claude`
+  const contents = sections.map(({ path, content }) => {
+    const global = path === `${claudeRoot}/CLAUDE.md` || path === configRoot || path.startsWith(`${configRoot}/`)
+    const displayPath = global ? path.replace(configRoot, claudeRoot) : path
+    return `Contents of ${displayPath}${global ? CLAUDE_MASK_USER_SUFFIX : CLAUDE_MASK_PROJECT_SUFFIX}:\n${content}`
+  })
+  return `${CLAUDE_MASK_INSTRUCTIONS_PREAMBLE}\n${contents.join("\n")}`
+}
 
 function maskedModel(input) {
   return input?.model?.providerID === MASK_PROVIDER_ID || input?.provider?.info?.id === MASK_PROVIDER_ID
@@ -329,10 +382,14 @@ function claudeMaskHooks({ directory, project, client } = {}) {
     async "experimental.chat.system.transform"(input, output) {
       if (!maskedModel(input)) return
       // Full replacement, mirroring the server-side harness spoof: the
-      // client's own system text never reaches the masked provider.
+      // client's own system text never reaches the masked provider —
+      // except project instructions, which are repacked in the live CC
+      // wrapper before the original string is dropped.
+      const instructions = claudeInstructionsBlock(claudeInstructionSections(output.system.join("\n")))
       const directory = await sessionDirectory(input.sessionID)
       const mode = sessionAgents.get(input.sessionID) === "plan" ? CLAUDE_MASK_PLAN_MODE : CLAUDE_MASK_BYPASS
-      output.system = [CLAUDE_MASK_IDENTITY, CLAUDE_MASK_HARNESS, maskedStyle(directory), claudeEnvironmentBlock(directory, project), mode]
+      output.system = [CLAUDE_MASK_IDENTITY, CLAUDE_MASK_HARNESS, maskedStyle(directory), claudeEnvironmentBlock(directory, project), mode,
+        ...(instructions ? [instructions] : [])]
     },
     "tool.definition"(input, output) {
       // Tool definitions are provider-agnostic; scrub unconditionally so

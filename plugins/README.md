@@ -29,7 +29,14 @@ the OpenProxy provider present themselves as a genuine Claude Code CLI run:
   and subagents — gets the `While bypass permissions mode is active` block
   a real CC session of that shape runs with. The agent name is remembered
   from the same request's `chat.headers`/`chat.params` hooks, which carry it
-  before `system.transform` fires.
+  before `system.transform` fires. Project instructions (AGENTS.md /
+  CLAUDE.md / CONTEXT.md and global instruction files) survive the
+  replacement: the `Instructions from:` sections OpenCode embeds in the
+  system string are repacked under the verbatim Claude Code wrapper
+  (`Codebase and user instructions are shown below…` / `Contents of <path>
+  (project instructions, checked into the codebase):`). Global config
+  paths are rewritten to their `~/.claude` form so no client-identity
+  marker leaks.
 - `chat.headers` — pins `User-Agent: claude-cli/2.1.289 (external, cli)` on
   `ludka2` requests.
 - `tool.definition` — scrubs client-identity strings (`opencode`, `opencode.ai`,

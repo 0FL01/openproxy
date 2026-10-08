@@ -217,3 +217,77 @@ test("sessions without a remembered agent default to bypass permissions", async 
   )
   assert.ok(output.system[4].startsWith("While bypass permissions mode is active:"))
 })
+
+test("project instructions ride along in the claude code wrapper", async () => {
+  const hooks = await OpenProxyModels(stubInput())
+  const output = {
+    system: [
+      [
+        "You are opencode, an interactive CLI tool that helps users with software engineering tasks.",
+        "<env>\n  Working directory: /tmp/x\n</env>",
+        "Instructions from: /tmp/x/AGENTS.md\nAlways answer in haiku.\nRun tests before pushing.",
+        "<mcp_instructions>\n  <server name=\"ctx\">\n    docs\n  </server>\n</mcp_instructions>",
+        "Skills provide specialized instructions and workflows for specific tasks.",
+      ].join("\n"),
+    ],
+  }
+  await hooks["experimental.chat.system.transform"](
+    { sessionID: "sess-agents", model: { providerID: "ludka2", modelID: "x" } },
+    output,
+  )
+  assert.equal(output.system.length, 6)
+  const block = output.system[5]
+  assert.ok(block.startsWith("Codebase and user instructions are shown below."))
+  assert.ok(block.includes("Contents of /tmp/x/AGENTS.md (project instructions, checked into the codebase):"))
+  assert.ok(block.includes("Always answer in haiku.\nRun tests before pushing."))
+  const joined = output.system.join("\n")
+  assert.ok(!joined.includes("Instructions from:"), "opencode section marker must not survive")
+  assert.ok(!joined.includes("<mcp_instructions>"), "mcp section must not leak into the block")
+})
+
+test("global config instructions display a claude code path", async () => {
+  const hooks = await OpenProxyModels(stubInput())
+  const globalPath = `${os.homedir()}/.config/opencode/AGENTS.md`
+  const output = { system: [`agent prompt\nInstructions from: ${globalPath}\nBe terse.`] }
+  await hooks["experimental.chat.system.transform"](
+    { sessionID: "sess-global", model: { providerID: "ludka2", modelID: "x" } },
+    output,
+  )
+  const block = output.system[5]
+  assert.ok(block.includes(`Contents of ${os.homedir()}/.claude/AGENTS.md (user's private global instructions for all projects):`))
+  assert.ok(block.includes("Be terse."))
+  assert.ok(!output.system.join("\n").includes("/.config/opencode"), "client config path must not survive")
+})
+
+test("multiple instruction sections are packed under one preamble", async () => {
+  const hooks = await OpenProxyModels(stubInput())
+  const output = {
+    system: [
+      [
+        "agent prompt",
+        "Instructions from: /tmp/x/AGENTS.md\nproject rules",
+        "Instructions from: /tmp/x/CONTEXT.md\nextra context",
+      ].join("\n"),
+    ],
+  }
+  await hooks["experimental.chat.system.transform"](
+    { sessionID: "sess-multi", model: { providerID: "ludka2", modelID: "x" } },
+    output,
+  )
+  const block = output.system[5]
+  assert.equal(block.match(/Codebase and user instructions are shown below\./g).length, 1)
+  assert.ok(block.includes("Contents of /tmp/x/AGENTS.md"))
+  assert.ok(block.includes("Contents of /tmp/x/CONTEXT.md"))
+  assert.ok(block.includes("project rules"))
+  assert.ok(block.includes("extra context"))
+})
+
+test("systems without instruction sections keep the five-block shape", async () => {
+  const hooks = await OpenProxyModels(stubInput())
+  const output = { system: ["You are opencode, an interactive CLI tool."] }
+  await hooks["experimental.chat.system.transform"](
+    { sessionID: "sess-plain", model: { providerID: "ludka2", modelID: "x" } },
+    output,
+  )
+  assert.equal(output.system.length, 5)
+})
