@@ -213,16 +213,16 @@ async fn known_chat_uses_published_inventory_while_forced_refresh_is_held() {
     assert_eq!(catalog_request.path, "/backend-api/codex/models");
     assert_eq!(
         catalog_request.query.as_deref(),
-        Some("client_version=0.159.0")
+        Some("client_version=0.161.0")
     );
     let generation_requests = generation.requests().await;
     let generation_request = &generation_requests[0];
     for request in [catalog_request, generation_request] {
-        assert_eq!(request.headers.get("version").unwrap(), "0.159.0");
+        assert_eq!(request.headers.get("version").unwrap(), "0.161.0");
         assert_eq!(request.headers.get("originator").unwrap(), "codex_cli_rs");
         assert_eq!(
             request.headers.get("user-agent").unwrap(),
-            "codex_cli_rs/0.159.0"
+            "codex_cli_rs/0.161.0"
         );
         assert_eq!(
             request.headers.get("chatgpt-account-id").unwrap(),
@@ -555,11 +555,11 @@ async fn mcp_search_uses_standalone_index_account_fallback_and_all_lengths() {
         assert_eq!(upstream["commands"]["response_length"], expected_length);
         assert!(upstream.get("tools").is_none());
         assert!(upstream.get("tool_choice").is_none());
-        assert_eq!(request.headers.get("version").unwrap(), "0.159.0");
+        assert_eq!(request.headers.get("version").unwrap(), "0.161.0");
         assert_eq!(request.headers.get("originator").unwrap(), "codex_cli_rs");
         assert_eq!(
             request.headers.get("user-agent").unwrap(),
-            "codex_cli_rs/0.159.0"
+            "codex_cli_rs/0.161.0"
         );
         assert_eq!(
             request.headers.get("content-type").unwrap(),

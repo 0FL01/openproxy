@@ -793,11 +793,11 @@ mod tests {
 
     #[test]
     fn parser_enforces_advertised_client_version() {
-        assert_eq!(CODEX_CLIENT_VERSION, "0.159.0");
+        assert_eq!(CODEX_CLIENT_VERSION, "0.161.0");
         let models = parse_codex_models(json!({"models": [
-            {"slug":"current","minimal_client_version":"0.159.0"},
+            {"slug":"current","minimal_client_version":"0.161.0"},
             {"slug":"old","minimal_client_version":"0.157.0"},
-            {"slug":"future","minimal_client_version":"0.160.0"}
+            {"slug":"future","minimal_client_version":"0.161.1"}
         ]}))
         .unwrap();
         assert_eq!(

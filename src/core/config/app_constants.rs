@@ -7,9 +7,9 @@ use std::time::Duration;
 
 // ─── Codex ────────────────────────────────────────────────────────────────
 
-pub const CODEX_CLIENT_VERSION: &str = "0.159.0";
+pub const CODEX_CLIENT_VERSION: &str = "0.161.0";
 pub const CODEX_ORIGINATOR: &str = "codex_cli_rs";
-pub const CODEX_USER_AGENT: &str = "codex_cli_rs/0.159.0";
+pub const CODEX_USER_AGENT: &str = "codex_cli_rs/0.161.0";
 
 // ─── GitHub Copilot ────────────────────────────────────────────────────────
 
