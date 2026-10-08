@@ -907,3 +907,164 @@ async fn models_availability_post_rejects_invalid_request() {
 
     assert_eq!(json, json!({ "error": "Invalid request" }));
 }
+
+async fn claude_gate_state() -> AppState {
+    let temp = tempdir().expect("tempdir");
+    let db = Arc::new(Db::load_from(temp.path()).await.expect("db"));
+    db.update(|state| {
+        state.api_keys = vec![active_key("valid-bearer")];
+        state.provider_connections = vec![
+            connection("claude", None, &[], true),
+            connection("openai", Some("gpt-4.1"), &[], true),
+        ];
+    })
+    .await
+    .expect("seed claude gate db");
+    AppState::new(db)
+}
+
+async fn model_ids(app: axum::Router, uri: &str, extra_headers: &[(&str, &str)]) -> Vec<String> {
+    let mut builder = Request::builder().uri(uri);
+    for (name, value) in extra_headers {
+        builder = builder.header(*name, *value);
+    }
+    let response = app
+        .oneshot(builder.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    json["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn models_endpoint_hides_claude_rows_from_unmasked_clients() {
+    let app = openproxy::build_app(claude_gate_state().await);
+
+    let plain = model_ids(
+        app.clone(),
+        "/v1/models",
+        &[("authorization", "Bearer valid-bearer")],
+    )
+    .await;
+    assert!(
+        plain.iter().all(|id| !id.starts_with("cc/")),
+        "claude rows must be hidden without the mask marker"
+    );
+    assert!(plain.contains(&"openai/gpt-4.1".to_string()));
+
+    let marked = model_ids(
+        app.clone(),
+        "/v1/models",
+        &[
+            ("authorization", "Bearer valid-bearer"),
+            ("x-openproxy-claude-mask", "1"),
+        ],
+    )
+    .await;
+    assert!(
+        marked.iter().any(|id| id.starts_with("cc/")),
+        "masked clients see claude rows"
+    );
+
+    let cli = model_ids(
+        app,
+        "/v1/models",
+        &[
+            ("authorization", "Bearer valid-bearer"),
+            ("user-agent", "claude-cli/2.1.289 (external, cli)"),
+        ],
+    )
+    .await;
+    assert!(
+        cli.iter().any(|id| id.starts_with("cc/")),
+        "claude-cli clients see claude rows"
+    );
+}
+
+#[tokio::test]
+async fn claude_inference_requires_mask_or_cli_client() {
+    let app = openproxy::build_app(claude_gate_state().await);
+
+    let unmasked = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("authorization", "Bearer valid-bearer")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"model": "cc/claude-sonnet-4-5", "messages": [], "stream": false})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unmasked.status(), StatusCode::FORBIDDEN);
+
+    let marked = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("authorization", "Bearer valid-bearer")
+                .header("content-type", "application/json")
+                .header("x-openproxy-claude-mask", "1")
+                .body(Body::from(
+                    json!({"model": "cc/claude-sonnet-4-5", "messages": []}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // Past the gate; without a live upstream the request fails downstream,
+    // never with 403.
+    assert_ne!(marked.status(), StatusCode::FORBIDDEN);
+
+    let cli = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("authorization", "Bearer valid-bearer")
+                .header("content-type", "application/json")
+                .header("user-agent", "claude-cli/2.1.289 (external, cli)")
+                .body(Body::from(
+                    json!({"model": "cc/claude-sonnet-4-5", "messages": [], "stream": false})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(cli.status(), StatusCode::FORBIDDEN);
+
+    // Non-claude models never hit the gate.
+    let openai = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("authorization", "Bearer valid-bearer")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"model": "openai/gpt-4.1", "messages": [], "stream": false}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(openai.status(), StatusCode::FORBIDDEN);
+}

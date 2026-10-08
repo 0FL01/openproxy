@@ -481,6 +481,22 @@ async fn chat_completions_impl(
         return json_error_response(StatusCode::GONE, "provider retired");
     }
 
+    // Claude/Anthropic subscription accounts only serve traffic that already
+    // presents itself as Claude Code: either a genuine claude-cli client or
+    // an OpenCode client running the openproxy-claude-mask plugin (which
+    // pins the UA and sends the marker header). Unmasked clients must not
+    // burn OAuth quota with harness fingerprints scanners flag.
+    if matches!(
+        resolved.provider.as_deref(),
+        Some("claude") | Some("anthropic")
+    ) && !claude_mask_client_allowed(&headers)
+    {
+        return json_error_response(
+            StatusCode::FORBIDDEN,
+            "claude models require the OpenCode mask plugin (openproxy-claude-mask.js) or a claude-cli client",
+        );
+    }
+
     // Convert headers once for client-tool detection and provider dispatch.
     let headers_map: std::collections::HashMap<String, String> = headers
         .iter()
@@ -4381,6 +4397,19 @@ fn json_error_response(status: StatusCode, message: &str) -> Response {
     let friendly = crate::core::utils::error::friendly_error_message(status.as_u16(), message);
     let body = crate::core::utils::error::build_error_body(status.as_u16(), Some(&friendly));
     with_cors_response((status, Json(body)).into_response())
+}
+
+/// Claude subscription traffic must present as Claude Code: either a
+/// genuine `claude-cli/…` client or the OpenCode mask plugin's marker
+/// header. Presence-based on purpose — the API key still authenticates.
+pub(crate) fn claude_mask_client_allowed(headers: &HeaderMap) -> bool {
+    if headers.contains_key("x-openproxy-claude-mask") {
+        return true;
+    }
+    headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ua| ua.starts_with("claude-cli/"))
 }
 
 fn with_cors_response(mut response: Response) -> Response {

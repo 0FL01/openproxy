@@ -1,9 +1,9 @@
 import assert from "node:assert/strict"
 import os from "node:os"
 import { test } from "node:test"
-import discovery from "../plugins/openproxy-models.js"
+import maskPlugin from "../plugins/openproxy-claude-mask.js"
 
-const OpenProxyModels = discovery.server
+const OpenProxyModels = maskPlugin.server
 
 function stubInput() {
   return {
@@ -233,6 +233,27 @@ test("sessions without a remembered agent default to bypass permissions", async 
     output,
   )
   assert.ok(output.system[4].startsWith("While bypass permissions mode is active:"))
+})
+
+test("masked chat headers carry the claude gate marker", async () => {
+  const hooks = await OpenProxyModels(stubInput())
+  const output = { headers: {} }
+  await hooks["chat.headers"](
+    { sessionID: "sess-marker", agent: "build", model: { providerID: "ludka2", modelID: "x" } },
+    output,
+  )
+  assert.equal(output.headers["User-Agent"], "claude-cli/2.1.289 (external, cli)")
+  assert.equal(output.headers["X-OpenProxy-Claude-Mask"], "1")
+})
+
+test("unmasked providers get no marker or UA pin", async () => {
+  const hooks = await OpenProxyModels(stubInput())
+  const output = { headers: {} }
+  await hooks["chat.headers"](
+    { sessionID: "sess-other", agent: "build", model: { providerID: "glm", modelID: "x" } },
+    output,
+  )
+  assert.deepEqual(output.headers, {})
 })
 
 test("project instructions ride along in the claude code wrapper", async () => {

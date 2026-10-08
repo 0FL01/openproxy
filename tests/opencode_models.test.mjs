@@ -37,6 +37,7 @@ test("discovery authenticates, refreshes inventory, preserves options and valida
     assert.equal(req.url, "/v1/models")
     assert.equal(req.headers.authorization, "Bearer fixture-key")
     assert.equal(req.headers["x-openproxy-fixture"], "keep")
+    assert.equal(req.headers["x-openproxy-claude-mask"], "1")
     res.writeHead(status, { "Content-Type": "application/json" })
     res.end(JSON.stringify(body))
   }).listen(0, "127.0.0.1")

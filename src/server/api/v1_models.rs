@@ -51,7 +51,19 @@ async fn list_models_for_kinds(
         }
     }
 
-    let data = build_models_list(&state, &snapshot, kind_filter).await;
+    let mut data = build_models_list(&state, &snapshot, kind_filter).await;
+
+    // Claude/Anthropic subscription models are served only to clients that
+    // present as Claude Code: the mask plugin's marker header or a genuine
+    // claude-cli UA. Unmasked clients never even see the catalog rows.
+    if !super::chat::claude_mask_client_allowed(&headers) {
+        data.retain(|model| {
+            !matches!(
+                model.opencode.as_ref().and_then(|o| o.source.as_deref()),
+                Some("claude") | Some("anthropic")
+            )
+        });
+    }
 
     with_cors_response(
         Json(ModelListResponse {

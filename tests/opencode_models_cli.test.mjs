@@ -17,6 +17,7 @@ test("OpenCode auto-loads the plugin and refresh discovers new IDs without rewri
   const configDir = join(directory, "config", "opencode")
   await mkdir(join(configDir, "plugins"), { recursive: true })
   await copyFile(new URL("../plugins/openproxy-models.js", import.meta.url), join(configDir, "plugins", "openproxy-models.js"))
+  await copyFile(new URL("../plugins/openproxy-claude-mask.js", import.meta.url), join(configDir, "plugins", "openproxy-claude-mask.js"))
   await copyFile(new URL("../plugins/openproxy-tui.js", import.meta.url), join(configDir, "plugins", "openproxy-tui.mjs"))
   let id = "cx/first"
   let limit = { context: 628000, input: 450000, output: 128000 }

@@ -2,6 +2,7 @@
 
 `openproxy-models.js` fetches OpenProxy's `/v1/models` when OpenCode loads its
 configuration. `openproxy-tui.js` enables its compact usage-limits sidebar.
+`openproxy-claude-mask.js` masks `ludka2` traffic as Claude Code (see below).
 Tested with OpenCode **1.18.34**. Plain JavaScript: no package installation or
 build step, embedded credentials, generated JSONC, or persistent client cache.
 Solid/OpenTUI imports are lazy and supplied by the TUI host; model discovery
@@ -9,7 +10,7 @@ has no new runtime dependencies.
 
 ## Claude Code client mask (ludka2)
 
-`openproxy-models.js` also registers client-side masking hooks so requests to
+`openproxy-claude-mask.js` registers client-side masking hooks so requests to
 the OpenProxy provider present themselves as a genuine Claude Code CLI run:
 
 - `experimental.chat.system.transform` — replaces the OpenCode system prompt
@@ -37,8 +38,8 @@ the OpenProxy provider present themselves as a genuine Claude Code CLI run:
   (project instructions, checked into the codebase):`). Global config
   paths are rewritten to their `~/.claude` form so no client-identity
   marker leaks.
-- `chat.headers` — pins `User-Agent: claude-cli/2.1.289 (external, cli)` on
-  `ludka2` requests.
+- `chat.headers` — pins `User-Agent: claude-cli/2.1.289 (external, cli)` and
+  sends `X-OpenProxy-Claude-Mask: 1` on `ludka2` requests.
 - `tool.definition` — scrubs client-identity strings (`opencode`, `opencode.ai`,
   `anomalyco/opencode`) from tool descriptions sent to any provider. The bash
   tool's pre-created temp-directory grant (whose concrete
@@ -48,22 +49,31 @@ the OpenProxy provider present themselves as a genuine Claude Code CLI run:
 
 Other providers keep OpenCode's real identity. The proxy's server-side harness
 spoof remains authoritative and idempotent for masked traffic; the client mask
-just removes the fingerprints before they ever leave the machine. Tests:
+just removes the fingerprints before they ever leave the machine.
+
+**Server-side gate.** OpenProxy serves claude/anthropic models only to clients
+that present as Claude Code: the mask marker header, or a genuine
+`claude-cli/…` User-Agent. Unmasked clients get no `cc/*` rows in `/v1/models`
+and a `403` on direct claude inference — so a session without the mask plugin
+never burns subscription quota with flagged traffic. `openproxy-models.js`
+sends the same marker on its `/v1/models` and `/v1/usage/limits` requests, so
+the catalog and sidebar stay complete. Tests:
 `node --test tests/opencode_mask.test.mjs`.
 
 ## Install
 
-From the repository root, copy **both plugin files**, not the tests:
+From the repository root, copy **all three plugin files**, not the tests:
 
 ```sh
 mkdir -p ~/.config/opencode/plugins
 cp plugins/openproxy-models.js ~/.config/opencode/plugins/openproxy-models.js
+cp plugins/openproxy-claude-mask.js ~/.config/opencode/plugins/openproxy-claude-mask.js
 cp plugins/openproxy-tui.js ~/.config/opencode/plugins/openproxy-tui.mjs
 ```
 
 The wrapper is installed with an `.mjs` extension so OpenCode's server plugin
-auto-discovery (`*.js`/`*.ts`) does not try to load its TUI-only export. Keep the
-two installed files together. In **`~/.config/opencode/tui.json`** (or your
+auto-discovery (`*.js`/`*.ts`) does not try to load its TUI-only export. Keep
+the installed files together. In **`~/.config/opencode/tui.json`** (or your
 existing `tui.jsonc`), add the TUI file entry:
 
 ```jsonc
@@ -77,9 +87,10 @@ Preserve other TUI settings and plugins. **Replace** the existing
 `oc-usage-limits-plugin@1.6.1` entry (or another version of that plugin) with
 this file entry to avoid duplicate panels and direct provider polling.
 
-OpenCode auto-loads `openproxy-models.js`; no server `plugin` entry is needed. The
-provider ID is `ludka2`; change `PROVIDER_ID` at the top of the plugin if needed.
-Keep your existing provider options, including the SDK choice:
+OpenCode auto-loads `openproxy-models.js` and `openproxy-claude-mask.js`; no
+server `plugin` entry is needed. The provider ID is `ludka2`; change the
+provider-ID constant in both files if needed. Keep your existing provider
+options, including the SDK choice:
 
 ```jsonc
 {
