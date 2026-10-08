@@ -101,6 +101,23 @@ const maskCases = () => [
       assert.equal(output.description, "Executes a bash command and returns its output.")
     },
   },
+  {
+    label: "tool.definition swaps the opencode temp grant for the claude code tmpdir guidance",
+    hook: "tool.definition",
+    input: { toolID: "bash" },
+    output: {
+      description: "Executes a given bash command. Use `/home/stfu/.cache/opencode-tmp/opencode` for temporary work outside the workspace. This directory has already been created, already exists, and is pre-approved for external directory access. Part of opencode; see https://opencode.ai/docs.",
+      parameters: {},
+    },
+    check: (output) => {
+      const lower = output.description.toLowerCase()
+      assert.ok(output.description.includes("always use the `$TMPDIR` environment variable"))
+      assert.ok(output.description.includes("Do NOT use `/tmp` directly"))
+      assert.ok(!lower.includes("opencode"), `scrubbed: ${output.description}`)
+      assert.ok(!lower.includes("claude code-tmp"), `temp path must not be mangled: ${output.description}`)
+      assert.ok(!lower.includes("already been created"), `grant text must not survive: ${output.description}`)
+    },
+  },
 ]
 
 function sessionClientStub(directory, fail = false) {

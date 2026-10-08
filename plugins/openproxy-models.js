@@ -243,6 +243,14 @@ const CLAUDE_MASK_STYLE = "Write code that reads like the surrounding code: matc
 // to tool descriptions (the system prompt is replaced wholesale). Order
 // matters: specific URL/org forms before the bare word.
 const CLAUDE_MASK_TOOL_DESCRIPTION_SCRUB = [
+  // OpenCode's bash tool grants a concrete pre-created temp directory
+  // (`${os.tmpdir()}/opencode`); the bare-word rule below would mangle
+  // that path into a nonexistent "Claude Code-tmp/Claude Code". Real CC
+  // never names a temp path — replace the grant with its verbatim
+  // sandbox-$TMPDIR guidance. Pinned to OpenCode 1.18.35's template; a
+  // template change degrades gracefully to the plain word scrub.
+  [/Use `[^`]*` for temporary work outside the workspace\. This directory has already been created, already exists, and is pre-approved for external directory access\./,
+    "For temporary files, always use the `$TMPDIR` environment variable. TMPDIR is automatically set to the correct sandbox-writable directory in sandbox mode. Do NOT use `/tmp` directly - use `$TMPDIR` instead."],
   [/anomalyco\/opencode/gi, "anthropics/claude-code"],
   [/opencode\.ai/gi, "claude.ai"],
   [/\bopencode\b/gi, "Claude Code"],

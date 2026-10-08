@@ -40,7 +40,11 @@ the OpenProxy provider present themselves as a genuine Claude Code CLI run:
 - `chat.headers` — pins `User-Agent: claude-cli/2.1.289 (external, cli)` on
   `ludka2` requests.
 - `tool.definition` — scrubs client-identity strings (`opencode`, `opencode.ai`,
-  `anomalyco/opencode`) from tool descriptions sent to any provider.
+  `anomalyco/opencode`) from tool descriptions sent to any provider. The bash
+  tool's pre-created temp-directory grant (whose concrete
+  `…/opencode-tmp/opencode` path the word scrub would mangle into a
+  nonexistent `Claude Code-tmp/Claude Code`) is replaced wholesale with the
+  verbatim Claude Code `$TMPDIR` guidance real CC sessions carry.
 
 Other providers keep OpenCode's real identity. The proxy's server-side harness
 spoof remains authoritative and idempotent for masked traffic; the client mask
