@@ -49,6 +49,7 @@ opencode.json
 opencode.jsonc
 .openproxy/
 admin.key
+.donor
 
 # typescript
 *.tsbuildinfo
