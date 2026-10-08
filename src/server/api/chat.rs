@@ -3158,9 +3158,10 @@ async fn proxy_response_with_pending_tracking(
                             }
                             if let Some(error) = batch.error {
                                 let usage = dispatch.usage.clone();
-                                if let Some(log) = attempt_log.take() {
+                                if let Some(mut log) = attempt_log.take() {
+                                    log.record_stream_error(error.code, &error.message);
                                     log.tps().invalidate();
-                                    log.finish("error", Some(502), usage.as_ref(), Some(error_kind::LOCAL_FAILURE)).await;
+                                    log.finish("error", Some(502), usage.as_ref(), Some(stream_error_kind(error.code))).await;
                                 }
                                 yield Ok::<Bytes, std::io::Error>(Bytes::from(dispatch.streaming_error(
                                     &error.message, "upstream_error", Some(error.code),
@@ -3197,9 +3198,10 @@ async fn proxy_response_with_pending_tracking(
                 }
                 if let Some(error) = batch.error {
                     let usage = dispatch.usage.clone();
-                    if let Some(log) = attempt_log.take() {
+                    if let Some(mut log) = attempt_log.take() {
+                        log.record_stream_error(error.code, &error.message);
                         log.tps().invalidate();
-                        log.finish("error", Some(502), usage.as_ref(), Some(error_kind::LOCAL_FAILURE)).await;
+                        log.finish("error", Some(502), usage.as_ref(), Some(stream_error_kind(error.code))).await;
                     }
                     yield Ok::<Bytes, std::io::Error>(Bytes::from(dispatch.streaming_error(
                         &error.message, "upstream_error", Some(error.code),
@@ -3271,9 +3273,10 @@ async fn proxy_response_with_pending_tracking(
                                 }
                                 if let Some(error) = batch.error {
                                     let usage = dispatch.usage.clone();
-                                    if let Some(log) = attempt_log.take() {
+                                    if let Some(mut log) = attempt_log.take() {
+                                        log.record_stream_error(error.code, &error.message);
                                         log.tps().invalidate();
-                                        log.finish("error", Some(502), usage.as_ref(), Some(error_kind::LOCAL_FAILURE)).await;
+                                        log.finish("error", Some(502), usage.as_ref(), Some(stream_error_kind(error.code))).await;
                                     }
                                     yield Ok::<Bytes, std::io::Error>(Bytes::from(dispatch.streaming_error(
                                         &error.message, "upstream_error", Some(error.code),
@@ -3310,9 +3313,10 @@ async fn proxy_response_with_pending_tracking(
                 }
                 if let Some(error) = batch.error {
                     let usage = dispatch.usage.clone();
-                    if let Some(log) = attempt_log.take() {
+                    if let Some(mut log) = attempt_log.take() {
+                        log.record_stream_error(error.code, &error.message);
                         log.tps().invalidate();
-                        log.finish("error", Some(502), usage.as_ref(), Some(error_kind::LOCAL_FAILURE)).await;
+                        log.finish("error", Some(502), usage.as_ref(), Some(stream_error_kind(error.code))).await;
                     }
                     yield Ok::<Bytes, std::io::Error>(Bytes::from(dispatch.streaming_error(
                         &error.message, "upstream_error", Some(error.code),
@@ -3525,6 +3529,30 @@ impl StreamDispatch {
                     code: "upstream_stream_truncated",
                     message: "Responses stream ended without response.completed".to_string(),
                 });
+            } else if self.source == Format::Claude
+                && self.target == Format::OpenAiResponses
+                && self.translation_state.as_ref().is_some_and(|state| {
+                    // Only flag streams whose Responses projection started but
+                    // never reached response.completed (Claude died before
+                    // message_stop; the second hop completes on that chunk).
+                    state
+                        .responses
+                        .state
+                        .get("started")
+                        .and_then(|v| v.as_bool())
+                        == Some(true)
+                        && state
+                            .responses
+                            .state
+                            .get("completedSent")
+                            .and_then(|v| v.as_bool())
+                            != Some(true)
+                })
+            {
+                batch.error = Some(StreamLimitError {
+                    code: "upstream_stream_truncated",
+                    message: "Claude stream ended before completion".to_string(),
+                });
             } else {
                 batch.error = self.finish_transforms(&mut batch.output);
             }
@@ -3719,6 +3747,15 @@ fn frame_error_to_stream(error: FrameError) -> StreamLimitError {
     StreamLimitError {
         code: error.code(),
         message: error.to_string(),
+    }
+}
+
+/// Classify a terminal stream error: failures the upstream itself reported
+/// are upstream failures; everything else is our translation/framing layer.
+fn stream_error_kind(code: &str) -> &'static str {
+    match code {
+        "upstream_error_event" => error_kind::UPSTREAM_FAILURE,
+        _ => error_kind::LOCAL_FAILURE,
     }
 }
 

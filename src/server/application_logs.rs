@@ -490,6 +490,7 @@ impl RequestLogContext {
                     data,
                     finished: Arc::new(AtomicBool::new(false)),
                     lean: true,
+                    stream_error: None,
                     codex_cache: Default::default(),
                     tps: Default::default(),
                 })
@@ -535,6 +536,7 @@ impl RequestLogContext {
                         data,
                         finished: Arc::new(AtomicBool::new(false)),
                         lean: false,
+                        stream_error: None,
                         codex_cache: Default::default(),
                         tps: Default::default(),
                     }),
@@ -579,6 +581,9 @@ pub struct AttemptLog {
     data: Value,
     finished: Arc<AtomicBool>,
     lean: bool,
+    /// Terminal stream error (code, message) captured on SSE paths so
+    /// post-mortems can distinguish translator/upstream failure classes.
+    stream_error: Option<(String, String)>,
     codex_cache: crate::core::executor::codex_cache::CodexCacheObservation,
     tps: crate::server::upstream_tps::UpstreamTpsObservation,
 }
@@ -590,6 +595,19 @@ impl AttemptLog {
 
     pub(crate) fn codex_cache(&self) -> crate::core::executor::codex_cache::CodexCacheObservation {
         self.codex_cache.clone()
+    }
+
+    /// Capture the terminal stream error before `finish`; persisted as
+    /// `errorCode`/`errorMessage` (message sanitized and bounded).
+    pub(crate) fn record_stream_error(&mut self, code: &str, message: &str) {
+        if self.stream_error.is_none() {
+            let sanitized: String = message
+                .chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .take(200)
+                .collect();
+            self.stream_error = Some((code.to_string(), sanitized));
+        }
     }
 
     pub async fn finish(
@@ -635,6 +653,10 @@ impl AttemptLog {
         data.insert("statusCode".into(), json!(status_code));
         if let Some(kind) = error_kind {
             data.insert("errorKind".into(), json!(kind));
+        }
+        if let Some((code, message)) = &self.stream_error {
+            data.insert("errorCode".into(), json!(code));
+            data.insert("errorMessage".into(), json!(message));
         }
         data.insert(
             "durationMs".into(),

@@ -504,6 +504,28 @@ pub fn claude_to_openai_streaming(
     if val.get("type").is_none() {
         return Vec::new();
     }
+    // Anthropic signals mid-stream failures (with 200 headers) as
+    // `{"type":"error","error":{...}}` events. Surface them instead of
+    // silently truncating the stream.
+    if val.get("type").and_then(|value| value.as_str()) == Some("error") {
+        let detail = val.get("error").cloned().unwrap_or(Value::Null);
+        let upstream_type = detail
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("error");
+        let message = detail
+            .get("message")
+            .and_then(Value::as_str)
+            .filter(|message| !message.trim().is_empty());
+        let message = match message {
+            Some(message) => format!("Claude upstream error ({upstream_type}): {message}"),
+            None => format!("Claude upstream error ({upstream_type})"),
+        };
+        return state.fail(crate::core::translator::limits::StreamLimitError {
+            code: "upstream_error_event",
+            message,
+        });
+    }
     if let Err(error) = track_claude_accumulation(state, &val) {
         return state.fail(error);
     }
@@ -527,6 +549,35 @@ pub fn claude_to_openai_streaming(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upstream_error_event_fails_the_stream_with_details() {
+        let mut state = crate::core::translator::registry::ResponseTransformState::default();
+        let chunk =
+            br#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#;
+        let out = claude_to_openai_streaming(chunk, &mut state);
+        assert!(out.is_empty());
+        let error = state.failure.expect("error event must fail the stream");
+        assert_eq!(error.code, "upstream_error_event");
+        assert_eq!(
+            error.message,
+            "Claude upstream error (overloaded_error): Overloaded"
+        );
+    }
+
+    #[test]
+    fn upstream_error_event_without_message_still_fails() {
+        let mut state = crate::core::translator::registry::ResponseTransformState::default();
+        let chunk = br#"{"type":"error","error":{"type":"invalid_request_error"}}"#;
+        let out = claude_to_openai_streaming(chunk, &mut state);
+        assert!(out.is_empty());
+        let error = state.failure.expect("error event must fail the stream");
+        assert_eq!(error.code, "upstream_error_event");
+        assert_eq!(
+            error.message,
+            "Claude upstream error (invalid_request_error)"
+        );
+    }
 
     fn run(events: &[Value]) -> Vec<Value> {
         let mut state = Map::new();
