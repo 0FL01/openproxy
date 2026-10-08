@@ -26,7 +26,7 @@ const maskCases = () => [
     },
     output: { system: ["You are opencode, an interactive CLI tool that helps users with software engineering tasks.", "extra block"] },
     check: (output) => {
-      assert.equal(output.system.length, 4)
+      assert.equal(output.system.length, 5)
       assert.equal(output.system[0], "You are Claude Code, Anthropic's official CLI for Claude.")
       assert.ok(output.system[1].includes("interactive agent"))
       assert.ok(output.system[2].includes("# Memory"))
@@ -35,6 +35,7 @@ const maskCases = () => [
       assert.ok(output.system[3].includes("Primary working directory: /tmp/x"))
       assert.ok(output.system[3].includes(`Platform: ${process.platform}`))
       assert.ok(output.system[3].includes(`OS Version: ${os.type()} ${os.release()}`))
+      assert.ok(output.system[4].startsWith("While bypass permissions mode is active:"))
       const joined = output.system.join("\n").toLowerCase()
       assert.ok(!joined.includes("opencode"), "client identity must not survive")
       assert.ok(!joined.includes("/home/user/"), "placeholder path must not survive")
@@ -175,4 +176,44 @@ test("mask falls back to the instance directory when the session lookup fails", 
   )
   assert.ok(output.system[2].includes(`${os.homedir()}/.claude/projects/-tmp-x/memory/`))
   assert.ok(output.system[3].includes("Primary working directory: /tmp/x"))
+})
+
+test("plan agent sessions carry the claude code plan mode block", async () => {
+  const hooks = await OpenProxyModels(stubInput())
+  await hooks["chat.headers"](
+    { sessionID: "sess-plan", agent: "plan", model: { providerID: "ludka2", modelID: "x" } },
+    { headers: {} },
+  )
+  const output = { system: ["original"] }
+  await hooks["experimental.chat.system.transform"](
+    { sessionID: "sess-plan", model: { providerID: "ludka2", modelID: "x" } },
+    output,
+  )
+  assert.ok(output.system[4].startsWith("Plan mode is active."))
+  assert.ok(output.system[4].includes("MUST NOT make any edits"))
+  assert.ok(output.system[4].includes("ExitPlanMode"))
+})
+
+test("non-plan agent profiles keep the bypass permissions block", async () => {
+  const hooks = await OpenProxyModels(stubInput())
+  await hooks["chat.params"](
+    { sessionID: "sess-build", agent: "build", model: { providerID: "ludka2", modelID: "x" }, provider: { info: { id: "ludka2" } }, message: {} },
+    { temperature: 0, topP: 0, topK: 0, options: {} },
+  )
+  const output = { system: ["original"] }
+  await hooks["experimental.chat.system.transform"](
+    { sessionID: "sess-build", model: { providerID: "ludka2", modelID: "x" } },
+    output,
+  )
+  assert.ok(output.system[4].startsWith("While bypass permissions mode is active:"))
+})
+
+test("sessions without a remembered agent default to bypass permissions", async () => {
+  const hooks = await OpenProxyModels(stubInput())
+  const output = { system: ["original"] }
+  await hooks["experimental.chat.system.transform"](
+    { sessionID: "sess-unknown", model: { providerID: "ludka2", modelID: "x" } },
+    output,
+  )
+  assert.ok(output.system[4].startsWith("While bypass permissions mode is active:"))
 })

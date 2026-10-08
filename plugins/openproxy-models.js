@@ -229,6 +229,8 @@ function providerRequest(provider, resource) {
 // provider keeps OpenCode's real identity. Host-specific paths never
 // leave as placeholders: the memory path and the environment block are
 // rebuilt from the real session working directory and home directory.
+// The permission-mode block mirrors the active OpenCode agent profile:
+// plan mode for the Plan agent, bypass permissions for everything else.
 const MASK_PROVIDER_ID = PROVIDER_ID // "ludka2"
 const CLAUDE_MASK_VERSION = "2.1.289"
 const CLAUDE_MASK_UA = `claude-cli/${CLAUDE_MASK_VERSION} (external, cli)`
@@ -243,6 +245,13 @@ const CLAUDE_MASK_TOOL_DESCRIPTION_SCRUB = [
   [/opencode\.ai/gi, "claude.ai"],
   [/\bopencode\b/gi, "Claude Code"],
 ]
+
+// Permission-mode blocks, mirroring the live CC 2.1.289 texts. OpenCode
+// profiles map to Claude Code modes: the Plan agent reads as plan mode,
+// every other profile (including custom primaries and subagents) reads as
+// bypass permissions — the mode a real CC session of that shape runs in.
+const CLAUDE_MASK_BYPASS = "While bypass permissions mode is active:\n\nYou can do much of your work through the Bash tool when it is the simpler route: read files with cat, head, or sed -n, search with grep and find, and make small, mechanical file changes with sed, heredocs, or short scripts instead of the dedicated Read, Edit, or Write tools. The choice is yours: prefer Edit or Write when a shell edit would be fragile, such as exact or multi-line replacements, or sed/awk flags that differ between GNU and BSD/macOS."
+const CLAUDE_MASK_PLAN_MODE = "Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits (with the exception of the plan file mentioned below), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supercedes any other instructions you have received.\n\nYou should build your plan incrementally by writing to or editing the plan file. Do not make any changes to the system - this is a read-only planning phase. Ask the user clarifying questions when weighing tradeoffs, and do not make large assumptions about user intent. The goal is to present a well researched plan.\n\n# Plan mode workflow\n - Phase 1: Initial understanding. Explore the codebase with read-only tools before proposing changes.\n - Phase 2: Design. Draft the solution approach and identify the critical files.\n - Phase 3: Review. Re-check the plan and open questions with the user.\n - Phase 4: Final plan. Write the final plan with context, critical files, and verification steps.\n - Phase 5: Call ExitPlanMode so the user can approve the plan."
 
 // Host-specific absolute path in the corpus-derived style block; replaced
 // at runtime with the real session path so no placeholder ever leaves.
@@ -299,17 +308,31 @@ function claudeMaskHooks({ directory, project, client } = {}) {
     }
     return style
   }
+  // system.transform never receives the agent name; chat.headers and
+  // chat.params do, on the same request. Remember the session's agent so
+  // the mode block matches the active OpenCode profile.
+  const sessionAgents = new Map()
+  const rememberAgent = (input) => {
+    if (typeof input?.sessionID === "string" && typeof input?.agent === "string") {
+      sessionAgents.set(input.sessionID, input.agent)
+    }
+  }
   return {
     "chat.headers"(input, output) {
+      rememberAgent(input)
       if (!maskedModel(input)) return
       output.headers["User-Agent"] = CLAUDE_MASK_UA
+    },
+    "chat.params"(input, output) {
+      rememberAgent(input)
     },
     async "experimental.chat.system.transform"(input, output) {
       if (!maskedModel(input)) return
       // Full replacement, mirroring the server-side harness spoof: the
       // client's own system text never reaches the masked provider.
       const directory = await sessionDirectory(input.sessionID)
-      output.system = [CLAUDE_MASK_IDENTITY, CLAUDE_MASK_HARNESS, maskedStyle(directory), claudeEnvironmentBlock(directory, project)]
+      const mode = sessionAgents.get(input.sessionID) === "plan" ? CLAUDE_MASK_PLAN_MODE : CLAUDE_MASK_BYPASS
+      output.system = [CLAUDE_MASK_IDENTITY, CLAUDE_MASK_HARNESS, maskedStyle(directory), claudeEnvironmentBlock(directory, project), mode]
     },
     "tool.definition"(input, output) {
       // Tool definitions are provider-agnostic; scrub unconditionally so

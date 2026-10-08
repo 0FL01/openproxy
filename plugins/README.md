@@ -22,7 +22,14 @@ the OpenProxy provider present themselves as a genuine Claude Code CLI run:
   status, platform, shell and OS version, so no corpus placeholder (e.g.
   `/home/user/...`) ever reaches the provider. The per-session working
   directory comes from OpenCode's session record (`client.session.get`) with
-  the plugin instance directory as fallback.
+  the plugin instance directory as fallback. A fifth block mirrors the
+  active OpenCode agent profile as a Claude Code permission mode: the `plan`
+  agent gets the Claude Code plan-mode instructions (read-only planning,
+  ExitPlanMode workflow), every other profile — including custom primaries
+  and subagents — gets the `While bypass permissions mode is active` block
+  a real CC session of that shape runs with. The agent name is remembered
+  from the same request's `chat.headers`/`chat.params` hooks, which carry it
+  before `system.transform` fires.
 - `chat.headers` — pins `User-Agent: claude-cli/2.1.289 (external, cli)` on
   `ludka2` requests.
 - `tool.definition` — scrubs client-identity strings (`opencode`, `opencode.ai`,
