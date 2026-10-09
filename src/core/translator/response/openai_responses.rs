@@ -597,35 +597,55 @@ fn close_tool_call(
     );
 }
 
+fn have_chat_usage(state: &serde_json::Map<String, Value>) -> bool {
+    state.get("usage").is_some_and(|v| v.is_object())
+}
+
+fn buffer_chat_usage(state: &mut serde_json::Map<String, Value>, chunk: &Value) {
+    let Some(usage) = chunk.get("usage").filter(|v| v.is_object()) else {
+        return;
+    };
+    state.insert(
+        "usage".to_string(),
+        serde_json::json!({
+            "input_tokens": usage.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0),
+            "input_tokens_details": {
+                "cached_tokens": usage.pointer("/prompt_tokens_details/cached_tokens").and_then(Value::as_u64).unwrap_or(0)
+            },
+            "output_tokens": usage.get("completion_tokens").and_then(Value::as_u64).unwrap_or(0),
+            "output_tokens_details": {
+                "reasoning_tokens": usage.pointer("/completion_tokens_details/reasoning_tokens").and_then(Value::as_u64).unwrap_or(0)
+            },
+            "total_tokens": usage.get("total_tokens").and_then(Value::as_u64).unwrap_or(0)
+        }),
+    );
+}
+
 fn send_completed(state: &mut serde_json::Map<String, Value>, events: &mut Vec<Value>) {
     if state.get("completedSent").and_then(|v| v.as_bool()) != Some(true) {
         state.insert("completedSent".to_string(), Value::Bool(true));
-        let usage = state.get("usage").cloned().unwrap_or_else(|| {
-            serde_json::json!({
-                "input_tokens": 0,
-                "input_tokens_details": {"cached_tokens": 0},
-                "output_tokens": 0,
-                "output_tokens_details": {"reasoning_tokens": 0},
-                "total_tokens": 0
-            })
+        let mut response = serde_json::json!({
+            "id": state.get("responseId").and_then(|v| v.as_str()).unwrap_or(""),
+            "object": "response",
+            "created_at": state.get("created").and_then(|v| v.as_i64()).unwrap_or(0),
+            "status": "completed",
+            "background": false,
+            "error": null,
+            "incomplete_details": null,
+            "service_tier": null,
         });
+        // Never synthesize usage: omit the key when upstream sent none
+        // (compat.rs terminal does the same).
+        if let Some(usage) = state.get("usage").cloned().filter(|v| v.is_object()) {
+            response["usage"] = usage;
+        }
         emit(
             events,
             state,
             "response.completed",
             serde_json::json!({
                 "type": "response.completed",
-                "response": {
-                    "id": state.get("responseId").and_then(|v| v.as_str()).unwrap_or(""),
-                    "object": "response",
-                    "created_at": state.get("created").and_then(|v| v.as_i64()).unwrap_or(0),
-                    "status": "completed",
-                    "background": false,
-                    "error": null,
-                    "incomplete_details": null,
-                    "service_tier": null,
-                    "usage": usage
-                }
+                "response": response
             }),
         );
     }
@@ -776,6 +796,9 @@ fn emit_tool_calls_block(
 
 /// finish_reason arm of `chat_to_responses_response` (JS 110-116): close
 /// every open message, reasoning, and tool call, then send completed.
+/// The terminal `response.completed` is deferred until upstream usage arrives
+/// (`choices:[] + usage` tail) or the stream ends, so a split usage tail is
+/// not orphaned behind an early completed with no usage.
 fn emit_finish_block(state: &mut serde_json::Map<String, Value>, events: &mut Vec<Value>) {
     let msg_keys: Vec<String> = state
         .get("msgItemAdded")
@@ -795,39 +818,37 @@ fn emit_finish_block(state: &mut serde_json::Map<String, Value>, events: &mut Ve
     for k in &func_keys {
         close_tool_call(state, events, k);
     }
-    send_completed(state, events);
+    if have_chat_usage(state) {
+        send_completed(state, events);
+    } else {
+        state.insert("needCompleted".to_string(), Value::Bool(true));
+    }
 }
 
 pub fn chat_to_responses_response(
     chunk: &Value,
     state: &mut serde_json::Map<String, Value>,
 ) -> Vec<Value> {
+    buffer_chat_usage(state, chunk);
     if chunk
         .get("choices")
         .and_then(|v| v.as_array())
         .is_none_or(|a| a.is_empty())
     {
+        // Standard OpenAI split usage tail: `choices:[] + usage` arrives after
+        // the `finish_reason` chunk. Flush the deferred terminal once.
+        if state.get("needCompleted").and_then(|v| v.as_bool()) == Some(true)
+            && state.get("completedSent").and_then(|v| v.as_bool()) != Some(true)
+            && state.get("started").and_then(|v| v.as_bool()) == Some(true)
+        {
+            let mut events = Vec::new();
+            send_completed(state, &mut events);
+            return events;
+        }
         return vec![];
     }
 
     let mut events: Vec<Value> = Vec::new();
-
-    if let Some(usage) = chunk.get("usage") {
-        state.insert(
-            "usage".to_string(),
-            serde_json::json!({
-                "input_tokens": usage.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0),
-                "input_tokens_details": {
-                    "cached_tokens": usage.pointer("/prompt_tokens_details/cached_tokens").and_then(Value::as_u64).unwrap_or(0)
-                },
-                "output_tokens": usage.get("completion_tokens").and_then(Value::as_u64).unwrap_or(0),
-                "output_tokens_details": {
-                    "reasoning_tokens": usage.pointer("/completion_tokens_details/reasoning_tokens").and_then(Value::as_u64).unwrap_or(0)
-                },
-                "total_tokens": usage.get("total_tokens").and_then(Value::as_u64).unwrap_or(0)
-            }),
-        );
-    }
 
     if !state.contains_key("started") {
         state.insert("started".to_string(), Value::Bool(true));
@@ -1477,6 +1498,33 @@ pub fn chat_to_responses_streaming(
     state: &mut crate::core::translator::registry::ResponseTransformState,
 ) -> Vec<String> {
     if chunk == b"[DONE]" {
+        // Flush a deferred terminal before the stream end so a finish chunk
+        // without usage still yields exactly one `response.completed`.
+        let pending = state
+            .responses
+            .state
+            .get("needCompleted")
+            .and_then(|v| v.as_bool())
+            == Some(true)
+            && state
+                .responses
+                .state
+                .get("completedSent")
+                .and_then(|v| v.as_bool())
+                != Some(true)
+            && state
+                .responses
+                .state
+                .get("started")
+                .and_then(|v| v.as_bool())
+                == Some(true);
+        if pending {
+            let mut events = Vec::new();
+            send_completed(&mut state.responses.state, &mut events);
+            let mut out = format_responses_events(events);
+            out.push("data: [DONE]\n\n".to_string());
+            return out;
+        }
         return vec!["data: [DONE]\n\n".to_string()];
     }
     let Ok(value) = serde_json::from_slice::<Value>(chunk) else {
@@ -1491,6 +1539,38 @@ pub fn chat_to_responses_streaming(
     if let Some(error) = take_arithmetic_failure(&mut state.responses.state) {
         return state.fail(error);
     }
+    format_responses_events(events)
+}
+
+/// EOF synthesis for `OpenAi -> OpenAiResponses/Codex`: emit the deferred
+/// terminal when upstream closed cleanly without `[DONE]` or a usage tail.
+/// No-op on failure, duplicate calls, or streams that never started.
+pub fn chat_to_responses_finish(
+    state: &mut crate::core::translator::registry::ResponseTransformState,
+) -> Vec<String> {
+    let pending = state
+        .responses
+        .state
+        .get("needCompleted")
+        .and_then(|v| v.as_bool())
+        == Some(true)
+        && state
+            .responses
+            .state
+            .get("completedSent")
+            .and_then(|v| v.as_bool())
+            != Some(true)
+        && state
+            .responses
+            .state
+            .get("started")
+            .and_then(|v| v.as_bool())
+            == Some(true);
+    if !pending {
+        return Vec::new();
+    }
+    let mut events = Vec::new();
+    send_completed(&mut state.responses.state, &mut events);
     format_responses_events(events)
 }
 
@@ -1626,6 +1706,66 @@ mod tests {
     }
 
     #[test]
+    fn split_usage_tail_completes_once_with_real_usage() {
+        // OpenAI split tail: `finish_reason` chunk without usage, then a
+        // `choices:[] + usage` chunk. The terminal must carry real usage
+        // exactly once, with no fake-zero completed before it.
+        let mut state = ResponseTransformState::default();
+        let open = json!({
+            "id": "chatcmpl-1",
+            "model": "gpt-6-luna",
+            "choices": [{"index": 0, "delta": {"content": "hi"}, "finish_reason": null}]
+        });
+        let open_events = chat_to_responses_response(&open, &mut state.responses.state);
+        assert!(!open_events
+            .iter()
+            .any(|e| e.get("event").and_then(|v| v.as_str()) == Some("response.completed")));
+        let finish = json!({
+            "id": "chatcmpl-1",
+            "model": "gpt-6-luna",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+        });
+        let finish_events = chat_to_responses_response(&finish, &mut state.responses.state);
+        assert!(
+            !finish_events
+                .iter()
+                .any(|e| e.get("event").and_then(|v| v.as_str()) == Some("response.completed")),
+            "split tail must defer completed until usage: {finish_events:?}"
+        );
+        let tail = json!({
+            "id": "chatcmpl-1",
+            "model": "gpt-6-luna",
+            "choices": [],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 3, "total_tokens": 13}
+        });
+        let tail_events = chat_to_responses_response(&tail, &mut state.responses.state);
+        let completed: Vec<&Value> = tail_events
+            .iter()
+            .filter(|e| e.get("event").and_then(|v| v.as_str()) == Some("response.completed"))
+            .collect();
+        assert_eq!(
+            completed.len(),
+            1,
+            "usage tail completes once: {tail_events:?}"
+        );
+        let response = &completed[0]["data"]["response"];
+        assert_eq!(response["usage"]["input_tokens"], json!(10));
+        assert_eq!(response["usage"]["output_tokens"], json!(3));
+        assert_eq!(response["usage"]["total_tokens"], json!(13));
+        // A following [DONE] must not duplicate the terminal.
+        let done_out = chat_to_responses_streaming(b"[DONE]", &mut state);
+        assert_eq!(
+            done_out
+                .iter()
+                .filter(|s| s.contains("response.completed"))
+                .count(),
+            0,
+            "completed must stay single: {done_out:?}"
+        );
+        assert!(done_out.iter().any(|s| s.contains("[DONE]")));
+    }
+
+    #[test]
     fn think_close_chunk_with_null_finish_does_not_complete_response() {
         // Regression: a `</think>` chunk (all content consumed by the think
         // machine) takes the early-return path through
@@ -1685,7 +1825,9 @@ mod tests {
             "missing finish_reason must not complete the response: {events:?}"
         );
 
-        // A real terminal chunk completes exactly once, after the text.
+        // A real terminal chunk closes text; the terminal is deferred until
+        // usage arrives or the stream ends (split usage tail must not be
+        // orphaned behind an early completed).
         let finish = json!({
             "id": "chatcmpl-1",
             "choices": [{
@@ -1695,11 +1837,29 @@ mod tests {
             }]
         });
         let events = chat_to_responses_response(&finish, &mut state.responses.state);
-        let completed: Vec<&Value> = events
+        assert!(
+            events
+                .iter()
+                .any(|e| e.get("event").and_then(|v| v.as_str())
+                    == Some("response.output_item.done")),
+            "finish must close the message: {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.get("event").and_then(|v| v.as_str()) == Some("response.completed")),
+            "finish without usage defers completed until [DONE]/EOF: {events:?}"
+        );
+        let flushed = chat_to_responses_finish(&mut state);
+        let completed = flushed
             .iter()
-            .filter(|e| e.get("event").and_then(|v| v.as_str()) == Some("response.completed"))
-            .collect();
-        assert_eq!(completed.len(), 1, "exactly one completion: {events:?}");
+            .filter(|s| s.contains("response.completed"))
+            .count();
+        assert_eq!(completed, 1, "exactly one deferred completion: {flushed:?}");
+        assert!(
+            !flushed.join("").contains("\"usage\""),
+            "no usage must not be fabricated: {flushed:?}"
+        );
     }
 
     #[test]
@@ -1841,10 +2001,15 @@ mod tests {
         assert_eq!(item_done["data"]["item"]["name"], "glob");
         assert_eq!(item_done["data"]["item"]["status"], "completed");
         assert!(
-            events
+            !events
                 .iter()
                 .any(|event| event["event"] == "response.completed"),
-            "tool-call finish should complete the response"
+            "tool-call finish without usage defers completed until [DONE]/EOF"
+        );
+        let flushed = chat_to_responses_finish(&mut state);
+        assert!(
+            flushed.iter().any(|s| s.contains("response.completed")),
+            "deferred tool-call finish should complete on EOF"
         );
     }
 

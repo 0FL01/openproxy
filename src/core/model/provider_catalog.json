@@ -2945,7 +2945,26 @@
   },
   {
    "alias": "a6api",
-   "models": []
+   "models": [
+    {
+     "id": "deepseek-v4.1-flash",
+     "contextLength": 1000000,
+     "maxOutput": 384000,
+     "kind": "llm"
+    },
+    {
+     "id": "glm-5.3",
+     "contextLength": 1048576,
+     "maxOutput": 131072,
+     "kind": "llm"
+    },
+    {
+     "id": "gpt-6-luna",
+     "contextLength": 1050000,
+     "maxOutput": 128000,
+     "kind": "llm"
+    }
+   ]
   },
   {
    "alias": "deepgram",

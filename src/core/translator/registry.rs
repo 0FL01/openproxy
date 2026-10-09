@@ -889,6 +889,13 @@ impl TranslationRegistry {
             // No response transform buffers state that needs flushing.
             let _ = transform;
         }
+        if matches!(source, Format::OpenAi)
+            && matches!(target, Format::OpenAiResponses | Format::Codex)
+        {
+            output.extend(super::response::openai_responses::chat_to_responses_finish(
+                state,
+            ));
+        }
         output
     }
 }

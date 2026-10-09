@@ -941,11 +941,13 @@ async fn execute_single_model(
         obj.insert("stream".into(), Value::Bool(plan.stream));
     }
 
-    // Z.ai's OpenAI-compatible streaming endpoint reports the final token
-    // usage chunk when `stream_options.include_usage` is enabled. The target
-    // format is known here, so the flag cannot leak onto GLM's Claude
-    // transport, which does not accept this field.
-    if plan.target_format == Format::OpenAi && matches!(plan.provider.as_str(), "glm" | "glm-cn") {
+    // Z.ai's and A6API's OpenAI-compatible streaming endpoints report the
+    // final token usage chunk when `stream_options.include_usage` is enabled.
+    // The target format is known here, so the flag cannot leak onto GLM's
+    // Claude transport, which does not accept this field.
+    if plan.target_format == Format::OpenAi
+        && matches!(plan.provider.as_str(), "glm" | "glm-cn" | "a6api")
+    {
         inject_glm_stream_usage(&mut body);
     }
 

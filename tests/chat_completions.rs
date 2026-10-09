@@ -7,7 +7,7 @@ use axum::http::{Request, StatusCode};
 use openproxy::db::sqlite::repo::request_repo::{self, RequestDetailFilter};
 use openproxy::db::Db;
 use openproxy::server::state::AppState;
-use openproxy::types::{ApiKey, ProviderConnection, ProviderNode, Settings};
+use openproxy::types::{ApiKey, ProviderConnection, ProviderNode, RuntimeTransport, Settings};
 use serde_json::json;
 use tempfile::tempdir;
 use tower::util::ServiceExt;
@@ -1046,4 +1046,77 @@ async fn chat_completions_rejects_connections_without_credentials() {
         .unwrap()
         .contains("No credentials"));
     assert!(upstream.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a6api_responses_stream_injects_usage_and_returns_completed_with_usage() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_partial_json(json!({
+            "model": "gpt-6-luna",
+            "stream": true,
+            "stream_options": {"include_usage": true},
+        })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(
+                "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-6-luna\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-6-luna\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-6-luna\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":3,\"total_tokens\":13}}\n\ndata: [DONE]\n\n",
+                "text/event-stream",
+            ),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let mut a6 = connection("conn-a6", "a6api", 1, "upstream-key");
+    a6.default_model = None;
+    a6.provider_specific_data = BTreeMap::from([("enabledModels".into(), json!(["gpt-6-luna"]))]);
+    a6.runtime_transport = Some(RuntimeTransport {
+        base_url: Some(format!("{}/v1/chat/completions", upstream.uri())),
+    });
+    let state = seeded_state(Vec::new(), vec![a6]).await;
+
+    let app = openproxy::build_app(state.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("authorization", "Bearer valid-bearer")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "a6api/gpt-6-luna",
+                        "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+                        "stream": true,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert_eq!(status, StatusCode::OK, "unexpected response: {text}");
+    assert_eq!(
+        text.matches("event: response.completed").count(),
+        1,
+        "exactly one terminal: {text}"
+    );
+    assert!(text.contains("\"input_tokens\":10"), "real usage: {text}");
+    assert!(text.contains("\"output_tokens\":3"), "real usage: {text}");
+
+    let logs = state
+        .db
+        .sqlite
+        .with_conn(|conn| request_repo::list(conn, &RequestDetailFilter::default(), 10, 0))
+        .unwrap();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].data["inputTokens"], 10);
+    assert_eq!(logs[0].data["outputTokens"], 3);
 }

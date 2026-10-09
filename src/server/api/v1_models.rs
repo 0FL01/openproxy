@@ -129,6 +129,12 @@ async fn build_models_list(
                 .map(String::as_str)
                 .unwrap_or(provider_entry.alias.as_str());
 
+            // A6API rows are entitlement-gated by per-key enabledModels;
+            // static rows must never publish without an active connection.
+            if provider_id == "a6api" {
+                continue;
+            }
+
             if !provider_matches_kinds(catalog, provider_id, kind_filter) {
                 continue;
             }
@@ -1398,14 +1404,23 @@ mod tests {
                 "a6api/vendor/glm-5.2"
             ]
         );
-        for (id, efforts) in [
+        for (id, efforts, expected_limit) in [
             (
                 "a6api/gpt-6-luna",
                 &["low", "medium", "high", "xhigh", "max"][..],
+                Some((1_050_000_u32, 128_000_u32)),
             ),
-            ("a6api/glm-5.3", &["low", "high", "max"][..]),
-            ("a6api/vendor/glm-5.2", &["low", "high", "max"][..]),
-            ("a6api/deepseek-v4.1-flash", &["low", "high", "max"][..]),
+            (
+                "a6api/glm-5.3",
+                &["low", "high", "max"][..],
+                Some((1_048_576_u32, 131_072_u32)),
+            ),
+            ("a6api/vendor/glm-5.2", &["low", "high", "max"][..], None),
+            (
+                "a6api/deepseek-v4.1-flash",
+                &["low", "high", "max"][..],
+                Some((1_000_000_u32, 384_000_u32)),
+            ),
         ] {
             let model = models.iter().find(|model| model.id == id).unwrap();
             let variants: BTreeMap<_, _> = efforts
@@ -1416,11 +1431,22 @@ mod tests {
             assert_eq!(metadata["source"], "a6api");
             assert_eq!(metadata["reasoning"], true);
             assert_eq!(metadata["variants"], json!(variants));
-            for field in ["limit", "modalities", "attachment", "tool_call"] {
+            for field in ["modalities", "attachment", "tool_call"] {
                 assert!(metadata.get(field).is_none(), "unexpected {field} for {id}");
             }
-            assert_eq!(model.context_length, None);
-            assert_eq!(model.max_completion_tokens, None);
+            match expected_limit {
+                Some((context, output)) => {
+                    assert_eq!(model.context_length, Some(context));
+                    assert_eq!(model.max_completion_tokens, Some(output));
+                    assert_eq!(metadata["limit"]["context"], json!(context));
+                    assert_eq!(metadata["limit"]["output"], json!(output));
+                }
+                None => {
+                    assert!(metadata.get("limit").is_none(), "unexpected limit for {id}");
+                    assert_eq!(model.context_length, None);
+                    assert_eq!(model.max_completion_tokens, None);
+                }
+            }
         }
     }
 
@@ -1519,7 +1545,7 @@ mod tests {
         assert_eq!(models[0].id, "my-a6/glm-5.3");
         assert_eq!(
             json!(models[0].opencode),
-            json!({"name": "Saved model", "source": "a6api", "reasoning": false, "variants": {}})
+            json!({"name": "Saved model", "source": "a6api", "reasoning": false, "variants": {}, "limit": {"context": 1048576, "output": 131072}})
         );
         assert_eq!(json!(snapshot.custom_models), before);
     }
@@ -1578,7 +1604,8 @@ mod tests {
             let metadata = json!(a6_model.opencode);
             assert_eq!(metadata["source"], "a6api");
             assert_eq!(metadata["variants"]["max"]["reasoningEffort"], "max");
-            assert!(metadata.get("limit").is_none());
+            assert_eq!(metadata["limit"]["context"], json!(1_050_000));
+            assert_eq!(metadata["limit"]["output"], json!(128_000));
             let glm = models
                 .iter()
                 .find(|model| model.id == "glm/glm-5.3-flash")
@@ -1622,7 +1649,8 @@ mod tests {
             metadata["variants"],
             json!({"low": {"reasoningEffort": "low"}, "high": {"reasoningEffort": "high"}, "max": {"reasoningEffort": "max"}})
         );
-        assert!(metadata.get("limit").is_none());
+        assert_eq!(metadata["limit"]["context"], json!(1_048_576));
+        assert_eq!(metadata["limit"]["output"], json!(131_072));
     }
 
     #[tokio::test]
