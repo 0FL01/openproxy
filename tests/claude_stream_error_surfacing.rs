@@ -115,6 +115,7 @@ const TOOL_USE_ARGS_SECOND: &str = "event: content_block_delta\ndata: {\"type\":
 const TOOL_USE_STOP: &str =
     "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n";
 const TOOL_USE_FINISH: &str = "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}\n\n";
+const END_TURN_FINISH: &str = "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}\n\n";
 
 async fn latest_request_details(test_db: &TempTestDb) -> Value {
     use rusqlite::Connection;
@@ -406,9 +407,12 @@ async fn claude_events_after_message_stop_are_visible_in_stream_trace() {
     // Anomaly detector: upstream text after message_stop would produce a
     // downstream delta AFTER response.completed — the class of defect that
     // makes an agent client restart its turn. The trace must surface it.
+    // Usage rides message_delta like a real Anthropic stream so the terminal
+    // lands on message_stop, before the stray post-stop delta.
     let upstream = MockUpstream::start([ScriptedResponse::sse([
         MESSAGE_START,
         TEXT_DELTA,
+        END_TURN_FINISH,
         MESSAGE_STOP,
         TEXT_DELTA,
     ])])

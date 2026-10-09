@@ -3561,6 +3561,10 @@ impl StreamDispatch {
                     // Only flag streams whose Responses projection started but
                     // never reached response.completed (Claude died before
                     // message_stop; the second hop completes on that chunk).
+                    // A pending `needCompleted` means message_stop already
+                    // arrived and the terminal is only deferred until usage
+                    // or EOF (C-a6api split-usage semantics) — such streams
+                    // flush the terminal in finish_transforms below instead.
                     state
                         .responses
                         .state
@@ -3571,6 +3575,12 @@ impl StreamDispatch {
                             .responses
                             .state
                             .get("completedSent")
+                            .and_then(|v| v.as_bool())
+                            != Some(true)
+                        && state
+                            .responses
+                            .state
+                            .get("needCompleted")
                             .and_then(|v| v.as_bool())
                             != Some(true)
                 })
