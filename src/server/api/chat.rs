@@ -3152,7 +3152,6 @@ async fn proxy_response_with_pending_tracking(
                         Ok(Ok(Some(chunk))) => {
                             let read_at = std::time::Instant::now();
                             let batch = dispatch.feed_at(&chunk, read_at);
-                            dispatch.sync_trace_into(&mut attempt_log);
                             // Passthrough bytes are committed before observer
                             // failures; framing is observational on native routes.
                             if passthrough {
@@ -3198,7 +3197,6 @@ async fn proxy_response_with_pending_tracking(
                     }
                 }
                 let batch = dispatch.finish();
-                dispatch.sync_trace_into(&mut attempt_log);
                 for output in batch.output {
                     yield Ok::<Bytes, std::io::Error>(output);
                 }
@@ -3271,7 +3269,6 @@ async fn proxy_response_with_pending_tracking(
                         Ok(frame) => {
                             if let Ok(data) = frame.into_data() {
                                 let batch = dispatch.feed_at(&data, read_at);
-                                dispatch.sync_trace_into(&mut attempt_log);
                                 if passthrough {
                                     yield Ok::<Bytes, std::io::Error>(data);
                                 }
@@ -3315,7 +3312,6 @@ async fn proxy_response_with_pending_tracking(
                     }
                 }
                 let batch = dispatch.finish();
-                dispatch.sync_trace_into(&mut attempt_log);
                 for output in batch.output {
                     yield Ok::<Bytes, std::io::Error>(output);
                 }
@@ -3371,9 +3367,6 @@ struct StreamDispatch {
     source: Format,
     target: Format,
     next_response_sequence_number: u64,
-    /// Bounded metadata trace of upstream/emitted SSE events; active only
-    /// for translated Claude streams (see `stream_trace::trace_applies`).
-    trace: Option<crate::server::stream_trace::StreamEventTrace>,
 }
 
 #[derive(Default)]
@@ -3417,9 +3410,6 @@ impl StreamDispatch {
                     .insert("toolNameMap".to_string(), Value::Object(map));
             }
         }
-        let translation_active = translation_state.is_some();
-        let trace = crate::server::stream_trace::trace_applies(source, target, translation_active)
-            .then(crate::server::stream_trace::StreamEventTrace::default);
         Self {
             tps: None,
             frame_read_at: None,
@@ -3434,21 +3424,12 @@ impl StreamDispatch {
             source,
             target,
             next_response_sequence_number: 0,
-            trace,
         }
     }
 
     #[cfg(test)]
     fn feed(&mut self, chunk: &[u8]) -> DispatchBatch {
         self.feed_at(chunk, std::time::Instant::now())
-    }
-
-    /// Sync the stream trace (when active) into the attempt log so it
-    /// survives finish and interrupted/drop paths.
-    fn sync_trace_into(&self, attempt_log: &mut Option<AttemptLog>) {
-        if let (Some(trace), Some(log)) = (&self.trace, attempt_log.as_mut()) {
-            log.observe_stream_trace(trace);
-        }
     }
 
     fn feed_at(&mut self, chunk: &[u8], read_at: std::time::Instant) -> DispatchBatch {
@@ -3590,29 +3571,13 @@ impl StreamDispatch {
         batch
     }
 
-    /// `append_translated_chunks` + emitted-side trace observation. Each
-    /// produced SSE frame is inspected for its event name (and item type /
-    /// tool name for output_item.added); finish reasons inside chat chunks
-    /// are recorded separately.
-    fn trace_translated_chunks(&self, output: &mut Vec<Bytes>, chunks: Vec<String>) {
-        for line in &chunks {
-            if let Some(trace) = &self.trace {
-                trace.observe_emitted(line);
-                if let Some(finish) = extract_finish_reason(line) {
-                    trace.observe_finish_reason(&finish);
-                }
-            }
-        }
-        append_translated_chunks(output, chunks);
-    }
-
     fn finish_transforms(&mut self, output: &mut Vec<Bytes>) -> Option<StreamLimitError> {
         if let Some(state) = self.translation_state.as_mut() {
             let chunks = registry::global_registry().finish_stream(self.source, self.target, state);
             if let Some(error) = state.failure.clone() {
                 return Some(error);
             }
-            self.trace_translated_chunks(output, chunks);
+            append_translated_chunks(output, chunks);
         }
         None
     }
@@ -3629,12 +3594,6 @@ impl StreamDispatch {
                 frame.payload(),
                 self.frame_read_at,
             );
-        }
-        if let Some(trace) = &self.trace {
-            let parsed_for_trace = frame
-                .payload()
-                .and_then(|payload| serde_json::from_str::<Value>(payload).ok());
-            trace.observe_upstream(frame.event(), parsed_for_trace.as_ref());
         }
         if self.stop_on_response_completed
             && self.translation_state.is_none()
@@ -3711,7 +3670,7 @@ impl StreamDispatch {
                 batch.response_completed = true;
             }
             match translated {
-                Ok(chunks) => self.trace_translated_chunks(&mut batch.output, chunks),
+                Ok(chunks) => append_translated_chunks(&mut batch.output, chunks),
                 Err(error) => return Err(error),
             }
         }
@@ -3750,9 +3709,6 @@ impl StreamDispatch {
     }
 
     fn streaming_error(&mut self, error_msg: &str, error_type: &str, code: Option<&str>) -> String {
-        if let Some(trace) = &self.trace {
-            trace.observe_stream_error(code.unwrap_or("upstream_stream_error"));
-        }
         let friendly = crate::core::utils::error::friendly_error_message(502, error_msg);
         if self.target == Format::OpenAiResponses {
             return crate::core::translator::response::openai_responses::format_error_event(
@@ -3817,18 +3773,6 @@ fn append_translated_chunks(output: &mut Vec<Bytes>, chunks: Vec<String>) {
             output.push(frame);
         }
     }
-}
-
-/// Extract `choices[0].finish_reason` from a chat-completion style emitted
-/// line (metadata only, used by the stream trace).
-fn extract_finish_reason(line: &str) -> Option<String> {
-    let data = line.trim().strip_prefix("data: ")?;
-    let value: Value = serde_json::from_str(data.trim()).ok()?;
-    value
-        .pointer("/choices/0/finish_reason")?
-        .as_str()
-        .filter(|reason| !reason.is_empty())
-        .map(str::to_string)
 }
 
 fn transform_dashboard_frame(

@@ -280,20 +280,6 @@ async fn complete_claude_stream_still_completes_the_responses_projection() {
         details.get("errorKind").is_none(),
         "complete stream must log success: {details}"
     );
-    // Pure-text turn with thinking: reasoning + message items, no tools,
-    // exactly one completion, nothing emitted after it.
-    let trace = &details["streamTrace"];
-    assert_eq!(trace["upstreamEvents"]["message_start"], 1, "{trace}");
-    assert_eq!(
-        trace["upstreamEvents"]["content_block_start:thinking"], 1,
-        "{trace}"
-    );
-    assert_eq!(trace["itemTypes"]["reasoning"], 1, "{trace}");
-    assert_eq!(trace["itemTypes"]["message"], 1, "{trace}");
-    assert!(trace["itemTypes"].get("function_call").is_none(), "{trace}");
-    assert_eq!(trace["completedCount"], 1, "{trace}");
-    assert_eq!(trace["errorCount"], 0, "{trace}");
-    assert_eq!(trace["framesAfterCompleted"], 0, "{trace}");
     let log = latest_public_request_log(&app).await;
     assert_eq!(log["route"], "/v1/responses");
     assert_eq!(log["statusCode"], 200);
@@ -365,71 +351,10 @@ async fn claude_tool_use_argument_deltas_complete_responses_tool_call() {
     assert_eq!(details["statusCode"], 200);
     assert!(details.get("errorCode").is_none(), "{details}");
     assert!(details.get("errorKind").is_none(), "{details}");
-    // Stream trace: upstream saw a thinking + tool_use turn; the Responses
-    // projection emitted the function_call item and one terminal completion.
-    let trace = &details["streamTrace"];
-    assert_eq!(trace["upstreamEvents"]["message_start"], 1, "{trace}");
-    assert_eq!(
-        trace["upstreamEvents"]["content_block_start:thinking"], 1,
-        "{trace}"
-    );
-    assert_eq!(
-        trace["upstreamEvents"]["content_block_start:tool_use"], 1,
-        "{trace}"
-    );
-    assert_eq!(trace["stopReason"], "tool_use", "{trace}");
-    assert_eq!(trace["itemTypes"]["reasoning"], 1, "{trace}");
-    assert_eq!(trace["itemTypes"]["function_call"], 1, "{trace}");
-    assert_eq!(trace["toolNames"][0], "read", "{trace}");
-    assert_eq!(trace["completedCount"], 1, "{trace}");
-    assert_eq!(trace["errorCount"], 0, "{trace}");
-    assert_eq!(trace["framesAfterCompleted"], 0, "{trace}");
     let log = latest_public_request_log(&app).await;
     assert_eq!(log["statusCode"], 200);
     assert!(log.get("errorCode").is_none(), "{log}");
     assert!(log.get("errorMessage").is_none(), "{log}");
-    let projected_trace = &log["streamTrace"];
-    assert_eq!(projected_trace["completedCount"], 1, "{projected_trace}");
-    assert_eq!(
-        projected_trace["itemTypes"]["function_call"], 1,
-        "{projected_trace}"
-    );
-    assert_eq!(
-        projected_trace["stopReason"], "tool_use",
-        "{projected_trace}"
-    );
-    upstream.shutdown().await;
-}
-
-#[tokio::test]
-async fn claude_events_after_message_stop_are_visible_in_stream_trace() {
-    // Anomaly detector: upstream text after message_stop would produce a
-    // downstream delta AFTER response.completed — the class of defect that
-    // makes an agent client restart its turn. The trace must surface it.
-    let upstream = MockUpstream::start([ScriptedResponse::sse([
-        MESSAGE_START,
-        TEXT_DELTA,
-        MESSAGE_STOP,
-        TEXT_DELTA,
-    ])])
-    .await;
-    let (app, test_db) = app_for(&upstream).await;
-
-    let response = app
-        .clone()
-        .oneshot(responses_request())
-        .await
-        .expect("response");
-    let body = read_body(response).await;
-    assert!(body.contains("response.completed"), "{body}");
-
-    let details = latest_request_details(&test_db).await;
-    let trace = &details["streamTrace"];
-    assert_eq!(trace["completedCount"], 1, "{trace}");
-    assert!(
-        trace["framesAfterCompleted"].as_u64().unwrap_or(0) > 0,
-        "post-completed frame must be recorded: {trace}"
-    );
     upstream.shutdown().await;
 }
 

@@ -54,21 +54,7 @@ async fn request_logs_return_metadata_and_filter_results() {
                         "request": "secret prompt",
                         "response": "secret response",
                         "errorCode": "invalid_request_error",
-                        "errorMessage": "Bad request Authorization: Bearer diagnostic-secret",
-                        "streamTrace": {
-                            "version": 1,
-                            "upstreamEvents": {"message_start": 1, "content_block_start:text": 1},
-                            "emittedEvents": {"response.completed": 1},
-                            "itemTypes": {"message": 1},
-                            "toolNames": ["read"],
-                            "stopReason": "end_turn",
-                            "finishReason": "stop",
-                            "completedCount": 1,
-                            "errorCount": 0,
-                            "framesAfterCompleted": 0,
-                            "doneSent": true,
-                            "entries": ["u:message_start", "d:response.completed"]
-                        }
+                        "errorMessage": "Bad request Authorization: Bearer diagnostic-secret"
                     }),
                 },
             )
@@ -125,11 +111,6 @@ async fn request_logs_return_metadata_and_filter_results() {
         payload["requests"][0]["errorMessage"],
         "Bad request Authorization: [REDACTED]"
     );
-    let trace = &payload["requests"][0]["streamTrace"];
-    assert_eq!(trace["completedCount"], 1);
-    assert_eq!(trace["stopReason"], "end_turn");
-    assert_eq!(trace["toolNames"][0], "read");
-    assert_eq!(trace["entries"][1], "d:response.completed");
     assert_eq!(payload["requests"][0]["tokensPerSecond"], 28.0);
     assert_eq!(payload["requests"][0]["generatedOutputTokens"], 7);
     assert_eq!(payload["requests"][0]["upstreamDurationMs"], 250.0);
@@ -323,7 +304,6 @@ async fn request_logs_tps_requires_valid_final_inputs_and_success_preserving_zer
             "statusCode",
             "errorCode",
             "errorMessage",
-            "streamTrace",
             "durationMs",
             "inputTokens",
             "outputTokens",
@@ -334,10 +314,9 @@ async fn request_logs_tps_requires_valid_final_inputs_and_success_preserving_zer
             "generatedOutputTokens",
             "upstreamDurationMs",
         ];
-        assert_eq!(row.as_object().unwrap().len(), allowed.len() - 3);
+        assert_eq!(row.as_object().unwrap().len(), allowed.len() - 2);
         assert!(row.get("errorCode").is_none());
         assert!(row.get("errorMessage").is_none());
-        assert!(row.get("streamTrace").is_none());
         assert!(row
             .as_object()
             .unwrap()
