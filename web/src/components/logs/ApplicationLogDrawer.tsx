@@ -1,5 +1,5 @@
 import Drawer from "@/shared/components/Drawer";
-import type { ApplicationLog } from "./types";
+import type { ApplicationLog, StreamTrace } from "./types";
 
 interface Props {
   log: ApplicationLog | null;
@@ -12,6 +12,59 @@ function Field({ label, value }: { label: string; value?: string | number | null
       <div className="text-xs font-medium uppercase tracking-wide text-text-muted">{label}</div>
       <div className="mt-1 break-all font-mono text-sm text-text-main">{value ?? "—"}</div>
     </div>
+  );
+}
+
+function CountsGrid({ title, counts }: { title: string; counts?: Record<string, number> }) {
+  const entries = Object.entries(counts ?? {});
+  if (entries.length === 0) return null;
+  return (
+    <div>
+      <div className="text-xs font-medium uppercase tracking-wide text-text-muted">{title}</div>
+      <div className="mt-1 grid grid-cols-1 gap-1 sm:grid-cols-2">
+        {entries.map(([key, count]) => (
+          <div key={key} className="flex items-baseline justify-between gap-2 font-mono text-xs text-text-main">
+            <span className="break-all">{key}</span>
+            <span className="text-text-muted">×{count}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function StreamTraceBlock({ trace }: { trace: StreamTrace }) {
+  return (
+    <details className="rounded-lg border border-border bg-bg-subtle p-4">
+      <summary className="cursor-pointer text-sm font-semibold text-text-main">Stream trace</summary>
+      <div className="mt-3 space-y-3">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <Field label="Stop reason" value={trace.stopReason} />
+          <Field label="Finish reason" value={trace.finishReason} />
+          <Field label="Completed" value={trace.completedCount} />
+          <Field label="Errors" value={trace.errorCount} />
+          <Field label="After completed" value={trace.framesAfterCompleted} />
+          <Field label="[DONE] sent" value={trace.doneSent ? "yes" : "no"} />
+          <Field label="Overflowed" value={trace.overflowed ?? 0} />
+          {trace.toolNames && trace.toolNames.length > 0 && (
+            <Field label="Tool calls" value={trace.toolNames.join(", ")} />
+          )}
+        </div>
+        <CountsGrid title="Upstream events" counts={trace.upstreamEvents} />
+        <CountsGrid title="Emitted events" counts={trace.emittedEvents} />
+        <CountsGrid title="Item types" counts={trace.itemTypes} />
+        <div>
+          <div className="text-xs font-medium uppercase tracking-wide text-text-muted">Event order</div>
+          <ol className="mt-1 space-y-0.5 font-mono text-xs text-text-main">
+            {trace.entries.map((entry, index) => (
+              <li key={`${index}-${entry}`} className="break-all">
+                <span className="text-text-muted">{String(index + 1).padStart(2, "0")}</span> {entry}
+              </li>
+            ))}
+          </ol>
+        </div>
+      </div>
+    </details>
   );
 }
 
@@ -41,6 +94,8 @@ export default function ApplicationLogDrawer({ log, onClose }: Props) {
               <p className="mt-1 whitespace-pre-wrap break-words font-mono text-sm text-text-main">{log.errorMessage}</p>
             </div>
           )}
+
+          {log.streamTrace && <StreamTraceBlock trace={log.streamTrace} />}
 
           <div className="rounded-lg border border-border bg-bg-subtle p-4">
             <h3 className="mb-3 text-sm font-semibold text-text-main">Observed throughput</h3>

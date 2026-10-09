@@ -538,6 +538,7 @@ impl RequestLogContext {
                     finished: Arc::new(AtomicBool::new(false)),
                     lean: true,
                     error_details: None,
+                    stream_trace: None,
                     codex_cache: Default::default(),
                     tps: Default::default(),
                 })
@@ -584,6 +585,7 @@ impl RequestLogContext {
                         finished: Arc::new(AtomicBool::new(false)),
                         lean: false,
                         error_details: None,
+                        stream_trace: None,
                         codex_cache: Default::default(),
                         tps: Default::default(),
                     }),
@@ -631,6 +633,9 @@ pub struct AttemptLog {
     /// Bounded, sanitized terminal diagnostic captured from an upstream
     /// response or stream without retaining the raw body.
     error_details: Option<(Option<String>, String)>,
+    /// Bounded metadata trace of SSE events for translated Claude streams;
+    /// synchronized from `StreamDispatch` before finish/drop.
+    stream_trace: Option<Value>,
     codex_cache: crate::core::executor::codex_cache::CodexCacheObservation,
     tps: crate::server::upstream_tps::UpstreamTpsObservation,
 }
@@ -649,6 +654,17 @@ impl AttemptLog {
     pub(crate) fn record_error_details(&mut self, code: Option<&str>, message: &str) {
         if self.error_details.is_none() {
             self.error_details = Some(sanitize_error_diagnostic(code, message));
+        }
+    }
+
+    /// Capture the latest bounded stream-event trace snapshot. Called after
+    /// each dispatch step so the trace survives interrupted/drop paths.
+    pub(crate) fn observe_stream_trace(
+        &mut self,
+        trace: &crate::server::stream_trace::StreamEventTrace,
+    ) {
+        if let Some(snapshot) = trace.snapshot() {
+            self.stream_trace = Some(snapshot);
         }
     }
 
@@ -701,6 +717,9 @@ impl AttemptLog {
                 data.insert("errorCode".into(), json!(code));
             }
             data.insert("errorMessage".into(), json!(message));
+        }
+        if let Some(trace) = &self.stream_trace {
+            data.insert("streamTrace".into(), trace.clone());
         }
         data.insert(
             "durationMs".into(),
@@ -815,6 +834,8 @@ struct RequestLogRecord {
     error_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_trace: Option<Value>,
     duration_ms: u64,
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
@@ -908,6 +929,94 @@ fn parse_timestamp(value: &str) -> Option<String> {
         .map(|timestamp| timestamp.with_timezone(&Utc).to_rfc3339())
 }
 
+const STREAM_TRACE_MAX_ENTRIES: usize = 64;
+const STREAM_TRACE_MAX_TOOL_NAMES: usize = 8;
+const STREAM_TRACE_MAX_KEYS: usize = 48;
+
+/// Validate and re-bound a stored `streamTrace` object before projecting it
+/// through the authenticated request-logs API. Only known keys with known
+/// shapes survive; anything malformed drops the whole field (never partial
+/// garbage). Strings are re-sanitized so legacy or tampered rows cannot leak
+/// arbitrary content.
+fn sanitize_stream_trace(value: &Value) -> Option<Value> {
+    let obj = value.as_object()?;
+    if obj.get("version")?.as_u64()? != 1 {
+        return None;
+    }
+    let counts = |key: &str| -> Option<Value> {
+        let map = obj.get(key)?.as_object()?;
+        if map.len() > STREAM_TRACE_MAX_KEYS {
+            return None;
+        }
+        let mut out = Map::new();
+        for (k, v) in map {
+            let count = v.as_u64()?;
+            let key = sanitize_error_message(k);
+            if key.is_empty() {
+                return None;
+            }
+            out.insert(key, json!(count));
+        }
+        Some(Value::Object(out))
+    };
+    let strings = |key: &str, cap: usize| -> Option<Value> {
+        let arr = obj.get(key)?.as_array()?;
+        if arr.len() > cap {
+            return None;
+        }
+        let mut out = Vec::with_capacity(arr.len());
+        for item in arr {
+            let text = sanitize_error_message(item.as_str()?);
+            if text.is_empty() {
+                return None;
+            }
+            out.push(Value::String(text));
+        }
+        Some(Value::Array(out))
+    };
+    let scalar_u32 = |key: &str| -> Option<Value> { Some(json!(obj.get(key)?.as_u64()?)) };
+    let scalar_str = |key: &str| -> Option<Value> {
+        let text = sanitize_error_message(obj.get(key)?.as_str()?);
+        (!text.is_empty()).then_some(Value::String(text))
+    };
+    let mut out = Map::new();
+    out.insert("version".into(), json!(1));
+    out.insert("upstreamEvents".into(), counts("upstreamEvents")?);
+    out.insert("emittedEvents".into(), counts("emittedEvents")?);
+    out.insert("itemTypes".into(), counts("itemTypes")?);
+    if let Some(tool_names) = obj.get("toolNames") {
+        out.insert(
+            "toolNames".into(),
+            strings("toolNames", STREAM_TRACE_MAX_TOOL_NAMES)?,
+        );
+        let _ = tool_names;
+    }
+    if let Some(value) = obj.get("stopReason") {
+        let _ = value;
+        out.insert("stopReason".into(), scalar_str("stopReason")?);
+    }
+    if let Some(value) = obj.get("finishReason") {
+        let _ = value;
+        out.insert("finishReason".into(), scalar_str("finishReason")?);
+    }
+    out.insert("completedCount".into(), scalar_u32("completedCount")?);
+    out.insert("errorCount".into(), scalar_u32("errorCount")?);
+    out.insert(
+        "framesAfterCompleted".into(),
+        scalar_u32("framesAfterCompleted")?,
+    );
+    out.insert("doneSent".into(), json!(obj.get("doneSent")?.as_bool()?));
+    if let Some(overflow) = obj.get("overflowed") {
+        let _ = overflow;
+        out.insert("overflowed".into(), scalar_u32("overflowed")?);
+    }
+    out.insert(
+        "entries".into(),
+        strings("entries", STREAM_TRACE_MAX_ENTRIES)?,
+    );
+    Some(Value::Object(out))
+}
+
 fn request_log_from_row(row: request_repo::RequestDetailRow) -> RequestLogRecord {
     let tps = completed_tps(row.status.as_deref(), &row.data);
     let error_code = sanitize_error_code(row.data.get("errorCode").and_then(Value::as_str));
@@ -916,6 +1025,7 @@ fn request_log_from_row(row: request_repo::RequestDetailRow) -> RequestLogRecord
         .get("errorMessage")
         .and_then(Value::as_str)
         .map(sanitize_error_message);
+    let stream_trace = row.data.get("streamTrace").and_then(sanitize_stream_trace);
     RequestLogRecord {
         request_id: row.id,
         timestamp: row.timestamp,
@@ -940,6 +1050,7 @@ fn request_log_from_row(row: request_repo::RequestDetailRow) -> RequestLogRecord
             .map(str::to_string),
         error_code,
         error_message,
+        stream_trace,
         duration_ms: row
             .data
             .get("durationMs")
@@ -1341,6 +1452,43 @@ mod tests {
         assert!(!message.contains("abc-secret"));
         assert!(!message.contains("token-secret"));
         assert!(message.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn stream_trace_projection_validates_shape_and_drops_garbage() {
+        let valid = json!({
+            "version": 1,
+            "upstreamEvents": {"message_start": 2, "message_delta:stop_reason=end_turn": 1},
+            "emittedEvents": {"response.completed": 1, "error:upstream_stream_truncated": 1},
+            "itemTypes": {"message": 1},
+            "stopReason": "end_turn",
+            "finishReason": "stop",
+            "completedCount": 1,
+            "errorCount": 1,
+            "framesAfterCompleted": 0,
+            "doneSent": true,
+            "entries": ["u:message_start", "d:response.completed"]
+        });
+        let projected = sanitize_stream_trace(&valid).unwrap();
+        assert_eq!(projected["upstreamEvents"]["message_start"], 2);
+        assert_eq!(projected["completedCount"], 1);
+        assert_eq!(projected["doneSent"], true);
+        assert_eq!(projected["entries"].as_array().unwrap().len(), 2);
+
+        // Wrong version, missing required counters, over-cap entries, and
+        // unknown junk all drop the field entirely.
+        let mut wrong_version = valid.clone();
+        wrong_version["version"] = json!(2);
+        assert!(sanitize_stream_trace(&wrong_version).is_none());
+        let mut missing = valid.clone();
+        missing.as_object_mut().unwrap().remove("completedCount");
+        assert!(sanitize_stream_trace(&missing).is_none());
+        let mut too_many_entries = valid.clone();
+        too_many_entries["entries"] =
+            Value::Array(std::iter::repeat_n(json!("x"), STREAM_TRACE_MAX_ENTRIES + 1).collect());
+        assert!(sanitize_stream_trace(&too_many_entries).is_none());
+        assert!(sanitize_stream_trace(&json!("not-an-object")).is_none());
+        assert!(sanitize_stream_trace(&json!({"version": 1})).is_none());
     }
 
     #[test]
