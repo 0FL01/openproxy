@@ -166,6 +166,84 @@ test("sidebar shares provider quotas, uses theme colors, retries loading once an
   assert.ok(intervals.mock.callCount() > 0)
 })
 
+test("A6API renders credit balances without usage bars and preserves other providers", async (t) => {
+  const clock = pollingClock(t)
+  const control = account("Control", "fresh", {
+    "API credits": quota({ used: 2, total: 3, remaining: 1.00283, unit: "USD" }),
+    Session: quota({ remainingPercentage: 75, resetAt: new Date(clock.now + 3600000).toISOString() }),
+  })
+  let fields = {}
+  t.mock.method(globalThis, "fetch", async () => response([
+    { ...account("A6", "fresh", { "API credits": quota({
+      used: 2, total: 3, unit: "USD", ...fields,
+    }) }), provider: "a6api", plan: null },
+    control,
+  ]))
+  const api = host(t)
+  await OpenProxySidebar(api)
+  api.ready()
+  await flush()
+  const unchanged = content(api.tree().props.children[2]).join("\n")
+  assert.match(unchanged, /API credits\s+━{5}─{3} 67% · 1.00283 USD left/)
+  assert.match(unchanged, /Session\s+━{2}─{6} 25% ↻1h/)
+  for (const [next, expected, color] of [
+    [{ remaining: 1.00283 }, "$1.00 left", "white"],
+    [{ remaining: 1234.5678 }, "$1,234.57 left", "white"],
+    [{ remaining: 0.01 }, "$0.01 left", "white"],
+    [{ remaining: 0.019 }, "$0.02 left", "white"],
+    [{ remaining: 0.000001 }, "<$0.01 left", "white"],
+    [{ remaining: 0 }, "$0.00 left", "red"],
+    [{ remaining: null }, "unknown", "gray"],
+    [{ remaining: 0, unlimited: true }, "Unlimited", "white"],
+    [{ remaining: 5, unit: "EUR" }, "5 EUR left", "white"],
+  ]) {
+    fields = next
+    await clock.poll(0)
+    const block = api.tree().props.children[1]
+    assert.equal(content(block).join("\n"), `A6API\nBalance ${expected}`)
+    const balance = block.props.children[1].props.children[0].props.children
+    assert.equal(balance[1].props.fg, color)
+    assert.equal(content(api.tree().props.children[2]).join("\n"), unchanged)
+  }
+})
+
+test("A6API aggregates balances before rounding and shows expiry, partial data and retained errors", async (t) => {
+  const clock = pollingClock(t)
+  const expires = new Date(clock.now + 60 * 3600000).toISOString()
+  const a6 = (id, fields) => ({ ...account(id, "fresh", { "API credits": quota({
+    used: 1, total: 2, unit: "USD", ...fields,
+  }) }), provider: "a6api", plan: null })
+  let rows = [a6("First", { remaining: 0.006, resetAt: expires }), a6("Second", { remaining: 0.006 })]
+  let failed = false
+  t.mock.method(globalThis, "fetch", async () => {
+    if (failed) throw new Error("fixture-key")
+    return response(rows)
+  })
+  const api = host(t)
+  await OpenProxySidebar(api)
+  api.ready()
+  await flush()
+  assert.equal(api.render(), "Usage limits\nA6API\nBalance $0.01 left\nExpires 2d12h")
+  clock.advance(3600000)
+  assert.match(api.render(), /Expires 2d11h/)
+  rows[1] = a6("Unknown", { remaining: null })
+  await clock.poll(0)
+  assert.match(api.render(), /A6API\nPartial data\nBalance <\$0.01 left\nExpires 2d11h/)
+  rows[1] = { ...rows[1], status: "unavailable", quotas: {}, error: "Quota rate limited", errorStatus: 429 }
+  await clock.poll(0)
+  assert.match(api.render(), /Partial data\nQuota rate limited · HTTP 429\nBalance <\$0.01 left/)
+  failed = true
+  await clock.poll(0)
+  assert.match(api.render(), /Proxy unavailable[\s\S]*Data stale[\s\S]*Balance <\$0.01 left/)
+  clock.advance(59 * 3600000)
+  assert.match(api.render(), /Balance <\$0.01 left\nExpired/)
+  assert.doesNotMatch(api.render(), /API credits|━|─|%|↻|due|fixture-key|First|Second|Unknown/)
+  failed = false
+  rows = [{ ...a6("Recovered", { remaining: 1.00283 }), status: "stale" }]
+  await clock.poll(0)
+  assert.equal(api.render(), "Usage limits\nA6API\nBalance $1.00 left")
+})
+
 test("sidebar disposal aborts its only in-flight request and prevents late updates or polling", async (t) => {
   const api = host(t)
   let signal, finish

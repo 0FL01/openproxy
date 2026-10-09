@@ -300,7 +300,8 @@ function sharedLimits(accounts) {
       const total = quantitative ? sum(counts, "total") : used === null ? null : 100
       const balances = values.filter((quota) => quota.remaining !== null)
       const resets = values.map((quota) => quota.resetAt).filter(Boolean).sort((a, b) => Date.parse(a) - Date.parse(b))
-      const known = quantitative ? counts.length : percentages.length || balances.length
+      const known = group.provider === "a6api" && label === "API credits" ? balances.length
+        : quantitative ? counts.length : percentages.length || balances.length
       const unlimited = values.some((quota) => quota.unlimited)
       return { label, partial: !unlimited && known > 0 && known < values.length, quota: {
         used, total, remaining: balances.length ? sum(balances, "remaining") : null,
@@ -407,12 +408,26 @@ export async function OpenProxySidebar(api) {
     if (minutes < 1440) return `${hours}h${minutes % 60 ? `${minutes % 60}m` : ""}`
     return `${Math.floor(minutes / 1440)}d${hours % 24 ? `${hours % 24}h` : ""}`
   }
-  const quotaView = ({ label, quota }, theme) => {
+  const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" })
+  const quotaView = ({ label, quota }, theme, provider) => {
+    const amount = (value) => `${Number(value.toPrecision(6))}${quota.unit ? ` ${quota.unit}` : ""}`
+    if (provider === "a6api" && label === "API credits") {
+      const remaining = quota.remaining
+      const balance = quota.unlimited ? "Unlimited" : remaining === null ? "unknown"
+        : quota.unit === "USD" && remaining > 0 && remaining < 0.01 ? "<$0.01 left"
+        : `${quota.unit === "USD" ? usd.format(remaining) : amount(remaining)} left`
+      const tone = quota.unlimited ? "text" : remaining === null ? "textMuted" : remaining === 0 ? "error" : "text"
+      // A6API's resetAt is the key's expiry, not a replenishing quota window.
+      const expired = quota.resetAt && Date.parse(quota.resetAt) <= now()
+      return jsxs("box", { flexDirection: "column", children: [
+        jsxs("text", { children: [span("Balance ", "text", theme), span(balance, tone, theme)] }),
+        ...(quota.resetAt ? [text(expired ? "Expired" : `Expires ${reset(quota.resetAt)}`, expired ? "error" : "textMuted", theme)] : []),
+      ] })
+    }
     const percentage = quota.remainingPercentage !== null ? 100 - quota.remainingPercentage
       : quota.used !== null && quota.total > 0 ? quota.used / quota.total * 100 : null
     const used = percentage === null ? null : Math.max(0, Math.min(100, percentage))
     const filled = used === null ? 0 : Math.round(used * 8 / 100)
-    const amount = (value) => `${Number(value.toPrecision(6))}${quota.unit ? ` ${quota.unit}` : ""}`
     const balance = quota.remaining !== null ? `${amount(quota.remaining)} left` : null
     const detail = !quota.unlimited && used !== null && quota.unit
       ? balance ?? (quota.used !== null ? `${amount(quota.used)} used` : null) : null
@@ -444,14 +459,14 @@ export async function OpenProxySidebar(api) {
             const warning = populated.length ? stale ? "Data stale" : partial ? "Partial data" : null
               : group.accounts.some((account) => account.status === "loading") ? "Loading…"
               : group.accounts.every((account) => account.status === "unsupported") ? "Limits unsupported" : "Limits unavailable"
-            const name = { codex: "Codex", claude: "Claude", anthropic: "Anthropic", glm: "GLM", "glm-cn": "GLM CN", "opencode-go": "OpenCode Go" }[group.provider] ?? group.provider
+            const name = { a6api: "A6API", codex: "Codex", claude: "Claude", anthropic: "Anthropic", glm: "GLM", "glm-cn": "GLM CN", "opencode-go": "OpenCode Go" }[group.provider] ?? group.provider
             return jsxs("box", { flexDirection: "column", children: [
               jsxs("text", { children: [span(name, "text", theme, true),
                 ...(group.plan ? [span(` · ${group.plan}`, "textMuted", theme)] : []),
               ] }),
               ...(warning ? [text(warning, populated.length ? "warning" : "textMuted", theme)] : []),
               ...errors.map((error) => text(error, "error", theme)),
-              ...group.quotas.map((row) => quotaView(row, theme)),
+              ...group.quotas.map((row) => quotaView(row, theme, group.provider)),
             ] })
           }),
         ]

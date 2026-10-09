@@ -44,6 +44,14 @@ test("installed OpenCode TUI supplies lazy UI imports and actually renders react
         used: null, total: null, remaining: null, remainingPercentage: 80,
         resetAt: new Date(Date.now() + 7200000).toISOString(), unlimited: false,
       } },
+    }, {
+      id: "a6", provider: "a6api", label: "A6 fixture", plan: null, error: null,
+      observedAt: new Date(Date.now() - 3600000).toISOString(), status: requests === 1 ? "loading" : "stale",
+      refreshing: false, nextRefreshAt: null, errorStatus: null,
+      quotas: requests === 1 ? {} : { "API credits": {
+        used: 2, total: 3, remaining: 1.00283, remainingPercentage: 1.00283 / 3 * 100,
+        resetAt: new Date(Date.now() + 60 * 3600000).toISOString(), unit: "USD", unlimited: false,
+      } },
     }] }))
   }).listen(0, "127.0.0.1")
   await once(server, "listening")
@@ -74,7 +82,7 @@ test("installed OpenCode TUI supplies lazy UI imports and actually renders react
     OPENCODE_DISABLE_EXTERNAL_SKILLS: "true", OPENCODE_DISABLE_CLAUDE_CODE: "true",
     OPENCODE_DISABLE_AUTOUPDATE: "true", OPENCODE_DISABLE_MODELS_FETCH: "true", OPENCODE_MODELS_URL: origin,
   }
-  const python = `import os, pty, subprocess, select, time, sys, fcntl, termios, struct, signal
+  const python = `import os, pty, subprocess, select, time, sys, fcntl, termios, struct, signal, re
 master, slave = pty.openpty()
 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 60, 120, 0, 0))
 child = subprocess.Popen([sys.argv[1]], stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
@@ -88,7 +96,10 @@ try:
    except OSError: break
    if not data: break
    output += data
-   if b"50%" in output: break
+   rendered = re.sub(rb"\\x1b\\[[0-?]*[ -/]*[@-~]", b"", output)
+   if (b"Codex" in rendered and b"50%" in rendered and b"A6API" in rendered
+       and re.search(rb"Balance\\s*\\$1\\.00\\s*left", rendered)
+       and re.search(rb"Expires\\s*2d12h", rendered)): break
 finally:
  os.killpg(child.pid, signal.SIGTERM) if child.poll() is None else None
  try: child.wait(timeout=3)
@@ -106,6 +117,10 @@ sys.stdout.buffer.write(output)
   assert.match(rendered, /50%/)
   assert.match(rendered, /━{4}─{4}/)
   assert.match(rendered, /↻1h/)
-   assert.doesNotMatch(rendered, /Fixture account|Second fixture|updated just now|Data stale|retrying/)
+  assert.match(rendered, /A6API/)
+  assert.match(rendered, /Balance\s*\$1\.00\s*left/)
+  assert.match(rendered, /Expires\s*2d12h/)
+  assert.doesNotMatch(rendered, /API credits|1\.00283|━{5}─{3}|67%|↻2d12h/i)
+  assert.doesNotMatch(rendered, /a6api|Fixture account|Second fixture|A6 fixture|updated just now|Data stale|retrying/)
   assert.equal(requests, 2)
 })

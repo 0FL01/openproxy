@@ -237,6 +237,13 @@ Provider headings and percentages are bold. Each quota is one compact text row
 with an eight-character thin green bar (`━` filled, `─` empty) and an inline reset
 such as `↻2d3h`. Percentages are green below 70%, yellow from 70% and red from 90%;
 reset details use muted theme colors.
+A6API credits are shown as a monetary balance instead of a usage bar, for example
+`A6API` / `Balance $1.00 left`. USD balances are rounded to cents after aggregation;
+a positive balance below one cent reads `<$0.01 left`. Zero, unknown and unlimited
+balances remain distinct. A known key expiry appears on a separate `Expires 2d12h`
+line (or `Expired`), never as a replenishing reset countdown. The nearest known
+expiry is shown when several keys are grouped. Other providers keep their existing
+quota rendering.
 Connection labels and routine freshness/age text are hidden; warnings identify
 failures, partial, loading, unsupported or unavailable data. Claude connections
 report passively observed `5h`/`weekly (7d)` windows from the proxy's stored
