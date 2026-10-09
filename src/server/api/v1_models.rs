@@ -1109,6 +1109,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn claude_opus_5_5_advertises_reasoning_effort_variants() {
+        // Opus 5.5 has no models.dev entry, so the catalog row is the only
+        // authoritative effort source for the OpenCode plugin. Without
+        // `reasoningEfforts` the row ships without `opencode.variants` and
+        // xhigh never appears in the client's effort picker.
+        let snapshot = AppDb {
+            provider_connections: vec![ProviderConnection {
+                id: "conn-claude".into(),
+                provider: "claude".into(),
+                auth_type: "oauth".into(),
+                access_token: Some("sk-ant-oat-test".into()),
+                is_active: Some(true),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let models = build_models_list(&test_state().await, &snapshot, &[LLM_KIND]).await;
+        let model = models
+            .iter()
+            .find(|m| m.id == "cc/claude-opus-5-5")
+            .expect("cc/claude-opus-5-5 should appear in /v1/models");
+        let metadata = model
+            .opencode
+            .as_ref()
+            .expect("opencode metadata should be present");
+        let expected: BTreeMap<_, _> = ["low", "medium", "high", "xhigh", "max"]
+            .iter()
+            .map(|effort| ((*effort).to_string(), json!({"reasoningEffort": effort})))
+            .collect();
+        assert_eq!(
+            serde_json::to_value(&metadata.variants).expect("variants serialize"),
+            json!(expected),
+            "opus 5.5 must advertise low/medium/high/xhigh/max variants"
+        );
+        assert_eq!(metadata.reasoning, Some(true));
+    }
+
+    #[tokio::test]
     async fn claude_cc_catalog_has_no_duplicate_rows() {
         // 2026-10-07: b89f3bb8 added both dashed and dotted opus spellings
         // (claude-opus-4-8 + claude-opus-4.8, claude-opus-5-5 + 5.5), which

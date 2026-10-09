@@ -148,6 +148,8 @@
     {
      "id": "claude-opus-5-5",
      "name": "Claude Opus 5.5",
+     "capabilities": ["tools", "reasoning"],
+     "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"],
      "kind": "llm"
     },
     {
