@@ -1755,6 +1755,86 @@ mod tests {
     }
 
     #[test]
+    fn a6api_prepared_requests_preserve_configured_reasoning_efforts() {
+        use crate::core::chat::RequestPlan;
+        use crate::core::translator::registry::{global_registry, Format};
+        use crate::core::utils::thinking_suffix::reapply_thinking_after_translate;
+        use serde_json::json;
+
+        let executor = DefaultExecutor::new("a6api", Arc::new(ClientPool::new()), None).unwrap();
+        let registry = global_registry();
+        let presets: [(&str, &[&str]); 3] = [
+            ("gpt-6-luna", &["low", "medium", "high", "xhigh", "max"]),
+            ("glm-5.3", &["low", "high", "max"]),
+            ("deepseek-v4.1-flash", &["low", "high", "max"]),
+        ];
+        let messages = json!([{"role": "user", "content": "Synthetic reasoning request."}]);
+        let credentials = json!({"provider": "a6api"});
+
+        for (model, efforts) in presets {
+            for &effort in efforts {
+                for stream in [false, true] {
+                    for (endpoint, source_format) in [
+                        ("/v1/chat/completions", Format::OpenAi),
+                        ("/v1/responses", Format::OpenAiResponses),
+                    ] {
+                        let case = format!("{model} {effort} stream={stream} {endpoint}");
+                        let mut body = json!({"model": model, "stream": stream});
+                        if source_format == Format::OpenAi {
+                            body["messages"] = messages.clone();
+                            body["reasoning_effort"] = json!(effort);
+                        } else {
+                            body["input"] = messages.clone();
+                            body["reasoning"] = json!({"effort": effort});
+                        }
+                        let plan = RequestPlan::new(Some(endpoint), &body, "a6api", model);
+                        assert_eq!(plan.source_format, source_format, "{case}");
+                        assert_eq!(plan.target_format, Format::OpenAi, "{case}");
+                        assert_eq!(plan.dispatch_model(), model, "{case}");
+                        assert!(plan.thinking_level.is_none(), "{case}");
+
+                        if plan.needs_translation() {
+                            assert!(registry.translate_request_with_strip(
+                                plan.source_format,
+                                plan.target_format,
+                                plan.dispatch_model(),
+                                &mut body,
+                                stream,
+                                Some(&credentials),
+                                None,
+                            ));
+                        }
+                        reapply_thinking_after_translate(
+                            plan.target_format,
+                            &plan.provider,
+                            plan.dispatch_model(),
+                            &mut body,
+                            None,
+                            stream,
+                        );
+                        let prepared = executor
+                            .prepare_upstream_body(&body, plan.dispatch_model())
+                            .unwrap();
+                        let serialized: Value =
+                            serde_json::from_slice(prepared.serialized_bytes()).unwrap();
+
+                        assert_eq!(serialized["model"].as_str(), Some(model), "{case}");
+                        assert_eq!(serialized["stream"].as_bool(), Some(stream), "{case}");
+                        assert_eq!(
+                            serialized["reasoning_effort"].as_str(),
+                            Some(effort),
+                            "{case}"
+                        );
+                        assert_eq!(serialized["messages"], messages, "{case}");
+                        assert!(serialized.get("input").is_none(), "{case}");
+                        assert!(serialized.get("reasoning").is_none(), "{case}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn bounded_serializer_accepts_exact_limit_and_rejects_plus_one() {
         let value = serde_json::json!({"unicode": "Привет 🌍", "unknown": {"x": true}});
         let exact = serde_json::to_vec(&value).unwrap();

@@ -128,6 +128,75 @@ test("authoritative empty effort list disables SDK reasoning variants", async (t
   assert.equal(Object.hasOwn(config.provider.ludka2.models.unknown, "variants"), false)
 })
 
+test("A6API inventory preserves canonical source and exact effort defaults with explicit local overrides", async (t) => {
+  const gptVariants = Object.fromEntries(["low", "medium", "high", "xhigh", "max"].map((effort) => [effort, { reasoningEffort: effort }]))
+  const otherVariants = Object.fromEntries(["low", "high", "max"].map((effort) => [effort, { reasoningEffort: effort }]))
+  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({
+    object: "list", data: [
+      { id: "my-a6/gpt-6-luna", opencode: { source: "a6api", reasoning: true, variants: gptVariants } },
+      { id: "a6api/glm-5.3", opencode: { source: "a6api", reasoning: true, variants: otherVariants } },
+      { id: "a6api/deepseek-v4.1-flash", opencode: { source: "a6api", reasoning: true, variants: otherVariants } },
+      { id: "cx/control", opencode: { source: "codex" } },
+    ],
+  }), { headers: { "Content-Type": "application/json" } }))
+  const config = { provider: { ludka2: {
+    options: { baseURL: "https://example.invalid/v1", apiKey: "fixture-key" },
+    models: {
+      "a6api/gpt-5.5": { name: "Old excluded A6 model" },
+      "cx/control": { name: "Local control" },
+    },
+  } } }
+  const plugin = await OpenProxyModels()
+  await plugin.config(config)
+
+  const defaultVariants = {
+    low: { reasoningEffort: "low" },
+    high: { reasoningEffort: "high" },
+    max: { reasoningEffort: "max" },
+    none: { disabled: true },
+    minimal: { disabled: true },
+    medium: { disabled: true },
+    xhigh: { disabled: true },
+  }
+  const defaults = config.provider.ludka2.models
+  assert.deepEqual(defaults, {
+    "my-a6/gpt-6-luna": {
+      name: "GPT-6 Luna · a6api", reasoning: true, variants: {
+        low: { reasoningEffort: "low" },
+        medium: { reasoningEffort: "medium" },
+        high: { reasoningEffort: "high" },
+        xhigh: { reasoningEffort: "xhigh" },
+        max: { reasoningEffort: "max" },
+        none: { disabled: true },
+        minimal: { disabled: true },
+      },
+    },
+    "a6api/glm-5.3": { name: "GLM 5.3 · a6api", reasoning: true, variants: defaultVariants },
+    "a6api/deepseek-v4.1-flash": { name: "Deepseek V4.1 Flash · a6api", reasoning: true, variants: defaultVariants },
+    "cx/control": { name: "Local control · codex" },
+  })
+
+  // Defaults above are asserted without a local effort override. Only the
+  // exact GLM route ID may explicitly re-enable medium in a separate config.
+  const overridden = { provider: { ludka2: {
+    options: config.provider.ludka2.options,
+    models: {
+      "a6api/glm-5.3": { variants: { medium: { reasoningEffort: "medium" } } },
+      "glm-5.3": { variants: { xhigh: { reasoningEffort: "xhigh" } } },
+      "cx/control": { name: "Local control" },
+    },
+  } } }
+  await plugin.config(overridden)
+  assert.deepEqual(overridden.provider.ludka2.models, {
+    ...defaults,
+    "a6api/glm-5.3": {
+      ...defaults["a6api/glm-5.3"],
+      variants: { ...defaultVariants, medium: { reasoningEffort: "medium" } },
+    },
+  })
+  assert.deepEqual(defaults["a6api/glm-5.3"].variants, defaultVariants)
+})
+
 test("GLM limits retain context usage while local output fills gaps and incomplete limits stay silent", async (t) => {
   const warnings = []
   t.mock.method(console, "warn", (message) => warnings.push(message))

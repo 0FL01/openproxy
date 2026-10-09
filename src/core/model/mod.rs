@@ -125,11 +125,28 @@ pub fn a6api_connection_supports_model(connection: &ProviderConnection, model: &
             .any(|id| id == model.trim())
 }
 
+/// User-chosen publication families and effort presets, not upstream capability
+/// discovery. Raw per-key inventory and exact routing entitlement stay intact.
+pub(crate) fn a6api_default_reasoning_efforts(model: &str) -> Option<&'static [&'static str]> {
+    const GPT_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+    const GLM_DEEPSEEK_EFFORTS: &[&str] = &["low", "high", "max"];
+
+    let model_id = model.trim().rsplit('/').next()?;
+    if model_id.starts_with("gpt-6") {
+        Some(GPT_EFFORTS)
+    } else if model_id.starts_with("glm-5") || model_id.starts_with("deepseek-v4") {
+        Some(GLM_DEEPSEEK_EFFORTS)
+    } else {
+        None
+    }
+}
+
 pub fn a6api_active_model_ids(db: &AppDb) -> Vec<String> {
     db.provider_connections
         .iter()
         .filter(|connection| connection.provider == "a6api" && connection.is_active())
         .flat_map(a6api_enabled_model_ids)
+        .filter(|model| a6api_default_reasoning_efforts(model).is_some())
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect()
@@ -318,5 +335,189 @@ fn infer_provider_from_model_name(model_name: &str) -> &'static str {
         // Common model families that land here: llama-*, codellama-*, phi-*,
         // nemotron-*, dbrx-*, qwen-*, yi-*, gemma-*.
         "openai"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{
+        a6api_active_model_ids, a6api_connection_supports_model, a6api_default_reasoning_efforts,
+        a6api_enabled_model_ids,
+    };
+    use crate::types::{AppDb, ProviderConnection};
+
+    fn connection_with_inventory(inventory: serde_json::Value) -> ProviderConnection {
+        let mut connection = ProviderConnection {
+            provider: "a6api".to_string(),
+            ..ProviderConnection::default()
+        };
+        connection
+            .provider_specific_data
+            .insert("enabledModels".to_string(), inventory);
+        connection
+    }
+
+    #[test]
+    fn a6api_reasoning_defaults_match_final_segment_families() {
+        let gpt_efforts: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+        let glm_deepseek_efforts: &[&str] = &["low", "high", "max"];
+
+        for model in [
+            "gpt-6",
+            "gpt-6-mini",
+            "openai/gpt-6",
+            " \torg/openai/gpt-6-pro\n",
+        ] {
+            assert_eq!(a6api_default_reasoning_efforts(model), Some(gpt_efforts));
+        }
+        for model in [
+            "glm-5",
+            "zai/glm-5",
+            " org/zai/glm-5-turbo ",
+            "deepseek-v4",
+            "deepseek/deepseek-v4",
+            " org/deepseek/deepseek-v4-flash ",
+        ] {
+            assert_eq!(
+                a6api_default_reasoning_efforts(model),
+                Some(glm_deepseek_efforts)
+            );
+        }
+    }
+
+    #[test]
+    fn a6api_reasoning_defaults_reject_case_and_prefix_mismatches() {
+        for model in [
+            "",
+            " \t\n",
+            "GPT-6",
+            "openai/GPT-6",
+            "GLM-5",
+            "deepseek/DeepSeek-v4",
+            "gpt-5.5",
+            "glm-4.7",
+            "deepseek-v3.2",
+            "gpt6",
+            "glm5",
+            "deepseekv4",
+            "not-gpt-6",
+            "gpt-6/other-model",
+            "glm-5/gemini-3-pro",
+            "deepseek-v4/",
+        ] {
+            assert_eq!(a6api_default_reasoning_efforts(model), None, "{model:?}");
+        }
+    }
+
+    #[test]
+    fn a6api_reasoning_defaults_use_literal_prefix_wildcards() {
+        for (model, family) in [
+            ("gpt-60", "gpt-6"),
+            ("vendor/glm-50", "glm-5"),
+            ("vendor/deepseek-v40", "deepseek-v4"),
+        ] {
+            assert_eq!(
+                a6api_default_reasoning_efforts(model),
+                a6api_default_reasoning_efforts(family)
+            );
+        }
+    }
+
+    #[test]
+    fn a6api_active_inventory_is_sorted_eligible_union() {
+        let first_active = connection_with_inventory(json!([
+            " openai/gpt-6 ",
+            "gemini-3-pro",
+            "glm-5",
+            "gpt-6-mini",
+            "openai/gpt-6"
+        ]));
+        let mut second_active = connection_with_inventory(json!([
+            "deepseek/deepseek-v4",
+            "glm-5",
+            "gpt-60",
+            "claude-opus-4.6"
+        ]));
+        second_active.is_active = Some(true);
+        let mut inactive =
+            connection_with_inventory(json!(["glm-5-inactive-only", "deepseek-v4-inactive-only"]));
+        inactive.is_active = Some(false);
+        let mut other_provider = connection_with_inventory(json!(["gpt-6-other-provider-only"]));
+        other_provider.provider = "openai".to_string();
+        let db = AppDb {
+            provider_connections: vec![first_active, second_active, inactive, other_provider],
+            ..AppDb::default()
+        };
+
+        assert_eq!(
+            a6api_active_model_ids(&db),
+            [
+                "deepseek/deepseek-v4",
+                "glm-5",
+                "gpt-6-mini",
+                "gpt-60",
+                "openai/gpt-6"
+            ]
+        );
+    }
+
+    #[test]
+    fn a6api_active_inventory_handles_malformed_and_ineligible_inventory() {
+        for inventory in [
+            json!(null),
+            json!("gpt-6"),
+            json!({"id": "gpt-6"}),
+            json!([null, false, 42, {}, []]),
+            json!(["", "  ", "gemini-3-pro", "gpt-5.5", "GPT-6"]),
+        ] {
+            let db = AppDb {
+                provider_connections: vec![connection_with_inventory(inventory)],
+                ..AppDb::default()
+            };
+            assert!(a6api_active_model_ids(&db).is_empty());
+        }
+
+        let db = AppDb {
+            provider_connections: vec![ProviderConnection {
+                provider: "a6api".to_string(),
+                ..ProviderConnection::default()
+            }],
+            ..AppDb::default()
+        };
+        assert!(a6api_active_model_ids(&db).is_empty());
+    }
+
+    #[test]
+    fn a6api_raw_support_retains_filtered_out_exact_inventory_ids() {
+        let connection =
+            connection_with_inventory(json!([null, 42, " google/gemini-3-pro ", "", " gpt-6 "]));
+        let other_connection = connection_with_inventory(json!(["gpt-6"]));
+        assert_eq!(
+            a6api_enabled_model_ids(&connection),
+            ["google/gemini-3-pro", "gpt-6"]
+        );
+        assert!(a6api_connection_supports_model(
+            &connection,
+            " google/gemini-3-pro "
+        ));
+        assert!(!a6api_connection_supports_model(
+            &connection,
+            "gemini-3-pro"
+        ));
+        assert!(!a6api_connection_supports_model(
+            &connection,
+            "google/Gemini-3-pro"
+        ));
+        assert!(!a6api_connection_supports_model(
+            &other_connection,
+            "google/gemini-3-pro"
+        ));
+        let db = AppDb {
+            provider_connections: vec![connection, other_connection],
+            ..AppDb::default()
+        };
+        assert_eq!(a6api_active_model_ids(&db), ["gpt-6"]);
     }
 }

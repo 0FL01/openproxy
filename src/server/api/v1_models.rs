@@ -81,6 +81,7 @@ async fn build_models_list(
 ) -> Vec<ModelCard> {
     let catalog = provider_catalog();
     let alias_to_provider_id = catalog.alias_to_provider_id();
+    let a6api_custom_aliases = a6api_custom_aliases(catalog, snapshot, &alias_to_provider_id);
     let created = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -117,6 +118,8 @@ async fn build_models_list(
         }
     }
 
+    // Keep the origin beside each card: configurable route prefixes cannot
+    // establish provider identity, and duplicate route IDs cannot key a map.
     let mut models = Vec::new();
 
     if active_connections.is_empty() {
@@ -135,20 +138,23 @@ async fn build_models_list(
                     continue;
                 }
 
-                models.push(model_card(
-                    format!("{}/{}", provider_entry.alias, model.id),
-                    provider_entry.alias.clone(),
-                    created,
-                    None,
-                    model.context_window,
-                    model.max_output,
+                models.push((
+                    model_card(
+                        format!("{}/{}", provider_entry.alias, model.id),
+                        provider_entry.alias.clone(),
+                        created,
+                        None,
+                        model.context_window,
+                        model.max_output,
+                    ),
+                    Some(provider_id),
                 ));
             }
         }
 
         if kind_filter.contains(&LLM_KIND) {
             for custom_model in snapshot.custom_models.iter().filter(|model| {
-                model.provider_alias.trim() != "a6api"
+                !a6api_custom_aliases.contains(model.provider_alias.trim())
                     && (model.r#type.is_empty()
                         || model.r#type == LLM_KIND
                         || model.r#type == "chat")
@@ -159,12 +165,15 @@ async fn build_models_list(
                     continue;
                 }
 
-                models.push(model_card(
-                    format!("{provider_alias}/{model_id}"),
-                    provider_alias.to_string(),
-                    created,
-                    None,
-                    None,
+                models.push((
+                    model_card(
+                        format!("{provider_alias}/{model_id}"),
+                        provider_alias.to_string(),
+                        created,
+                        None,
+                        None,
+                        None,
+                    ),
                     None,
                 ));
             }
@@ -335,15 +344,18 @@ async fn build_models_list(
                         .find_model(provider_id, &model_id)
                         .and_then(|model| model.context_window)
                 };
-                models.push(model_card(
-                    format!("{output_alias}/{model_id}"),
-                    output_alias.clone(),
-                    created,
-                    None,
-                    ctx_len,
-                    catalog
-                        .find_model(provider_id, &model_id)
-                        .and_then(|model| model.max_output),
+                models.push((
+                    model_card(
+                        format!("{output_alias}/{model_id}"),
+                        output_alias.clone(),
+                        created,
+                        None,
+                        ctx_len,
+                        catalog
+                            .find_model(provider_id, &model_id)
+                            .and_then(|model| model.max_output),
+                    ),
+                    Some(provider_id),
                 ));
             }
         }
@@ -353,7 +365,7 @@ async fn build_models_list(
     // (e.g., custom models registered on provider nodes rather than connections)
     if kind_filter.contains(&LLM_KIND) {
         for custom_model in &snapshot.custom_models {
-            if custom_model.provider_alias.trim() == "a6api" {
+            if a6api_custom_aliases.contains(custom_model.provider_alias.trim()) {
                 continue;
             }
             if !custom_model.r#type.is_empty()
@@ -370,12 +382,15 @@ async fn build_models_list(
             if provider_alias.is_empty() {
                 continue;
             }
-            models.push(model_card(
-                format!("{provider_alias}/{model_id}"),
-                provider_alias.to_string(),
-                created,
-                None,
-                None,
+            models.push((
+                model_card(
+                    format!("{provider_alias}/{model_id}"),
+                    provider_alias.to_string(),
+                    created,
+                    None,
+                    None,
+                    None,
+                ),
                 None,
             ));
         }
@@ -383,7 +398,7 @@ async fn build_models_list(
 
     let mut deduped_models = Vec::new();
     let mut seen_ids = HashSet::new();
-    for mut model in models {
+    for (mut model, origin) in models {
         // Apply visibility after every source has been merged: the custom-model
         // fallback must not reintroduce a disabled row.
         {
@@ -392,6 +407,13 @@ async fn build_models_list(
                 .split_once('/')
                 .unwrap_or((&model.owned_by, &model.id));
             let connection = active_connections.iter().find(|connection| {
+                // A shared custom alias does not make a fallback row A6-owned.
+                if origin.is_none()
+                    && connection.provider == "a6api"
+                    && !a6api_custom_aliases.contains(alias)
+                {
+                    return false;
+                }
                 let static_alias = catalog
                     .static_alias_for_provider(&connection.provider)
                     .unwrap_or(&connection.provider);
@@ -400,9 +422,9 @@ async fn build_models_list(
                     || alias
                         == output_alias(catalog, connection, &connection.provider, static_alias)
             });
-            let provider_id = connection
-                .map(|connection| connection.provider.as_str())
+            let provider_id = origin
                 .or_else(|| alias_to_provider_id.get(alias).map(String::as_str))
+                .or_else(|| connection.map(|connection| connection.provider.as_str()))
                 .unwrap_or(alias);
             let static_alias = catalog
                 .static_alias_for_provider(provider_id)
@@ -419,6 +441,15 @@ async fn build_models_list(
             let catalog_capabilities = entry
                 .and_then(|entry| entry.capabilities.as_deref())
                 .unwrap_or(&[]);
+            let a6api_efforts = origin
+                .filter(|provider| *provider == "a6api")
+                .and_then(|_| crate::core::model::a6api_default_reasoning_efforts(model_id))
+                .map(|values| {
+                    values
+                        .iter()
+                        .map(|value| (*value).to_string())
+                        .collect::<Vec<_>>()
+                });
             let mut metadata = OpenCodeModelConfig::from_facts(ModelMetadataFacts {
                 name: entry.and_then(|entry| entry.name.clone()),
                 context: model.context_length,
@@ -429,7 +460,9 @@ async fn build_models_list(
                 attachment: None,
                 reasoning: None,
                 tool_call: None,
-                efforts: entry.and_then(|entry| entry.reasoning_efforts.as_deref()),
+                efforts: a6api_efforts
+                    .as_deref()
+                    .or_else(|| entry.and_then(|entry| entry.reasoning_efforts.as_deref())),
             });
             if let Some(entry) = models_dev
                 .as_ref()
@@ -543,6 +576,8 @@ async fn build_models_list(
             if let Some(custom) = snapshot.custom_models.iter().find(|custom| {
                 custom.id.trim() == model_id
                     && [alias, provider_id, static_alias].contains(&custom.provider_alias.trim())
+                    && (origin != Some("a6api")
+                        || a6api_custom_aliases.contains(custom.provider_alias.trim()))
                     && (custom.r#type.is_empty()
                         || custom.r#type == LLM_KIND
                         || custom.r#type == "chat")
@@ -647,6 +682,47 @@ fn output_alias(
                 .filter(|alias| !alias.is_empty())
         })
         .unwrap_or_else(|| static_alias.to_string())
+}
+
+/// Only unambiguous A6API aliases may own A6 custom metadata. Native provider
+/// identities and other configured nodes/connections keep their custom rows.
+fn a6api_custom_aliases(
+    catalog: &crate::core::model::catalog::ProviderCatalog,
+    snapshot: &AppDb,
+    alias_to_provider_id: &HashMap<String, String>,
+) -> HashSet<String> {
+    let mut aliases = HashSet::from(["a6api".to_string()]);
+    for connection in snapshot
+        .provider_connections
+        .iter()
+        .filter(|connection| connection.provider == "a6api")
+    {
+        let alias = output_alias(catalog, connection, "a6api", "a6api");
+        let claimed_by_catalog = catalog
+            .provider_info(&alias)
+            .is_some_and(|provider| provider.id != "a6api")
+            || alias_to_provider_id
+                .get(&alias)
+                .is_some_and(|provider| provider != "a6api");
+        let claimed_by_connection = snapshot.provider_connections.iter().any(|other| {
+            if other.provider == "a6api" {
+                return false;
+            }
+            let static_alias = catalog
+                .static_alias_for_provider(&other.provider)
+                .unwrap_or(&other.provider);
+            alias == other.provider
+                || alias == static_alias
+                || alias == output_alias(catalog, other, &other.provider, static_alias)
+        });
+        let claimed_by_node = snapshot.provider_nodes.iter().any(|node| {
+            node.id == alias || node.prefix.as_deref().map(str::trim) == Some(alias.as_str())
+        });
+        if !claimed_by_catalog && !claimed_by_connection && !claimed_by_node {
+            aliases.insert(alias);
+        }
+    }
+    aliases
 }
 
 fn enabled_model_ids(connection: &ProviderConnection) -> (Vec<String>, bool) {
@@ -1281,17 +1357,29 @@ mod tests {
         };
         let snapshot = AppDb {
             provider_connections: vec![
-                connection("first", true, json!(["deepseek-v4.1-flash", "shared"])),
-                connection("second", true, json!(["gemini-3-flash", "shared"])),
-                connection("inactive", false, json!(["hidden"])),
+                connection(
+                    "first",
+                    true,
+                    json!(["deepseek-v4.1-flash", "gpt-6-luna", "gemini-3-flash"]),
+                ),
+                connection(
+                    "second",
+                    true,
+                    json!(["glm-5.3", "gpt-6-luna", "vendor/glm-5.2", "shared"]),
+                ),
+                connection("inactive", false, json!(["gpt-6-inactive"])),
             ],
             custom_models: vec![CustomModel {
                 provider_alias: "a6api".into(),
-                id: "not-key-enabled".into(),
+                id: "gpt-6-not-key-enabled".into(),
                 r#type: "llm".into(),
                 name: None,
                 extra: BTreeMap::new(),
             }],
+            model_aliases: BTreeMap::from([(
+                "missing".into(),
+                ModelAliasTarget::Path("a6api/glm-5-missing".into()),
+            )]),
             ..Default::default()
         };
 
@@ -1305,18 +1393,236 @@ mod tests {
             ids,
             vec![
                 "a6api/deepseek-v4.1-flash",
-                "a6api/gemini-3-flash",
-                "a6api/shared"
+                "a6api/glm-5.3",
+                "a6api/gpt-6-luna",
+                "a6api/vendor/glm-5.2"
             ]
         );
-        assert!(models.iter().all(|model| model.id != "a6api/hidden"));
-        assert!(models
-            .iter()
-            .all(|model| model.id != "a6api/not-key-enabled"));
-        assert!(models
-            .iter()
-            .filter(|model| model.id.starts_with("a6api/"))
-            .all(|model| json!(model.opencode)["source"] == "a6api"));
+        for (id, efforts) in [
+            (
+                "a6api/gpt-6-luna",
+                &["low", "medium", "high", "xhigh", "max"][..],
+            ),
+            ("a6api/glm-5.3", &["low", "high", "max"][..]),
+            ("a6api/vendor/glm-5.2", &["low", "high", "max"][..]),
+            ("a6api/deepseek-v4.1-flash", &["low", "high", "max"][..]),
+        ] {
+            let model = models.iter().find(|model| model.id == id).unwrap();
+            let variants: BTreeMap<_, _> = efforts
+                .iter()
+                .map(|effort| ((*effort).to_string(), json!({"reasoningEffort": effort})))
+                .collect();
+            let metadata = json!(model.opencode);
+            assert_eq!(metadata["source"], "a6api");
+            assert_eq!(metadata["reasoning"], true);
+            assert_eq!(metadata["variants"], json!(variants));
+            for field in ["limit", "modalities", "attachment", "tool_call"] {
+                assert!(metadata.get(field).is_none(), "unexpected {field} for {id}");
+            }
+            assert_eq!(model.context_length, None);
+            assert_eq!(model.max_completion_tokens, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn a6api_configured_prefix_cannot_expand_custom_inventory() {
+        let state = test_state().await;
+        for active in [false, true] {
+            for other_active in [false, true] {
+                let mut snapshot = AppDb {
+                    provider_connections: vec![ProviderConnection {
+                        id: "a6".into(),
+                        provider: "a6api".into(),
+                        is_active: Some(active),
+                        provider_specific_data: BTreeMap::from([
+                            ("prefix".into(), json!("my-a6")),
+                            ("enabledModels".into(), json!(["gpt-6-luna"])),
+                        ]),
+                        ..Default::default()
+                    }],
+                    custom_models: [
+                        ("my-a6", "gpt-6-missing"),
+                        ("my-a6", "gemini-3-flash"),
+                        ("a6api", "glm-5-missing"),
+                        ("local", "retained"),
+                    ]
+                    .into_iter()
+                    .map(|(alias, id)| CustomModel {
+                        provider_alias: alias.into(),
+                        id: id.into(),
+                        r#type: "llm".into(),
+                        name: None,
+                        extra: BTreeMap::new(),
+                    })
+                    .collect(),
+                    ..Default::default()
+                };
+                if other_active {
+                    snapshot.provider_connections.push(ProviderConnection {
+                        id: "other".into(),
+                        provider: "xai".into(),
+                        provider_specific_data: BTreeMap::from([(
+                            "enabledModels".into(),
+                            json!(["grok-4"]),
+                        )]),
+                        ..Default::default()
+                    });
+                }
+                let models = build_models_list(&state, &snapshot, &[LLM_KIND]).await;
+                let a6_ids: Vec<_> = models
+                    .iter()
+                    .filter(|model| {
+                        model.id.starts_with("my-a6/") || model.id.starts_with("a6api/")
+                    })
+                    .map(|model| model.id.as_str())
+                    .collect();
+                assert_eq!(
+                    a6_ids,
+                    if active {
+                        vec!["my-a6/gpt-6-luna"]
+                    } else {
+                        vec![]
+                    }
+                );
+                assert!(models.iter().any(|model| model.id == "local/retained"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a6api_inventory_metadata_keeps_explicit_overrides() {
+        let snapshot = AppDb {
+            provider_connections: vec![ProviderConnection {
+                id: "a6".into(),
+                provider: "a6api".into(),
+                provider_specific_data: BTreeMap::from([
+                    ("prefix".into(), json!("my-a6")),
+                    ("enabledModels".into(), json!(["glm-5.3"])),
+                ]),
+                ..Default::default()
+            }],
+            custom_models: vec![CustomModel {
+                provider_alias: "my-a6".into(),
+                id: "glm-5.3".into(),
+                r#type: "llm".into(),
+                name: Some("Saved model".into()),
+                extra: BTreeMap::from([(
+                    "opencode".into(),
+                    json!({"reasoning": false, "variants": {}, "source": "untrusted"}),
+                )]),
+            }],
+            ..Default::default()
+        };
+        let before = json!(snapshot.custom_models);
+        let models = build_models_list(&test_state().await, &snapshot, &[LLM_KIND]).await;
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "my-a6/glm-5.3");
+        assert_eq!(
+            json!(models[0].opencode),
+            json!({"name": "Saved model", "source": "a6api", "reasoning": false, "variants": {}})
+        );
+        assert_eq!(json!(snapshot.custom_models), before);
+    }
+
+    #[tokio::test]
+    async fn a6api_prefix_collision_keeps_provider_metadata_isolated() {
+        let state = test_state().await;
+        let native = ProviderConnection {
+            id: "native".into(),
+            provider: "glm".into(),
+            provider_specific_data: BTreeMap::from([(
+                "enabledModels".into(),
+                json!(["glm-5.3-flash"]),
+            )]),
+            ..Default::default()
+        };
+        let baseline = build_models_list(
+            &state,
+            &AppDb {
+                provider_connections: vec![native.clone()],
+                ..Default::default()
+            },
+            &[LLM_KIND],
+        )
+        .await;
+        let native_metadata = json!(baseline[0].opencode);
+        let a6 = ProviderConnection {
+            id: "a6".into(),
+            provider: "a6api".into(),
+            provider_specific_data: BTreeMap::from([
+                ("prefix".into(), json!("glm")),
+                ("enabledModels".into(), json!(["gpt-6-luna"])),
+            ]),
+            ..Default::default()
+        };
+        for connections in [
+            vec![a6.clone(), native.clone()],
+            vec![native.clone(), a6.clone()],
+        ] {
+            let snapshot = AppDb {
+                provider_connections: connections,
+                custom_models: vec![CustomModel {
+                    provider_alias: "glm".into(),
+                    id: "native-only".into(),
+                    r#type: "llm".into(),
+                    name: None,
+                    extra: BTreeMap::new(),
+                }],
+                ..Default::default()
+            };
+            let models = build_models_list(&state, &snapshot, &[LLM_KIND]).await;
+            let a6_model = models
+                .iter()
+                .find(|model| model.id == "glm/gpt-6-luna")
+                .unwrap();
+            let metadata = json!(a6_model.opencode);
+            assert_eq!(metadata["source"], "a6api");
+            assert_eq!(metadata["variants"]["max"]["reasoningEffort"], "max");
+            assert!(metadata.get("limit").is_none());
+            let glm = models
+                .iter()
+                .find(|model| model.id == "glm/glm-5.3-flash")
+                .unwrap();
+            assert_eq!(json!(glm.opencode), native_metadata);
+            let custom = models
+                .iter()
+                .find(|model| model.id == "glm/native-only")
+                .unwrap();
+            assert_eq!(json!(custom.opencode)["source"], "glm");
+            assert!(json!(custom.opencode).get("variants").is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn a6api_shared_native_alias_does_not_borrow_custom_overrides() {
+        let snapshot = AppDb {
+            provider_connections: vec![ProviderConnection {
+                id: "a6".into(),
+                provider: "a6api".into(),
+                provider_specific_data: BTreeMap::from([
+                    ("prefix".into(), json!("glm")),
+                    ("enabledModels".into(), json!(["glm-5.3"])),
+                ]),
+                ..Default::default()
+            }],
+            custom_models: vec![CustomModel {
+                provider_alias: "glm".into(),
+                id: "glm-5.3".into(),
+                r#type: "llm".into(),
+                name: None,
+                extra: BTreeMap::from([("opencode".into(), json!({"variants": {}}))]),
+            }],
+            ..Default::default()
+        };
+        let models = build_models_list(&test_state().await, &snapshot, &[LLM_KIND]).await;
+        assert_eq!(models.len(), 1);
+        let metadata = json!(models[0].opencode);
+        assert_eq!(metadata["source"], "a6api");
+        assert_eq!(
+            metadata["variants"],
+            json!({"low": {"reasoningEffort": "low"}, "high": {"reasoningEffort": "high"}, "max": {"reasoningEffort": "max"}})
+        );
+        assert!(metadata.get("limit").is_none());
     }
 
     #[tokio::test]

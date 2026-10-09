@@ -493,6 +493,407 @@ async fn models_endpoint_returns_active_connection_and_custom_llm_models() {
 }
 
 #[tokio::test]
+async fn a6api_catalog_and_models_apply_defaults_without_mutating_inventory() {
+    async fn get_json(app: &axum::Router, uri: &str) -> serde_json::Value {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header("authorization", "Bearer fixture-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("authorized model request");
+        assert_eq!(response.status(), StatusCode::OK, "{uri}");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("model response body");
+        serde_json::from_slice(&body).expect("model response JSON")
+    }
+
+    fn catalog_rows<'a>(catalog: &'a serde_json::Value, alias: &str) -> &'a [serde_json::Value] {
+        catalog["providerModels"]
+            .as_array()
+            .expect("catalog provider models")
+            .iter()
+            .find(|entry| entry["alias"] == alias)
+            .expect("provider catalog entry")["models"]
+            .as_array()
+            .expect("provider catalog models")
+    }
+
+    fn expected_efforts(id: &str) -> &'static [&'static str] {
+        if id.starts_with("gpt-6") {
+            &["low", "medium", "high", "xhigh", "max"]
+        } else {
+            assert!(id.starts_with("glm-5") || id.starts_with("deepseek-v4"));
+            &["low", "high", "max"]
+        }
+    }
+
+    fn assert_projection(
+        catalog: &serde_json::Value,
+        models: &serde_json::Value,
+        eligible: &[&str],
+        visible: &[&str],
+    ) {
+        let rows = catalog_rows(catalog, "a6api");
+        let mut catalog_ids: Vec<_> = rows
+            .iter()
+            .map(|row| row["id"].as_str().expect("catalog model id"))
+            .collect();
+        catalog_ids.sort_unstable();
+        let mut expected_ids = eligible.to_vec();
+        expected_ids.sort_unstable();
+        // Compare vectors, not sets, so duplicated union rows also fail.
+        assert_eq!(catalog_ids, expected_ids);
+        for row in rows {
+            let id = row["id"].as_str().unwrap();
+            assert_eq!(row["kind"], "llm", "{id}");
+        }
+
+        assert_eq!(models["object"], "list");
+        let a6api_rows: Vec<_> = models["data"]
+            .as_array()
+            .expect("model list")
+            .iter()
+            .filter(|row| row["id"].as_str().unwrap().starts_with("a6api/"))
+            .collect();
+        let mut model_ids: Vec<_> = a6api_rows
+            .iter()
+            .map(|row| row["id"].as_str().unwrap())
+            .collect();
+        model_ids.sort_unstable();
+        let mut expected_model_ids: Vec<_> =
+            visible.iter().map(|id| format!("a6api/{id}")).collect();
+        expected_model_ids.sort_unstable();
+        assert_eq!(model_ids, expected_model_ids);
+        for row in a6api_rows {
+            let id = row["id"].as_str().unwrap().strip_prefix("a6api/").unwrap();
+            let variants: BTreeMap<_, _> = expected_efforts(id)
+                .iter()
+                .map(|effort| (*effort, json!({"reasoningEffort": effort})))
+                .collect();
+            assert_eq!(row["opencode"]["source"], "a6api", "{id}");
+            assert_eq!(row["opencode"]["reasoning"], true, "{id}");
+            assert_eq!(row["opencode"]["variants"], json!(variants), "{id}");
+        }
+    }
+
+    fn other_provider_models(models: &serde_json::Value) -> Vec<serde_json::Value> {
+        models["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["opencode"]["source"] == "xai")
+            .cloned()
+            .map(|mut row| {
+                row.as_object_mut().unwrap().remove("created");
+                row
+            })
+            .collect()
+    }
+
+    fn stored_model_data(db: &Db) -> serde_json::Value {
+        let (connections, disabled, configuration) = db
+            .sqlite_handle()
+            .with_conn(|sql| {
+                let mut statement =
+                    sql.prepare("SELECT id, data FROM providerConnections ORDER BY id")?;
+                let connections = statement
+                    .query_map([], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                let mut statement =
+                    sql.prepare("SELECT provider, model FROM disabledModels ORDER BY provider, model")?;
+                let disabled = statement
+                    .query_map([], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                let mut statement = sql.prepare(
+                    "SELECT 'settings', '1', data FROM settings UNION ALL SELECT scope, key, value FROM kv ORDER BY 1, 2",
+                )?;
+                let configuration = statement
+                    .query_map([], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok((connections, disabled, configuration))
+            })
+            .expect("read persisted inventory and configuration");
+        let inventory: BTreeMap<_, _> = connections
+            .into_iter()
+            .map(|(id, data)| {
+                let data: serde_json::Value =
+                    serde_json::from_str(&data).expect("stored connection JSON");
+                (id, data["providerSpecificData"].clone())
+            })
+            .collect();
+        let mut disabled_map: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (provider, model) in disabled {
+            disabled_map.entry(provider).or_default().push(model);
+        }
+        json!({
+            "inventory": inventory,
+            "disabled": disabled_map,
+            "configuration": configuration
+        })
+    }
+
+    // Keep the directory alive through every request and persisted-state check.
+    let temp = tempdir().expect("A6API fixture directory");
+    let db = Arc::new(Db::load_from(temp.path()).await.expect("A6API fixture db"));
+    db.update(|state| {
+        state.api_keys = vec![active_key("fixture-key")];
+        let mut primary = connection(
+            "a6api",
+            Some("gpt-6-default-only"),
+            &[
+                "gpt-6",
+                "gpt-6-fixture-next",
+                "glm-5.1-fixture",
+                "deepseek-v4-fixture-flash",
+                "gpt-5.4",
+                "gemini-fixture",
+                "gpt-6",
+            ],
+            true,
+        );
+        primary.id = "a6api-primary".into();
+        primary.api_key = Some("fixture-primary-key".into());
+        let mut secondary = connection(
+            "a6api",
+            None,
+            &[
+                "gpt-6",
+                "glm-5.1-fixture",
+                "deepseek-v4-fixture-pro",
+                "glm-4-fixture",
+                "deepseek-v3-fixture",
+            ],
+            true,
+        );
+        secondary.id = "a6api-secondary".into();
+        secondary.api_key = Some("fixture-secondary-key".into());
+        let mut inactive = connection("a6api", None, &["gpt-6-inactive-only"], false);
+        inactive.id = "a6api-inactive".into();
+        inactive.api_key = Some("fixture-inactive-key".into());
+        state.provider_connections = vec![
+            primary,
+            secondary,
+            inactive,
+            connection("xai", None, &["grok-4"], true),
+        ];
+        state.custom_models = vec![
+            CustomModel {
+                provider_alias: "a6api".into(),
+                id: "gpt-6-custom-only".into(),
+                r#type: "llm".into(),
+                name: Some("Stored A6API custom model".into()),
+                extra: BTreeMap::new(),
+            },
+            CustomModel {
+                provider_alias: "xai".into(),
+                id: "grok-4".into(),
+                r#type: "llm".into(),
+                name: Some("Fixture Grok".into()),
+                extra: BTreeMap::from([("opencode".into(), json!({"attachment": false}))]),
+            },
+        ];
+        state.model_aliases.insert(
+            "fixture-a6api-alias".into(),
+            ModelAliasTarget::Path("a6api/glm-5-alias-only".into()),
+        );
+        state
+            .settings
+            .extra
+            .insert("fixtureSetting".into(), json!("preserve"));
+        state.extra.insert(
+            "disabledModels".into(),
+            json!({
+                "a6api": ["deepseek-v4-fixture-pro", "gpt-5.4"],
+                "xai": ["grok-fixture-disabled"]
+            }),
+        );
+    })
+    .await
+    .expect("seed distinct A6API accounts and configuration");
+    let original = db.snapshot();
+    let mut expected = (*original).clone();
+    let mut expected_stored = stored_model_data(&db);
+    for account in &original.provider_connections {
+        assert_eq!(
+            expected_stored["inventory"][&account.id],
+            json!(account.provider_specific_data)
+        );
+    }
+    assert_eq!(
+        expected_stored["disabled"],
+        original.extra["disabledModels"]
+    );
+    let app = openproxy::build_app(AppState::new(db.clone()));
+    let eligible = [
+        "gpt-6",
+        "gpt-6-fixture-next",
+        "glm-5.1-fixture",
+        "deepseek-v4-fixture-flash",
+        "deepseek-v4-fixture-pro",
+    ];
+    let catalog = get_json(&app, "/api/catalog").await;
+    let models = get_json(&app, "/v1/models").await;
+    assert_projection(
+        &catalog,
+        &models,
+        &eligible,
+        &[
+            "gpt-6",
+            "gpt-6-fixture-next",
+            "glm-5.1-fixture",
+            "deepseek-v4-fixture-flash",
+        ],
+    );
+    let other_catalog = catalog_rows(&catalog, "xai").to_vec();
+    let other_models = other_provider_models(&models);
+    assert_eq!(other_models.len(), 1);
+    assert_eq!(other_models[0]["id"], "xai/grok-4");
+    assert_eq!(other_models[0]["opencode"]["name"], "Fixture Grok");
+    assert_eq!(other_models[0]["opencode"]["attachment"], false);
+    assert_eq!(db.snapshot().as_ref(), original.as_ref());
+    assert_eq!(stored_model_data(&db), expected_stored);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/models/disabled")
+                .header("authorization", "Bearer fixture-key")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"providerAlias": "a6api", "ids": ["glm-5.1-fixture"]}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("disable eligible A6API model");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("disabled response body");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+        json!({"success": true})
+    );
+    let disabled = json!({
+        "a6api": ["deepseek-v4-fixture-pro", "glm-5.1-fixture", "gpt-5.4"],
+        "xai": ["grok-fixture-disabled"]
+    });
+    expected
+        .extra
+        .insert("disabledModels".into(), disabled.clone());
+    expected_stored["disabled"] = disabled;
+    let catalog = get_json(&app, "/api/catalog").await;
+    let models = get_json(&app, "/v1/models").await;
+    assert_projection(
+        &catalog,
+        &models,
+        &eligible,
+        &["gpt-6", "gpt-6-fixture-next", "deepseek-v4-fixture-flash"],
+    );
+    assert_eq!(catalog_rows(&catalog, "xai"), other_catalog);
+    assert_eq!(other_provider_models(&models), other_models);
+    assert_eq!(db.snapshot().as_ref(), &expected);
+    assert_eq!(stored_model_data(&db), expected_stored);
+
+    let changed_inventory = json!([
+        "gpt-6",
+        "gpt-6-fixture-new",
+        "glm-5.1-fixture",
+        "deepseek-v4-fixture-flash",
+        "gpt-5.4",
+        "gemini-fixture",
+        "qwen-fixture-new",
+        "gpt-6"
+    ]);
+    db.update(|state| {
+        state
+            .provider_connections
+            .iter_mut()
+            .find(|account| account.id == "a6api-primary")
+            .expect("primary A6API account")
+            .provider_specific_data
+            .insert("enabledModels".into(), changed_inventory.clone());
+    })
+    .await
+    .expect("persist changed A6API inventory");
+    expected
+        .provider_connections
+        .iter_mut()
+        .find(|account| account.id == "a6api-primary")
+        .unwrap()
+        .provider_specific_data
+        .insert("enabledModels".into(), changed_inventory.clone());
+    expected_stored["inventory"]["a6api-primary"]["enabledModels"] = changed_inventory;
+
+    // The original router must project the committed inventory immediately.
+    let catalog = get_json(&app, "/api/catalog").await;
+    let models = get_json(&app, "/v1/models").await;
+    assert_projection(
+        &catalog,
+        &models,
+        &[
+            "gpt-6",
+            "gpt-6-fixture-new",
+            "glm-5.1-fixture",
+            "deepseek-v4-fixture-flash",
+            "deepseek-v4-fixture-pro",
+        ],
+        &["gpt-6", "gpt-6-fixture-new", "deepseek-v4-fixture-flash"],
+    );
+    assert_eq!(catalog_rows(&catalog, "xai"), other_catalog);
+    assert_eq!(other_provider_models(&models), other_models);
+    assert_eq!(db.snapshot().as_ref(), &expected);
+    assert_eq!(stored_model_data(&db), expected_stored);
+    let snapshot = db.snapshot();
+    let primary = snapshot
+        .provider_connections
+        .iter()
+        .find(|account| account.id == "a6api-primary")
+        .unwrap();
+    let secondary = snapshot
+        .provider_connections
+        .iter()
+        .find(|account| account.id == "a6api-secondary")
+        .unwrap();
+    assert!(openproxy::core::model::a6api_connection_supports_model(
+        primary,
+        "qwen-fixture-new"
+    ));
+    assert!(openproxy::core::model::a6api_connection_supports_model(
+        primary, "gpt-5.4"
+    ));
+    assert!(!openproxy::core::model::a6api_connection_supports_model(
+        secondary,
+        "qwen-fixture-new"
+    ));
+    assert!(!openproxy::core::model::a6api_connection_supports_model(
+        primary,
+        "gpt-6-fixture-next"
+    ));
+    assert!(!openproxy::core::model::a6api_connection_supports_model(
+        primary, "gpt-6*"
+    ));
+}
+
+#[tokio::test]
 async fn models_endpoint_dedupes_duplicate_model_ids() {
     let state = app_state().await;
     // Ignore UNIQUE constraint failure — the model listing deduplication is
