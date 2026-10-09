@@ -105,6 +105,10 @@ async fn read_body(response: axum::response::Response) -> String {
 const MESSAGE_START: &str = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_surf\",\"model\":\"claude-opus-5-5\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":3}}}\n\n";
 const TEXT_DELTA: &str = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n";
 const MESSAGE_STOP: &str = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+const THINKING_START: &str = "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\"}}\n\n";
+const THINKING_DELTA: &str = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"let me check\"}}\n\n";
+const THINKING_STOP: &str =
+    "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n";
 const TOOL_USE_START: &str = "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_read_1\",\"name\":\"read\",\"input\":{}}}\n\n";
 const TOOL_USE_ARGS_FIRST: &str = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"file_path\\\":\"}}\n\n";
 const TOOL_USE_ARGS_SECOND: &str = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"src/lib.rs\\\"}\"}}\n\n";
@@ -237,8 +241,14 @@ async fn claude_truncated_stream_is_flagged_not_logged_success() {
 
 #[tokio::test]
 async fn complete_claude_stream_still_completes_the_responses_projection() {
+    // Includes a thinking block: the `</think>` chunk used to trigger a
+    // premature response.completed (null finish_reason was treated as
+    // terminal by the shared helper). Completion must stay at the end.
     let upstream = MockUpstream::start([ScriptedResponse::sse([
         MESSAGE_START,
+        THINKING_START,
+        THINKING_DELTA,
+        THINKING_STOP,
         TEXT_DELTA,
         MESSAGE_STOP,
     ])])
@@ -254,6 +264,15 @@ async fn complete_claude_stream_still_completes_the_responses_projection() {
     assert!(body.contains("response.completed"), "{body}");
     assert!(body.contains("partial"), "{body}");
     assert!(!body.contains("upstream_stream_truncated"), "{body}");
+    // Completion must be the LAST terminal event, after all text content.
+    let completed_at = body.rfind("response.completed").expect("completed index");
+    let text_done_at = body
+        .rfind("response.output_text.delta")
+        .expect("text delta index");
+    assert!(
+        completed_at > text_done_at,
+        "response.completed must come after text deltas: {body}"
+    );
 
     let details = latest_request_details(&test_db).await;
     assert_eq!(details["statusCode"], 200);
@@ -261,9 +280,16 @@ async fn complete_claude_stream_still_completes_the_responses_projection() {
         details.get("errorKind").is_none(),
         "complete stream must log success: {details}"
     );
-    // Pure-text turn: no function_call items anywhere in the trace.
+    // Pure-text turn with thinking: reasoning + message items, no tools,
+    // exactly one completion, nothing emitted after it.
     let trace = &details["streamTrace"];
     assert_eq!(trace["upstreamEvents"]["message_start"], 1, "{trace}");
+    assert_eq!(
+        trace["upstreamEvents"]["content_block_start:thinking"], 1,
+        "{trace}"
+    );
+    assert_eq!(trace["itemTypes"]["reasoning"], 1, "{trace}");
+    assert_eq!(trace["itemTypes"]["message"], 1, "{trace}");
     assert!(trace["itemTypes"].get("function_call").is_none(), "{trace}");
     assert_eq!(trace["completedCount"], 1, "{trace}");
     assert_eq!(trace["errorCount"], 0, "{trace}");
@@ -278,8 +304,13 @@ async fn complete_claude_stream_still_completes_the_responses_projection() {
 
 #[tokio::test]
 async fn claude_tool_use_argument_deltas_complete_responses_tool_call() {
+    // Thinking block first: the tool call used to be emitted AFTER a
+    // premature response.completed triggered by the `</think>` chunk.
     let upstream = MockUpstream::start([ScriptedResponse::sse([
         MESSAGE_START,
+        THINKING_START,
+        THINKING_DELTA,
+        THINKING_STOP,
         TOOL_USE_START,
         TOOL_USE_ARGS_FIRST,
         TOOL_USE_ARGS_SECOND,
@@ -319,21 +350,35 @@ async fn claude_tool_use_argument_deltas_complete_responses_tool_call() {
         !body.contains("upstream_stream_invalid_tool_call"),
         "{body}"
     );
+    // Completion must come after the full tool call, not before it.
+    let completed_at = body.rfind("response.completed").expect("completed index");
+    let args_done_at = body
+        .rfind("response.function_call_arguments.done")
+        .expect("args done index");
+    assert!(
+        completed_at > args_done_at,
+        "response.completed must come after function_call_arguments.done: {body}"
+    );
 
     upstream.wait_for_requests(1).await;
     let details = latest_request_details(&test_db).await;
     assert_eq!(details["statusCode"], 200);
     assert!(details.get("errorCode").is_none(), "{details}");
     assert!(details.get("errorKind").is_none(), "{details}");
-    // Stream trace: upstream saw a tool_use turn; the Responses projection
-    // emitted exactly one function_call item and one completion.
+    // Stream trace: upstream saw a thinking + tool_use turn; the Responses
+    // projection emitted the function_call item and one terminal completion.
     let trace = &details["streamTrace"];
     assert_eq!(trace["upstreamEvents"]["message_start"], 1, "{trace}");
+    assert_eq!(
+        trace["upstreamEvents"]["content_block_start:thinking"], 1,
+        "{trace}"
+    );
     assert_eq!(
         trace["upstreamEvents"]["content_block_start:tool_use"], 1,
         "{trace}"
     );
     assert_eq!(trace["stopReason"], "tool_use", "{trace}");
+    assert_eq!(trace["itemTypes"]["reasoning"], 1, "{trace}");
     assert_eq!(trace["itemTypes"]["function_call"], 1, "{trace}");
     assert_eq!(trace["toolNames"][0], "read", "{trace}");
     assert_eq!(trace["completedCount"], 1, "{trace}");

@@ -654,7 +654,8 @@ fn emit_tool_calls_and_finish(
         .and_then(|v| v.as_array())
         .and_then(|a| a.first())
         .and_then(|c| c.get("finish_reason"))
-        .is_some()
+        .and_then(Value::as_str)
+        .is_some_and(|reason| !reason.is_empty())
     {
         emit_finish_block(state, events);
     }
@@ -1622,6 +1623,83 @@ mod tests {
         assert!(output.contains("\"reasoning_tokens\":21"));
         assert!(output.contains("\"incomplete_details\":null"));
         assert!(output.contains("data: [DONE]"));
+    }
+
+    #[test]
+    fn think_close_chunk_with_null_finish_does_not_complete_response() {
+        // Regression: a `</think>` chunk (all content consumed by the think
+        // machine) takes the early-return path through
+        // `emit_tool_calls_and_finish`. Its finish_reason is null mid-stream;
+        // treating key presence as terminal emitted response.completed in
+        // the middle of the answer (seen in production stream traces).
+        let mut state = ResponseTransformState::default();
+
+        // Open a reasoning item via <think>.
+        let open = json!({
+            "id": "chatcmpl-1",
+            "choices": [{
+                "index": 0,
+                "delta": {"content": "<think>pondering"},
+                "finish_reason": null
+            }]
+        });
+        let events = chat_to_responses_response(&open, &mut state.responses.state);
+        assert!(
+            events
+                .iter()
+                .any(|e| e.get("event").and_then(|v| v.as_str())
+                    == Some("response.output_item.added"))
+        );
+
+        // Close thinking: content fully consumed → early-return path with
+        // finish_reason null. MUST NOT emit response.completed.
+        let close = json!({
+            "id": "chatcmpl-1",
+            "choices": [{
+                "index": 0,
+                "delta": {"content": "</think>"},
+                "finish_reason": null
+            }]
+        });
+        let events = chat_to_responses_response(&close, &mut state.responses.state);
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.get("event").and_then(|v| v.as_str()) == Some("response.completed")),
+            "null finish_reason must not complete the response: {events:?}"
+        );
+
+        // Missing finish_reason key entirely: also not terminal.
+        let no_key = json!({
+            "id": "chatcmpl-1",
+            "choices": [{
+                "index": 0,
+                "delta": {"content": "more"},
+            }]
+        });
+        let events = chat_to_responses_response(&no_key, &mut state.responses.state);
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.get("event").and_then(|v| v.as_str()) == Some("response.completed")),
+            "missing finish_reason must not complete the response: {events:?}"
+        );
+
+        // A real terminal chunk completes exactly once, after the text.
+        let finish = json!({
+            "id": "chatcmpl-1",
+            "choices": [{
+                "index": 0,
+                "delta": {},
+                "finish_reason": "stop"
+            }]
+        });
+        let events = chat_to_responses_response(&finish, &mut state.responses.state);
+        let completed: Vec<&Value> = events
+            .iter()
+            .filter(|e| e.get("event").and_then(|v| v.as_str()) == Some("response.completed"))
+            .collect();
+        assert_eq!(completed.len(), 1, "exactly one completion: {events:?}");
     }
 
     #[test]
