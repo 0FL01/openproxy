@@ -1645,6 +1645,7 @@ async fn forward_with_provider_fallback(
                                     .iter()
                                     .find(|(name, _)| name.eq_ignore_ascii_case("user-agent"))
                                     .map(|(_, value)| value.clone()),
+                                trusted_mask: claude_mask_marker_present(&request_headers),
                             },
                         )
                     } else {
@@ -4493,6 +4494,17 @@ pub(crate) fn claude_mask_client_allowed(headers: &HeaderMap) -> bool {
         .is_some_and(|ua| ua.starts_with("claude-cli/"))
 }
 
+/// Presence (not value) of the mask-plugin marker in the already-collected
+/// client headers. Case-insensitive: the normalized map lookup is
+/// case-sensitive but keys are only lowercase by upstream convention
+/// (`headers_map` lowercases at ingress), so scan explicitly. Pure
+/// function — same input, same verdict. No UA logic here.
+fn claude_mask_marker_present(headers: &BTreeMap<String, String>) -> bool {
+    headers
+        .keys()
+        .any(|name| name.eq_ignore_ascii_case("x-openproxy-claude-mask"))
+}
+
 fn with_cors_response(mut response: Response) -> Response {
     response.headers_mut().insert(
         header::ACCESS_CONTROL_ALLOW_ORIGIN,
@@ -4547,10 +4559,10 @@ mod tests {
     use super::{
         apply_harness_prompt_id, apply_harness_request_id, apply_harness_session_header,
         attempt_error_response, build_dashboard_sse_response, build_proxied_response,
-        derive_harness_uuid, extract_token_usage_from_value, has_native_codex_web_search,
-        is_refreshable_auth_failure, select_connection, select_connection_with_supporters,
-        should_prefetch_message_images, tool_image_support, unified_reset_retry_after,
-        upstream_error_diagnostic, StreamDispatch,
+        claude_mask_marker_present, derive_harness_uuid, extract_token_usage_from_value,
+        has_native_codex_web_search, is_refreshable_auth_failure, select_connection,
+        select_connection_with_supporters, should_prefetch_message_images, tool_image_support,
+        unified_reset_retry_after, upstream_error_diagnostic, StreamDispatch,
     };
     use crate::core::account_fallback::ProviderAttemptError;
     use crate::core::chat::RequestPlan;
@@ -4854,6 +4866,27 @@ mod tests {
                 json!({"version":1,"generatedOutputTokens":7,"elapsedMicros":2_000_000,"endKind":"protocol_terminal"})
             );
         }
+    }
+
+    #[test]
+    fn claude_mask_marker_present_matches_gate_presence_semantics() {
+        // Presence, not value: empty counts (parity with
+        // `claude_mask_client_allowed` contains_key).
+        assert!(claude_mask_marker_present(&BTreeMap::from([(
+            "x-openproxy-claude-mask".to_string(),
+            "1".to_string(),
+        )])));
+        assert!(claude_mask_marker_present(&BTreeMap::from([(
+            "x-openproxy-claude-mask".to_string(),
+            String::new(),
+        )])));
+        // Normalized-map lookup is case-sensitive by type: scan
+        // case-insensitively so a mixed-case insert still matches.
+        assert!(claude_mask_marker_present(&BTreeMap::from([(
+            "X-OpenProxy-Claude-Mask".to_string(),
+            "1".to_string(),
+        )])));
+        assert!(!claude_mask_marker_present(&BTreeMap::new()));
     }
 
     #[test]

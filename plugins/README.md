@@ -48,8 +48,11 @@ the OpenProxy provider present themselves as a genuine Claude Code CLI run:
   verbatim Claude Code `$TMPDIR` guidance real CC sessions carry.
 
 Other providers keep OpenCode's real identity. The proxy's server-side harness
-spoof remains authoritative and idempotent for masked traffic; the client mask
-just removes the fingerprints before they ever leave the machine.
+spoof remains authoritative for unmasked traffic; a confirmed personalized mask
+prompt (marker header + Claude Code identity, e.g. when an SDK hop dropped the
+pinned CLI User-Agent) passes through byte-unchanged, preserving the client's
+host-specific environment, mode and instructions. The client mask just removes
+the fingerprints before they ever leave the machine.
 
 **Server-side gate.** OpenProxy serves claude/anthropic models only to clients
 that present as Claude Code: the mask marker header, or a genuine

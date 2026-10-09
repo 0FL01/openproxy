@@ -448,6 +448,12 @@ const CLAUDE_CODE_STYLE_SYSTEM: &str = "Write code that reads like the surroundi
 pub struct ClaudeHarnessIdentity {
     pub session_id: String,
     pub client_ua: Option<String>,
+    /// Presence of the OpenCode mask plugin marker header
+    /// (`X-OpenProxy-Claude-Mask`). The plugin pins a genuine CLI
+    /// `User-Agent`, but SDK hops may drop it; the marker is the
+    /// fallback signal that the system text is already a personalized
+    /// Claude Code prompt (not unmasked OpenCode text).
+    pub trusted_mask: bool,
 }
 
 /// C46 first-party check: `claude`/`anthropic` routed straight to
@@ -536,6 +542,14 @@ pub fn is_real_claude_code_request(system_text: &str, client_ua: Option<&str>) -
     if !is_claude_cli_user_agent(client_ua) {
         return false;
     }
+    has_claude_identity(system_text)
+}
+
+/// Identity half of the CLI classifier, without the UA check: the
+/// reference main-CLI sentence or the Agent SDK subagent template.
+/// Used to recognise a confirmed mask-plugin prompt when the SDK hop
+/// dropped the pinned CLI `User-Agent` but kept the marker header.
+fn has_claude_identity(system_text: &str) -> bool {
     let lower = system_text.to_lowercase();
     lower.contains(CLAUDE_CODE_IDENTITY_MARKER) || lower.contains(CLAUDE_CODE_SUBAGENT_MARKER)
 }
@@ -672,6 +686,15 @@ pub fn apply_claude_harness(body: &mut Value, harness: &ClaudeHarnessIdentity) -
     };
     let original = extract_system_text(obj.get("system"));
     if is_real_claude_code_request(&original, harness.client_ua.as_deref()) {
+        return false;
+    }
+    // Confirmed mask-plugin prompt whose pinned CLI UA was dropped by an
+    // SDK hop: marker presence + Claude identity passes through
+    // byte-unchanged, exactly like genuine CLI traffic (no user_id
+    // synthesis, no replacement). Marker alone without identity still
+    // gets the full replacement — an unbounded client system is never
+    // trusted on the marker bit alone.
+    if harness.trusted_mask && has_claude_identity(&original) {
         return false;
     }
 
@@ -1253,6 +1276,15 @@ mod tests {
         ClaudeHarnessIdentity {
             session_id: session.to_string(),
             client_ua: ua.map(str::to_string),
+            trusted_mask: false,
+        }
+    }
+
+    fn masked_harness(session: &str, ua: Option<&str>) -> ClaudeHarnessIdentity {
+        ClaudeHarnessIdentity {
+            session_id: session.to_string(),
+            client_ua: ua.map(str::to_string),
+            trusted_mask: true,
         }
     }
 
@@ -1312,6 +1344,7 @@ mod tests {
         let harness = ClaudeHarnessIdentity {
             client_ua: ua.map(str::to_string),
             session_id: "11111111-1111-4111-8111-111111111111".to_string(),
+            trusted_mask: false,
         };
         let original_system = json!([{
             "type": "text",
@@ -1512,6 +1545,116 @@ mod tests {
         let h = harness("sess-1", Some("claude-cli/2.1.282 (external, cli)"));
         assert!(!apply_claude_harness(&mut body, &h));
         assert_eq!(body, before);
+    }
+
+    #[test]
+    fn trusted_mask_preserves_personalized_prompt_when_ua_dropped() {
+        // Bug: OpenCode as `stfu` in `/tmp/space` got `/home/user/...`
+        // because the SDK hop dropped the pinned CLI UA and the server
+        // overwrote the plugin's personalized system with the generic
+        // 3-block form (slug `-home-user-project` vs `-tmp-space`).
+        let personalized = "You are Claude Code, Anthropic's official CLI for Claude.\n\n# Memory\n\nYou have a persistent file-based memory at `/home/stfu/.claude/projects/-tmp-space/memory/`.\n\n# Environment\nYou have been invoked in the following environment:\n - Primary working directory: /tmp/space";
+        let make = || {
+            json!({
+                "model": "claude-opus-5-5",
+                "system": personalized,
+                "messages": [{ "role": "user", "content": "hi" }],
+            })
+        };
+
+        // Marker + identity + dropped/non-CLI UA → preserve byte-unchanged,
+        // exactly like genuine traffic (no user_id synthesis).
+        for ua in [Some("opencode/1.18.31"), None] {
+            let mut body = make();
+            let before = body.clone();
+            let h = masked_harness("sess-mask", ua);
+            assert!(
+                !apply_claude_harness(&mut body, &h),
+                "masked prompt must survive UA loss: {ua:?}"
+            );
+            assert_eq!(body, before);
+            assert!(body.get("metadata").is_none(), "no user_id on passthrough");
+            let wire = serde_json::to_string(&body).unwrap();
+            assert!(wire.contains("/home/stfu/.claude/projects/-tmp-space/memory/"));
+            assert!(wire.contains("Primary working directory: /tmp/space"));
+            assert!(!wire.contains("/home/user/"));
+        }
+
+        // Genuine CLI UA without marker still preserves (existing path).
+        let mut body = make();
+        let before = body.clone();
+        let h = harness("sess-mask", Some("claude-cli/2.1.289 (external, cli)"));
+        assert!(!apply_claude_harness(&mut body, &h));
+        assert_eq!(body, before);
+
+        // Marker alone without identity never preserves an unbounded
+        // client system — full replacement (fail-closed).
+        let mut body = json!({
+            "model": "claude-opus-5-5",
+            "system": "Be terse.",
+            "messages": [{ "role": "user", "content": "hi" }],
+        });
+        let h = masked_harness("sess-mask", Some("opencode/1.18.31"));
+        assert!(apply_claude_harness(&mut body, &h));
+        assert_eq!(body["system"].as_array().unwrap().len(), 3);
+
+        // Unmasked identity quote without marker still spoofs (no bypass
+        // for arbitrary text that merely mentions the phrase).
+        let mut body = make();
+        let h = harness("sess-mask", Some("opencode/1.18.31"));
+        assert!(apply_claude_harness(&mut body, &h));
+        let wire = serde_json::to_string(&body).unwrap();
+        assert!(wire.contains("/home/user/.claude/projects/-home-user-project/memory/"));
+        assert!(!wire.contains("/home/stfu/"));
+    }
+
+    #[test]
+    fn trusted_mask_survives_openai_to_claude_translation() {
+        // End-to-end: OpenAI-shape system (as produced by the Responses
+        // pivot `instructions` → system message) must keep the personalized
+        // path when the marker survives but the UA was dropped.
+        let personalized = "You are Claude Code, Anthropic's official CLI for Claude.\n\n# Memory\n\nYou have a persistent file-based memory at `/home/stfu/.claude/projects/-tmp-space/memory/`.\n\n# Environment\nYou have been invoked in the following environment:\n - Primary working directory: /tmp/space";
+        let make_openai = || {
+            json!({
+                "model": "claude-opus-5-5",
+                "messages": [
+                    { "role": "system", "content": personalized },
+                    { "role": "user", "content": "hi" },
+                ],
+            })
+        };
+
+        let mut masked = make_openai();
+        assert!(
+            crate::core::translator::request::openai_to_claude::openai_to_claude_request(
+                "claude-opus-5-5",
+                &mut masked,
+                false,
+                None,
+            )
+        );
+        let h = masked_harness("sess-rt", Some("opencode/1.18.31"));
+        assert!(!apply_claude_harness(&mut masked, &h));
+        let wire = serde_json::to_string(&masked).unwrap();
+        assert!(wire.contains("/home/stfu/.claude/projects/-tmp-space/memory/"));
+        assert!(wire.contains("Primary working directory: /tmp/space"));
+        assert!(!wire.contains("/home/user/"));
+
+        // Same translated body without the marker gets the generic form.
+        let mut unmasked = make_openai();
+        assert!(
+            crate::core::translator::request::openai_to_claude::openai_to_claude_request(
+                "claude-opus-5-5",
+                &mut unmasked,
+                false,
+                None,
+            )
+        );
+        let h = harness("sess-rt", Some("opencode/1.18.31"));
+        assert!(apply_claude_harness(&mut unmasked, &h));
+        let wire = serde_json::to_string(&unmasked).unwrap().to_lowercase();
+        assert!(wire.contains("/home/user/.claude/projects/-home-user-project/memory/"));
+        assert!(!wire.contains("/home/stfu"));
     }
 
     #[test]
