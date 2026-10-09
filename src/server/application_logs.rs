@@ -14,6 +14,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
+use once_cell::sync::Lazy;
+use regex::Regex;
+
 #[path = "chat_session.rs"]
 mod chat_session;
 
@@ -22,6 +25,50 @@ pub const LEAN_LOG_QUEUE_EVENTS: usize = 512;
 pub const LEAN_LOG_QUEUE_BYTES: usize = 512 * 1024;
 pub const LEAN_LOG_MAX_EVENT_BYTES: usize = 8 * 1024;
 const LEAN_LOG_FIELD_BYTES: usize = 256;
+const ERROR_DIAGNOSTIC_MESSAGE_CHARS: usize = 200;
+const ERROR_DIAGNOSTIC_CODE_CHARS: usize = 80;
+
+static AUTHORIZATION_VALUE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)(\bauthorization\s*:\s*)(?:bearer\s+)?[^\s,;]+")
+        .expect("valid authorization regex")
+});
+static API_KEY_VALUE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)(\bx-api-key\s*:\s*)[^\s,;]+").expect("valid API key regex"));
+static BEARER_TOKEN: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)\bbearer[\t ]+[^\s,;]+").expect("valid bearer token regex"));
+static SECRET_KEY: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)\bsk-[^\s,;]+").expect("valid secret key regex"));
+
+fn sanitize_error_code(code: Option<&str>) -> Option<String> {
+    let code = code?.trim();
+    if code.is_empty()
+        || !code
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+    {
+        return None;
+    }
+    Some(code.chars().take(ERROR_DIAGNOSTIC_CODE_CHARS).collect())
+}
+
+fn sanitize_error_message(message: &str) -> String {
+    let clean_controls: String = message
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect();
+    let clean_authorization = AUTHORIZATION_VALUE.replace_all(&clean_controls, "$1[REDACTED]");
+    let clean_api_key = API_KEY_VALUE.replace_all(&clean_authorization, "$1[REDACTED]");
+    let clean_bearer = BEARER_TOKEN.replace_all(&clean_api_key, "Bearer [REDACTED]");
+    let clean_secrets = SECRET_KEY.replace_all(&clean_bearer, "[REDACTED]");
+    clean_secrets
+        .chars()
+        .take(ERROR_DIAGNOSTIC_MESSAGE_CHARS)
+        .collect()
+}
+
+fn sanitize_error_diagnostic(code: Option<&str>, message: &str) -> (Option<String>, String) {
+    (sanitize_error_code(code), sanitize_error_message(message))
+}
 
 /// Request-log durability mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -490,7 +537,7 @@ impl RequestLogContext {
                     data,
                     finished: Arc::new(AtomicBool::new(false)),
                     lean: true,
-                    stream_error: None,
+                    error_details: None,
                     codex_cache: Default::default(),
                     tps: Default::default(),
                 })
@@ -536,7 +583,7 @@ impl RequestLogContext {
                         data,
                         finished: Arc::new(AtomicBool::new(false)),
                         lean: false,
-                        stream_error: None,
+                        error_details: None,
                         codex_cache: Default::default(),
                         tps: Default::default(),
                     }),
@@ -581,9 +628,9 @@ pub struct AttemptLog {
     data: Value,
     finished: Arc<AtomicBool>,
     lean: bool,
-    /// Terminal stream error (code, message) captured on SSE paths so
-    /// post-mortems can distinguish translator/upstream failure classes.
-    stream_error: Option<(String, String)>,
+    /// Bounded, sanitized terminal diagnostic captured from an upstream
+    /// response or stream without retaining the raw body.
+    error_details: Option<(Option<String>, String)>,
     codex_cache: crate::core::executor::codex_cache::CodexCacheObservation,
     tps: crate::server::upstream_tps::UpstreamTpsObservation,
 }
@@ -597,16 +644,11 @@ impl AttemptLog {
         self.codex_cache.clone()
     }
 
-    /// Capture the terminal stream error before `finish`; persisted as
-    /// `errorCode`/`errorMessage` (message sanitized and bounded).
-    pub(crate) fn record_stream_error(&mut self, code: &str, message: &str) {
-        if self.stream_error.is_none() {
-            let sanitized: String = message
-                .chars()
-                .map(|c| if c.is_control() { ' ' } else { c })
-                .take(200)
-                .collect();
-            self.stream_error = Some((code.to_string(), sanitized));
+    /// Capture bounded, sanitized error details before `finish`; only the
+    /// selected code and message are persisted, never the upstream body.
+    pub(crate) fn record_error_details(&mut self, code: Option<&str>, message: &str) {
+        if self.error_details.is_none() {
+            self.error_details = Some(sanitize_error_diagnostic(code, message));
         }
     }
 
@@ -654,8 +696,10 @@ impl AttemptLog {
         if let Some(kind) = error_kind {
             data.insert("errorKind".into(), json!(kind));
         }
-        if let Some((code, message)) = &self.stream_error {
-            data.insert("errorCode".into(), json!(code));
+        if let Some((code, message)) = &self.error_details {
+            if let Some(code) = code {
+                data.insert("errorCode".into(), json!(code));
+            }
             data.insert("errorMessage".into(), json!(message));
         }
         data.insert(
@@ -767,6 +811,10 @@ struct RequestLogRecord {
     status_code: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error_message: Option<String>,
     duration_ms: u64,
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
@@ -862,6 +910,12 @@ fn parse_timestamp(value: &str) -> Option<String> {
 
 fn request_log_from_row(row: request_repo::RequestDetailRow) -> RequestLogRecord {
     let tps = completed_tps(row.status.as_deref(), &row.data);
+    let error_code = sanitize_error_code(row.data.get("errorCode").and_then(Value::as_str));
+    let error_message = row
+        .data
+        .get("errorMessage")
+        .and_then(Value::as_str)
+        .map(sanitize_error_message);
     RequestLogRecord {
         request_id: row.id,
         timestamp: row.timestamp,
@@ -884,6 +938,8 @@ fn request_log_from_row(row: request_repo::RequestDetailRow) -> RequestLogRecord
             .get("errorKind")
             .and_then(Value::as_str)
             .map(str::to_string),
+        error_code,
+        error_message,
         duration_ms: row
             .data
             .get("durationMs")
@@ -1226,6 +1282,90 @@ mod tests {
         });
         let value = serde_json::to_value(without_kind).unwrap();
         assert!(value.get("errorKind").is_none());
+    }
+
+    #[test]
+    fn request_log_projects_and_sanitizes_error_diagnostics() {
+        let row = request_repo::RequestDetailRow {
+            id: "request-diagnostic".into(),
+            timestamp: "2026-10-09T12:00:00Z".into(),
+            provider: Some("claude".into()),
+            model: Some("claude-opus".into()),
+            connection_id: None,
+            status: Some("error".into()),
+            api_key_id: Some("key-1".into()),
+            api_key_name: Some("OpenCode".into()),
+            correlation_id: None,
+            data: json!({
+                "route": "/v1/responses",
+                "statusCode": 400,
+                "errorKind": error_kind::INVALID_REQUEST,
+                "errorCode": "invalid_request_error",
+                "errorMessage": "Bad request\nAuthorization: Bearer abc-secret\nx-api-key: key-secret sk-ant-live-secret",
+                "request": "prompt must never be returned",
+                "response": "raw response must never be returned"
+            }),
+        };
+
+        let value = serde_json::to_value(request_log_from_row(row)).unwrap();
+        assert_eq!(value["route"], "/v1/responses");
+        assert_eq!(value["statusCode"], 400);
+        assert_eq!(value["errorCode"], "invalid_request_error");
+        let message = value["errorMessage"].as_str().unwrap();
+        assert!(message.starts_with("Bad request Authorization: [REDACTED]"));
+        assert!(!message.contains("abc-secret"));
+        assert!(!message.contains("key-secret"));
+        assert!(!message.contains("sk-ant-live-secret"));
+        assert!(!value.to_string().contains("prompt must never"));
+        assert!(!value.to_string().contains("raw response must never"));
+    }
+
+    #[test]
+    fn error_diagnostic_sanitizer_bounds_fields_and_rejects_unsafe_codes() {
+        let (code, message) = sanitize_error_diagnostic(
+            Some(&format!(
+                "{}unsafe",
+                "a".repeat(ERROR_DIAGNOSTIC_CODE_CHARS)
+            )),
+            &format!("{}\nAuthorization: secret", "m".repeat(250)),
+        );
+        assert_eq!(
+            code.as_deref(),
+            Some("a".repeat(ERROR_DIAGNOSTIC_CODE_CHARS).as_str())
+        );
+        assert_eq!(message.chars().count(), ERROR_DIAGNOSTIC_MESSAGE_CHARS);
+        assert!(!message.contains('\n'));
+        assert_eq!(sanitize_error_code(Some("invalid code")), None);
+
+        let message = sanitize_error_message("header x-api-key:abc-secret; Bearer token-secret");
+        assert!(!message.contains("abc-secret"));
+        assert!(!message.contains("token-secret"));
+        assert!(message.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn legacy_error_details_are_sanitized_when_projected() {
+        let row = request_repo::RequestDetailRow {
+            id: "request-legacy-error".into(),
+            timestamp: "2026-10-09T12:00:00Z".into(),
+            provider: Some("claude".into()),
+            model: Some("claude-opus".into()),
+            connection_id: None,
+            status: Some("error".into()),
+            api_key_id: None,
+            api_key_name: None,
+            correlation_id: None,
+            data: json!({
+                "errorCode": "legacy\ncode",
+                "errorMessage": "upstream said Bearer legacy-secret"
+            }),
+        };
+        let value = serde_json::to_value(request_log_from_row(row)).unwrap();
+        assert!(value.get("errorCode").is_none());
+        assert!(!value["errorMessage"]
+            .as_str()
+            .unwrap()
+            .contains("legacy-secret"));
     }
 
     #[test]

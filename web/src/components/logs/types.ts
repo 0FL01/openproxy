@@ -5,6 +5,8 @@ export interface ApplicationLog {
   status: "pending" | "success" | "error" | "interrupted" | string;
   statusCode?: number;
   errorKind?: string;
+  errorCode?: string;
+  errorMessage?: string;
   model: string;
   provider: string;
   durationMs: number;

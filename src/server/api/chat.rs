@@ -1810,6 +1810,8 @@ async fn forward_with_provider_fallback(
                     .as_deref()
                     .and_then(crate::core::account_fallback::parse_retry_after_from_body);
                 let retry_after = header_retry_after.or(body_retry_after);
+                let (diagnostic_code, diagnostic_message) =
+                    upstream_error_diagnostic(status.as_u16(), upstream_body.as_deref());
                 let policy_rejection =
                     crate::core::translator::request::claude_format::is_claude_oauth_policy_rejection(
                         status.as_u16(),
@@ -1827,7 +1829,7 @@ async fn forward_with_provider_fallback(
                     retry_after,
                     upstream_body,
                 });
-                if let Some(attempt_log) = attempt_log {
+                if let Some(mut attempt_log) = attempt_log {
                     // C43: explicit error-kind literal per branch — never
                     // inferred from the status code. Policy rejections stay
                     // AUTH_FAILURE: classification is by body text, not status.
@@ -1840,6 +1842,8 @@ async fn forward_with_provider_fallback(
                     } else {
                         error_kind::UPSTREAM_FAILURE
                     };
+                    attempt_log
+                        .record_error_details(diagnostic_code.as_deref(), &diagnostic_message);
                     attempt_log
                         .finish("error", Some(status.as_u16()), None, Some(error_kind))
                         .await;
@@ -3159,7 +3163,7 @@ async fn proxy_response_with_pending_tracking(
                             if let Some(error) = batch.error {
                                 let usage = dispatch.usage.clone();
                                 if let Some(mut log) = attempt_log.take() {
-                                    log.record_stream_error(error.code, &error.message);
+                                    log.record_error_details(Some(error.code), &error.message);
                                     log.tps().invalidate();
                                     log.finish("error", Some(502), usage.as_ref(), Some(stream_error_kind(error.code))).await;
                                 }
@@ -3199,7 +3203,7 @@ async fn proxy_response_with_pending_tracking(
                 if let Some(error) = batch.error {
                     let usage = dispatch.usage.clone();
                     if let Some(mut log) = attempt_log.take() {
-                        log.record_stream_error(error.code, &error.message);
+                        log.record_error_details(Some(error.code), &error.message);
                         log.tps().invalidate();
                         log.finish("error", Some(502), usage.as_ref(), Some(stream_error_kind(error.code))).await;
                     }
@@ -3274,7 +3278,7 @@ async fn proxy_response_with_pending_tracking(
                                 if let Some(error) = batch.error {
                                     let usage = dispatch.usage.clone();
                                     if let Some(mut log) = attempt_log.take() {
-                                        log.record_stream_error(error.code, &error.message);
+                                        log.record_error_details(Some(error.code), &error.message);
                                         log.tps().invalidate();
                                         log.finish("error", Some(502), usage.as_ref(), Some(stream_error_kind(error.code))).await;
                                     }
@@ -3314,7 +3318,7 @@ async fn proxy_response_with_pending_tracking(
                 if let Some(error) = batch.error {
                     let usage = dispatch.usage.clone();
                     if let Some(mut log) = attempt_log.take() {
-                        log.record_stream_error(error.code, &error.message);
+                        log.record_error_details(Some(error.code), &error.message);
                         log.tps().invalidate();
                         log.finish("error", Some(502), usage.as_ref(), Some(stream_error_kind(error.code))).await;
                     }
@@ -4184,6 +4188,40 @@ async fn extract_upstream_error_with_body(response: UpstreamResponse) -> (String
     (message, raw_body)
 }
 
+fn upstream_error_diagnostic(status: u16, body: Option<&[u8]>) -> (Option<String>, String) {
+    let Some(payload) = body.and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok()) else {
+        return (None, format!("Upstream returned HTTP {status}"));
+    };
+
+    fn string(value: Option<&Value>) -> Option<&str> {
+        value
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+    let error = payload.get("error");
+    let code = [
+        error.and_then(|value| value.pointer("/details/error_code")),
+        error.and_then(|value| value.get("code")),
+        error.and_then(|value| value.get("type")),
+        payload.get("code"),
+        payload.get("type"),
+    ]
+    .into_iter()
+    .find_map(|value| string(value));
+    let message = error
+        .and_then(|value| value.get("message"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| string(error))
+        .or_else(|| string(payload.get("message")))
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("Upstream returned HTTP {status}"));
+
+    (code.map(str::to_string), message)
+}
+
 async fn collected_body_failure_response(
     error: BoundedBodyError,
     attempt_log: Option<AttemptLog>,
@@ -4506,7 +4544,7 @@ mod tests {
         derive_harness_uuid, extract_token_usage_from_value, has_native_codex_web_search,
         is_refreshable_auth_failure, select_connection, select_connection_with_supporters,
         should_prefetch_message_images, tool_image_support, unified_reset_retry_after,
-        StreamDispatch,
+        upstream_error_diagnostic, StreamDispatch,
     };
     use crate::core::account_fallback::ProviderAttemptError;
     use crate::core::chat::RequestPlan;
@@ -4553,6 +4591,39 @@ mod tests {
         let coalesced = translate(fixture.len());
         assert_eq!(translate(1), coalesced);
         assert_eq!(translate(17), coalesced);
+    }
+
+    #[test]
+    fn upstream_error_diagnostic_prefers_specific_codes_and_structured_messages() {
+        let (code, message) = upstream_error_diagnostic(
+            400,
+            Some(br#"{"error":{"type":"invalid_request_error","code":"bad_request","message":"Invalid tool","details":{"error_code":"tool_schema_invalid"}}}"#),
+        );
+        assert_eq!(code.as_deref(), Some("tool_schema_invalid"));
+        assert_eq!(message, "Invalid tool");
+
+        let (code, message) = upstream_error_diagnostic(
+            403,
+            Some(br#"{"error":{"type":"permission_error","message":"Denied"}}"#),
+        );
+        assert_eq!(code.as_deref(), Some("permission_error"));
+        assert_eq!(message, "Denied");
+    }
+
+    #[test]
+    fn upstream_error_diagnostic_does_not_fall_back_to_raw_body() {
+        assert_eq!(
+            upstream_error_diagnostic(502, Some(b"<html>proxy failure</html>")),
+            (None, "Upstream returned HTTP 502".to_string())
+        );
+        assert_eq!(
+            upstream_error_diagnostic(429, None),
+            (None, "Upstream returned HTTP 429".to_string())
+        );
+        assert_eq!(
+            upstream_error_diagnostic(400, Some(br#"{"error":{"message":"bad"}}"#)),
+            (None, "bad".to_string())
+        );
     }
 
     #[tokio::test]

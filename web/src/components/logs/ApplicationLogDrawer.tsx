@@ -24,6 +24,7 @@ export default function ApplicationLogDrawer({ log, onClose }: Props) {
             <Field label="Status" value={log.status.toUpperCase()} />
             <Field label="HTTP status" value={log.statusCode} />
             {log.errorKind && <Field label="Error kind" value={log.errorKind} />}
+            {log.errorCode && <Field label="Error code" value={log.errorCode} />}
             <Field label="Request ID" value={log.requestId} />
             <Field label="Route" value={log.route} />
             <Field label="Model" value={log.model} />
@@ -33,6 +34,13 @@ export default function ApplicationLogDrawer({ log, onClose }: Props) {
             <Field label="Started" value={new Date(log.timestamp).toLocaleString()} />
             <Field label="Duration" value={`${log.durationMs} ms`} />
           </div>
+
+          {log.errorMessage && (
+            <div className="rounded-lg border border-error/25 bg-error/5 p-4">
+              <div className="text-xs font-medium uppercase tracking-wide text-text-muted">Error message</div>
+              <p className="mt-1 whitespace-pre-wrap break-words font-mono text-sm text-text-main">{log.errorMessage}</p>
+            </div>
+          )}
 
           <div className="rounded-lg border border-border bg-bg-subtle p-4">
             <h3 className="mb-3 text-sm font-semibold text-text-main">Observed throughput</h3>

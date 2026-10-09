@@ -52,7 +52,9 @@ async fn request_logs_return_metadata_and_filter_results() {
                         "chatSession": {"version": 1, "hmac": "private-chat-fingerprint", "source": "x-session-id"},
                         "upstreamTps": {"version": 1, "generatedOutputTokens": 7, "elapsedMicros": 250000, "endKind": "protocol_terminal", "privateExtra": "secret"},
                         "request": "secret prompt",
-                        "response": "secret response"
+                        "response": "secret response",
+                        "errorCode": "invalid_request_error",
+                        "errorMessage": "Bad request Authorization: Bearer diagnostic-secret"
                     }),
                 },
             )
@@ -104,6 +106,11 @@ async fn request_logs_return_metadata_and_filter_results() {
     assert!(!payload.to_string().contains("codexCache"));
     assert!(!payload.to_string().contains("private-fingerprint"));
     assert_eq!(payload["requests"][0]["apiKeyName"], "OpenCode");
+    assert_eq!(payload["requests"][0]["errorCode"], "invalid_request_error");
+    assert_eq!(
+        payload["requests"][0]["errorMessage"],
+        "Bad request Authorization: [REDACTED]"
+    );
     assert_eq!(payload["requests"][0]["tokensPerSecond"], 28.0);
     assert_eq!(payload["requests"][0]["generatedOutputTokens"], 7);
     assert_eq!(payload["requests"][0]["upstreamDurationMs"], 250.0);
@@ -123,6 +130,7 @@ async fn request_logs_return_metadata_and_filter_results() {
     let serialized = String::from_utf8_lossy(&body);
     assert!(!serialized.contains(TEST_KEY));
     assert!(!serialized.contains("secret"));
+    assert!(!serialized.contains("diagnostic-secret"));
     assert!(!serialized.contains("private"));
 
     let response = openproxy::build_app(AppState::new(db.clone()))
@@ -294,6 +302,8 @@ async fn request_logs_tps_requires_valid_final_inputs_and_success_preserving_zer
             "model",
             "status",
             "statusCode",
+            "errorCode",
+            "errorMessage",
             "durationMs",
             "inputTokens",
             "outputTokens",
@@ -304,7 +314,9 @@ async fn request_logs_tps_requires_valid_final_inputs_and_success_preserving_zer
             "generatedOutputTokens",
             "upstreamDurationMs",
         ];
-        assert_eq!(row.as_object().unwrap().len(), allowed.len());
+        assert_eq!(row.as_object().unwrap().len(), allowed.len() - 2);
+        assert!(row.get("errorCode").is_none());
+        assert!(row.get("errorMessage").is_none());
         assert!(row
             .as_object()
             .unwrap()

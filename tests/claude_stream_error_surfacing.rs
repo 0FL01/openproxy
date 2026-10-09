@@ -102,6 +102,27 @@ async fn latest_request_details(test_db: &TempTestDb) -> Value {
     .expect("join details read")
 }
 
+async fn latest_public_request_log(app: &axum::Router) -> Value {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/request-logs?page=1&pageSize=10")
+                .header("authorization", "Bearer test-key")
+                .body(Body::empty())
+                .expect("request logs request"),
+        )
+        .await
+        .expect("request logs response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("request logs body");
+    let payload: Value = serde_json::from_slice(&bytes).expect("request logs JSON");
+    payload["requests"][0].clone()
+}
+
 #[tokio::test]
 async fn claude_upstream_error_event_surfaces_as_streaming_error() {
     let upstream = MockUpstream::start([ScriptedResponse::sse([
@@ -112,7 +133,11 @@ async fn claude_upstream_error_event_surfaces_as_streaming_error() {
     .await;
     let (app, test_db) = app_for(&upstream).await;
 
-    let response = app.oneshot(responses_request()).await.expect("response");
+    let response = app
+        .clone()
+        .oneshot(responses_request())
+        .await
+        .expect("response");
     let body = read_body(response).await;
     assert!(
         body.contains("\"type\":\"error\"") || body.contains("event: error"),
@@ -131,6 +156,14 @@ async fn claude_upstream_error_event_surfaces_as_streaming_error() {
         "persisted message: {}",
         details["errorMessage"]
     );
+    let log = latest_public_request_log(&app).await;
+    assert_eq!(log["route"], "/v1/responses");
+    assert_eq!(log["statusCode"], 502);
+    assert_eq!(log["errorCode"], "upstream_error_event");
+    assert!(log["errorMessage"]
+        .as_str()
+        .unwrap()
+        .contains("overloaded_error"));
     upstream.shutdown().await;
 }
 
@@ -145,7 +178,11 @@ async fn claude_truncated_stream_is_flagged_not_logged_success() {
     .await;
     let (app, test_db) = app_for(&upstream).await;
 
-    let response = app.oneshot(responses_request()).await.expect("response");
+    let response = app
+        .clone()
+        .oneshot(responses_request())
+        .await
+        .expect("response");
     let body = read_body(response).await;
     assert!(body.contains("upstream_stream_truncated"), "{body}");
     assert!(
@@ -157,6 +194,14 @@ async fn claude_truncated_stream_is_flagged_not_logged_success() {
     assert_eq!(details["errorKind"], "local_failure");
     assert_eq!(details["errorCode"], "upstream_stream_truncated");
     assert_eq!(details["statusCode"], 502);
+    let log = latest_public_request_log(&app).await;
+    assert_eq!(log["route"], "/v1/responses");
+    assert_eq!(log["statusCode"], 502);
+    assert_eq!(log["errorCode"], "upstream_stream_truncated");
+    assert!(log["errorMessage"]
+        .as_str()
+        .unwrap()
+        .contains("Claude stream ended"));
     upstream.shutdown().await;
 }
 
@@ -170,7 +215,11 @@ async fn complete_claude_stream_still_completes_the_responses_projection() {
     .await;
     let (app, test_db) = app_for(&upstream).await;
 
-    let response = app.oneshot(responses_request()).await.expect("response");
+    let response = app
+        .clone()
+        .oneshot(responses_request())
+        .await
+        .expect("response");
     let body = read_body(response).await;
     assert!(body.contains("response.completed"), "{body}");
     assert!(body.contains("partial"), "{body}");
@@ -182,5 +231,66 @@ async fn complete_claude_stream_still_completes_the_responses_projection() {
         details.get("errorKind").is_none(),
         "complete stream must log success: {details}"
     );
+    let log = latest_public_request_log(&app).await;
+    assert_eq!(log["route"], "/v1/responses");
+    assert_eq!(log["statusCode"], 200);
+    assert!(log.get("errorCode").is_none());
+    assert!(log.get("errorMessage").is_none());
+    upstream.shutdown().await;
+}
+
+#[tokio::test]
+async fn claude_http_error_diagnostic_is_logged_and_redacted_from_request_logs() {
+    let upstream_body = json!({
+        "type": "error",
+        "error": {
+            "type": "invalid_request_error",
+            "message": "Invalid tool declaration. Authorization: Bearer bearer-secret x-api-key: header-secret sk-ant-body-secret",
+            "details": {"error_code": "tool_schema_invalid"}
+        }
+    })
+    .to_string();
+    let upstream = MockUpstream::start([ScriptedResponse::json(
+        StatusCode::BAD_REQUEST,
+        upstream_body.clone(),
+    )])
+    .await;
+    let (app, test_db) = app_for(&upstream).await;
+
+    let response = app
+        .clone()
+        .oneshot(responses_request())
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let downstream_body = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("downstream body");
+    assert_eq!(downstream_body.as_ref(), upstream_body.as_bytes());
+    upstream.wait_for_requests(1).await;
+
+    let details = latest_request_details(&test_db).await;
+    assert_eq!(details["route"], "/v1/responses");
+    assert_eq!(details["statusCode"], 400);
+    assert_eq!(details["errorKind"], "invalid_request");
+    assert_eq!(details["errorCode"], "tool_schema_invalid");
+    assert!(!details.to_string().contains("bearer-secret"));
+    assert!(!details.to_string().contains("header-secret"));
+    assert!(!details.to_string().contains("sk-ant-body-secret"));
+
+    let log = latest_public_request_log(&app).await;
+    assert_eq!(log["route"], "/v1/responses");
+    assert_eq!(log["statusCode"], 400);
+    assert_eq!(log["errorKind"], "invalid_request");
+    assert_eq!(log["errorCode"], "tool_schema_invalid");
+    let message = log["errorMessage"].as_str().unwrap();
+    assert!(message.starts_with("Invalid tool declaration."));
+    assert!(message.contains("Authorization: [REDACTED]"));
+    assert!(message.contains("x-api-key: [REDACTED]"));
+    assert!(!log.to_string().contains("bearer-secret"));
+    assert!(!log.to_string().contains("header-secret"));
+    assert!(!log.to_string().contains("sk-ant-body-secret"));
+    assert!(!log.to_string().contains("error body"));
+
     upstream.shutdown().await;
 }
