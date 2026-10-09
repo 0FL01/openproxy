@@ -182,16 +182,11 @@ pub fn claude_to_openai_response(chunk: &Value, state: &mut Map<String, Value>) 
                         });
                     if let Some(tc) = tool_call_clone {
                         let idx_num = tc.get("index").cloned().unwrap_or(Value::from(0u64));
-                        let id = tc
-                            .get("id")
-                            .cloned()
-                            .unwrap_or(Value::String(String::new()));
                         results.push(make_chunk(
                             state,
                             json!({
                                 "tool_calls": [{
                                     "index": idx_num,
-                                    "id": id,
                                     "function": {"arguments": partial}
                                 }]
                             }),
@@ -701,6 +696,26 @@ mod tests {
         let call = &first_tool["choices"][0]["delta"]["tool_calls"][0];
         assert_eq!(call["id"], "tu_1");
         assert_eq!(call["function"]["name"], "WebSearch");
+
+        let argument_deltas: Vec<&Value> = out
+            .iter()
+            .flat_map(|chunk| {
+                chunk["choices"][0]["delta"]["tool_calls"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+            })
+            .filter(|call| {
+                call["function"]["arguments"]
+                    .as_str()
+                    .is_some_and(|s| !s.is_empty())
+            })
+            .collect();
+        assert_eq!(argument_deltas.len(), 2);
+        assert!(argument_deltas.iter().all(|call| call.get("id").is_none()));
+        assert!(argument_deltas
+            .iter()
+            .all(|call| call["index"].as_u64() == Some(0)));
 
         // Subsequent deltas should carry the partial json.
         let arg_deltas: Vec<&str> = out

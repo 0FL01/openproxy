@@ -70,6 +70,30 @@ fn responses_request() -> Request<Body> {
         .unwrap()
 }
 
+fn responses_tool_request() -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/v1/responses")
+        .header("authorization", "Bearer test-key")
+        .header("content-type", "application/json")
+        .header("x-openproxy-claude-mask", "1")
+        .body(Body::from(
+            json!({
+                "model": "claude/claude-opus-5-5",
+                "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Read the file"}]}],
+                "tools": [{
+                    "type": "function",
+                    "name": "read",
+                    "description": "Read a file",
+                    "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}}, "required": ["file_path"]}
+                }],
+                "stream": true
+            })
+            .to_string(),
+        ))
+        .unwrap()
+}
+
 async fn read_body(response: axum::response::Response) -> String {
     assert_eq!(response.status(), StatusCode::OK);
     let bytes = to_bytes(response.into_body(), 1024 * 1024)
@@ -81,6 +105,12 @@ async fn read_body(response: axum::response::Response) -> String {
 const MESSAGE_START: &str = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_surf\",\"model\":\"claude-opus-5-5\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":3}}}\n\n";
 const TEXT_DELTA: &str = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n";
 const MESSAGE_STOP: &str = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+const TOOL_USE_START: &str = "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_read_1\",\"name\":\"read\",\"input\":{}}}\n\n";
+const TOOL_USE_ARGS_FIRST: &str = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"file_path\\\":\"}}\n\n";
+const TOOL_USE_ARGS_SECOND: &str = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"src/lib.rs\\\"}\"}}\n\n";
+const TOOL_USE_STOP: &str =
+    "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n";
+const TOOL_USE_FINISH: &str = "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}\n\n";
 
 async fn latest_request_details(test_db: &TempTestDb) -> Value {
     use rusqlite::Connection;
@@ -236,6 +266,62 @@ async fn complete_claude_stream_still_completes_the_responses_projection() {
     assert_eq!(log["statusCode"], 200);
     assert!(log.get("errorCode").is_none());
     assert!(log.get("errorMessage").is_none());
+    upstream.shutdown().await;
+}
+
+#[tokio::test]
+async fn claude_tool_use_argument_deltas_complete_responses_tool_call() {
+    let upstream = MockUpstream::start([ScriptedResponse::sse([
+        MESSAGE_START,
+        TOOL_USE_START,
+        TOOL_USE_ARGS_FIRST,
+        TOOL_USE_ARGS_SECOND,
+        TOOL_USE_STOP,
+        TOOL_USE_FINISH,
+        MESSAGE_STOP,
+    ])])
+    .await;
+    let (app, test_db) = app_for(&upstream).await;
+
+    let response = app
+        .clone()
+        .oneshot(responses_tool_request())
+        .await
+        .expect("response");
+    let body = read_body(response).await;
+    assert!(body.contains("response.output_item.added"), "{body}");
+    assert!(body.contains("\"type\":\"function_call\""), "{body}");
+    assert!(body.contains("\"call_id\":\"toolu_read_1\""), "{body}");
+    assert!(body.contains("\"name\":\"read\""), "{body}");
+    assert!(
+        body.contains("response.function_call_arguments.delta"),
+        "{body}"
+    );
+    assert!(body.contains("\"delta\":\"{\\\"file_path\\\":\""), "{body}");
+    assert!(body.contains("src/lib.rs"), "{body}");
+    assert!(
+        body.contains("response.function_call_arguments.done"),
+        "{body}"
+    );
+    assert!(
+        body.contains("\"arguments\":\"{\\\"file_path\\\":\\\"src/lib.rs\\\"}\""),
+        "{body}"
+    );
+    assert!(body.contains("response.completed"), "{body}");
+    assert!(
+        !body.contains("upstream_stream_invalid_tool_call"),
+        "{body}"
+    );
+
+    upstream.wait_for_requests(1).await;
+    let details = latest_request_details(&test_db).await;
+    assert_eq!(details["statusCode"], 200);
+    assert!(details.get("errorCode").is_none(), "{details}");
+    assert!(details.get("errorKind").is_none(), "{details}");
+    let log = latest_public_request_log(&app).await;
+    assert_eq!(log["statusCode"], 200);
+    assert!(log.get("errorCode").is_none(), "{log}");
+    assert!(log.get("errorMessage").is_none(), "{log}");
     upstream.shutdown().await;
 }
 
