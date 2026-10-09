@@ -9,6 +9,7 @@ use axum::http::{Request, StatusCode};
 use common::lean_harness::{MockUpstream, ScriptedResponse, TempTestDb};
 use common::test_api_key;
 use openproxy::server::codex_catalog::CodexModelCatalog;
+use openproxy::server::console_logs::{ConsoleLogBuffer, ConsoleLogMakeWriter};
 use openproxy::server::state::AppState;
 use openproxy::types::{CustomModel, ProviderConnection, ProviderNode};
 use serde_json::json;
@@ -660,8 +661,16 @@ async fn configuration_reconciliation_removes_inactive_and_tracks_explicit_custo
     generation.shutdown().await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn post_commit_transport_failure_emits_sequenced_responses_error_once() {
+    let logs = Arc::new(ConsoleLogBuffer::new(20));
+    let subscriber = tracing_subscriber::fmt()
+        .with_env_filter("openproxy::chat::stream=trace")
+        .with_ansi(false)
+        .without_time()
+        .with_writer(ConsoleLogMakeWriter::new(logs.clone()))
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
     let catalog = MockUpstream::start([ScriptedResponse::json(
         StatusCode::OK,
         catalog_payload(&[("gpt-known", false)]),
@@ -688,7 +697,8 @@ async fn post_commit_transport_failure_emits_sequenced_responses_error_once() {
         .await
         .expect("seed Codex inventory");
 
-    let response = post_codex_responses(&openproxy::build_app(state), "gpt-known").await;
+    let app = openproxy::build_app(state);
+    let response = post_codex_responses(&app, "gpt-known").await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = to_bytes(response.into_body(), 64 * 1024)
         .await
@@ -710,6 +720,85 @@ async fn post_commit_transport_failure_emits_sequenced_responses_error_once() {
     assert_eq!(error_data["param"], serde_json::Value::Null);
     assert!(!output.contains("response.completed"), "{output}");
     assert!(!output.contains("data: [DONE]"), "{output}");
+    assert_eq!(generation.request_count().await, 1);
+    let trace = logs.get_logs().await.join("\n");
+    assert!(trace.contains("stream_start"), "{trace}");
+    assert!(trace.contains("transport=\"reqwest\""), "{trace}");
+    assert!(trace.contains("reason=\"transport_error\""), "{trace}");
+    assert!(trace.contains("next_response_sequence_number=5"), "{trace}");
+    assert!(trace.contains("reqwest(timeout=false,body=true"), "{trace}");
+    assert!(!trace.contains("upstream_terminal"), "{trace}");
+    assert!(!trace.contains("scripted upstream body failure"), "{trace}");
+    let records = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/request-logs?page=1&pageSize=10")
+                .header("authorization", "Bearer test-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(records.status(), StatusCode::OK);
+    let records: serde_json::Value =
+        serde_json::from_slice(&to_bytes(records.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    assert_eq!(records["requests"].as_array().unwrap().len(), 1);
+    assert!(
+        records["requests"][0].get("streamTrace").is_none(),
+        "{records}"
+    );
+    catalog.shutdown().await;
+    generation.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn upstream_terminal_trace_is_distinct_from_local_transport_failure() {
+    let logs = Arc::new(ConsoleLogBuffer::new(20));
+    let subscriber = tracing_subscriber::fmt()
+        .with_env_filter("openproxy::chat::stream=trace")
+        .with_ansi(false)
+        .without_time()
+        .with_writer(ConsoleLogMakeWriter::new(logs.clone()))
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let fixture = concat!(
+        "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":4,\"response\":{\"id\":\"resp_trace\",\"model\":\"gpt-known\"}}\n\n",
+        "event: error\ndata: {\"type\":\"error\",\"sequence_number\":5,\"code\":\"upstream_stream_error\",\"message\":\"Upstream stream error\",\"param\":null}\n\n"
+    );
+    let catalog = MockUpstream::start([ScriptedResponse::json(
+        StatusCode::OK,
+        catalog_payload(&[("gpt-known", false)]),
+    )])
+    .await;
+    let generation = MockUpstream::start([ScriptedResponse::sse([fixture])]).await;
+    let connection = codex_connection("codex-upstream-error", 1);
+    let (_db, state) = state_with_catalog(
+        catalog.url("/backend-api/codex/models"),
+        generation.url("/backend-api/codex/responses"),
+        vec![connection.clone()],
+        Vec::new(),
+    )
+    .await;
+    state
+        .codex_models
+        .refresh_connection(&state, &connection, true)
+        .await
+        .unwrap();
+    let response = post_codex_responses(&openproxy::build_app(state), "gpt-known").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let wire = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+    assert_eq!(wire.as_ref(), fixture.as_bytes());
+    let trace = logs.get_logs().await.join("\n");
+    assert!(trace.contains("upstream_terminal"), "{trace}");
+    assert!(trace.contains("event_kind=\"error\""), "{trace}");
+    assert!(trace.contains("upstream_stream_error"), "{trace}");
+    assert!(trace.contains("reason=\"eof\""), "{trace}");
+    assert!(
+        trace.contains("native_response_completed=Some(false)"),
+        "{trace}"
+    );
+    assert!(trace.contains("next_response_sequence_number=6"), "{trace}");
+    assert!(!trace.contains("transport_error"), "{trace}");
     assert_eq!(generation.request_count().await, 1);
     catalog.shutdown().await;
     generation.shutdown().await;

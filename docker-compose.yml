@@ -15,6 +15,7 @@ services:
       HOSTNAME: 0.0.0.0
       PORT: 4623
       TRUST_PROXY: "true"
+      RUST_LOG: ${RUST_LOG:-info}
     ports:
       - "127.0.0.1:4623:4623"
     volumes:

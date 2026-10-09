@@ -66,7 +66,10 @@ fn sanitize_error_message(message: &str) -> String {
         .collect()
 }
 
-fn sanitize_error_diagnostic(code: Option<&str>, message: &str) -> (Option<String>, String) {
+pub(crate) fn sanitize_error_diagnostic(
+    code: Option<&str>,
+    message: &str,
+) -> (Option<String>, String) {
     (sanitize_error_code(code), sanitize_error_message(message))
 }
 
