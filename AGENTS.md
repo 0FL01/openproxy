@@ -26,7 +26,8 @@ Fork: this is an independent product path; parity with 9router, OmniRoute, or ot
 
 ## Key References
 - `docs/ARCHITECTURE.md` — pipeline order, intentional behavior, executor dispatch
-- `src/server/trace_logs.rs` — always-on bounded stream TRACE in `DATA_DIR/logs/stream-trace/`, outside SQLite; `RUST_LOG` filters only console/dashboard. Read the diagnostics section in `docs/ARCHITECTURE.md`; verify with `cargo test --locked --lib trace_logs` and `cargo test --locked --test trace_file_logs`.
+- `src/server/trace_logs.rs` — always-on bounded TRACE outside SQLite: `DATA_DIR/logs/stream-trace/active.jsonl`, rotated `*.jsonl.zst`. Compose: named volume `openproxy-prod-data` → `/app/data`, not a bind mount. `RUST_LOG` filters only console/dashboard. Details: `docs/ARCHITECTURE.md#persistent-stream-diagnostics`; verify with `cargo test --locked --lib trace_logs` and `cargo test --locked --test trace_file_logs`.
+- Read TRACE: `docker compose exec -T openproxy sh -c 'tail -F "$DATA_DIR/logs/stream-trace/active.jsonl"'`; archives: `zstd -dc <archive.jsonl.zst>` (host CLI). Correlate by `stream_id`; `docker logs` / `openproxy logs tail` do not read these files.
 - `src/server/api/codex_web_mcp.rs` — the single-tool MCP protocol/auth boundary; `src/server/codex_search.rs` owns standalone indexed-search account routing
 
 ## Dev Workflow — backend + dashboard rebuild
