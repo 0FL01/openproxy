@@ -18,6 +18,7 @@ use crate::server::auth::login_limiter::LoginLimiter;
 use crate::server::codex_catalog::CodexModelCatalog;
 use crate::server::console_logs::{shared_console_log_buffer, ConsoleLogBuffer};
 use crate::server::quota_snapshots::QuotaSnapshots;
+use crate::server::trace_logs::TraceLogCounters;
 
 /// Session info stored server-side
 #[derive(Debug, Clone)]
@@ -34,6 +35,8 @@ pub struct AppState {
     pub client_pool: Arc<ClientPool>,
     pub pending_flows: PendingFlowStore,
     pub console_logs: Arc<ConsoleLogBuffer>,
+    /// Process-local losses in the independent best-effort TRACE file sink.
+    pub trace_log_counters: Arc<TraceLogCounters>,
     pub sessions: Arc<RwLock<HashMap<String, SessionInfo>>>,
     pub codex_proxy: Arc<CodexProxyState>,
     pub xai_proxy: Arc<XaiProxyState>,
@@ -96,6 +99,7 @@ impl AppState {
             client_pool: Arc::new(ClientPool::new()),
             pending_flows: PendingFlowStore::new(),
             console_logs: shared_console_log_buffer(),
+            trace_log_counters: Arc::new(TraceLogCounters::default()),
             sessions: Arc::new(RwLock::new(HashMap::new())),
             codex_proxy: Arc::new(CodexProxyState::new()),
             xai_proxy: Arc::new(XaiProxyState::new()),
@@ -114,6 +118,12 @@ impl AppState {
             quota_snapshots: Arc::new(QuotaSnapshots::default()),
             llm_admission: Arc::new(LlmAdmission::from_env()),
         }
+    }
+
+    /// Attach the server-owned diagnostic counters without starting a writer.
+    pub fn with_trace_log_counters(mut self, counters: Arc<TraceLogCounters>) -> Self {
+        self.trace_log_counters = counters;
+        self
     }
 
     /// Enable dashboard reverse proxy mode: all dashboard fallback requests

@@ -205,7 +205,7 @@ pub async fn request_log_flush_with_budget(budget: Duration) -> bool {
     }
 }
 
-fn truncate_field(value: &str) -> String {
+pub(crate) fn truncate_field(value: &str) -> String {
     if value.len() <= LEAN_LOG_FIELD_BYTES {
         return value.to_string();
     }

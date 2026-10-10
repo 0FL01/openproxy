@@ -186,6 +186,26 @@ async fn run_stats(rt: &Runtime, ctx: OutputCtx) -> anyhow::Result<i32> {
                             .unwrap_or(0)
                     ),
                 );
+                humanln(
+                    ctx,
+                    format!(
+                        "Trace file records dropped: {}",
+                        payload
+                            .get("traceLogDropped")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0)
+                    ),
+                );
+                humanln(
+                    ctx,
+                    format!(
+                        "Trace file I/O errors: {}",
+                        payload
+                            .get("traceLogIoErrors")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0)
+                    ),
+                );
             }
             Ok(0)
         }

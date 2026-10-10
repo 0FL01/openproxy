@@ -60,6 +60,7 @@ pub struct Cli {
     #[arg(long, env = "PORT", default_value_t = 4623)]
     pub port: u16,
 
+    /// Console/dashboard filter. Bounded stream TRACE files remain enabled.
     #[arg(long, env = "RUST_LOG", default_value = "info")]
     pub log_filter: String,
 

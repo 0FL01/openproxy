@@ -3,9 +3,6 @@
 ## What
 OpenProxy is an AI proxy router written in Rust — OpenAI-compatible endpoint that routes requests to 40+ AI providers with format translation, account fallback, token refresh, usage tracking, and SSE streaming.
 
-## Why
-Own single-binary AI router: faster, safer Rust implementation. Critical patterns: type-safe format handling, encrypted secrets, immutable data flow, thread-safe by design.
-
 ## How (Architecture)
 - **Core**: model parsing → format detection → request translation → provider execution → response translation → SSE streaming
 - **Account mgmt**: credential selection → token refresh → model-level account fallback
@@ -29,6 +26,7 @@ Fork: this is an independent product path; parity with 9router, OmniRoute, or ot
 
 ## Key References
 - `docs/ARCHITECTURE.md` — pipeline order, intentional behavior, executor dispatch
+- `src/server/trace_logs.rs` — always-on bounded stream TRACE in `DATA_DIR/logs/stream-trace/`, outside SQLite; `RUST_LOG` filters only console/dashboard. Read the diagnostics section in `docs/ARCHITECTURE.md`; verify with `cargo test --locked --lib trace_logs` and `cargo test --locked --test trace_file_logs`.
 - `src/server/api/codex_web_mcp.rs` — the single-tool MCP protocol/auth boundary; `src/server/codex_search.rs` owns standalone indexed-search account routing
 
 ## Dev Workflow — backend + dashboard rebuild

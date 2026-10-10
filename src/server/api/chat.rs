@@ -3491,6 +3491,10 @@ impl StreamDispatch {
         }
         let id = crate::server::request_logger::new_request_id();
         self.runtime_started_at = Some(tokio::time::Instant::now());
+        // fmt builds its String before MakeWriter applies the record cap.
+        // Bound diagnostic labels only; routing and upstream model IDs stay intact.
+        let provider = crate::server::application_logs::truncate_field(provider);
+        let model = crate::server::application_logs::truncate_field(model);
         tracing::trace!(
             target: "openproxy::chat::stream",
             stream_id = %id, provider, model, transport,
@@ -4894,6 +4898,54 @@ mod tests {
         assert!(!output.contains("private-response-content"));
         assert!(!output.contains(&"x".repeat(81)));
         assert!(!output.contains(&"m".repeat(201)));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_trace_labels_are_bounded_without_changing_model_ids() {
+        use crate::server::console_logs::{ConsoleLogBuffer, ConsoleLogMakeWriter};
+
+        let logs = std::sync::Arc::new(ConsoleLogBuffer::new(20));
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_env_filter("openproxy::chat::stream=trace")
+            .without_time()
+            .with_writer(ConsoleLogMakeWriter::new(logs.clone()))
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let provider = "п".repeat(180);
+        let model = "界".repeat(150);
+        let original = model.clone();
+        let mut dispatch = StreamDispatch::new(
+            Format::OpenAiResponses,
+            Format::OpenAiResponses,
+            "text/event-stream",
+            None,
+            None,
+            None,
+            false,
+        );
+        dispatch.start_runtime_trace(&provider, &model, "reqwest");
+        let frame = format!(
+            "data: {}\n\n",
+            json!({"type":"response.completed","sequence_number":1,
+                "response":{"model":model,"output":"private-response-content"}})
+        );
+        let batch = dispatch.feed(frame.as_bytes());
+        assert!(batch.output.is_empty());
+        assert!(batch.error.is_none());
+        assert!(!batch.response_completed);
+        assert_eq!(model, original);
+        assert_eq!(model.len(), 450);
+        let lines = logs.get_logs().await;
+        let start: Value = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!(start["fields"]["provider"].as_str().unwrap().len(), 256);
+        let label = start["fields"]["model"].as_str().unwrap();
+        assert_eq!(label.len(), 255);
+        assert!(model.starts_with(label));
+        assert!(lines.iter().all(|line| line.len() <= 8 * 1024));
+        assert!(lines
+            .iter()
+            .all(|line| !line.contains("private-response-content")));
     }
 
     #[tokio::test(flavor = "current_thread")]

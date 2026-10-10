@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::{info, warn};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{filter::filter_fn, layer::SubscriberExt, util::SubscriberInitExt, Layer};
 
 use openproxy::cli::config::ResolvedConfig;
 use openproxy::cli::{
@@ -16,6 +16,7 @@ use openproxy::db::watcher::spawn_watcher;
 use openproxy::db::Db;
 use openproxy::server::console_logs::{shared_console_log_buffer, ConsoleLogMakeWriter};
 use openproxy::server::state::AppState;
+use openproxy::server::trace_logs::{accepts_stream_trace, trace_log_channel};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -259,17 +260,36 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let console_log_writer = ConsoleLogMakeWriter::new(shared_console_log_buffer());
+    let (trace_log_writer, mut trace_log_guard) = trace_log_channel();
 
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new(cli.log_filter.clone()))
         .with(
             tracing_subscriber::fmt::layer()
                 .with_ansi(false)
-                .with_writer(console_log_writer),
+                .with_writer(console_log_writer)
+                .with_filter(tracing_subscriber::EnvFilter::new(cli.log_filter.clone())),
+        )
+        .with(
+            tracing_subscriber::fmt::layer()
+                .json()
+                .with_ansi(false)
+                .with_current_span(false)
+                .with_span_list(false)
+                .with_writer(trace_log_writer)
+                .with_filter(
+                    filter_fn(accepts_stream_trace)
+                        .with_max_level_hint(tracing_subscriber::filter::LevelFilter::TRACE),
+                ),
         )
         .init();
 
     let db = Db::load().await?;
+    // Db::load may fall back from an unwritable configured directory. Only
+    // start filesystem work after the actual persistent directory is known.
+    if let Err(error) = trace_log_guard.start(&db.data_dir) {
+        tracing::warn!(target: "openproxy::trace_logs", kind = ?error.kind(), "trace worker unavailable");
+        eprintln!("trace worker unavailable kind={:?}", error.kind());
+    }
     // E-logging preflight: one ERROR line when the data-dir filesystem is
     // nearly full. Non-fatal; a disk can still fill at runtime.
     openproxy::server::application_logs::log_disk_preflight(&db.data_dir);
@@ -300,6 +320,7 @@ async fn main() -> anyhow::Result<()> {
     let banner_uses_generated_password = openproxy::core::auth::dashboard_password_is_ephemeral()
         && !openproxy::core::auth::has_stored_password_hash(&db.snapshot().settings);
     let state = AppState::new(db)
+        .with_trace_log_counters(trace_log_guard.counters())
         .with_dashboard_sidecar_url(cli.dashboard_sidecar_url.clone())
         .with_web_dir(cli.web_dir.clone());
     // Periodic cleanup of stale HTTP client connections.
@@ -337,7 +358,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Print startup banner to stderr so the user sees it even when
     // stdout is captured (containers, CI, …). The tracing subscriber
-    // writes to the log file only — this is the only terminal feedback.
+    // writes to the console buffer and private TRACE files, not the terminal.
     eprintln!();
     eprintln!("  openproxy {}", env!("CARGO_PKG_VERSION"));
     eprintln!(
