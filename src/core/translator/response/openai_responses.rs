@@ -3,13 +3,25 @@
 use serde_json::Value;
 
 pub(crate) fn format_error_event(sequence_number: u64, code: &str, message: &str) -> String {
-    let data = serde_json::json!({
+    // OpenCode recognises a late-stream refusal through the nested
+    // `error.code`; the official Responses contract uses the flat fields.
+    // Retain the canonical flat fields and add the nested object only for
+    // the refusal code. Every other error stays byte-identical.
+    let mut data = serde_json::json!({
         "type": "error",
         "sequence_number": sequence_number,
         "code": code,
         "message": message,
         "param": null,
     });
+    if code == "invalid_prompt" {
+        data["error"] = serde_json::json!({
+            "type": "invalid_request_error",
+            "code": code,
+            "message": message,
+            "param": null,
+        });
+    }
     format!("event: error\ndata: {data}\n\n")
 }
 
@@ -2200,5 +2212,38 @@ mod tests {
             "custom close: {s2}"
         );
         assert!(s2.contains("\"input\":\"ls\""), "unwrapped input: {s2}");
+    }
+
+    #[test]
+    fn refusal_error_event_keeps_flat_shape_and_adds_nested_error() {
+        let frame = format_error_event(
+            503,
+            "invalid_prompt",
+            "Claude refused to respond (stop_reason=refusal).",
+        );
+        assert!(frame.starts_with("event: error\ndata: "));
+        let payload: Value =
+            serde_json::from_str(frame.strip_prefix("event: error\ndata: ").unwrap().trim())
+                .expect("error payload JSON");
+        assert_eq!(payload["type"], "error");
+        assert_eq!(payload["sequence_number"], 503);
+        assert_eq!(payload["code"], "invalid_prompt");
+        assert_eq!(
+            payload["message"],
+            "Claude refused to respond (stop_reason=refusal)."
+        );
+        assert!(payload.get("param").is_some_and(Value::is_null));
+        assert_eq!(payload["error"]["type"], "invalid_request_error");
+        assert_eq!(payload["error"]["code"], "invalid_prompt");
+        assert_eq!(
+            payload["error"]["message"],
+            "Claude refused to respond (stop_reason=refusal)."
+        );
+    }
+
+    #[test]
+    fn ordinary_error_event_shape_is_unchanged() {
+        let frame = format_error_event(5, "upstream_stream_error", "Upstream stream error");
+        assert_eq!(frame, "event: error\ndata: {\"code\":\"upstream_stream_error\",\"message\":\"Upstream stream error\",\"param\":null,\"sequence_number\":5,\"type\":\"error\"}\n\n");
     }
 }

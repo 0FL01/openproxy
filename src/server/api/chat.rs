@@ -2292,10 +2292,49 @@ async fn read_original_body(
     Ok(Bytes::from(collected))
 }
 
+/// Reject collected Claude refusals before translating them into success.
+/// Callers decide whether the body is a translated Claude response; native
+/// /v1/messages is deliberately not intercepted.
+async fn collected_claude_refusal_response(
+    body: &[u8],
+    token_usage: Option<&TokenUsage>,
+    attempt_log: &mut Option<AttemptLog>,
+) -> Option<Response> {
+    let value = serde_json::from_slice::<Value>(body).ok()?;
+    let refusal =
+        crate::core::translator::response::claude_to_openai::claude_refusal_error(&value)?;
+    if let Some(mut log) = attempt_log.take() {
+        log.record_error_details(Some(refusal.code), &refusal.message);
+        log.tps().invalidate();
+        log.finish(
+            "error",
+            Some(400),
+            token_usage,
+            Some(error_kind::UPSTREAM_FAILURE),
+        )
+        .await;
+    }
+    Some(with_cors_response(
+        (
+            StatusCode::BAD_REQUEST,
+            [(header::CONTENT_TYPE, "application/json")],
+            serde_json::json!({
+                "error": {
+                    "message": refusal.message,
+                    "type": "invalid_request_error",
+                    "code": refusal.code
+                }
+            })
+            .to_string(),
+        )
+            .into_response(),
+    ))
+}
+
 async fn proxy_dashboard_sse(
     response: UpstreamResponse,
     plan: &RequestPlan,
-    attempt_log: Option<AttemptLog>,
+    mut attempt_log: Option<AttemptLog>,
 ) -> Response {
     let status = response.status();
     let headers = response.headers().clone();
@@ -2312,6 +2351,16 @@ async fn proxy_dashboard_sse(
     };
 
     let token_usage = extract_token_usage_from_bytes(&body_bytes);
+    // This collector always synthesizes dashboard Chat SSE, even when the
+    // upstream request itself was native Claude.
+    if plan.target_format == Format::Claude {
+        if let Some(response) =
+            collected_claude_refusal_response(&body_bytes, token_usage.as_ref(), &mut attempt_log)
+                .await
+        {
+            return response;
+        }
+    }
     if let Some(attempt_log) = attempt_log {
         attempt_log
             .finish("success", Some(status.as_u16()), token_usage.as_ref(), None)
@@ -2770,7 +2819,7 @@ async fn proxy_response(
     response: UpstreamResponse,
     provider: &str,
     plan: &RequestPlan,
-    attempt_log: Option<AttemptLog>,
+    mut attempt_log: Option<AttemptLog>,
 ) -> Response {
     let status = response.status();
     let headers = response.headers().clone();
@@ -2794,6 +2843,21 @@ async fn proxy_response(
     let unenveloped_body = unwrap_cline_envelope(&body_bytes, provider);
 
     let token_usage = extract_token_usage_from_bytes(unenveloped_body.as_ref());
+
+    // A Claude safety refusal must not translate into an empty successful
+    // response. Intercept before translation so both Responses and Chat
+    // non-stream routes share one fixed shape and log.
+    if plan.target_format == registry::Format::Claude && plan.needs_translation() {
+        if let Some(response) = collected_claude_refusal_response(
+            unenveloped_body.as_ref(),
+            token_usage.as_ref(),
+            &mut attempt_log,
+        )
+        .await
+        {
+            return response;
+        }
+    }
 
     // 9router parity: translate non-streaming response body when source
     // and target formats differ (handleNonStreamingResponse).
@@ -3169,6 +3233,13 @@ async fn proxy_response_with_pending_tracking(
                                 yield Ok::<Bytes, std::io::Error>(output);
                             }
                             if let Some(error) = batch.error {
+                                // Build the terminal first so its observation
+                                // lands in the persisted trace below; the
+                                // earlier sync only covered translated chunks.
+                                let terminal = dispatch.streaming_error(
+                                    &error.message, "upstream_error", Some(error.code),
+                                );
+                                dispatch.sync_trace_into(&mut attempt_log);
                                 dispatch.trace_end("observer_error", read_wait, Some((error.code, &error.message)));
                                 let usage = dispatch.usage.clone();
                                 if let Some(mut log) = attempt_log.take() {
@@ -3176,9 +3247,7 @@ async fn proxy_response_with_pending_tracking(
                                     log.tps().invalidate();
                                     log.finish("error", Some(502), usage.as_ref(), Some(stream_error_kind(error.code))).await;
                                 }
-                                yield Ok::<Bytes, std::io::Error>(Bytes::from(dispatch.streaming_error(
-                                    &error.message, "upstream_error", Some(error.code),
-                                )));
+                                yield Ok::<Bytes, std::io::Error>(Bytes::from(terminal));
                                 return;
                             }
                             if batch.response_completed {
@@ -3216,6 +3285,10 @@ async fn proxy_response_with_pending_tracking(
                     yield Ok::<Bytes, std::io::Error>(output);
                 }
                 if let Some(error) = batch.error {
+                    let terminal = dispatch.streaming_error(
+                        &error.message, "upstream_error", Some(error.code),
+                    );
+                    dispatch.sync_trace_into(&mut attempt_log);
                     dispatch.trace_end("observer_error", eof_read_wait, Some((error.code, &error.message)));
                     let usage = dispatch.usage.clone();
                     if let Some(mut log) = attempt_log.take() {
@@ -3223,9 +3296,7 @@ async fn proxy_response_with_pending_tracking(
                         log.tps().invalidate();
                         log.finish("error", Some(502), usage.as_ref(), Some(stream_error_kind(error.code))).await;
                     }
-                    yield Ok::<Bytes, std::io::Error>(Bytes::from(dispatch.streaming_error(
-                        &error.message, "upstream_error", Some(error.code),
-                    )));
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from(terminal));
                     return;
                 }
                 dispatch.trace_end("eof", eof_read_wait, None);
@@ -3298,6 +3369,10 @@ async fn proxy_response_with_pending_tracking(
                                     yield Ok::<Bytes, std::io::Error>(output);
                                 }
                                 if let Some(error) = batch.error {
+                                    let terminal = dispatch.streaming_error(
+                                        &error.message, "upstream_error", Some(error.code),
+                                    );
+                                    dispatch.sync_trace_into(&mut attempt_log);
                                     dispatch.trace_end("observer_error", read_wait, Some((error.code, &error.message)));
                                     let usage = dispatch.usage.clone();
                                     if let Some(mut log) = attempt_log.take() {
@@ -3305,9 +3380,7 @@ async fn proxy_response_with_pending_tracking(
                                         log.tps().invalidate();
                                         log.finish("error", Some(502), usage.as_ref(), Some(stream_error_kind(error.code))).await;
                                     }
-                                    yield Ok::<Bytes, std::io::Error>(Bytes::from(dispatch.streaming_error(
-                                        &error.message, "upstream_error", Some(error.code),
-                                    )));
+                                    yield Ok::<Bytes, std::io::Error>(Bytes::from(terminal));
                                     return;
                                 }
                                 if batch.response_completed {
@@ -3345,6 +3418,10 @@ async fn proxy_response_with_pending_tracking(
                     yield Ok::<Bytes, std::io::Error>(output);
                 }
                 if let Some(error) = batch.error {
+                    let terminal = dispatch.streaming_error(
+                        &error.message, "upstream_error", Some(error.code),
+                    );
+                    dispatch.sync_trace_into(&mut attempt_log);
                     dispatch.trace_end("observer_error", eof_read_wait, Some((error.code, &error.message)));
                     let usage = dispatch.usage.clone();
                     if let Some(mut log) = attempt_log.take() {
@@ -3352,9 +3429,7 @@ async fn proxy_response_with_pending_tracking(
                         log.tps().invalidate();
                         log.finish("error", Some(502), usage.as_ref(), Some(stream_error_kind(error.code))).await;
                     }
-                    yield Ok::<Bytes, std::io::Error>(Bytes::from(dispatch.streaming_error(
-                        &error.message, "upstream_error", Some(error.code),
-                    )));
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from(terminal));
                     return;
                 }
                 dispatch.trace_end("eof", eof_read_wait, None);
@@ -3967,7 +4042,7 @@ fn frame_error_to_stream(error: FrameError) -> StreamLimitError {
 /// are upstream failures; everything else is our translation/framing layer.
 fn stream_error_kind(code: &str) -> &'static str {
     match code {
-        "upstream_error_event" => error_kind::UPSTREAM_FAILURE,
+        "upstream_error_event" | "invalid_prompt" => error_kind::UPSTREAM_FAILURE,
         _ => error_kind::LOCAL_FAILURE,
     }
 }
@@ -4830,6 +4905,35 @@ mod tests {
     use crate::core::translator::registry::Format;
     use crate::core::translator::response_transform::OpenAiTransformer;
     use crate::types::{AppDb, CustomModel, ProviderConnection};
+
+    #[tokio::test]
+    async fn dashboard_collector_rejects_refusal_even_for_a_native_upstream_request() {
+        let plan = RequestPlan::new(
+            Some("/v1/messages"),
+            &json!({"messages": [], "max_tokens": 64, "stream": false}),
+            "claude",
+            "claude-opus-5-5",
+        );
+        assert!(!plan.needs_translation());
+        let fixture = br#"{"type":"message","content":[],"stop_reason":"refusal","usage":{"input_tokens":10,"output_tokens":0}}"#;
+        let response = axum::http::Response::builder()
+            .header("content-type", "application/json")
+            .body(reqwest::Body::from(fixture.to_vec()))
+            .unwrap();
+        let response = super::proxy_dashboard_sse(
+            super::UpstreamResponse::Reqwest(reqwest::Response::from(response)),
+            &plan,
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        let error: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(error["error"]["code"], "invalid_prompt");
+        assert_eq!(error["error"]["type"], "invalid_request_error");
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn stream_trace_native_terminals_are_observational_bounded_and_redacted() {

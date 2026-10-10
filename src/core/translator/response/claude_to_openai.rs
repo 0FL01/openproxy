@@ -473,6 +473,39 @@ fn track_claude_accumulation(
     Ok(())
 }
 
+/// Fixed refusal signal for an upstream Claude safety refusal.
+///
+/// `refusal` is a valid Anthropic `stop_reason`, but it must not collapse
+/// into an ordinary `stop`: with no content blocks that would surface as an
+/// empty successful response. The fixed code identifies a refusal rather
+/// than a transport failure; the message carries no prompt or model text.
+pub(crate) const CLAUDE_REFUSAL_CODE: &str = "invalid_prompt";
+pub(crate) const CLAUDE_REFUSAL_MESSAGE: &str = "Claude refused to respond (stop_reason=refusal).";
+
+/// Detect an upstream Claude refusal in either streaming (`message_delta`)
+/// or non-streaming (`message`) JSON. Content-agnostic: only `stop_reason`
+/// is inspected, never prompt or completion text.
+pub(crate) fn claude_refusal_error(
+    value: &Value,
+) -> Option<crate::core::translator::limits::StreamLimitError> {
+    let event_type = value.get("type").and_then(|v| v.as_str())?;
+    let refused = if event_type == "message_delta" {
+        value.pointer("/delta/stop_reason").and_then(|v| v.as_str()) == Some("refusal")
+    } else if event_type == "message" {
+        value.get("stop_reason").and_then(|v| v.as_str()) == Some("refusal")
+    } else {
+        false
+    };
+    if refused {
+        Some(crate::core::translator::limits::StreamLimitError {
+            code: CLAUDE_REFUSAL_CODE,
+            message: CLAUDE_REFUSAL_MESSAGE.to_string(),
+        })
+    } else {
+        None
+    }
+}
+
 /// Registry-compatible wrapper: parses one complete event payload, calls the typed
 /// `claude_to_openai_response`, and serialises results back to SSE lines.
 /// Framing is owned by the registry or chat stream's shared text dispatcher.
@@ -486,6 +519,11 @@ pub fn claude_to_openai_streaming(
     let Ok(val) = serde_json::from_slice::<Value>(chunk) else {
         return Vec::new();
     };
+    // A safety refusal must surface as an explicit terminal error, not as an
+    // ordinary stop that completes with empty output.
+    if let Some(error) = claude_refusal_error(&val) {
+        return state.fail(error);
+    }
     if val.get("type").and_then(|value| value.as_str()) == Some("message")
         && val.get("content").is_some()
     {
@@ -765,5 +803,48 @@ mod tests {
         // Only the message_start chunk should be produced; server tool deltas suppressed.
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["choices"][0]["delta"]["role"], "assistant");
+    }
+
+    #[test]
+    fn refusal_delta_fails_the_stream_with_invalid_prompt() {
+        let mut state = crate::core::translator::registry::ResponseTransformState::default();
+        let chunk = br#"{"type":"message_delta","delta":{"stop_reason":"refusal"},"usage":{"input_tokens":3902,"output_tokens":0}}"#;
+        let out = claude_to_openai_streaming(chunk, &mut state);
+        assert!(out.is_empty());
+        let error = state.failure.expect("refusal must fail the stream");
+        assert_eq!(error.code, "invalid_prompt");
+        assert_eq!(
+            error.message,
+            "Claude refused to respond (stop_reason=refusal)."
+        );
+    }
+
+    #[test]
+    fn refusal_full_message_is_detected_for_non_stream_guard() {
+        let value = json!({
+            "type": "message",
+            "content": [],
+            "stop_reason": "refusal",
+            "usage": {"input_tokens": 1, "output_tokens": 0}
+        });
+        let error = claude_refusal_error(&value).expect("full refusal detected");
+        assert_eq!(error.code, CLAUDE_REFUSAL_CODE);
+        assert_eq!(error.message, CLAUDE_REFUSAL_MESSAGE);
+        let mut state = crate::core::translator::registry::ResponseTransformState::default();
+        assert!(claude_to_openai_streaming(value.to_string().as_bytes(), &mut state).is_empty());
+        assert_eq!(state.failure.unwrap().code, CLAUDE_REFUSAL_CODE);
+    }
+
+    #[test]
+    fn ordinary_stop_reasons_are_not_refusals() {
+        for stop in ["end_turn", "tool_use", "max_tokens", "stop_sequence"] {
+            let value = json!({"type": "message_delta", "delta": {"stop_reason": stop}});
+            assert!(
+                claude_refusal_error(&value).is_none(),
+                "{stop} must not be a refusal"
+            );
+        }
+        let missing = json!({"type": "message_delta", "delta": {}});
+        assert!(claude_refusal_error(&missing).is_none());
     }
 }

@@ -5,7 +5,9 @@
 //! (200 headers, in-band failure) and logged truncated streams as success.
 //! These tests pin the three contract points: upstream error events surface
 //! as `upstream_error_event` with an upstream error kind, truncated Claude
-//! streams are flagged, and complete streams keep their success shape.
+//! streams are flagged, and complete streams keep their success shape. Claude
+//! refusals are explicit, non-retried failures on translated routes; native
+//! Messages JSON/SSE retain their byte-exact successful HTTP transport shape.
 
 mod common;
 
@@ -116,6 +118,123 @@ const TOOL_USE_STOP: &str =
     "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n";
 const TOOL_USE_FINISH: &str = "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}\n\n";
 const END_TURN_FINISH: &str = "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}\n\n";
+const REFUSAL_DELTA: &str = "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"refusal\"},\"usage\":{\"input_tokens\":3902,\"output_tokens\":0}}\n\n";
+const REFUSAL_MESSAGE_BODY: &str = "{\"type\":\"message\",\"id\":\"msg_refusal\",\"content\":[],\"stop_reason\":\"refusal\",\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}";
+const REFUSAL_MESSAGE: &str = "Claude refused to respond (stop_reason=refusal).";
+
+fn claude_request(route: &str, stream: bool) -> Request<Body> {
+    let body = if route == "/v1/responses" {
+        json!({
+            "model": "claude/claude-opus-5-5",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            "stream": stream
+        })
+    } else {
+        json!({
+            "model": "claude/claude-opus-5-5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 64,
+            "stream": stream
+        })
+    };
+    Request::builder()
+        .method("POST")
+        .uri(route)
+        .header("authorization", "Bearer test-key")
+        .header("content-type", "application/json")
+        .header("x-openproxy-claude-mask", "1")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+#[derive(Debug)]
+struct SseEvent {
+    event: String,
+    data: Value,
+}
+
+fn assert_refusal_stream(body: &str) -> Vec<SseEvent> {
+    assert!(
+        body.ends_with("\n\n"),
+        "unterminated downstream SSE: {body}"
+    );
+    assert!(
+        !body.contains("[DONE]"),
+        "refusal must not send DONE: {body}"
+    );
+    let events: Vec<_> = body
+        .split("\n\n")
+        .filter(|frame| !frame.trim().is_empty())
+        .map(|frame| {
+            let mut event = None;
+            let mut data = Vec::new();
+            for line in frame.lines() {
+                if let Some(name) = line.strip_prefix("event:") {
+                    assert!(event.is_none(), "duplicate event field: {frame}");
+                    event = Some(name.trim().to_string());
+                } else if let Some(payload) = line.strip_prefix("data:") {
+                    data.push(payload.trim_start());
+                } else {
+                    assert!(line.starts_with(':'), "unexpected SSE field: {frame}");
+                }
+            }
+            SseEvent {
+                event: event.expect("projected SSE event name"),
+                data: serde_json::from_str(&data.join("\n")).expect("projected SSE JSON"),
+            }
+        })
+        .collect();
+    assert!(
+        events.len() >= 2,
+        "refusal must follow committed SSE: {body}"
+    );
+    assert_eq!(
+        events.iter().filter(|event| event.event == "error").count(),
+        1,
+        "exactly one terminal error: {body}"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.data["type"] == "error")
+            .count(),
+        1,
+        "exactly one error payload: {body}"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| event.event != "response.completed"
+                && event.data["type"] != "response.completed"),
+        "refusal must not claim completion: {body}"
+    );
+    // Every emitted event is sequenced, including the final error: no reset,
+    // duplicate, skipped number, or trailing frame is acceptable.
+    for pair in events.windows(2) {
+        let previous = pair[0].data["sequence_number"]
+            .as_u64()
+            .expect("prior sequence");
+        let next = pair[1].data["sequence_number"]
+            .as_u64()
+            .expect("next sequence");
+        assert_eq!(next, previous + 1, "non-contiguous SSE sequence: {body}");
+    }
+    let terminal = events.last().expect("terminal error");
+    assert_eq!(
+        terminal.event, "error",
+        "error must be strictly last: {body}"
+    );
+    assert_eq!(terminal.data["type"], "error");
+    assert_eq!(terminal.data["code"], "invalid_prompt");
+    assert_eq!(terminal.data["message"], REFUSAL_MESSAGE);
+    assert!(terminal.data.get("param").is_some_and(Value::is_null));
+    let nested = &terminal.data["error"];
+    assert_eq!(nested["type"], "invalid_request_error");
+    assert_eq!(nested["code"], terminal.data["code"]);
+    assert_eq!(nested["message"], terminal.data["message"]);
+    assert!(nested.get("param").is_some_and(Value::is_null));
+    events
+}
 
 async fn latest_request_details(test_db: &TempTestDb) -> Value {
     use rusqlite::Connection;
@@ -156,6 +275,95 @@ async fn latest_public_request_log(app: &axum::Router) -> Value {
         .expect("request logs body");
     let payload: Value = serde_json::from_slice(&bytes).expect("request logs JSON");
     payload["requests"][0].clone()
+}
+
+async fn assert_refusal_log(
+    app: &axum::Router,
+    test_db: &TempTestDb,
+    upstream: &MockUpstream,
+    route: &str,
+    status_code: u16,
+    input_tokens: u64,
+) -> (Value, Value) {
+    assert_eq!(
+        upstream.request_count().await,
+        1,
+        "refusal must not retry generation"
+    );
+    let details = latest_request_details(test_db).await;
+    let log = latest_public_request_log(app).await;
+    for record in [&details, &log] {
+        assert_eq!(record["route"], route, "{record}");
+        assert_eq!(record["statusCode"], status_code, "{record}");
+        assert_eq!(record["errorKind"], "upstream_failure", "{record}");
+        assert_eq!(record["errorCode"], "invalid_prompt", "{record}");
+        assert_eq!(record["errorMessage"], REFUSAL_MESSAGE, "{record}");
+        assert_eq!(record["inputTokens"], input_tokens, "{record}");
+        assert_eq!(
+            record["outputTokens"], 0,
+            "known zero must survive: {record}"
+        );
+    }
+    assert_eq!(log["status"], "error", "{log}");
+    assert!(
+        details.get("upstreamTps").is_none(),
+        "failed upstream TPS: {details}"
+    );
+    for field in [
+        "tokensPerSecond",
+        "generatedOutputTokens",
+        "upstreamDurationMs",
+    ] {
+        assert!(
+            log[field].is_null(),
+            "failed upstream TPS field {field}: {log}"
+        );
+    }
+    (details, log)
+}
+
+async fn assert_refusal_stream_log(
+    app: &axum::Router,
+    test_db: &TempTestDb,
+    upstream: &MockUpstream,
+) {
+    let (details, log) =
+        assert_refusal_log(app, test_db, upstream, "/v1/responses", 502, 3902).await;
+    let trace = &details["streamTrace"];
+    assert_eq!(trace["stopReason"], "refusal", "{trace}");
+    assert_eq!(trace["errorCount"], 1, "{trace}");
+    assert_eq!(trace["completedCount"], 0, "{trace}");
+    assert_eq!(trace["framesAfterCompleted"], 0, "{trace}");
+    assert_eq!(trace["doneSent"], false, "{trace}");
+    let entries = trace["entries"].as_array().expect("bounded trace entries");
+    assert!(entries.len() <= 64, "{trace}");
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry.as_str().unwrap().chars().count() <= 64),
+        "{trace}"
+    );
+    for field in ["upstreamEvents", "emittedEvents", "itemTypes"] {
+        assert!(trace[field].as_object().unwrap().len() <= 48, "{trace}");
+    }
+    if let Some(names) = trace["toolNames"].as_array() {
+        assert!(names.len() <= 8, "{trace}");
+    }
+    assert_eq!(
+        log["streamTrace"], *trace,
+        "public trace must retain terminal: {log}"
+    );
+}
+
+async fn assert_non_stream_refusal(response: axum::response::Response) {
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let bytes = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("error body");
+    let payload: Value = serde_json::from_slice(&bytes).expect("error JSON");
+    assert_eq!(payload["error"]["code"], "invalid_prompt");
+    assert_eq!(payload["error"]["type"], "invalid_request_error");
+    assert_eq!(payload["error"]["message"], REFUSAL_MESSAGE);
 }
 
 #[tokio::test]
@@ -490,5 +698,367 @@ async fn claude_http_error_diagnostic_is_logged_and_redacted_from_request_logs()
     assert!(!log.to_string().contains("sk-ant-body-secret"));
     assert!(!log.to_string().contains("error body"));
 
+    upstream.shutdown().await;
+}
+
+#[tokio::test]
+async fn claude_refusal_surfaces_as_invalid_prompt_error() {
+    // Incident shape: message_start, refusal delta with zero output tokens,
+    // message_stop. Must not complete as an empty success.
+    let upstream = MockUpstream::start([ScriptedResponse::sse([
+        MESSAGE_START,
+        REFUSAL_DELTA,
+        MESSAGE_STOP,
+    ])])
+    .await;
+    let (app, test_db) = app_for(&upstream).await;
+
+    let response = app
+        .clone()
+        .oneshot(responses_request())
+        .await
+        .expect("response");
+    let body = read_body(response).await;
+    assert_refusal_stream(&body);
+    assert_refusal_stream_log(&app, &test_db, &upstream).await;
+    upstream.shutdown().await;
+}
+
+#[tokio::test]
+async fn claude_refusal_after_partial_text_keeps_text_and_fails() {
+    let upstream = MockUpstream::start([ScriptedResponse::sse([
+        MESSAGE_START,
+        TEXT_DELTA,
+        REFUSAL_DELTA,
+        MESSAGE_STOP,
+    ])])
+    .await;
+    let (app, test_db) = app_for(&upstream).await;
+
+    let response = app
+        .clone()
+        .oneshot(responses_request())
+        .await
+        .expect("response");
+    let body = read_body(response).await;
+    // Already-committed text stays; the terminal is still an explicit error.
+    let events = assert_refusal_stream(&body);
+    let text_deltas: Vec<_> = events[..events.len() - 1]
+        .iter()
+        .filter(|event| event.event == "response.output_text.delta")
+        .map(|event| event.data["delta"].as_str().expect("text delta"))
+        .collect();
+    assert_eq!(
+        text_deltas,
+        ["partial"],
+        "committed text before error: {body}"
+    );
+    assert_refusal_stream_log(&app, &test_db, &upstream).await;
+    upstream.shutdown().await;
+}
+
+#[tokio::test]
+async fn claude_refusal_after_partial_tool_args_does_not_invent_completion() {
+    let upstream = MockUpstream::start([ScriptedResponse::sse([
+        MESSAGE_START,
+        TOOL_USE_START,
+        TOOL_USE_ARGS_FIRST,
+        REFUSAL_DELTA,
+        MESSAGE_STOP,
+    ])])
+    .await;
+    let (app, test_db) = app_for(&upstream).await;
+
+    let response = app
+        .clone()
+        .oneshot(responses_tool_request())
+        .await
+        .expect("response");
+    let body = read_body(response).await;
+    let events = assert_refusal_stream(&body);
+    let committed = &events[..events.len() - 1];
+    let (item_at, item) = committed
+        .iter()
+        .enumerate()
+        .find(|(_, event)| {
+            event.event == "response.output_item.added"
+                && event.data["item"]["type"] == "function_call"
+        })
+        .expect("committed tool call before refusal");
+    assert_eq!(item.data["item"]["call_id"], "toolu_read_1");
+    assert_eq!(item.data["item"]["name"], "read");
+    let argument_deltas: Vec<_> = committed
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| event.event == "response.function_call_arguments.delta")
+        .collect();
+    assert_eq!(
+        argument_deltas.len(),
+        1,
+        "committed partial arguments: {body}"
+    );
+    let (args_at, args) = argument_deltas[0];
+    assert!(
+        args_at > item_at,
+        "arguments follow real tool identity: {body}"
+    );
+    assert_eq!(args.data["delta"], "{\"file_path\":");
+    assert_eq!(args.data["item_id"], item.data["item"]["id"]);
+    assert_eq!(args.data["output_index"], item.data["output_index"]);
+    assert!(
+        events.iter().all(
+            |event| event.event != "response.function_call_arguments.done"
+                && event.event != "response.output_item.done"
+        ),
+        "refusal must not invent argument completion: {body}"
+    );
+    assert_refusal_stream_log(&app, &test_db, &upstream).await;
+    upstream.shutdown().await;
+}
+
+#[tokio::test]
+async fn claude_refusal_and_stop_in_one_chunk_fails_once() {
+    // One transport chunk carrying refusal + message_stop: single terminal.
+    let combined = format!("{REFUSAL_DELTA}{MESSAGE_STOP}");
+    let upstream =
+        MockUpstream::start([ScriptedResponse::sse([MESSAGE_START.to_string(), combined])]).await;
+    let (app, test_db) = app_for(&upstream).await;
+
+    let response = app
+        .clone()
+        .oneshot(responses_request())
+        .await
+        .expect("response");
+    let body = read_body(response).await;
+    assert_refusal_stream(&body);
+    assert_refusal_stream_log(&app, &test_db, &upstream).await;
+    upstream.shutdown().await;
+}
+
+#[tokio::test]
+async fn claude_refusal_split_across_chunks_fails_once() {
+    // The refusal frame split mid-JSON across transport chunks.
+    let half = REFUSAL_DELTA.len() / 2;
+    let (first, second) = REFUSAL_DELTA.split_at(half);
+    let upstream = MockUpstream::start([ScriptedResponse::sse([
+        MESSAGE_START,
+        first,
+        second,
+        MESSAGE_STOP,
+    ])])
+    .await;
+    let (app, test_db) = app_for(&upstream).await;
+
+    let response = app
+        .clone()
+        .oneshot(responses_request())
+        .await
+        .expect("response");
+    let body = read_body(response).await;
+    assert_refusal_stream(&body);
+    assert_refusal_stream_log(&app, &test_db, &upstream).await;
+    upstream.shutdown().await;
+}
+
+#[tokio::test]
+async fn claude_data_only_refusal_uses_json_type_and_fails_once() {
+    // Claude-compatible upstreams may omit event: and carry the event kind
+    // only in JSON. Refusal detection and the journal must still agree.
+    let upstream = MockUpstream::start([ScriptedResponse::sse([
+        MESSAGE_START.split_once('\n').unwrap().1,
+        REFUSAL_DELTA.split_once('\n').unwrap().1,
+        MESSAGE_STOP.split_once('\n').unwrap().1,
+    ])])
+    .await;
+    let (app, test_db) = app_for(&upstream).await;
+
+    let response = app
+        .clone()
+        .oneshot(responses_request())
+        .await
+        .expect("response");
+    let body = read_body(response).await;
+    assert_refusal_stream(&body);
+    assert_refusal_stream_log(&app, &test_db, &upstream).await;
+    upstream.shutdown().await;
+}
+
+#[tokio::test]
+async fn claude_refusal_in_delimiterless_eof_tail_is_logged_as_error() {
+    // No frame delimiter and no message_stop: finish() must recognize the
+    // refusal tail before its generic truncation guard or success logger.
+    let upstream = MockUpstream::start([ScriptedResponse::sse([
+        MESSAGE_START,
+        TEXT_DELTA,
+        REFUSAL_DELTA.trim_end_matches('\n'),
+    ])])
+    .await;
+    let (app, test_db) = app_for(&upstream).await;
+
+    let response = app
+        .clone()
+        .oneshot(responses_request())
+        .await
+        .expect("response");
+    let body = read_body(response).await;
+    let events = assert_refusal_stream(&body);
+    assert!(
+        events[..events.len() - 1]
+            .iter()
+            .any(|event| event.event == "response.output_text.delta"
+                && event.data["delta"] == "partial"),
+        "committed text before EOF refusal: {body}"
+    );
+    assert_refusal_stream_log(&app, &test_db, &upstream).await;
+    upstream.shutdown().await;
+}
+
+#[tokio::test]
+async fn claude_refusal_non_stream_returns_400_invalid_prompt() {
+    let upstream =
+        MockUpstream::start([ScriptedResponse::json(StatusCode::OK, REFUSAL_MESSAGE_BODY)]).await;
+    let (app, test_db) = app_for(&upstream).await;
+
+    let response = app
+        .clone()
+        .oneshot(claude_request("/v1/responses", false))
+        .await
+        .expect("response");
+    assert_non_stream_refusal(response).await;
+    assert_refusal_log(&app, &test_db, &upstream, "/v1/responses", 400, 10).await;
+    upstream.shutdown().await;
+}
+
+#[tokio::test]
+async fn claude_refusal_non_stream_chat_returns_400_invalid_prompt() {
+    let upstream =
+        MockUpstream::start([ScriptedResponse::json(StatusCode::OK, REFUSAL_MESSAGE_BODY)]).await;
+    let (app, test_db) = app_for(&upstream).await;
+
+    let response = app
+        .clone()
+        .oneshot(claude_request("/v1/chat/completions", false))
+        .await
+        .expect("response");
+    assert_non_stream_refusal(response).await;
+    assert_refusal_log(&app, &test_db, &upstream, "/v1/chat/completions", 400, 10).await;
+    upstream.shutdown().await;
+}
+
+#[tokio::test]
+async fn dashboard_collected_claude_refusal_returns_400_and_logs_error() {
+    // The dashboard requests SSE, but collects a non-stream upstream JSON
+    // message first. It must reject refusal before constructing success SSE.
+    let route = "/api/dashboard/chat/completions";
+    let upstream =
+        MockUpstream::start([ScriptedResponse::json(StatusCode::OK, REFUSAL_MESSAGE_BODY)]).await;
+    let (app, test_db) = app_for(&upstream).await;
+
+    let response = app
+        .clone()
+        .oneshot(claude_request(route, true))
+        .await
+        .expect("dashboard response");
+    assert_non_stream_refusal(response).await;
+    assert_refusal_log(&app, &test_db, &upstream, route, 400, 10).await;
+    let requests = upstream.requests().await;
+    assert_eq!(requests[0].path, "/v1/messages");
+    let body: Value =
+        serde_json::from_slice(&requests[0].body).expect("collected upstream request");
+    assert_eq!(body["stream"], false, "dashboard collection path: {body}");
+    upstream.shutdown().await;
+}
+
+#[tokio::test]
+async fn native_claude_refusal_passes_through_unchanged() {
+    // Native /v1/messages: the refusal detector must not rewrite bytes.
+    let upstream =
+        MockUpstream::start([ScriptedResponse::json(StatusCode::OK, REFUSAL_MESSAGE_BODY)]).await;
+    let (app, test_db) = app_for(&upstream).await;
+
+    let response = app
+        .clone()
+        .oneshot(claude_request("/v1/messages", false))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("downstream body");
+    assert_eq!(bytes.as_ref(), REFUSAL_MESSAGE_BODY.as_bytes());
+
+    assert_eq!(upstream.request_count().await, 1);
+    let details = latest_request_details(&test_db).await;
+    assert_eq!(details["statusCode"], 200);
+    assert!(details.get("errorCode").is_none(), "{details}");
+    assert!(details.get("errorKind").is_none(), "{details}");
+    let log = latest_public_request_log(&app).await;
+    assert_eq!(log["statusCode"], 200);
+    assert_eq!(log["status"], "success");
+    assert!(log.get("errorCode").is_none(), "{log}");
+    upstream.shutdown().await;
+}
+
+#[tokio::test]
+async fn native_claude_sse_refusal_passes_through_byte_exact_with_200() {
+    let chunks = [MESSAGE_START, TEXT_DELTA, REFUSAL_DELTA, MESSAGE_STOP];
+    let upstream = MockUpstream::start([ScriptedResponse::sse(chunks)]).await;
+    let (app, test_db) = app_for(&upstream).await;
+
+    let response = app
+        .clone()
+        .oneshot(claude_request("/v1/messages", true))
+        .await
+        .expect("native SSE response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("native SSE body");
+    assert_eq!(bytes.as_ref(), chunks.concat().as_bytes());
+    assert_eq!(upstream.request_count().await, 1);
+    let details = latest_request_details(&test_db).await;
+    assert_eq!(details["statusCode"], 200);
+    assert!(details.get("errorCode").is_none(), "{details}");
+    assert!(details.get("errorKind").is_none(), "{details}");
+    let log = latest_public_request_log(&app).await;
+    assert_eq!(log["statusCode"], 200);
+    assert_eq!(log["status"], "success");
+    assert!(log.get("errorCode").is_none(), "{log}");
+    upstream.shutdown().await;
+}
+
+#[tokio::test]
+async fn ordinary_empty_end_turn_still_completes() {
+    // Guard against over-triggering: an empty end_turn turn keeps its
+    // long-standing successful completion shape.
+    let upstream = MockUpstream::start([ScriptedResponse::sse([
+        MESSAGE_START,
+        END_TURN_FINISH,
+        MESSAGE_STOP,
+    ])])
+    .await;
+    let (app, test_db) = app_for(&upstream).await;
+
+    let response = app
+        .clone()
+        .oneshot(responses_request())
+        .await
+        .expect("response");
+    let body = read_body(response).await;
+    assert_eq!(
+        body.matches("event: response.completed").count(),
+        1,
+        "{body}"
+    );
+    assert!(!body.contains("event: error"), "{body}");
+    assert!(!body.contains("\"type\":\"error\""), "{body}");
+
+    assert_eq!(upstream.request_count().await, 1);
+    let details = latest_request_details(&test_db).await;
+    assert_eq!(details["statusCode"], 200);
+    assert!(details.get("errorCode").is_none(), "{details}");
+    assert!(details.get("errorKind").is_none(), "{details}");
+    assert_eq!(details["streamTrace"]["completedCount"], 1, "{details}");
+    assert_eq!(details["streamTrace"]["errorCount"], 0, "{details}");
     upstream.shutdown().await;
 }

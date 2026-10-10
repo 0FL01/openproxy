@@ -44,11 +44,11 @@ struct TraceState {
 
 impl StreamEventTrace {
     /// Record one upstream SSE frame. `event` is the `event:` field when
-    /// present (Claude always sends it); `payload` is the parsed data JSON
+    /// present, otherwise JSON `type` supplies the kind; `payload` is the parsed data JSON
     /// when available. Content fields are read only for structure (block
     /// type, tool name, stop reason), never copied.
     pub(crate) fn observe_upstream(&self, event: Option<&str>, payload: Option<&Value>) {
-        let Some(event) = event else {
+        let Some(event) = event.or_else(|| payload?.get("type")?.as_str()) else {
             return;
         };
         let mut key = event.to_string();
@@ -350,6 +350,24 @@ mod tests {
         // [DONE] and the trailing delta both arrive after completion.
         assert_eq!(snapshot["framesAfterCompleted"], 2);
         assert_eq!(snapshot["entries"].as_array().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn data_only_refusal_records_kind_and_stop_reason() {
+        let t = trace();
+        t.observe_upstream(
+            None,
+            Some(&json!({"type":"message_delta","delta":{"stop_reason":"refusal"}})),
+        );
+        let snapshot = t.snapshot().unwrap();
+        assert_eq!(snapshot["stopReason"], "refusal");
+        assert_eq!(
+            snapshot["upstreamEvents"]["message_delta:stop_reason=refusal"],
+            1
+        );
+        // An explicit SSE event keeps precedence over a conflicting JSON type.
+        t.observe_upstream(Some("message_stop"), Some(&json!({"type":"error"})));
+        assert_eq!(t.snapshot().unwrap()["upstreamEvents"]["message_stop"], 1);
     }
 
     #[test]
