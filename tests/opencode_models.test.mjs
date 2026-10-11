@@ -275,6 +275,8 @@ test("discovery generates readable names without changing model IDs", async (t) 
       { id: "custom-cx/gpt-5.6-luna", opencode: { source: "codex" } },
       { id: "custom-ocg/gpt-5.6-luna", opencode: { source: "opencode-go" } },
       { id: "cx/gpt-5.6-sol-fast", opencode: { source: "codex" } },
+      { id: "cx/gpt-6-luna-fast", opencode: { name: "GPT-6-Luna-Fast", source: "codex" } },
+      { id: "cx/gpt-6.1-sol-fast", opencode: { name: "GPT-6.1-Sol-Fast", source: "codex" } },
       { id: "cx/glm-5.2", opencode: { source: "codex" } },
       { id: "cx/glm-4.6v", opencode: { name: "Glm 4.6v", source: "codex" } },
       { id: "cx/explicit", opencode: { name: "Public Luna", source: "codex" } },
@@ -293,7 +295,8 @@ test("discovery generates readable names without changing model IDs", async (t) 
   } } }
   await (await OpenProxyModels()).config(config)
   assert.deepEqual(Object.keys(config.provider.ludka2.models), [
-    "custom-cx/gpt-5.6-luna", "custom-ocg/gpt-5.6-luna", "cx/gpt-5.6-sol-fast", "cx/glm-5.2", "cx/glm-4.6v", "cx/explicit", "cx/same", "cx/local",
+    "custom-cx/gpt-5.6-luna", "custom-ocg/gpt-5.6-luna", "cx/gpt-5.6-sol-fast", "cx/gpt-6-luna-fast", "cx/gpt-6.1-sol-fast",
+    "cx/glm-5.2", "cx/glm-4.6v", "cx/explicit", "cx/same", "cx/local",
     "custom-glm/glm-5.3", "custom-glm/glm-5.3-flash",
   ])
   assert.equal(config.provider.ludka2.models["custom-cx/gpt-5.6-luna"].name, "GPT-5.6 Luna · codex")
@@ -310,5 +313,7 @@ test("discovery generates readable names without changing model IDs", async (t) 
     await (await OpenProxyModels()).config(config)
     assert.deepEqual(config.provider.ludka2.models, discovered)
   }
+  assert.equal(config.provider.ludka2.models["cx/gpt-6-luna-fast"].name, "GPT-6-Luna-Fast · codex")
+  assert.equal(config.provider.ludka2.models["cx/gpt-6.1-sol-fast"].name, "GPT-6.1-Sol-Fast · codex")
   assert.equal(config.provider.ludka2.models["custom-glm/glm-5.3-flash"].name, "My GLM Flash · glm")
 })

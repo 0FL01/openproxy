@@ -642,6 +642,15 @@ struct CodexModelDto {
     input_modalities: Vec<String>,
     #[serde(default)]
     supports_search_tool: bool,
+    #[serde(default)]
+    service_tiers: Option<Vec<CodexServiceTierDto>>,
+    #[serde(default)]
+    additional_speed_tiers: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CodexServiceTierDto {
+    id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -673,6 +682,16 @@ fn parse_codex_models(payload: Value) -> Result<Vec<CodexModelMetadata>, String>
             .map(|id| id.trim().to_string())
             .filter(|id| !id.is_empty());
         let Some(id) = id else { continue };
+        let supports_fast = model
+            .service_tiers
+            .iter()
+            .flatten()
+            .any(|tier| tier.id.as_deref() == Some("priority"))
+            || model
+                .additional_speed_tiers
+                .iter()
+                .flatten()
+                .any(|tier| tier == "fast");
         // Swarm-only `ultra` effort is dropped for the plain proxy router.
         let reasoning_efforts: Vec<String> = model
             .supported_reasoning_levels
@@ -695,15 +714,53 @@ fn parse_codex_models(payload: Value) -> Result<Vec<CodexModelMetadata>, String>
             .map(|name| name.trim().to_string())
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| id.clone());
-        models.entry(id.clone()).or_insert(CodexModelMetadata {
-            id,
-            name,
-            context_window: model.max_context_window.or(model.context_window),
-            capabilities,
-            reasoning_efforts,
-        });
+        models.entry(id.clone()).or_insert((
+            CodexModelMetadata {
+                id,
+                name,
+                context_window: model.max_context_window.or(model.context_window),
+                capabilities,
+                reasoning_efforts,
+            },
+            supports_fast,
+        ));
     }
-    Ok(models.into_values().collect())
+    // Derive per-account aliases only after native IDs and first-wins duplicates
+    // have been resolved, so a published native Fast row is never overwritten.
+    let fast_models: Vec<_> = models
+        .values()
+        .filter(|(model, fast)| {
+            *fast && model.id.starts_with("gpt-") && !model.id.ends_with("-fast")
+        })
+        .map(|(model, _)| {
+            let mut alias = model.clone();
+            alias.id.push_str("-fast");
+            alias.name = codex_fast_model_name(&model.id);
+            alias
+        })
+        .collect();
+    for alias in fast_models {
+        models.entry(alias.id.clone()).or_insert((alias, false));
+    }
+    Ok(models.into_values().map(|(model, _)| model).collect())
+}
+
+fn codex_fast_model_name(base: &str) -> String {
+    let name = base
+        .split('-')
+        .map(|part| {
+            if part == "gpt" {
+                return "GPT".to_string();
+            }
+            let mut chars = part.chars();
+            chars
+                .next()
+                .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>()
+        .join("-");
+    format!("{name}-Fast")
 }
 
 fn parse_version(value: &str) -> Option<Vec<u64>> {
@@ -739,9 +796,9 @@ mod tests {
     fn parser_filters_and_sanitizes_codex_models() {
         let models = parse_codex_models(json!({"models": [
             {"slug":"gpt-current","display_name":"Current","visibility":"list","supported_in_api":true,"minimal_client_version":CODEX_CLIENT_VERSION,"context_window":272000,"max_context_window":872000,"supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}],"input_modalities":["text","image"],"supports_search_tool":true,"base_instructions":"secret"},
-            {"slug":"gpt-hidden","visibility":"hide"},
-            {"slug":"gpt-disabled","supported_in_api":false},
-            {"slug":"gpt-future","minimal_client_version":"999.0.0"},
+            {"slug":"gpt-hidden","visibility":"hide","service_tiers":[{"id":"priority"}]},
+            {"slug":"gpt-disabled","supported_in_api":false,"additional_speed_tiers":["fast"]},
+            {"slug":"gpt-future","minimal_client_version":"999.0.0","service_tiers":[{"id":"priority"}]},
             {"slug":"gpt-malformed","minimal_client_version":"next"},
             {"slug":"gpt-current","display_name":"duplicate"},
             {"slug":"gpt-6-sol","visibility":"list","supported_in_api":true,"minimal_client_version":"0.155.0"},
@@ -769,6 +826,76 @@ mod tests {
         let output = current.catalog_json();
         assert!(output.get("base_instructions").is_none());
         assert_eq!(output["targetFormat"], "openai-responses");
+    }
+
+    #[test]
+    fn parser_derives_fast_aliases_with_names_and_inherited_metadata() {
+        let models = parse_codex_models(json!({"models": [
+            {"slug":"gpt-6-luna","display_name":"Luna upstream name","service_tiers":[{"id":"priority"}],"max_context_window":272000,"supported_reasoning_levels":[{"effort":"high"}],"input_modalities":["text","image"],"supports_search_tool":true},
+            {"slug":"gpt-6.1-sol","additional_speed_tiers":["fast"],"context_window":872000,"supported_reasoning_levels":[{"effort":"low"}]}
+        ]}))
+        .unwrap();
+
+        assert_eq!(models.len(), 4);
+        for (id, name) in [
+            ("gpt-6-luna", "GPT-6-Luna-Fast"),
+            ("gpt-6.1-sol", "GPT-6.1-Sol-Fast"),
+        ] {
+            let base = models.iter().find(|model| model.id == id).unwrap();
+            let fast = models
+                .iter()
+                .find(|model| model.id == format!("{id}-fast"))
+                .unwrap();
+            assert_eq!(fast.name, name);
+            assert_eq!(fast.context_window, base.context_window);
+            assert_eq!(fast.capabilities, base.capabilities);
+            assert_eq!(fast.reasoning_efforts, base.reasoning_efforts);
+        }
+    }
+
+    #[test]
+    fn parser_preserves_native_fast_ids_and_first_wins_tier_metadata() {
+        let models = parse_codex_models(json!({"models": [
+            {"slug":"gpt-6-luna","service_tiers":[{"id":"priority"}]},
+            {"slug":"gpt-6-luna-fast","display_name":"Native Fast","context_window":123000,"service_tiers":[{"id":"priority"}]},
+            {"slug":"gpt-duplicate","display_name":"First"},
+            {"slug":"gpt-duplicate","display_name":"Second","additional_speed_tiers":["fast"]},
+            {"slug":"gpt-null","service_tiers":null,"additional_speed_tiers":null},
+            {"slug":"gpt-empty","service_tiers":[],"additional_speed_tiers":[]},
+            {"slug":"gpt-standard","service_tiers":[{}, {"id":null}, {"id":"flex"}],"additional_speed_tiers":["other"]},
+            {"slug":"other-model","service_tiers":[{"id":"priority"}]}
+        ]}))
+        .unwrap();
+
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "gpt-6-luna",
+                "gpt-6-luna-fast",
+                "gpt-duplicate",
+                "gpt-empty",
+                "gpt-null",
+                "gpt-standard",
+                "other-model"
+            ]
+        );
+        let native = models
+            .iter()
+            .find(|model| model.id == "gpt-6-luna-fast")
+            .unwrap();
+        assert_eq!(native.name, "Native Fast");
+        assert_eq!(native.context_window, Some(123000));
+        assert_eq!(
+            models
+                .iter()
+                .find(|model| model.id == "gpt-duplicate")
+                .unwrap()
+                .name,
+            "First"
+        );
     }
 
     #[test]

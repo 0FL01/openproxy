@@ -155,6 +155,147 @@ async fn post_mcp_search(app: &axum::Router, response_length: &str) -> axum::res
 }
 
 #[tokio::test]
+async fn fast_aliases_preserve_protocols_and_route_only_to_fast_supporters() {
+    let base_payload = catalog_payload(&[("gpt-6-luna", false), ("gpt-6.1-sol", false)]);
+    let mut fast_payload: serde_json::Value = serde_json::from_str(&base_payload).unwrap();
+    fast_payload["models"][0]["service_tiers"] = json!([{"id":"priority"}]);
+    fast_payload["models"][1]["additional_speed_tiers"] = json!(["fast"]);
+    let catalog = MockUpstream::start([
+        ScriptedResponse::json(StatusCode::OK, base_payload),
+        ScriptedResponse::json(StatusCode::OK, fast_payload.to_string()),
+        ScriptedResponse::json(StatusCode::OK, fast_payload.to_string()),
+    ])
+    .await;
+    let success = |model| {
+        let output = json!([{"id":"msg_fast", "type":"message", "role":"assistant", "status":"completed", "content":[{"type":"output_text", "text":"ok", "annotations":[]}]}]);
+        ScriptedResponse::sse([
+            json!({"type":"response.created", "response":{"id":"resp_fast", "object":"response", "created_at":1791072000, "model":model, "status":"in_progress", "output":[]}}),
+            json!({"type":"response.output_text.delta", "item_id":"msg_fast", "output_index":0, "content_index":0, "delta":"ok"}),
+            json!({"type":"response.completed", "response":{"id":"resp_fast", "object":"response", "created_at":1791072000, "model":model, "status":"completed", "output":output, "usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}),
+        ].map(|event| format!("event: {}\ndata: {event}\n\n", event["type"].as_str().unwrap())))
+    };
+    let generation = MockUpstream::start([
+        ScriptedResponse::json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            r#"{"error":{"message":"fixture overload"}}"#,
+        ),
+        success("gpt-6-luna"),
+        success("gpt-6.1-sol"),
+        success("gpt-6.1-sol"),
+        success("gpt-6-luna"),
+    ])
+    .await;
+    let connections = vec![
+        codex_connection("a", 1),
+        codex_connection("b", 2),
+        codex_connection("c", 3),
+    ];
+    let (_db, state) = state_with_catalog(
+        catalog.url("/backend-api/codex/models"),
+        generation.url("/backend-api/codex/responses"),
+        connections.clone(),
+        Vec::new(),
+    )
+    .await;
+    for connection in &connections {
+        state
+            .codex_models
+            .refresh_connection(&state, connection, true)
+            .await
+            .unwrap();
+    }
+    let app = openproxy::build_app(state.clone());
+    for (endpoint, model, stream, tier) in [
+        ("/v1/responses", "gpt-6-luna-fast", true, None),
+        ("/v1/responses", "gpt-6.1-sol-fast", false, Some("auto")),
+        (
+            "/v1/chat/completions",
+            "gpt-6.1-sol-fast-high",
+            true,
+            Some("default"),
+        ),
+        (
+            "/v1/chat/completions",
+            "gpt-6-luna-fast(high)",
+            false,
+            Some("flex"),
+        ),
+    ] {
+        let mut body = if endpoint == "/v1/responses" {
+            json!({"input":"hello"})
+        } else {
+            json!({"messages":[{"role":"user", "content":"hello"}], "reasoning_effort":"low"})
+        };
+        body["model"] = json!(format!("cx/{model}"));
+        body["stream"] = json!(stream);
+        if let Some(tier) = tier {
+            body["service_tier"] = json!(tier);
+        }
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(endpoint)
+                    .header("authorization", "Bearer test-key")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{model}");
+        let content_type = response.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .to_string();
+        let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        if stream {
+            assert!(content_type.contains("text/event-stream"));
+            assert!(String::from_utf8_lossy(&bytes).contains("ok"));
+        } else {
+            assert!(content_type.contains("application/json"));
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            if endpoint == "/v1/responses" {
+                assert_eq!(body["output"][0]["content"][0]["text"], "ok");
+            } else {
+                assert_eq!(body["choices"][0]["message"]["content"], "ok");
+            }
+        }
+    }
+    let requests = generation.requests().await;
+    assert_eq!(requests.len(), 5);
+    for (index, request) in requests.iter().enumerate() {
+        let account = if index == 1 { "c" } else { "b" };
+        assert_eq!(
+            request.headers["authorization"],
+            format!("Bearer fixture-{account}-access")
+        );
+        let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        assert_eq!(
+            body["model"],
+            if index == 2 || index == 3 {
+                "gpt-6.1-sol"
+            } else {
+                "gpt-6-luna"
+            }
+        );
+        assert_eq!(body["service_tier"], "priority");
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["store"], false);
+        if index >= 3 {
+            assert_eq!(body["reasoning"]["effort"], "high");
+        }
+    }
+    let response = post_codex(&app, "gpt-unknown-fast").await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(generation.request_count().await, 5);
+    assert_eq!(catalog.request_count().await, 3);
+    catalog.shutdown().await;
+    generation.shutdown().await;
+}
+
+#[tokio::test]
 async fn known_chat_uses_published_inventory_while_forced_refresh_is_held() {
     let release_refresh = Arc::new(Notify::new());
     let catalog = MockUpstream::start([

@@ -576,6 +576,11 @@ impl CodexExecutor {
             }
         }
 
+        let is_fast_alias = model_id.starts_with("gpt-") && model_id.ends_with("-fast");
+        if is_fast_alias {
+            model_id.truncate(model_id.len() - "-fast".len());
+        }
+
         // Priority: body.reasoning.effort > reasoning_effort > model suffix.
         let effort = normalized_body
             .pointer("/reasoning/effort")
@@ -669,6 +674,9 @@ impl CodexExecutor {
                 request_body["service_tier"] = Value::String("priority".to_string());
             }
             // else: dropped (not carried into request_body)
+        }
+        if is_fast_alias {
+            request_body["service_tier"] = Value::String("priority".to_string());
         }
 
         Ok(request_body)
@@ -1588,6 +1596,62 @@ data: {"type":"response.output_text.delta","delta":"server_is_overloaded"}
             .transform_request_body(&body, "o4-mini", false)
             .unwrap();
         assert!(out.get("service_tier").is_none());
+    }
+
+    #[test]
+    fn test_codex_fast_alias_wire_mapping() {
+        let executor = CodexExecutor::new(Arc::new(ClientPool::new()), None).unwrap();
+        for (model, base, tier, effort) in [
+            ("gpt-6-luna-fast", "gpt-6-luna", None, None),
+            ("gpt-6.1-sol-fast", "gpt-6.1-sol", Some("flex"), None),
+            (
+                "gpt-6-luna-fast-high",
+                "gpt-6-luna",
+                Some("auto"),
+                Some("high"),
+            ),
+            (
+                "gpt-6.1-sol-fast(high)",
+                "gpt-6.1-sol",
+                Some("default"),
+                Some("high"),
+            ),
+        ] {
+            let mut body = json!({"input":"hi"});
+            if let Some(tier) = tier {
+                body["service_tier"] = json!(tier);
+            }
+            let out = executor
+                .transform_request_body(&body, model, false)
+                .unwrap();
+            assert_eq!(out["model"], base);
+            assert_eq!(out["service_tier"], "priority");
+            assert_eq!(
+                out.pointer("/reasoning/effort").and_then(Value::as_str),
+                effort
+            );
+            assert_eq!(out["stream"], true);
+            assert_eq!(out["store"], false);
+        }
+
+        let out = executor
+            .transform_request_body(
+                &json!({"input":"hi", "reasoning":{"effort":"low"}}),
+                "gpt-6-luna-fast-high",
+                true,
+            )
+            .unwrap();
+        assert_eq!(out["model"], "gpt-6-luna");
+        assert_eq!(out["service_tier"], "priority");
+        assert_eq!(out["reasoning"]["effort"], "low");
+
+        for model in ["custom-fast", "gpt-6-luna-Fast"] {
+            let out = executor
+                .transform_request_body(&json!({"input":"hi"}), model, true)
+                .unwrap();
+            assert_eq!(out["model"], model);
+            assert!(out.get("service_tier").is_none());
+        }
     }
 
     #[test]

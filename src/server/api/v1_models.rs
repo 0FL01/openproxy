@@ -1754,7 +1754,7 @@ mod tests {
             provider_specific_data: BTreeMap::from([("prefix".into(), json!("custom-cx"))]),
             ..Default::default()
         };
-        let snapshot = AppDb {
+        let mut snapshot = AppDb {
             provider_connections: vec![connection.clone()],
             ..Default::default()
         };
@@ -1776,6 +1776,27 @@ mod tests {
                     context_window: Some(999_000),
                     capabilities: vec!["tools".into()],
                     reasoning_efforts: vec![],
+                },
+                crate::server::codex_catalog::CodexModelMetadata {
+                    id: "gpt-6-luna".into(),
+                    name: "GPT-6-Luna".into(),
+                    context_window: Some(272_000),
+                    capabilities: vec!["tools".into(), "reasoning".into(), "vision".into()],
+                    reasoning_efforts: vec!["high".into()],
+                },
+                crate::server::codex_catalog::CodexModelMetadata {
+                    id: "gpt-6-luna-fast".into(),
+                    name: "GPT-6-Luna-Fast".into(),
+                    context_window: Some(272_000),
+                    capabilities: vec!["tools".into(), "reasoning".into(), "vision".into()],
+                    reasoning_efforts: vec!["high".into()],
+                },
+                crate::server::codex_catalog::CodexModelMetadata {
+                    id: "gpt-6.1-sol-fast".into(),
+                    name: "GPT-6.1-Sol-Fast".into(),
+                    context_window: Some(872_000),
+                    capabilities: vec!["tools".into(), "reasoning".into(), "vision".into()],
+                    reasoning_efforts: vec!["high".into()],
                 },
             ],
         );
@@ -1814,6 +1835,68 @@ mod tests {
         assert!(!llm
             .iter()
             .any(|model| model.id == "custom-cx/gpt-5.5-image"));
+
+        for (id, name) in [
+            ("gpt-6-luna-fast", "GPT-6-Luna-Fast"),
+            ("gpt-6.1-sol-fast", "GPT-6.1-Sol-Fast"),
+        ] {
+            let fast = llm
+                .iter()
+                .find(|model| model.id == format!("custom-cx/{id}"))
+                .unwrap();
+            let metadata = json!(fast.opencode);
+            assert_eq!(metadata["name"], name);
+            assert_eq!(metadata["source"], "codex");
+            assert_eq!(
+                metadata["limit"],
+                json!({"context":500000,"input":450000,"output":128000})
+            );
+            assert_eq!(metadata["modalities"]["input"], json!(["text", "image"]));
+            assert_eq!(metadata["tool_call"], true);
+            assert_eq!(
+                metadata["variants"],
+                json!({"high":{"reasoningEffort":"high"}})
+            );
+        }
+
+        snapshot.custom_models.push(CustomModel {
+            provider_alias: "custom-cx".into(),
+            id: "gpt-6.1-sol-fast".into(),
+            name: Some("My Fast".into()),
+            r#type: LLM_KIND.into(),
+            extra: BTreeMap::new(),
+        });
+        snapshot
+            .extra
+            .insert("disabledModels".into(), json!({"cx":["gpt-6-luna-fast"]}));
+        let models = build_models_list(&state, &snapshot, &[LLM_KIND]).await;
+        assert!(models
+            .iter()
+            .any(|model| model.id == "custom-cx/gpt-6-luna"));
+        assert!(!models
+            .iter()
+            .any(|model| model.id == "custom-cx/gpt-6-luna-fast"));
+        assert_eq!(
+            json!(
+                models
+                    .iter()
+                    .find(|model| model.id == "custom-cx/gpt-6.1-sol-fast")
+                    .unwrap()
+                    .opencode
+            )["name"],
+            "My Fast"
+        );
+
+        snapshot
+            .extra
+            .insert("disabledModels".into(), json!({"cx":["gpt-6-luna"]}));
+        let models = build_models_list(&state, &snapshot, &[LLM_KIND]).await;
+        assert!(!models
+            .iter()
+            .any(|model| model.id == "custom-cx/gpt-6-luna"));
+        assert!(models
+            .iter()
+            .any(|model| model.id == "custom-cx/gpt-6-luna-fast"));
     }
 
     #[tokio::test]

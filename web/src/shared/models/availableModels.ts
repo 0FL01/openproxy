@@ -140,7 +140,18 @@ export function buildAvailableModels(
     if (kind && kind !== type) continue;
     const isFree =
       typeof m.isFree === "boolean" ? m.isFree : undefined;
-    pushCore(m.id, m.name, "catalog", isFree);
+    // Keep an explicit custom name when that model joins the catalog.
+    const custom = customModels.find(
+      (model) =>
+        model?.providerAlias === providerAlias &&
+        model.id === m.id &&
+        (!type || (model.kind || model.type || "llm") === type)
+    );
+    const name =
+      typeof custom?.name === "string" && custom.name.trim()
+        ? custom.name
+        : m.name;
+    pushCore(m.id, name, "catalog", isFree);
   }
   for (const m of liveModels) {
     pushCore(m.id, m.name, "live", m.isFree);
