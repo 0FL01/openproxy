@@ -65,6 +65,7 @@ export default function Pagination({
           <div className="flex items-center gap-2">
             <span className="text-sm text-text-muted">Rows:</span>
             <select
+              aria-label="Rows per page"
               value={pageSize}
               onChange={(e) => onPageSizeChange(Number(e.target.value))}
               className={cn(
@@ -86,6 +87,7 @@ export default function Pagination({
         {totalPages > 1 && (
           <div className="flex items-center gap-1">
             <Button
+              aria-label="Previous page"
               variant="outline"
               size="sm"
               onClick={() => onPageChange(currentPage - 1)}
@@ -143,6 +145,7 @@ export default function Pagination({
             )}
 
             <Button
+              aria-label="Next page"
               variant="outline"
               size="sm"
               onClick={() => onPageChange(currentPage + 1)}

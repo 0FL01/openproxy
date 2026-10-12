@@ -139,6 +139,20 @@ unsigned original numerator and positive elapsed time qualify; explicit zero is
 preserved, legacy/failed/incomplete rows stay null without old-duration fallback.
 See [TPS semantics](request-tps.md).
 
+### On-demand rolling TPS aggregation
+
+The additive authenticated admin GET `/api/request-logs/tps-stats` computes
+provider × model medians over 1h/6h/24h from existing saved successful attempts,
+using their start timestamps and the same final TPS validator. Its closed
+projection contains only nullable stored labels, window boundaries, medians,
+coverage counts and group pagination; private linkage and arbitrary JSON remain
+excluded. One bounded, short-lived read-only reader holds no shared writer mutex;
+capacity/read failures return unavailable, never truncated statistics. No
+aggregates, caches, collectors, migrations or indexes are added, and existing
+30-day retention/configuration preservation remain unchanged. This separate
+admin read does not change the historical capture-only scope above or the public
+generation/tool/model route inventory. See [aggregate semantics](request-tps.md#rolling-provider--model-medians).
+
 ## Version evidence and limitations
 
 - OpenCode installed during C00: `1.18.31`.

@@ -4,6 +4,7 @@ import Button from "@/shared/components/Button";
 import Card from "@/shared/components/Card";
 import Pagination from "@/shared/components/Pagination";
 import ApplicationLogDrawer from "./ApplicationLogDrawer";
+import TpsStatsPanel from "./TpsStatsPanel";
 import type { ApplicationLog, LogsPayload } from "./types";
 
 const REFRESH_MS = 60_000;
@@ -111,6 +112,8 @@ export default function ApplicationLogsClient() {
     setFilters((current) => ({ ...current, [name]: value }));
   };
 
+  const tpsFilters = [filters.apiKeyId.trim(), filters.provider.trim(), filters.model.trim()];
+
   return (
     <div className="flex min-w-0 flex-col gap-5 px-1 sm:px-0">
       <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
@@ -124,20 +127,25 @@ export default function ApplicationLogsClient() {
       </div>
 
       <Card padding="md">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
+        <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-4">
           <select value={filters.apiKeyId} onChange={(event) => updateFilter("apiKeyId", event.target.value)} className="h-10 rounded-lg border border-border bg-surface px-3 text-sm text-text-main">
             <option value="">All API keys</option>
             {keys.map((key) => <option key={key.id} value={key.id}>{key.name}</option>)}
           </select>
-          <select value={filters.status} onChange={(event) => updateFilter("status", event.target.value)} className="h-10 rounded-lg border border-border bg-surface px-3 text-sm text-text-main">
-            <option value="">All statuses</option>
-            <option value="pending">Live</option><option value="success">Success</option>
-            <option value="error">Error</option><option value="interrupted">Interrupted</option>
-          </select>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-text-muted">Status (raw logs only)</span>
+            <select value={filters.status} onChange={(event) => updateFilter("status", event.target.value)} className="h-10 rounded-lg border border-border bg-surface px-3 text-sm text-text-main">
+              <option value="">All statuses</option>
+              <option value="pending">Live</option><option value="success">Success</option>
+              <option value="error">Error</option><option value="interrupted">Interrupted</option>
+            </select>
+          </label>
           <input value={filters.provider} onChange={(event) => updateFilter("provider", event.target.value)} placeholder="Provider" className="h-10 rounded-lg border border-border bg-surface px-3 text-sm text-text-main" />
           <input value={filters.model} onChange={(event) => updateFilter("model", event.target.value)} placeholder="Model" className="h-10 rounded-lg border border-border bg-surface px-3 text-sm text-text-main" />
         </div>
       </Card>
+
+      <TpsStatsPanel key={JSON.stringify(tpsFilters)} apiKeyId={tpsFilters[0]} provider={tpsFilters[1]} model={tpsFilters[2]} refreshToken={refresh} />
 
       {error && <div className="rounded-lg border border-error/25 bg-error/5 px-4 py-3 text-sm text-error">{error}</div>}
 

@@ -789,7 +789,12 @@ async fn persist_finish(db: Arc<Db>, id: String, status: &'static str, data: Val
 }
 
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/api/request-logs", routing::get(get_request_logs))
+    Router::new()
+        .route("/api/request-logs", routing::get(get_request_logs))
+        .route(
+            "/api/request-logs/tps-stats",
+            routing::get(super::request_tps_stats::get_tps_stats),
+        )
 }
 
 #[derive(Debug, Deserialize)]
@@ -1072,7 +1077,7 @@ fn request_log_from_row(row: request_repo::RequestDetailRow) -> RequestLogRecord
 
 /// Closed versioned projection: a successful legacy row alone proves neither
 /// original output usage nor original completion timing.
-fn completed_tps(status: Option<&str>, data: &Value) -> Option<(u64, u64)> {
+pub(super) fn completed_tps(status: Option<&str>, data: &Value) -> Option<(u64, u64)> {
     if status != Some("success") {
         return None;
     }

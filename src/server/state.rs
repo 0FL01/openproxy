@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use std::collections::HashMap;
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::{Notify, RwLock, Semaphore};
 
 use crate::core::executor::ClientPool;
 use crate::core::health::{health_registry, HealthRegistry};
@@ -87,6 +87,8 @@ pub struct AppState {
     /// C36 early admission: caps concurrently active LLM generations before
     /// JSON extraction. Health/admin routes never take a permit.
     pub llm_admission: Arc<LlmAdmission>,
+    /// One aggregate reader at a time; the blocking worker owns its permit.
+    pub request_tps_stats_reader: Arc<Semaphore>,
 }
 
 impl AppState {
@@ -117,6 +119,7 @@ impl AppState {
             quota_auto_ping: Arc::new(QuotaAutoPingLifecycle::new()),
             quota_snapshots: Arc::new(QuotaSnapshots::default()),
             llm_admission: Arc::new(LlmAdmission::from_env()),
+            request_tps_stats_reader: Arc::new(Semaphore::new(1)),
         }
     }
 

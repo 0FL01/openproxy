@@ -7,6 +7,7 @@ pub mod console_logs;
 pub mod dashboard;
 pub(crate) mod quota_snapshots;
 pub mod request_logger;
+pub(crate) mod request_tps_stats;
 pub mod state;
 pub(crate) mod stream_trace;
 pub mod trace_logs;

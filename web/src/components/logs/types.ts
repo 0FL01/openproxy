@@ -46,3 +46,30 @@ export interface LogsPayload {
     totalPages: number;
   };
 }
+
+export type TpsStatsWindow = "1h" | "6h" | "24h";
+export type TpsStatsGroupId = string | null;
+
+export interface TpsStatsObservation {
+  medianTps: number | null;
+  sampleCount: number;
+  successfulAttemptCount: number;
+}
+
+export interface TpsStatsGroup {
+  provider: TpsStatsGroupId;
+  model: TpsStatsGroupId;
+  windows: Record<TpsStatsWindow, TpsStatsObservation>;
+}
+
+export interface TpsStatsPayload {
+  asOf: string;
+  windows: Record<TpsStatsWindow, { start: string; end: string }>;
+  groups: TpsStatsGroup[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    totalItems: number;
+    totalPages: number;
+  };
+}
