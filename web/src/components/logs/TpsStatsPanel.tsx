@@ -12,6 +12,8 @@ interface TpsStatsPanelProps {
   provider: string;
   model: string;
   refreshToken: number;
+  hiddenProviders: TpsStatsGroupId[];
+  onHiddenProvidersChange: (hiddenProviders: TpsStatsGroupId[]) => void;
 }
 
 interface RequestState {
@@ -19,6 +21,11 @@ interface RequestState {
   data: TpsStatsPayload | null;
   loading: boolean;
   error: string;
+}
+
+interface ProviderOptionsState {
+  baseScope: string;
+  providers: TpsStatsGroupId[] | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -39,7 +46,10 @@ function isGroupId(value: unknown): value is TpsStatsGroupId {
 
 function isTpsStatsPayload(value: unknown, page: number, pageSize: number): value is TpsStatsPayload {
   if (!isRecord(value) || !isTimestamp(value.asOf) || !isRecord(value.windows)
+    || !Array.isArray(value.availableProviders) || !value.availableProviders.every(isGroupId)
     || !Array.isArray(value.groups) || !isRecord(value.pagination)) return false;
+  const availableProviders = new Set<TpsStatsGroupId>(value.availableProviders);
+  if (availableProviders.size !== value.availableProviders.length) return false;
 
   const bounds = value.windows;
   if (!WINDOWS.every((window) => {
@@ -60,7 +70,7 @@ function isTpsStatsPayload(value: unknown, page: number, pageSize: number): valu
 
   return value.groups.every((group: unknown) => {
     if (!isRecord(group) || !isGroupId(group.provider) || !isGroupId(group.model)
-      || !isRecord(group.windows)) return false;
+      || !availableProviders.has(group.provider) || !isRecord(group.windows)) return false;
     const observations = group.windows;
     return WINDOWS.every((window) => {
       const observation = observations[window];
@@ -81,19 +91,22 @@ function displayGroupId(value: TpsStatsGroupId) {
   return value;
 }
 
-export default function TpsStatsPanel({ apiKeyId, provider, model, refreshToken }: TpsStatsPanelProps) {
+export default function TpsStatsPanel({ apiKeyId, provider, model, refreshToken, hiddenProviders, onHiddenProvidersChange }: TpsStatsPanelProps) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-  const scope = JSON.stringify([apiKeyId, provider, model, page, pageSize]);
+  const baseScope = JSON.stringify([apiKeyId, provider, model]);
+  const scope = JSON.stringify([apiKeyId, provider, model, hiddenProviders, page, pageSize]);
   const [requestState, setRequestState] = useState<RequestState>({ scope, data: null, loading: true, error: "" });
+  const [providerOptions, setProviderOptions] = useState<ProviderOptionsState>({ baseScope, providers: null });
   const firstScope = useRef(true);
   const refreshRequest = useRef<(() => void) | null>(null);
   const previousRefresh = useRef(refreshToken);
-  // A page/size change hides the old snapshot before the new effect starts.
+  // Page/size/exclusion changes hide the old snapshot but retain choices for this base scope.
   const current = requestState.scope === scope
     ? requestState
     : { scope, data: null, loading: true, error: "" };
   const { data, loading, error } = current;
+  const availableProviders = providerOptions.baseScope === baseScope ? providerOptions.providers : null;
 
   useEffect(() => {
     let disposed = false;
@@ -135,6 +148,7 @@ export default function TpsStatsPanel({ apiKeyId, provider, model, refreshToken 
         const trimmed = value.trim();
         if (trimmed) params.set(key, trimmed);
       });
+      if (hiddenProviders.length > 0) params.set("hiddenProviders", JSON.stringify(hiddenProviders));
       try {
         const response = await fetch(`/api/request-logs/tps-stats?${params}`, {
           cache: "no-store",
@@ -144,6 +158,7 @@ export default function TpsStatsPanel({ apiKeyId, provider, model, refreshToken 
         const payload: unknown = await response.json();
         if (disposed || activeController.signal.aborted) return;
         if (!isTpsStatsPayload(payload, page, pageSize)) throw new Error("Invalid TPS statistics response");
+        setProviderOptions({ baseScope, providers: payload.availableProviders });
         // Only a successful, current response may correct a page after groups disappear.
         const lastPage = Math.max(1, payload.pagination.totalPages);
         if (page > lastPage || (payload.pagination.totalItems === 0 && page !== 1)) {
@@ -178,7 +193,7 @@ export default function TpsStatsPanel({ apiKeyId, provider, model, refreshToken 
       controller?.abort();
       refreshRequest.current = null;
     };
-  }, [apiKeyId, provider, model, page, pageSize, scope]);
+  }, [apiKeyId, provider, model, hiddenProviders, page, pageSize, baseScope, scope]);
 
   useEffect(() => {
     if (previousRefresh.current === refreshToken) return;
@@ -200,6 +215,22 @@ export default function TpsStatsPanel({ apiKeyId, provider, model, refreshToken 
         <p className="mt-1 text-xs font-medium text-text-muted">Success-only · saved attempts, not all traffic. Status filters apply only to raw logs.</p>
         <p className="mt-1 text-xs text-text-muted">Rolling windows use attempt start time. TPS is observed request throughput, including network, initial wait and backpressure, not GPU speed or a comparable benchmark. Coverage: eligible TPS samples / saved successful attempts.</p>
       </div>
+      <fieldset className="border-b border-border px-4 pb-4 pt-2">
+        <legend className="pt-3 text-xs font-medium text-text-muted">Providers (TPS only)</legend>
+        <div className="flex flex-wrap gap-x-4 gap-y-2">
+          {availableProviders === null ? <p className="text-xs text-text-muted">Provider choices will appear after TPS statistics load.</p> :
+            availableProviders.length === 0 ? <p className="text-xs text-text-muted">No matching providers.</p> :
+            availableProviders.map((providerId) => <label key={JSON.stringify(providerId)} className="flex min-w-0 cursor-pointer items-center gap-2 text-sm text-text-main">
+              <input type="checkbox" checked={!hiddenProviders.includes(providerId)} onChange={(event) => {
+                setPage(1);
+                onHiddenProvidersChange(event.target.checked
+                  ? hiddenProviders.filter((id) => id !== providerId)
+                  : [...hiddenProviders, providerId]);
+              }} className="h-4 w-4 shrink-0 accent-primary" />
+              <span className="break-all">{displayGroupId(providerId)}</span>
+            </label>)}
+        </div>
+      </fieldset>
       {error && <div role="status" aria-live="polite" className="border-b border-error/25 bg-error/5 px-4 py-3 text-sm text-error">{error}{data && " · Showing the last successful snapshot."}</div>}
       <div className="overflow-x-auto">
         <table className="w-full min-w-[600px] text-sm" aria-label="Median TPS by provider and model">
@@ -212,7 +243,7 @@ export default function TpsStatsPanel({ apiKeyId, provider, model, refreshToken 
           </thead>
           <tbody>
             {!data ? <tr><td colSpan={5} className="p-8 text-center text-text-muted">{loading ? "Loading TPS statistics…" : "TPS statistics unavailable."}</td></tr> :
-              data.groups.length === 0 ? <tr><td colSpan={5} className="p-8 text-center text-text-muted">No saved successful attempts in the last 24 hours for these filters.</td></tr> :
+              data.groups.length === 0 ? <tr><td colSpan={5} className="p-8 text-center text-text-muted">{data.availableProviders.length > 0 ? "All matching providers are hidden" : "No saved successful attempts in the last 24 hours for these filters."}</td></tr> :
               data.groups.map((group) => (
                 <tr key={JSON.stringify([group.provider, group.model])} className="border-b border-border/60">
                   <th scope="row" className="max-w-[200px] break-words p-4 text-left font-normal text-text-main">{displayGroupId(group.provider)}</th>

@@ -80,6 +80,20 @@ impl Fixture {
             .unwrap();
     }
 
+    fn age(&self, id: &str, hours: i64) {
+        self.state
+            .db
+            .sqlite
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE requestDetails SET timestamp=?1 WHERE id=?2",
+                    rusqlite::params![(Utc::now() - TimeDelta::hours(hours)).to_rfc3339(), id],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
     async fn request(&self, uri: &str, header: Option<(&str, &str)>) -> (StatusCode, Value) {
         let mut request = Request::builder().uri(uri);
         if let Some((name, value)) = header {
@@ -126,6 +140,22 @@ fn assert_keys(value: &Value, expected: &[&str]) {
     );
 }
 
+fn hidden_query(providers: Value) -> String {
+    format!(
+        "?hiddenProviders={}",
+        urlencoding::encode(&providers.to_string())
+    )
+}
+
+fn identities(payload: &Value) -> Vec<Value> {
+    payload["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|group| json!([group["provider"], group["model"]]))
+        .collect()
+}
+
 #[tokio::test]
 async fn filters_are_equalities_and_literal_case_sensitive_model_substrings_success_only() {
     let fixture = Fixture::new().await;
@@ -149,6 +179,7 @@ async fn filters_are_equalities_and_literal_case_sensitive_model_substrings_succ
     }
     let scope = fixture.stats("?provider=%20p%20&model=%20%25_%20").await;
     assert_eq!(scope["pagination"]["totalItems"], 2);
+    assert_eq!(scope["availableProviders"], json!(["p"]));
     assert_eq!(scope["groups"][0]["model"], "GPT%_A");
     assert_eq!(scope["groups"][0]["windows"]["1h"]["medianTps"], 20.0);
     assert_eq!(
@@ -160,6 +191,7 @@ async fn filters_are_equalities_and_literal_case_sensitive_model_substrings_succ
         .stats("?provider=p&model=GPT%25_&apiKeyId=%20consumer-a%20")
         .await;
     assert_eq!(key_scope["pagination"]["totalItems"], 1);
+    assert_eq!(key_scope["availableProviders"], json!(["p"]));
     assert_eq!(key_scope["groups"][0]["windows"]["1h"]["medianTps"], 10.0);
     assert_eq!(key_scope["groups"][0]["windows"]["1h"]["sampleCount"], 1);
     assert_eq!(
@@ -176,11 +208,16 @@ async fn filters_are_equalities_and_literal_case_sensitive_model_substrings_succ
     );
     let empty = fixture.stats("?provider=%20&model=%20&apiKeyId=%20").await;
     assert_eq!(empty["pagination"]["totalItems"], 4);
+    assert_eq!(empty["availableProviders"], json!(["other-p", "p"]));
     // Status and date filters belong to raw logs; they cannot change TPS scope.
     let status_ignored = fixture
         .stats("?status=error&startDate=2099-01-01&endDate=2000-01-01")
         .await;
     assert_eq!(status_ignored["groups"], empty["groups"]);
+    assert_eq!(
+        status_ignored["availableProviders"],
+        empty["availableProviders"]
+    );
     let (status, raw) = fixture
         .request(
             "/api/request-logs?status=error&pageSize=1",
@@ -223,15 +260,19 @@ async fn nullable_groups_paging_defaults_empty_pages_and_huge_page_are_determini
     assert_eq!(all["groups"][1]["model"], "");
     assert_eq!(all["groups"][2]["provider"], "");
     assert_eq!(all["groups"][2]["model"], Value::Null);
+    assert_eq!(all["availableProviders"], json!([null, "", "a"]));
+    assert_eq!(second["availableProviders"], all["availableProviders"]);
     let huge = fixture
         .stats(&format!("?page={}&pageSize=100", usize::MAX))
         .await;
     assert_eq!(huge["groups"], json!([]));
     assert_eq!(huge["pagination"]["totalItems"], 5);
+    assert_eq!(huge["availableProviders"], all["availableProviders"]);
     assert_eq!(huge["pagination"]["page"].as_u64(), Some(usize::MAX as u64));
     let missing = fixture.stats("?provider=missing").await;
     assert_eq!(missing["groups"], json!([]));
     assert_eq!(missing["pagination"]["totalPages"], 0);
+    assert_eq!(missing["availableProviders"], json!([]));
     for query in ["?page=0", "?pageSize=0", "?pageSize=101"] {
         assert_eq!(
             fixture
@@ -243,6 +284,245 @@ async fn nullable_groups_paging_defaults_empty_pages_and_huge_page_are_determini
                 .0,
             StatusCode::BAD_REQUEST
         );
+    }
+}
+
+#[tokio::test]
+async fn measured_first_paging_and_exclusions_keep_complete_historical_provider_options() {
+    let fixture = Fixture::new().await;
+    for (id, provider, model, data) in [
+        ("null-unknown", None, "unknown", json!({})),
+        ("empty-day", Some(""), "day-only", observation(7)),
+        ("a-unknown", Some("a"), "unknown", json!({})),
+        ("a-zero", Some("a"), "zero", observation(0)),
+        ("z-a", Some("z"), "a", observation(100)),
+        ("z-b", Some("z"), "b", observation(1)),
+        ("z-unknown", Some("z"), "unknown", json!({})),
+    ] {
+        fixture.insert(id, provider, Some(model), "consumer", "success", data);
+    }
+    fixture.age("empty-day", 8);
+    fixture.insert(
+        "old",
+        Some("old"),
+        Some("m"),
+        "consumer",
+        "success",
+        observation(1),
+    );
+    fixture.age("old", 25);
+    fixture.insert(
+        "failed",
+        Some("failed-only"),
+        Some("m"),
+        "consumer",
+        "error",
+        observation(1),
+    );
+
+    let expected = [
+        json!(["", "day-only"]),
+        json!(["a", "zero"]),
+        json!(["z", "a"]),
+        json!(["z", "b"]),
+        json!([null, "unknown"]),
+        json!(["a", "unknown"]),
+        json!(["z", "unknown"]),
+    ];
+    for page in 1..=5 {
+        let payload = fixture.stats(&format!("?page={page}&pageSize=2")).await;
+        let offset = ((page - 1) * 2).min(expected.len());
+        assert_eq!(
+            identities(&payload),
+            expected[offset..(offset + 2).min(expected.len())]
+        );
+        assert_eq!(
+            payload["pagination"],
+            json!({"page":page,"pageSize":2,"totalItems":7,"totalPages":4})
+        );
+        assert_eq!(payload["availableProviders"], json!([null, "", "a", "z"]));
+        if page == 1 {
+            assert_eq!(payload["groups"][0]["windows"]["1h"]["sampleCount"], 0);
+            assert_eq!(payload["groups"][0]["windows"]["6h"]["sampleCount"], 0);
+            assert_eq!(payload["groups"][0]["windows"]["24h"]["sampleCount"], 1);
+            assert_eq!(payload["groups"][1]["windows"]["24h"]["medianTps"], 0.0);
+        }
+    }
+    let query = hidden_query(json!(["z", "", "z"]));
+    let first = fixture.stats(&format!("{query}&pageSize=2")).await;
+    assert_eq!(
+        identities(&first),
+        vec![json!(["a", "zero"]), json!([null, "unknown"])]
+    );
+    assert_eq!(
+        first["pagination"],
+        json!({"page":1,"pageSize":2,"totalItems":3,"totalPages":2})
+    );
+    let second = fixture.stats(&format!("{query}&pageSize=2&page=2")).await;
+    assert_eq!(identities(&second), vec![json!(["a", "unknown"])]);
+    assert_eq!(second["availableProviders"], json!([null, "", "a", "z"]));
+    let out_of_range = fixture.stats(&format!("{query}&pageSize=2&page=3")).await;
+    assert_eq!(out_of_range["groups"], json!([]));
+    assert_eq!(
+        out_of_range["availableProviders"],
+        first["availableProviders"]
+    );
+    let all_hidden = fixture
+        .stats(&hidden_query(json!([null, "", "a", "z"])))
+        .await;
+    assert_eq!(all_hidden["groups"], json!([]));
+    assert_eq!(
+        all_hidden["pagination"],
+        json!({"page":1,"pageSize":20,"totalItems":0,"totalPages":0})
+    );
+    assert_eq!(
+        all_hidden["availableProviders"],
+        first["availableProviders"]
+    );
+    let model_scope = fixture
+        .stats(&format!("{query}&model=unknown&apiKeyId=consumer"))
+        .await;
+    assert_eq!(
+        identities(&model_scope),
+        vec![json!([null, "unknown"]), json!(["a", "unknown"])]
+    );
+    assert_eq!(model_scope["availableProviders"], json!([null, "a", "z"]));
+    let provider_scope = fixture.stats(&format!("{query}&provider=z")).await;
+    assert_eq!(provider_scope["groups"], json!([]));
+    assert_eq!(provider_scope["availableProviders"], json!(["z"]));
+}
+
+#[tokio::test]
+async fn exclusions_are_exact_nullable_untrimmed_ids_and_options_follow_key_and_model_scope() {
+    let fixture = Fixture::new().await;
+    for (id, provider) in [
+        ("null", None),
+        ("empty", Some("")),
+        ("literal", Some("null")),
+        ("spaced", Some(" p ")),
+        ("plain", Some("p")),
+    ] {
+        fixture.insert(
+            id,
+            provider,
+            Some("match"),
+            "key-a",
+            "success",
+            observation(1),
+        );
+    }
+    fixture.insert(
+        "other-key",
+        Some("only-key-b"),
+        Some("match"),
+        "key-b",
+        "success",
+        observation(1),
+    );
+    fixture.insert(
+        "other-model",
+        Some("other-model"),
+        Some("elsewhere"),
+        "key-a",
+        "success",
+        observation(1),
+    );
+    let scope = "&apiKeyId=key-a&model=match";
+    let baseline = fixture.stats("?apiKeyId=key-a&model=match").await;
+    assert_eq!(
+        baseline["availableProviders"],
+        json!([null, "", " p ", "null", "p"])
+    );
+    for (hidden, remaining) in [
+        (json!([]), json!([null, "", " p ", "null", "p"])),
+        (json!(["unmatched"]), json!([null, "", " p ", "null", "p"])),
+        (json!([null]), json!(["", " p ", "null", "p"])),
+        (json!([""]), json!([null, " p ", "null", "p"])),
+        (json!(["null"]), json!([null, "", " p ", "p"])),
+        (json!([" p ", " p "]), json!([null, "", "null", "p"])),
+        (json!(["p"]), json!([null, "", " p ", "null"])),
+    ] {
+        let payload = fixture
+            .stats(&format!("{}{scope}", hidden_query(hidden)))
+            .await;
+        let providers: Vec<_> = payload["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|group| group["provider"].clone())
+            .collect();
+        assert_eq!(json!(providers), remaining);
+        assert_eq!(payload["pagination"]["totalItems"], providers.len());
+        assert_eq!(
+            payload["availableProviders"],
+            baseline["availableProviders"]
+        );
+    }
+    let key_b = fixture
+        .stats(&format!(
+            "{}&apiKeyId=key-b&model=match",
+            hidden_query(json!(["only-key-b"]))
+        ))
+        .await;
+    assert_eq!(key_b["groups"], json!([]));
+    assert_eq!(key_b["availableProviders"], json!(["only-key-b"]));
+    let no_match = fixture
+        .stats(&format!(
+            "{}&apiKeyId=key-a&model=missing",
+            hidden_query(json!([null]))
+        ))
+        .await;
+    assert_eq!(no_match["availableProviders"], json!([]));
+}
+
+#[tokio::test]
+async fn invalid_exclusions_are_generic_json_400_and_limits_count_utf8_bytes() {
+    let fixture = Fixture::new().await;
+    let invalid = [
+        "".to_owned(),
+        "[".to_owned(),
+        "[null,]".to_owned(),
+        "null".to_owned(),
+        "{}".to_owned(),
+        "true".to_owned(),
+        "\"private-invalid\"".to_owned(),
+        "[123]".to_owned(),
+        "[true]".to_owned(),
+        "[[null]]".to_owned(),
+        "[{\"private-invalid\":1}]".to_owned(),
+        json!(["x".repeat(4 * 1024 + 1)]).to_string(),
+        json!(["é".repeat(2049)]).to_string(),
+    ];
+    let mut expected = None;
+    for raw in invalid {
+        let (status, payload) = fixture
+            .request(
+                &format!(
+                    "/api/request-logs/tps-stats?hiddenProviders={}",
+                    urlencoding::encode(&raw)
+                ),
+                Some(("x-api-key", TEST_KEY)),
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_keys(&payload, &["error"]);
+        assert!(payload["error"].is_string());
+        assert!(!payload.to_string().contains("private-invalid"));
+        if let Some(expected) = &expected {
+            assert_eq!(&payload, expected);
+        } else {
+            expected = Some(payload);
+        }
+    }
+    for raw in [
+        json!(["x".repeat(4 * 1024)]).to_string(),
+        json!(["é".repeat(2048)]).to_string(),
+    ] {
+        let payload = fixture
+            .stats(&format!("?hiddenProviders={}", urlencoding::encode(&raw)))
+            .await;
+        assert_eq!(payload["groups"], json!([]));
+        assert_eq!(payload["availableProviders"], json!([]));
     }
 }
 
@@ -311,7 +591,21 @@ async fn projection_is_strict_metadata_whitelist_and_reader_changes_no_rows_or_s
     let before = snapshot();
     let payload = fixture.stats("").await;
     assert_eq!(snapshot(), before);
-    assert_keys(&payload, &["asOf", "windows", "groups", "pagination"]);
+    let excluded = fixture.stats(&hidden_query(json!(["p"]))).await;
+    assert_eq!(excluded["groups"], json!([]));
+    assert_eq!(excluded["availableProviders"], json!(["p"]));
+    assert_eq!(snapshot(), before);
+    assert_keys(
+        &payload,
+        &[
+            "asOf",
+            "windows",
+            "groups",
+            "pagination",
+            "availableProviders",
+        ],
+    );
+    assert_eq!(payload["availableProviders"], json!(["p"]));
     assert_keys(&payload["windows"], &["1h", "6h", "24h"]);
     assert_keys(
         &payload["pagination"],
@@ -446,6 +740,14 @@ async fn oversized_relevant_data_and_reader_errors_have_only_generic_unavailable
     let expected = json!({"error":{"code":"tps_stats_unavailable","message":"TPS statistics are temporarily unavailable"}});
     let (status, payload) = fixture
         .request("/api/request-logs/tps-stats", Some(("x-api-key", TEST_KEY)))
+        .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(payload, expected);
+    let (status, payload) = fixture
+        .request(
+            &format!("/api/request-logs/tps-stats{}", hidden_query(json!(["p"]))),
+            Some(("x-api-key", TEST_KEY)),
+        )
         .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(payload, expected);

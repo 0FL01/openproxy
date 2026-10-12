@@ -5,9 +5,32 @@ import Card from "@/shared/components/Card";
 import Pagination from "@/shared/components/Pagination";
 import ApplicationLogDrawer from "./ApplicationLogDrawer";
 import TpsStatsPanel from "./TpsStatsPanel";
-import type { ApplicationLog, LogsPayload } from "./types";
+import type { ApplicationLog, LogsPayload, TpsStatsGroupId } from "./types";
 
 const REFRESH_MS = 60_000;
+const TPS_PREFERENCES_KEY = "openproxy.logs.tps-preferences.v1";
+
+interface TpsPreferences {
+  hidden: boolean;
+  hiddenProviders: TpsStatsGroupId[];
+}
+
+function readTpsPreferences(): TpsPreferences {
+  const defaults: TpsPreferences = { hidden: false, hiddenProviders: [] };
+  if (typeof window === "undefined") return defaults;
+  try {
+    const stored = window.localStorage.getItem(TPS_PREFERENCES_KEY);
+    if (stored === null) return defaults;
+    const value: unknown = JSON.parse(stored);
+    if (typeof value !== "object" || value === null || Array.isArray(value)
+      || Object.keys(value).length !== 2 || !("hidden" in value) || typeof value.hidden !== "boolean"
+      || !("hiddenProviders" in value) || !Array.isArray(value.hiddenProviders)
+      || !value.hiddenProviders.every((id: unknown) => id === null || typeof id === "string")) return defaults;
+    return { hidden: value.hidden, hiddenProviders: [...new Set<TpsStatsGroupId>(value.hiddenProviders)] };
+  } catch {
+    return defaults;
+  }
+}
 
 interface Filters {
   apiKeyId: string;
@@ -39,6 +62,17 @@ export default function ApplicationLogsClient() {
   const [totalItems, setTotalItems] = useState(0);
   const [refresh, setRefresh] = useState(0);
   const [filters, setFilters] = useState<Filters>({ apiKeyId: "", status: "", provider: "", model: "" });
+  // This page is client-only, so saved visibility is applied before the panel can mount.
+  const [tpsPreferences, setTpsPreferences] = useState<TpsPreferences>(readTpsPreferences);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(TPS_PREFERENCES_KEY, JSON.stringify(tpsPreferences));
+    } catch {
+      // Browser storage may be blocked; controls still work for this page visit.
+    }
+  }, [tpsPreferences]);
 
   useEffect(() => {
     let disposed = false;
@@ -143,9 +177,17 @@ export default function ApplicationLogsClient() {
           <input value={filters.provider} onChange={(event) => updateFilter("provider", event.target.value)} placeholder="Provider" className="h-10 rounded-lg border border-border bg-surface px-3 text-sm text-text-main" />
           <input value={filters.model} onChange={(event) => updateFilter("model", event.target.value)} placeholder="Model" className="h-10 rounded-lg border border-border bg-surface px-3 text-sm text-text-main" />
         </div>
+        <label className="mt-3 flex w-fit cursor-pointer items-center gap-2 text-sm text-text-main">
+          <input type="checkbox" checked={tpsPreferences.hidden} onChange={(event) => {
+            const hidden = event.target.checked;
+            setTpsPreferences((current) => ({ ...current, hidden }));
+          }} className="h-4 w-4 accent-primary" />
+          Hide Median TPS
+        </label>
       </Card>
 
-      <TpsStatsPanel key={JSON.stringify(tpsFilters)} apiKeyId={tpsFilters[0]} provider={tpsFilters[1]} model={tpsFilters[2]} refreshToken={refresh} />
+      {!tpsPreferences.hidden && <TpsStatsPanel key={JSON.stringify(tpsFilters)} apiKeyId={tpsFilters[0]} provider={tpsFilters[1]} model={tpsFilters[2]} refreshToken={refresh}
+        hiddenProviders={tpsPreferences.hiddenProviders} onHiddenProvidersChange={(hiddenProviders) => setTpsPreferences((current) => ({ ...current, hiddenProviders }))} />}
 
       {error && <div className="rounded-lg border border-error/25 bg-error/5 px-4 py-3 text-sm text-error">{error}</div>}
 

@@ -65,6 +65,7 @@ export interface TpsStatsGroup {
 export interface TpsStatsPayload {
   asOf: string;
   windows: Record<TpsStatsWindow, { start: string; end: string }>;
+  availableProviders: TpsStatsGroupId[];
   groups: TpsStatsGroup[];
   pagination: {
     page: number;

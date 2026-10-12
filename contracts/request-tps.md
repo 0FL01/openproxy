@@ -46,8 +46,33 @@ aggregator's internal provider/physical model is performed. Accounts and keys
 pool unless `apiKeyId` is selected. Provider/key filters use equality and model
 uses a case-sensitive literal substring; trimmed-empty filters are omitted.
 Status filters apply only to raw logs; medians always measure successful attempts.
-Group pagination defaults to page 1/size 20, with sizes 1–100, ordered by stored
-provider then model (null before strings). It is independent of raw-log paging.
+Group pagination defaults to page 1/size 20, with sizes 1–100. Groups with valid
+24h measurements come first, then groups without measurements; each partition
+is ordered by stored provider then model (null before strings). Explicit zero
+is measured, and measurements only in 24h still qualify. Provider exclusion and
+ordering apply before totals/pagination, independently of raw-log paging.
+
+The optional `hiddenProviders` query is a JSON array of exact string/null provider
+IDs; omission or `[]` excludes none. It is deduplicated without trimming IDs,
+so null, empty, whitespace-bearing and literal `"null"` identities remain distinct.
+JSON input is limited to 128 KiB and each string ID to 4 KiB (UTF-8 bytes);
+invalid input returns a safe 400 without echoing supplied data. Additive
+`availableProviders` contains unique null-first provider IDs from all matching
+saved-success groups before exclusion/pagination, including unknown-TPS groups.
+It uses saved attribution, not the current configured-provider catalog. Exclusion
+is a display selection after aggregation; excluded rows still consume the same
+scan/parse/retained-state budgets. Choices remain available when all are excluded.
+
+`Hide Median TPS` remains accessible outside the panel and unmounts it, stopping
+new statistics requests and cancelling browser timers/fetches. An already-running
+blocking reader can still finish under its existing worker-owned permit.
+Panel visibility and excluded providers persist only in this browser under
+`openproxy.logs.tps-preferences.v1` (`{hidden,hiddenProviders}`), never in SQLite.
+Storage errors/malformed preferences cannot break the logs page. New providers
+default visible; saved exclusions survive temporary absence and filter remounts.
+Provider checkboxes affect TPS only, intersect existing key/provider/model filters,
+reset group paging, and remain usable during refresh/errors within that filter
+scope. There is no cross-device preference synchronization.
 
 The panel debounces filter changes, reuses Refresh/focus/visibility signals and
 polls every 60 seconds after settlement while visible, including later group
@@ -61,7 +86,10 @@ in `$DATA_DIR/openproxy.sqlite`, never persisted. There are no metric tables,
 snapshots, collectors, caches, migrations, indexes or upstream calls. A local
 read-only SQLite connection scans the existing timestamp index with conservative
 RFC3339 date padding and exact UTC comparisons, without holding the shared
-writer mutex. It closes before page medians are sorted. One nonqueued reader
+writer mutex. It closes before provider/page selection and page medians are sorted.
+Provider-option/exclusion lists, page keys, response vectors and label-copy
+capacities are charged to the same retained-state budget; page selection uses
+two map passes without cloning the population's sample vectors. One nonqueued reader
 permit remains owned by the blocking worker even after HTTP cancellation.
 Busy/read/resource failures return 503 `tps_stats_unavailable`, never a partial
 or truncated-sample median. Rust copying/parsing and retained state are bounded;

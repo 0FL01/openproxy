@@ -33,6 +33,9 @@ const MAX_TIMESTAMP_BYTES: usize = 128;
 // per-entry structs, tree nodes, and allocator overhead in subsequent groups.
 const MAP_ROOT_OVERHEAD_BYTES: usize = 2 * 1024;
 const GROUP_OVERHEAD_BYTES: usize = 512;
+// Additional response/selection vectors and label copies do not share the
+// map's node allowance. Include conservative allocator overhead for each.
+const ALLOCATION_OVERHEAD_BYTES: usize = 32;
 // Cooperative between-row check, NOT a hard deadline for SQLite/disk I/O.
 const MAX_SCAN_DURATION: Duration = Duration::from_secs(5);
 
@@ -67,14 +70,37 @@ pub(super) struct StatsQuery {
     provider: Option<String>,
     model: Option<String>,
     api_key_id: Option<String>,
+    hidden_providers: Option<String>,
+    #[serde(skip)]
+    excluded_providers: Vec<Option<String>>,
 }
 
 impl StatsQuery {
-    fn normalize(mut self) -> Option<Self> {
+    fn normalize(mut self) -> Result<Self, &'static str> {
         self.page = Some(self.page.unwrap_or(1));
         self.page_size = Some(self.page_size.unwrap_or(20));
-        if self.page == Some(0) || !(1..=100).contains(&self.page_size?) {
-            return None;
+        if self.page == Some(0) || !(1..=100).contains(&self.page_size.unwrap()) {
+            return Err("page must be >= 1 and pageSize must be between 1 and 100");
+        }
+        if let Some(raw) = self.hidden_providers.take() {
+            const INVALID: &str =
+                "hiddenProviders must be a JSON array of string or null IDs within the allowed limits";
+            if raw.len() > MAX_JSON_BYTES {
+                return Err(INVALID);
+            }
+            let mut providers: Vec<Option<String>> =
+                serde_json::from_str(&raw).map_err(|_| INVALID)?;
+            if providers
+                .iter()
+                .flatten()
+                .any(|provider| provider.len() > MAX_LABEL_BYTES)
+            {
+                return Err(INVALID);
+            }
+            // Exact nullable identities: no trimming, coercion, or catalog lookup.
+            providers.sort_unstable();
+            providers.dedup();
+            self.excluded_providers = providers;
         }
         let clean = |value: Option<String>| {
             value
@@ -84,7 +110,7 @@ impl StatsQuery {
         self.provider = clean(self.provider);
         self.model = clean(self.model);
         self.api_key_id = clean(self.api_key_id);
-        Some(self)
+        Ok(self)
     }
 }
 
@@ -94,6 +120,7 @@ struct TpsStatsPayload {
     as_of: String,
     windows: Windows<WindowBounds>,
     groups: Vec<GroupStats>,
+    available_providers: Vec<Option<String>>,
     pagination: Pagination,
 }
 
@@ -165,12 +192,11 @@ pub(super) async fn get_tps_stats(
     let Ok(permit) = state.request_tps_stats_reader.clone().try_acquire_owned() else {
         return unavailable_response();
     };
-    let Some(query) = query.normalize() else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "page must be >= 1 and pageSize must be between 1 and 100"})),
-        )
-            .into_response();
+    let query = match query.normalize() {
+        Ok(query) => query,
+        Err(message) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": message}))).into_response()
+        }
     };
     let Some(path) = state.db.sqlite.path().map(Path::to_path_buf) else {
         return unavailable_response();
@@ -237,6 +263,78 @@ impl Budget {
         samples.push(rate);
         Ok(())
     }
+
+    fn reserve<T>(&mut self, values: &mut Vec<T>, capacity: usize) -> Result<(), Unavailable> {
+        let old = values.capacity();
+        if capacity <= old {
+            return Ok(());
+        }
+        let bytes = (capacity - old)
+            .checked_mul(size_of::<T>())
+            .and_then(|bytes| {
+                bytes.checked_add(if old == 0 {
+                    ALLOCATION_OVERHEAD_BYTES
+                } else {
+                    0
+                })
+            })
+            .ok_or(Unavailable)?;
+        self.charge(bytes)?;
+        values
+            .try_reserve_exact(capacity - values.len())
+            .map_err(|_| Unavailable)?;
+        // Account actual capacity if an allocator gives us more than requested.
+        self.charge(
+            (values.capacity() - capacity)
+                .checked_mul(size_of::<T>())
+                .ok_or(Unavailable)?,
+        )
+    }
+
+    fn clone_label(&mut self, label: &Option<String>) -> Result<Option<String>, Unavailable> {
+        let Some(label) = label else {
+            return Ok(None);
+        };
+        self.charge(
+            label
+                .capacity()
+                .checked_add(ALLOCATION_OVERHEAD_BYTES)
+                .ok_or(Unavailable)?,
+        )?;
+        let copy = label.clone();
+        self.charge(copy.capacity().saturating_sub(label.capacity()))?;
+        Ok(Some(copy))
+    }
+
+    fn push_provider(
+        &mut self,
+        providers: &mut Vec<Option<String>>,
+        provider: &Option<String>,
+    ) -> Result<(), Unavailable> {
+        if providers.len() == providers.capacity() {
+            let old = providers.capacity();
+            self.reserve(providers, old.checked_add(old.max(4)).ok_or(Unavailable)?)?;
+        }
+        let provider = self.clone_label(provider)?;
+        providers.push(provider);
+        Ok(())
+    }
+
+    fn push_page_key(
+        &mut self,
+        keys: &mut Vec<GroupKey>,
+        key: &GroupKey,
+        capacity: usize,
+    ) -> Result<(), Unavailable> {
+        if keys.len() >= capacity {
+            return Err(Unavailable);
+        }
+        self.reserve(keys, capacity)?;
+        let provider = self.clone_label(&key.0)?;
+        let model = self.clone_label(&key.1)?;
+        keys.push((provider, model));
+        Ok(())
+    }
 }
 
 // Date-only bounds deliberately pad BOTH UTC dates by 24h. Comparing a full
@@ -265,6 +363,17 @@ fn scan_groups(
         used: 0,
         limit: limits.retained_bytes,
     };
+    // Parsed exclusions are bounded by the JSON input limit, and remain owned
+    // by the query during the scan. Include their retained capacities too.
+    if query.excluded_providers.capacity() != 0 {
+        budget.charge(
+            query.excluded_providers.capacity() * size_of::<Option<String>>()
+                + ALLOCATION_OVERHEAD_BYTES,
+        )?;
+        for provider in query.excluded_providers.iter().flatten() {
+            budget.charge(provider.capacity() + ALLOCATION_OVERHEAD_BYTES)?;
+        }
+    }
     {
         // This connection never calls SqliteDb::open/init or inherits the
         // application's 64MiB page cache, mmap, temp-store, or busy settings.
@@ -345,28 +454,59 @@ fn read_stats(
     limits: Limits,
 ) -> Result<TpsStatsPayload, Unavailable> {
     let starts = [1, 6, 24].map(|hours| as_of - TimeDelta::hours(hours));
-    let (groups, _) = scan_groups(path, query, as_of, limits)?;
+    let (mut groups, retained) = scan_groups(path, query, as_of, limits)?;
+    let mut budget = Budget {
+        used: retained,
+        limit: limits.retained_bytes,
+    };
     let page = query.page.unwrap_or(1);
     let page_size = query.page_size.unwrap_or(20);
-    let total_items = groups.len();
     let offset = page.saturating_sub(1).saturating_mul(page_size);
-    let groups = groups
-        .into_iter()
-        .skip(offset.min(total_items))
-        .take(page_size)
-        .map(|((provider, model), group)| {
-            let [one, six, day] = group.samples;
-            GroupStats {
-                provider,
-                model,
-                windows: Windows {
-                    one: window_stats(one, group.successes[0]),
-                    six: window_stats(six, group.successes[1]),
-                    day: window_stats(day, group.successes[2]),
-                },
+    let mut available_providers = Vec::new();
+    let mut previous_provider = None;
+    let mut page_keys = Vec::new();
+    let mut total_items = 0;
+    let mut visible_index = 0;
+    // Two literal-map passes form a global measured/unmeasured partition without
+    // sorting the population or cloning sample vectors. Options come from ALL
+    // groups in the first pass, before exclusion, and are already null-first.
+    for measured in [true, false] {
+        for (key, group) in &groups {
+            if measured && previous_provider != Some(&key.0) {
+                budget.push_provider(&mut available_providers, &key.0)?;
+                previous_provider = Some(&key.0);
             }
-        })
-        .collect();
+            if query.excluded_providers.binary_search(&key.0).is_ok() {
+                continue;
+            }
+            if measured {
+                total_items += 1;
+            }
+            if group.samples[2].is_empty() == measured {
+                continue;
+            }
+            if visible_index >= offset && page_keys.len() < page_size {
+                budget.push_page_key(&mut page_keys, key, groups.len().min(page_size))?;
+            }
+            visible_index += 1;
+        }
+    }
+    let mut page_groups = Vec::new();
+    budget.reserve(&mut page_groups, page_keys.len())?;
+    for key in page_keys {
+        let group = groups.remove(&key).ok_or(Unavailable)?;
+        let (provider, model) = key;
+        let [one, six, day] = group.samples;
+        page_groups.push(GroupStats {
+            provider,
+            model,
+            windows: Windows {
+                one: window_stats(one, group.successes[0]),
+                six: window_stats(six, group.successes[1]),
+                day: window_stats(day, group.successes[2]),
+            },
+        });
+    }
     let end = as_of.to_rfc3339();
     let bounds = |index: usize| WindowBounds {
         start: starts[index].to_rfc3339(),
@@ -379,7 +519,8 @@ fn read_stats(
             six: bounds(1),
             day: bounds(2),
         },
-        groups,
+        groups: page_groups,
+        available_providers,
         pagination: Pagination {
             page,
             page_size,
@@ -493,6 +634,75 @@ mod tests {
         json!({"upstreamTps":{"version":1,"endKind":"json_body","generatedOutputTokens":tokens,"elapsedMicros":micros}}).to_string()
     }
 
+    fn group<'a>(payload: &'a Value, provider: Option<&str>, model: Option<&str>) -> &'a Value {
+        payload["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|group| group["provider"] == json!(provider) && group["model"] == json!(model))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn hidden_provider_raw_json_byte_boundary_and_safe_400() {
+        // The HTTP URI parser refuses URLs this large before routing; exercise
+        // the handler directly so its independent JSON bound stays verified.
+        let directory = tempfile::tempdir().unwrap();
+        let db = Arc::new(crate::db::Db::load_from(directory.path()).await.unwrap());
+        db.update(|data| data.settings.require_login = false)
+            .await
+            .unwrap();
+        let state = AppState::new(db);
+        for bytes in [MAX_JSON_BYTES, MAX_JSON_BYTES + 1] {
+            let raw = format!("{}[]", " ".repeat(bytes - 2));
+            let response = get_tps_stats(
+                State(state.clone()),
+                Query(StatsQuery {
+                    hidden_providers: Some(raw),
+                    ..Default::default()
+                }),
+                HeaderMap::new(),
+            )
+            .await;
+            assert_eq!(
+                response.status(),
+                if bytes == MAX_JSON_BYTES {
+                    StatusCode::OK
+                } else {
+                    StatusCode::BAD_REQUEST
+                }
+            );
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let payload: Value = serde_json::from_slice(&body).unwrap();
+            if bytes == MAX_JSON_BYTES {
+                assert_eq!(payload["availableProviders"], json!([]));
+            } else {
+                assert_eq!(
+                    payload,
+                    json!({"error": "hiddenProviders must be a JSON array of string or null IDs within the allowed limits"})
+                );
+            }
+        }
+        let query = StatsQuery {
+            hidden_providers: Some(r#"["null",null,"",null," p ","null"]"#.into()),
+            ..Default::default()
+        }
+        .normalize()
+        .unwrap();
+        assert_eq!(
+            query.excluded_providers,
+            vec![
+                None,
+                Some("".into()),
+                Some(" p ".into()),
+                Some("null".into())
+            ]
+        );
+        assert!(query.hidden_providers.is_none());
+    }
+
     #[test]
     fn half_open_boundaries_offsets_precision_invalid_times_and_counts() {
         let fixture = Fixture::new();
@@ -597,20 +807,20 @@ mod tests {
             .unwrap();
         let groups = payload["groups"].as_array().unwrap();
         assert_eq!(groups.len(), 4);
-        assert_eq!(groups[0]["provider"], Value::Null);
-        assert_eq!(groups[0]["model"], Value::Null);
-        assert_eq!(groups[1]["provider"], Value::Null);
-        assert_eq!(groups[1]["model"], "");
-        assert_eq!(groups[2]["provider"], "");
-        assert_eq!(groups[2]["model"], Value::Null);
-        assert_eq!(groups[3]["model"], "");
-        assert_eq!(groups[0]["windows"]["1h"]["medianTps"], 1.0);
-        assert_eq!(groups[2]["windows"]["1h"]["medianTps"], 1.5);
-        for index in [1, 3] {
-            assert!(groups[index]["windows"]["24h"]["medianTps"].is_null());
-            assert_eq!(groups[index]["windows"]["24h"]["sampleCount"], 0);
-            assert_eq!(groups[index]["windows"]["24h"]["successfulAttemptCount"], 1);
-            assert_eq!(groups[index]["windows"]["6h"]["successfulAttemptCount"], 0);
+        assert_eq!(
+            group(&payload, None, None)["windows"]["1h"]["medianTps"],
+            1.0
+        );
+        assert_eq!(
+            group(&payload, Some(""), None)["windows"]["1h"]["medianTps"],
+            1.5
+        );
+        for provider in [None, Some("")] {
+            let unknown = group(&payload, provider, Some(""));
+            assert!(unknown["windows"]["24h"]["medianTps"].is_null());
+            assert_eq!(unknown["windows"]["24h"]["sampleCount"], 0);
+            assert_eq!(unknown["windows"]["24h"]["successfulAttemptCount"], 1);
+            assert_eq!(unknown["windows"]["6h"]["successfulAttemptCount"], 0);
         }
         fixture.insert(
             "2026-10-12T11:30:00Z",
@@ -684,11 +894,11 @@ mod tests {
         for (index, data) in cases.iter().enumerate() {
             let expected = completed_tps(Some("success"), data)
                 .map(|(tokens, micros)| tokens as f64 * 1_000_000.0 / micros as f64);
-            let cell = &payload["groups"][index]["windows"]["1h"];
+            let cell = &group(&payload, Some("p"), Some(&format!("{index:02}")))["windows"]["1h"];
             assert_eq!(cell["sampleCount"], usize::from(expected.is_some()));
             assert_eq!(cell["medianTps"].as_f64(), expected);
         }
-        let cell = &payload["groups"][cases.len()]["windows"]["1h"];
+        let cell = &group(&payload, Some("p"), Some("malformed"))["windows"]["1h"];
         assert_eq!(cell["sampleCount"], 0);
         assert_eq!(cell["successfulAttemptCount"], 1);
     }
@@ -747,7 +957,16 @@ mod tests {
             Some("m"),
             &data,
         );
-        let exact = MAP_ROOT_OVERHEAD_BYTES + GROUP_OVERHEAD_BYTES + 2 + 3 * 4 * size_of::<f64>();
+        let scan_bytes =
+            MAP_ROOT_OVERHEAD_BYTES + GROUP_OVERHEAD_BYTES + 2 + 3 * 4 * size_of::<f64>();
+        let provider_list_bytes = 4 * size_of::<Option<String>>()
+            + ALLOCATION_OVERHEAD_BYTES
+            + 1
+            + ALLOCATION_OVERHEAD_BYTES;
+        let page_key_bytes =
+            size_of::<GroupKey>() + ALLOCATION_OVERHEAD_BYTES + 2 * (1 + ALLOCATION_OVERHEAD_BYTES);
+        let page_bytes = size_of::<GroupStats>() + ALLOCATION_OVERHEAD_BYTES;
+        let exact = scan_bytes + provider_list_bytes + page_key_bytes + page_bytes;
         assert!(fixture
             .read(
                 StatsQuery::default(),
@@ -774,6 +993,10 @@ mod tests {
             },
             Limits {
                 retained_bytes: GROUP_OVERHEAD_BYTES + 1,
+                ..Limits::default()
+            },
+            Limits {
+                retained_bytes: exact - 1,
                 ..Limits::default()
             },
             // Cannot hold even the first complete f64 observation.
@@ -811,6 +1034,204 @@ mod tests {
         }
         assert_eq!(budget.push(&mut samples, 9.0), Err(Unavailable));
         assert_eq!(samples.len(), 8);
+    }
+
+    #[test]
+    fn provider_list_and_page_key_capacities_have_independent_checked_budgets() {
+        let provider = Some("literal".to_owned());
+        let model = Some("model".to_owned());
+        let provider_bytes = 4 * size_of::<Option<String>>()
+            + ALLOCATION_OVERHEAD_BYTES
+            + provider.as_ref().unwrap().capacity()
+            + ALLOCATION_OVERHEAD_BYTES;
+        let mut budget = Budget {
+            used: 0,
+            limit: provider_bytes,
+        };
+        let mut providers = Vec::new();
+        budget.push_provider(&mut providers, &provider).unwrap();
+        assert_eq!(providers, vec![provider.clone()]);
+        assert_eq!(
+            budget.used,
+            providers.capacity() * size_of::<Option<String>>()
+                + ALLOCATION_OVERHEAD_BYTES
+                + providers[0].as_ref().unwrap().capacity()
+                + ALLOCATION_OVERHEAD_BYTES
+        );
+        assert_eq!(
+            budget.push_provider(&mut providers, &provider),
+            Err(Unavailable)
+        );
+        assert_eq!(providers.len(), 1);
+        let mut too_small = Budget {
+            used: 0,
+            limit: provider_bytes - 1,
+        };
+        let mut refused = Vec::new();
+        assert_eq!(
+            too_small.push_provider(&mut refused, &provider),
+            Err(Unavailable)
+        );
+        assert!(refused.is_empty());
+
+        let key = (provider, model);
+        let key_bytes = 3 * size_of::<GroupKey>()
+            + ALLOCATION_OVERHEAD_BYTES
+            + key.0.as_ref().unwrap().capacity()
+            + key.1.as_ref().unwrap().capacity()
+            + 2 * ALLOCATION_OVERHEAD_BYTES;
+        let mut budget = Budget {
+            used: 0,
+            limit: key_bytes,
+        };
+        let mut keys = Vec::new();
+        budget.push_page_key(&mut keys, &key, 3).unwrap();
+        assert_eq!(keys, vec![key.clone()]);
+        assert_eq!(
+            budget.used,
+            keys.capacity() * size_of::<GroupKey>()
+                + ALLOCATION_OVERHEAD_BYTES
+                + keys[0].0.as_ref().unwrap().capacity()
+                + keys[0].1.as_ref().unwrap().capacity()
+                + 2 * ALLOCATION_OVERHEAD_BYTES
+        );
+        assert_eq!(budget.push_page_key(&mut keys, &key, 3), Err(Unavailable));
+        assert_eq!(keys.len(), 1);
+        let mut too_small = Budget {
+            used: 0,
+            limit: key_bytes - 1,
+        };
+        let mut refused = Vec::new();
+        assert_eq!(
+            too_small.push_page_key(&mut refused, &key, 3),
+            Err(Unavailable)
+        );
+        assert!(refused.is_empty());
+    }
+
+    #[test]
+    fn provider_options_are_budgeted_even_when_no_page_groups_can_be_returned() {
+        let fixture = Fixture::new();
+        fixture.insert(
+            "2026-10-12T11:30:00Z",
+            "success",
+            Some("p"),
+            Some("m"),
+            "{}",
+        );
+        let path = fixture.directory.path().join("stats.sqlite");
+        for query in [
+            StatsQuery {
+                page: Some(2),
+                ..Default::default()
+            },
+            StatsQuery {
+                hidden_providers: Some(r#"["p"]"#.into()),
+                ..Default::default()
+            },
+        ] {
+            let query = query.normalize().unwrap();
+            let (_, scan_bytes) = scan_groups(&path, &query, as_of(), Limits::default()).unwrap();
+            let list_bytes = 4 * size_of::<Option<String>>()
+                + ALLOCATION_OVERHEAD_BYTES
+                + 1
+                + ALLOCATION_OVERHEAD_BYTES;
+            let payload = read_stats(
+                &path,
+                &query,
+                as_of(),
+                Limits {
+                    retained_bytes: scan_bytes + list_bytes,
+                    ..Limits::default()
+                },
+            )
+            .unwrap();
+            assert!(payload.groups.is_empty());
+            assert_eq!(payload.available_providers, vec![Some("p".into())]);
+            assert!(matches!(
+                read_stats(
+                    &path,
+                    &query,
+                    as_of(),
+                    Limits {
+                        retained_bytes: scan_bytes + list_bytes - 1,
+                        ..Limits::default()
+                    }
+                ),
+                Err(Unavailable)
+            ));
+        }
+    }
+
+    #[test]
+    fn measured_partition_is_global_literal_order_with_zero_and_day_only_samples() {
+        let fixture = Fixture::new();
+        for (provider, model, measured, tokens, timestamp) in [
+            (None, "unknown", false, 0, "2026-10-12T11:30:00Z"),
+            (Some(""), "day-only", true, 7, "2026-10-12T04:00:00Z"),
+            (Some("a"), "unknown", false, 0, "2026-10-12T11:30:00Z"),
+            (Some("a"), "zero", true, 0, "2026-10-12T11:30:00Z"),
+            (Some("z"), "a", true, 100, "2026-10-12T11:30:00Z"),
+            (Some("z"), "b", true, 1, "2026-10-12T11:30:00Z"),
+            (Some("z"), "unknown", false, 0, "2026-10-12T11:30:00Z"),
+        ] {
+            fixture.insert(
+                timestamp,
+                "success",
+                provider,
+                Some(model),
+                &if measured {
+                    observation(tokens, 1_000_000)
+                } else {
+                    "{}".into()
+                },
+            );
+        }
+        let expected = [
+            json!(["", "day-only"]),
+            json!(["a", "zero"]),
+            json!(["z", "a"]),
+            json!(["z", "b"]),
+            json!([null, "unknown"]),
+            json!(["a", "unknown"]),
+            json!(["z", "unknown"]),
+        ];
+        for page in 1..=5 {
+            let payload = fixture
+                .read(
+                    StatsQuery {
+                        page: Some(page),
+                        page_size: Some(2),
+                        ..Default::default()
+                    },
+                    Limits::default(),
+                )
+                .unwrap();
+            let identities: Vec<_> = payload["groups"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|group| json!([group["provider"], group["model"]]))
+                .collect();
+            let offset = ((page - 1) * 2).min(expected.len());
+            assert_eq!(
+                identities,
+                expected[offset..(offset + 2).min(expected.len())]
+            );
+            assert_eq!(payload["pagination"]["totalItems"], 7);
+            assert_eq!(payload["pagination"]["totalPages"], 4);
+            assert_eq!(payload["availableProviders"], json!([null, "", "a", "z"]));
+        }
+        let payload = fixture
+            .read(StatsQuery::default(), Limits::default())
+            .unwrap();
+        let day = group(&payload, Some(""), Some("day-only"));
+        assert_eq!(day["windows"]["24h"]["sampleCount"], 1);
+        assert_eq!(day["windows"]["6h"]["sampleCount"], 0);
+        assert_eq!(
+            group(&payload, Some("a"), Some("zero"))["windows"]["24h"]["medianTps"],
+            0.0
+        );
     }
 
     #[test]
