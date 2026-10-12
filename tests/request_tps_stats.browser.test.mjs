@@ -42,21 +42,34 @@ test("TPS visibility, provider preferences and scoped polling survive reload/err
     const identity = (index) => [null, "", "null", " p "][index] ?? (index === 0 ? null : `p${index}`);
     const group = (index, provider = identity(index)) => {
       const measured = index !== 1 && index !== 24;
-      return { provider, model: index === 0 ? null : index === 1 ? "" : `m${index}`, windows: Object.fromEntries(["1h", "6h", "24h"].map((w) => [w, {
-        medianTps: measured ? (index === 0 ? 0 : 5.05) : null,
-        sampleCount: measured ? 18 : 0, successfulAttemptCount: 20,
-      }])) };
+      const priority = index === 22 ? 1 : index === 23 ? 2 : 0;
+      return { provider, model: index === 0 ? null : index === 1 ? "" : `m${index}`, windows: Object.fromEntries(["1h", "6h", "24h"].map((w, window) => {
+        const hasSamples = measured && window >= priority;
+        return [w, {
+          medianTps: hasSamples ? (index === 0 ? 0 : index === 22 ? 1000 : index === 23 ? 2000 : index + 0.05) : null,
+          sampleCount: hasSamples ? 18 : 0, successfulAttemptCount: 20,
+        }];
+      })) };
     };
     const compareId = (a, b) => a === b ? 0 : a === null ? -1 : b === null ? 1 : a < b ? -1 : 1;
+    const rank = (group) => {
+      const priority = ["1h", "6h", "24h"].findIndex((window) => group.windows[window].sampleCount > 0);
+      return priority === -1 ? [3, 0] : [priority, group.windows[["1h", "6h", "24h"][priority]].medianTps];
+    };
     const stats = (params) => {
       const pageNumber = Number(params.get("page")), pageSize = Number(params.get("pageSize"));
       const provider = params.get("provider");
       let all = provider ? [group(2, provider)] : Array.from({ length: groupCount }, (_, i) => group(i));
+      all.push({ ...group(25, "search-only"), model: "standalone-web-search" });
+      all = all.filter((g) => g.model !== "standalone-web-search");
       const model = params.get("model");
       if (model) all = all.filter((g) => g.model?.includes(model));
       const availableProviders = [...new Set(all.map((g) => g.provider))].sort(compareId);
       const hidden = JSON.parse(params.get("hiddenProviders") || "[]");
-      all = all.filter((g) => !hidden.includes(g.provider)).sort((a, b) => Number(a.windows["24h"].sampleCount === 0) - Number(b.windows["24h"].sampleCount === 0) || compareId(a.provider, b.provider) || compareId(a.model, b.model));
+      all = all.filter((g) => !hidden.includes(g.provider)).sort((a, b) => {
+        const left = rank(a), right = rank(b);
+        return left[0] - right[0] || right[1] - left[1] || compareId(a.provider, b.provider) || compareId(a.model, b.model);
+      });
       return { asOf, windows, availableProviders, groups: all.slice((pageNumber - 1) * pageSize, pageNumber * pageSize), pagination: { page: pageNumber, pageSize, totalItems: all.length, totalPages: Math.ceil(all.length / pageSize) } };
     };
     const raw = { requestId: "raw-fixture", timestamp: asOf, route: "fixture", provider: "raw-provider", model: "raw-model", status: "success", durationMs: 500, inputTokens: 4, outputTokens: 5, cachedTokens: 0, tokensPerSecond: 2, generatedOutputTokens: 1, upstreamDurationMs: 500, apiKeyId: "consumer", apiKeyName: "Fixture" };
@@ -95,7 +108,11 @@ test("TPS visibility, provider preferences and scoped polling survive reload/err
     await panel.locator("time").waitFor();
     await page.clock.pauseAt(new Date(Date.parse(asOf) + 5_000));
     assert.equal(await table.locator("tbody tr").count(), 20);
-    assert.match(await table.locator("tbody tr").first().innerText(), /Unknown.*Unknown.*0\.0.*18\/20/s);
+    assert.match(await table.locator("tbody tr").first().innerText(), /p21.*m21.*21\.1.*18\/20/s);
+    assert.deepEqual(await table.locator("tbody tr td:first-of-type").allTextContents(), Array.from({ length: 20 }, (_, index) => `m${21 - index}`));
+    assert.equal(await table.getByText("standalone-web-search", { exact: true }).count(), 0);
+    assert.equal(await choices.getByRole("checkbox", { name: "search-only", exact: true }).count(), 0);
+    await panel.getByText("Sorted by highest-priority available window:", { exact: false }).waitFor();
     assert.equal(await choices.getByRole("checkbox").count(), 25);
     assert.equal(await hide.isChecked(), false);
     assert.equal(await panel.locator("time").getAttribute("datetime"), asOf);
@@ -105,6 +122,8 @@ test("TPS visibility, provider preferences and scoped polling survive reload/err
     await tick();
     await table.getByText("m24", { exact: true }).waitFor();
     assert.equal(await table.locator("tbody tr").count(), 5);
+    assert.deepEqual(await table.locator("tbody tr td:first-of-type").allTextContents(), ["Unknown", "m22", "m23", "Empty", "m24"]);
+    assert.match(await table.locator("tbody tr").first().innerText(), /Unknown.*Unknown.*0\.0.*18\/20/s);
     await choices.getByRole("checkbox", { name: "p4", exact: true }).uncheck();
     await tick();
     await panel.locator("time").waitFor();

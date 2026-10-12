@@ -213,6 +213,7 @@ export default function TpsStatsPanel({ apiKeyId, provider, model, refreshToken,
           </div>
         </div>
         <p className="mt-1 text-xs font-medium text-text-muted">Success-only · saved attempts, not all traffic. Status filters apply only to raw logs.</p>
+        <p className="mt-1 text-xs text-text-muted">Sorted by highest-priority available window: 1h → 6h → 24h, TPS descending; models without measurements last.</p>
         <p className="mt-1 text-xs text-text-muted">Rolling windows use attempt start time. TPS is observed request throughput, including network, initial wait and backpressure, not GPU speed or a comparable benchmark. Coverage: eligible TPS samples / saved successful attempts.</p>
       </div>
       <fieldset className="border-b border-border px-4 pb-4 pt-2">

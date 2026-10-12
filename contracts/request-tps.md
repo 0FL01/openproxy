@@ -46,11 +46,20 @@ aggregator's internal provider/physical model is performed. Accounts and keys
 pool unless `apiKeyId` is selected. Provider/key filters use equality and model
 uses a case-sensitive literal substring; trimmed-empty filters are omitted.
 Status filters apply only to raw logs; medians always measure successful attempts.
-Group pagination defaults to page 1/size 20, with sizes 1–100. Groups with valid
-24h measurements come first, then groups without measurements; each partition
-is ordered by stored provider then model (null before strings). Explicit zero
-is measured, and measurements only in 24h still qualify. Provider exclusion and
-ordering apply before totals/pagination, independently of raw-log paging.
+Group pagination defaults to page 1/size 20, with sizes 1–100. Groups rank by
+their first window with valid samples: 1h first, then 6h without 1h, then 24h
+without 1h/6h, then no measurements. Within each measured priority, the exact
+unrounded median of that window sorts descending; exact ties and unmeasured
+groups sort by stored provider then model (null before strings). Lower-priority
+windows do not break median ties. Explicit zero is a measurement, not missing.
+Provider exclusion and ordering apply before totals/pagination, independently
+of raw-log paging.
+
+The exact case-sensitive stored model `standalone-web-search` is hardcoded out
+of TPS groups, counts, provider choices and pagination for every provider.
+Lookalike model names are not excluded. Its raw logs, capture and stored data
+remain unchanged. These candidates still consume the raw scan budget, but
+known excluded search JSON is not parsed.
 
 The optional `hiddenProviders` query is a JSON array of exact string/null provider
 IDs; omission or `[]` excludes none. It is deduplicated without trimming IDs,
@@ -86,11 +95,13 @@ in `$DATA_DIR/openproxy.sqlite`, never persisted. There are no metric tables,
 snapshots, collectors, caches, migrations, indexes or upstream calls. A local
 read-only SQLite connection scans the existing timestamp index with conservative
 RFC3339 date padding and exact UTC comparisons, without holding the shared
-writer mutex. It closes before provider/page selection and page medians are sorted.
-Provider-option/exclusion lists, page keys, response vectors and label-copy
-capacities are charged to the same retained-state budget; page selection uses
-two map passes without cloning the population's sample vectors. One nonqueued reader
-permit remains owned by the blocking worker even after HTTP cancellation.
+writer mutex. It closes before median computation and global ranking/page selection.
+Provider-option/exclusion lists, compact borrowed-key ranks, page keys, response
+vectors and label-copy capacities are charged to the same retained-state budget.
+Ranking computes only the highest-priority median in-place for visible groups;
+remaining medians are computed for the page without cloning sample vectors.
+One nonqueued reader permit remains owned by the blocking worker even after
+HTTP cancellation.
 Busy/read/resource failures return 503 `tps_stats_unavailable`, never a partial
 or truncated-sample median. Rust copying/parsing and retained state are bounded;
 these limits are not a hard SQLite allocation, RSS or disk-I/O deadline promise.
@@ -105,11 +116,12 @@ limit, and filters cannot rescue the raw-candidate ceiling.
 The repeatable release probe is `cargo test --release --locked
 --no-default-features --lib measure_indexed_scan_with_concurrent_writes --
 --ignored --nocapture`. On the implementation host, 250,000 small observations
-across 100 groups took 525 ms including page medians, with 9.9 MB accounted state.
-1,000 rows combining maximum JSON and label sizes took 114 ms with 8.8 MB state.
+across 100 groups took 626 ms including global ranking/page medians, with 9.9 MB
+accounted scan state (ranking/page capacities are additionally budgeted).
+1,000 rows combining maximum JSON and label sizes took 98 ms with 8.8 MB scan state.
 1,000,000 small rows / 100 groups and 4,500 maximum-field groups were explicitly
 refused rather than sampled. Concurrent insert/finish pairs continued (observed
-maximum 4.1 ms); the fresh reader had `cache_size=-2000` (2,000 KiB target). These are synthetic
+maximum 2.4 ms); the fresh reader had `cache_size=-2000` (2,000 KiB target). These are synthetic
 fixture measurements, not production throughput, peak-RSS or latency guarantees.
 
 Existing retention is unchanged: cleanup runs at startup and then sleeps 86400

@@ -394,6 +394,12 @@ fn scan_groups(
             if row.get_ref(1)? != ValueRef::Text(b"success") {
                 continue;
             }
+            // This one-shot search model is not generation TPS, for ANY provider.
+            // Exclude by exact stored name before touching even enormous JSON;
+            // the raw candidate has already consumed its scan budget above.
+            if row.get_ref(4)? == ValueRef::Text(b"standalone-web-search") {
+                continue;
+            }
             if !matches_equality(row.get_ref(2)?, query.api_key_id.as_deref())
                 || !matches_equality(row.get_ref(3)?, query.provider.as_deref())
                 || !matches_model(row.get_ref(4)?, query.model.as_deref())
@@ -464,33 +470,47 @@ fn read_stats(
     let offset = page.saturating_sub(1).saturating_mul(page_size);
     let mut available_providers = Vec::new();
     let mut previous_provider = None;
-    let mut page_keys = Vec::new();
-    let mut total_items = 0;
-    let mut visible_index = 0;
-    // Two literal-map passes form a global measured/unmeasured partition without
-    // sorting the population or cloning sample vectors. Options come from ALL
-    // groups in the first pass, before exclusion, and are already null-first.
-    for measured in [true, false] {
-        for (key, group) in &groups {
-            if measured && previous_provider != Some(&key.0) {
-                budget.push_provider(&mut available_providers, &key.0)?;
-                previous_provider = Some(&key.0);
-            }
-            if query.excluded_providers.binary_search(&key.0).is_ok() {
-                continue;
-            }
-            if measured {
-                total_items += 1;
-            }
-            if group.samples[2].is_empty() == measured {
-                continue;
-            }
-            if visible_index >= offset && page_keys.len() < page_size {
-                budget.push_page_key(&mut page_keys, key, groups.len().min(page_size))?;
-            }
-            visible_index += 1;
+    let mut visible_count = 0;
+    // Options come from all base-filtered groups, before user exclusions/pages,
+    // and the literal map already provides unique null-first provider order.
+    for key in groups.keys() {
+        if previous_provider != Some(&key.0) {
+            budget.push_provider(&mut available_providers, &key.0)?;
+            previous_provider = Some(&key.0);
+        }
+        if query.excluded_providers.binary_search(&key.0).is_err() {
+            visible_count += 1;
         }
     }
+    // Compact borrowed keys + priority + exact median: no sample-vector copies.
+    // Both requested and actual rank capacities are charged before selection.
+    let mut ranked = Vec::new();
+    budget.reserve(&mut ranked, visible_count)?;
+    for (key, group) in &mut groups {
+        if query.excluded_providers.binary_search(&key.0).is_ok() {
+            continue;
+        }
+        let (priority, median) = group
+            .samples
+            .iter_mut()
+            .enumerate()
+            .find_map(|(priority, samples)| median_tps(samples).map(|median| (priority, median)))
+            .unwrap_or((3, 0.0));
+        ranked.push((key, priority, median));
+    }
+    ranked.sort_unstable_by(|a, b| {
+        a.1.cmp(&b.1)
+            .then_with(|| b.2.total_cmp(&a.2))
+            .then_with(|| a.0.cmp(b.0))
+    });
+    let total_items = ranked.len();
+    let page_capacity = total_items.saturating_sub(offset).min(page_size);
+    let mut page_keys = Vec::new();
+    for (key, _, _) in ranked.iter().skip(offset).take(page_size) {
+        budget.push_page_key(&mut page_keys, key, page_capacity)?;
+    }
+    // Release borrowed references before moving just the selected accumulators.
+    drop(ranked);
     let mut page_groups = Vec::new();
     budget.reserve(&mut page_groups, page_keys.len())?;
     for key in page_keys {
@@ -553,16 +573,21 @@ fn bounded_text(value: ValueRef<'_>, limit: usize) -> Result<Option<&str>, Unava
     }
 }
 
-fn window_stats(mut samples: Vec<f64>, successful_attempt_count: usize) -> WindowStats {
+fn median_tps(samples: &mut [f64]) -> Option<f64> {
     let sample_count = samples.len();
     samples.sort_unstable_by(f64::total_cmp);
-    let median_tps = if sample_count == 0 {
+    if sample_count == 0 {
         None
     } else if sample_count % 2 == 0 {
         Some((samples[sample_count / 2 - 1] + samples[sample_count / 2]) / 2.0)
     } else {
         Some(samples[sample_count / 2])
-    };
+    }
+}
+
+fn window_stats(mut samples: Vec<f64>, successful_attempt_count: usize) -> WindowStats {
+    let sample_count = samples.len();
+    let median_tps = median_tps(&mut samples);
     WindowStats {
         median_tps,
         sample_count,
@@ -947,6 +972,109 @@ mod tests {
     }
 
     #[test]
+    fn exact_search_name_is_skipped_before_json_but_still_consumes_raw_candidate_budget() {
+        let fixture = Fixture::new();
+        let huge = "x".repeat(4 * MAX_JSON_BYTES);
+        for provider in [None, Some(""), Some("any-provider")] {
+            fixture.insert(
+                "2026-10-12T11:30:00Z",
+                "success",
+                provider,
+                Some("standalone-web-search"),
+                &huge,
+            );
+        }
+        let limits = Limits {
+            candidates: 3,
+            json_bytes: 1,
+            ..Limits::default()
+        };
+        let payload = fixture.read(StatsQuery::default(), limits).unwrap();
+        assert_eq!(payload["groups"], json!([]));
+        assert_eq!(payload["availableProviders"], json!([]));
+        assert_eq!(payload["pagination"]["totalItems"], 0);
+        assert_eq!(
+            fixture.read(
+                StatsQuery::default(),
+                Limits {
+                    candidates: 2,
+                    ..limits
+                }
+            ),
+            Err(Unavailable)
+        );
+    }
+
+    #[tokio::test]
+    async fn search_tps_capture_remains_saved_in_durable_and_lean_logs() {
+        use super::super::application_logs::{
+            request_log_flush_with_budget, RequestLogContext, RequestLogMode,
+        };
+        use crate::core::executor::generation_timing::mark_generation_send;
+        use crate::core::translator::registry::Format;
+        use crate::db::sqlite::repo::request_repo;
+
+        for mode in [RequestLogMode::Durable, RequestLogMode::Lean] {
+            let directory = tempfile::tempdir().unwrap();
+            let db = Arc::new(crate::db::Db::load_from(directory.path()).await.unwrap());
+            let context = RequestLogContext::new_with_mode(
+                db.clone(),
+                &crate::types::ApiKey::default(),
+                "test",
+                mode,
+            );
+            for (provider, model) in [
+                ("search-only", "standalone-web-search"),
+                ("generation", "m"),
+            ] {
+                let log = context.start_attempt(provider, model).await.unwrap();
+                let observation = log.tps();
+                let timing = observation.timing();
+                timing
+                    .scope(async {
+                        mark_generation_send();
+                    })
+                    .await;
+                observation.observe_json(
+                    Format::OpenAi,
+                    &json!({"choices":[{"index":0,"finish_reason":"stop"}],"usage":{"completion_tokens":7}}),
+                    timing.started().unwrap() + Duration::from_micros(3_000_000),
+                );
+                log.finish("success", Some(200), None, None).await;
+            }
+            assert!(request_log_flush_with_budget(Duration::from_secs(5)).await);
+            let saved = db
+                .sqlite
+                .with_conn(|conn| request_repo::list(conn, &Default::default(), 100, 0))
+                .unwrap();
+            assert_eq!(saved.len(), 2);
+            for row in &saved {
+                assert_eq!(
+                    completed_tps(row.status.as_deref(), &row.data),
+                    Some((7, 3_000_000))
+                );
+            }
+            let payload = read_stats(
+                db.sqlite.path().unwrap(),
+                &StatsQuery::default(),
+                Utc::now(),
+                Limits::default(),
+            )
+            .unwrap();
+            assert_eq!(payload.groups.len(), 1);
+            assert_eq!(payload.groups[0].model.as_deref(), Some("m"));
+            assert_eq!(payload.groups[0].windows.one.median_tps, Some(7.0 / 3.0));
+            assert_eq!(payload.available_providers, vec![Some("generation".into())]);
+            assert_eq!(
+                db.sqlite
+                    .with_conn(|conn| request_repo::list(conn, &Default::default(), 100, 0))
+                    .unwrap(),
+                saved
+            );
+        }
+    }
+
+    #[test]
     fn exact_json_field_capacity_and_cooperative_duration_budgets_refuse_whole_result() {
         let fixture = Fixture::new();
         let data = observation(1, 1_000_000);
@@ -966,7 +1094,8 @@ mod tests {
         let page_key_bytes =
             size_of::<GroupKey>() + ALLOCATION_OVERHEAD_BYTES + 2 * (1 + ALLOCATION_OVERHEAD_BYTES);
         let page_bytes = size_of::<GroupStats>() + ALLOCATION_OVERHEAD_BYTES;
-        let exact = scan_bytes + provider_list_bytes + page_key_bytes + page_bytes;
+        let rank_bytes = size_of::<(&GroupKey, usize, f64)>() + ALLOCATION_OVERHEAD_BYTES;
+        let exact = scan_bytes + provider_list_bytes + rank_bytes + page_key_bytes + page_bytes;
         assert!(fixture
             .read(
                 StatsQuery::default(),
@@ -1110,7 +1239,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_options_are_budgeted_even_when_no_page_groups_can_be_returned() {
+    fn provider_options_and_visible_ranks_are_budgeted_even_on_empty_pages() {
         let fixture = Fixture::new();
         fixture.insert(
             "2026-10-12T11:30:00Z",
@@ -1136,12 +1265,17 @@ mod tests {
                 + ALLOCATION_OVERHEAD_BYTES
                 + 1
                 + ALLOCATION_OVERHEAD_BYTES;
+            let rank_bytes = if query.excluded_providers.is_empty() {
+                size_of::<(&GroupKey, usize, f64)>() + ALLOCATION_OVERHEAD_BYTES
+            } else {
+                0
+            };
             let payload = read_stats(
                 &path,
                 &query,
                 as_of(),
                 Limits {
-                    retained_bytes: scan_bytes + list_bytes,
+                    retained_bytes: scan_bytes + list_bytes + rank_bytes,
                     ..Limits::default()
                 },
             )
@@ -1154,7 +1288,7 @@ mod tests {
                     &query,
                     as_of(),
                     Limits {
-                        retained_bytes: scan_bytes + list_bytes - 1,
+                        retained_bytes: scan_bytes + list_bytes + rank_bytes - 1,
                         ..Limits::default()
                     }
                 ),
@@ -1164,15 +1298,18 @@ mod tests {
     }
 
     #[test]
-    fn measured_partition_is_global_literal_order_with_zero_and_day_only_samples() {
+    fn priority_windows_and_numeric_descending_order_are_global_before_paging() {
         let fixture = Fixture::new();
         for (provider, model, measured, tokens, timestamp) in [
             (None, "unknown", false, 0, "2026-10-12T11:30:00Z"),
             (Some(""), "day-only", true, 7, "2026-10-12T04:00:00Z"),
             (Some("a"), "unknown", false, 0, "2026-10-12T11:30:00Z"),
             (Some("a"), "zero", true, 0, "2026-10-12T11:30:00Z"),
-            (Some("z"), "a", true, 100, "2026-10-12T11:30:00Z"),
-            (Some("z"), "b", true, 1, "2026-10-12T11:30:00Z"),
+            (Some("z"), "a", true, 1, "2026-10-12T11:30:00Z"),
+            (Some("z"), "b", true, 100, "2026-10-12T11:30:00Z"),
+            (Some("a"), "six-slow", true, 5, "2026-10-12T08:00:00Z"),
+            (Some("z"), "six-fast", true, 1000, "2026-10-12T08:00:00Z"),
+            (Some("z"), "day-fast", true, 2000, "2026-10-12T04:00:00Z"),
             (Some("z"), "unknown", false, 0, "2026-10-12T11:30:00Z"),
         ] {
             fixture.insert(
@@ -1187,16 +1324,35 @@ mod tests {
                 },
             );
         }
+        // Recent saved successes without valid measurements must not promote
+        // fallback groups, even when legacy token/duration fields are present.
+        for (provider, model) in [
+            ("a", "six-slow"),
+            ("z", "six-fast"),
+            ("z", "day-fast"),
+            ("", "day-only"),
+        ] {
+            fixture.insert(
+                "2026-10-12T11:30:00Z",
+                "success",
+                Some(provider),
+                Some(model),
+                r#"{"outputTokens":999,"durationMs":1}"#,
+            );
+        }
         let expected = [
-            json!(["", "day-only"]),
-            json!(["a", "zero"]),
-            json!(["z", "a"]),
             json!(["z", "b"]),
+            json!(["z", "a"]),
+            json!(["a", "zero"]),
+            json!(["z", "six-fast"]),
+            json!(["a", "six-slow"]),
+            json!(["z", "day-fast"]),
+            json!(["", "day-only"]),
             json!([null, "unknown"]),
             json!(["a", "unknown"]),
             json!(["z", "unknown"]),
         ];
-        for page in 1..=5 {
+        for page in 1..=6 {
             let payload = fixture
                 .read(
                     StatsQuery {
@@ -1218,8 +1374,8 @@ mod tests {
                 identities,
                 expected[offset..(offset + 2).min(expected.len())]
             );
-            assert_eq!(payload["pagination"]["totalItems"], 7);
-            assert_eq!(payload["pagination"]["totalPages"], 4);
+            assert_eq!(payload["pagination"]["totalItems"], 10);
+            assert_eq!(payload["pagination"]["totalPages"], 5);
             assert_eq!(payload["availableProviders"], json!([null, "", "a", "z"]));
         }
         let payload = fixture
@@ -1228,10 +1384,86 @@ mod tests {
         let day = group(&payload, Some(""), Some("day-only"));
         assert_eq!(day["windows"]["24h"]["sampleCount"], 1);
         assert_eq!(day["windows"]["6h"]["sampleCount"], 0);
+        assert_eq!(day["windows"]["1h"]["successfulAttemptCount"], 1);
+        assert_eq!(day["windows"]["24h"]["successfulAttemptCount"], 2);
         assert_eq!(
             group(&payload, Some("a"), Some("zero"))["windows"]["24h"]["medianTps"],
             0.0
         );
+    }
+
+    #[test]
+    fn exact_even_fractional_ranking_and_nullable_ties_ignore_other_windows() {
+        let fixture = Fixture::new();
+        // Both display as 2.33 to two decimals; the higher exact even median
+        // must win over literal provider order, with no rounding in ranking.
+        for (provider, rates) in [
+            ("a", vec![(7, 3_000_000)]),
+            ("z", vec![(7, 3_000_000), (1167, 500_000_000)]),
+        ] {
+            for (tokens, micros) in rates {
+                fixture.insert(
+                    "2026-10-12T11:30:00Z",
+                    "success",
+                    Some(provider),
+                    Some("fractional"),
+                    &observation(tokens, micros),
+                );
+            }
+        }
+        let identities = [
+            (None, None),
+            (None, Some("")),
+            (Some(""), None),
+            (Some(""), Some("")),
+        ];
+        for (index, (provider, model)) in identities.iter().enumerate() {
+            fixture.insert(
+                "2026-10-12T11:30:00Z",
+                "success",
+                *provider,
+                *model,
+                &observation(1, 1_000_000),
+            );
+            // Reverse the 6h/24h medians relative to the required nullable
+            // tie order. Neither lower-priority median may break a 1h tie.
+            fixture.insert(
+                "2026-10-12T08:00:00Z",
+                "success",
+                *provider,
+                *model,
+                &observation(10 * index as u64, 1_000_000),
+            );
+        }
+        let payload = fixture
+            .read(StatsQuery::default(), Limits::default())
+            .unwrap();
+        let actual: Vec<_> = payload["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|group| json!([group["provider"], group["model"]]))
+            .collect();
+        assert_eq!(
+            actual,
+            vec![
+                json!(["z", "fractional"]),
+                json!(["a", "fractional"]),
+                json!([null, null]),
+                json!([null, ""]),
+                json!(["", null]),
+                json!(["", ""])
+            ]
+        );
+        assert_eq!(
+            group(&payload, Some("z"), Some("fractional"))["windows"]["1h"]["medianTps"].as_f64(),
+            Some((7.0 / 3.0 + 2.334) / 2.0)
+        );
+        assert_eq!(
+            group(&payload, Some("a"), Some("fractional"))["windows"]["1h"]["medianTps"].as_f64(),
+            Some(7.0 / 3.0)
+        );
+        assert_eq!(payload["availableProviders"], json!([null, "", "a", "z"]));
     }
 
     #[test]
@@ -1370,7 +1602,7 @@ mod tests {
             ready_rx.recv().unwrap();
             let before_rss = rss_kib();
             let started = Instant::now();
-            // Actual endpoint worker, including sorting only returned page groups.
+            // Actual endpoint worker, including global ranking and page projection.
             let result = read_stats(&path, &StatsQuery::default(), as_of(), Limits::default());
             let total_ms = started.elapsed().as_secs_f64() * 1_000.0;
             let after_rss = rss_kib();
