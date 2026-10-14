@@ -1,6 +1,6 @@
 # Goal: Codex effort-cache affinity and the working OpenCode V2 plugin
 
-Status: active
+Status: complete
 Source: user task and audited plan; latest instruction: replace the plugin with the working installed V2 copy, implement the effort-cache fix, commit, push, and deploy.
 Last updated: 2026-10-14
 
@@ -35,8 +35,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: latest explicit user authorization.
   - Acceptance: intended commits are on origin/main; rebuilt production container is healthy with the intended runtime revision; existing persistent data and environment retained.
   - Primary evidence: Git remote SHA, Compose build/up, health and build metadata.
-  - Status: pending
-  - Evidence: origin is `git@github.com:0FL01/openproxy.git`; the old production image is preserved as `openproxy:rollback-2b45f570` (`sha256:9a81805c983588f5f2d2732a775ed9254745f7f8efcaa57c6699809608701881`).
+  - Status: verified
+  - Evidence: commits `e8d942de` (affinity), `23360fdc` (effort semantics) and `faa8b9a0` (V2 replacement/goal) were pushed to origin/main. `docker compose up -d --build --wait --wait-timeout 180` succeeded; production image is `sha256:3ba87c1418d3e50f4cd71847e15390dba1d80193c533d351702b2253ddfa77b2`, container health is `healthy`, `/health` reports `status: ok` and the original three provider connections. The actual container binary contains compiled revision `faa8b9a095b33f213d6264f1b3cb629d171568a6`; mount remains `openproxy-prod-data:/app/data`. The old image is retained as `openproxy:rollback-2b45f570` (`sha256:9a81805c983588f5f2d2732a775ed9254745f7f8efcaa57c6699809608701881`).
 
 ### Constraints
 - No proxy history/session/cache manager, synthesized updates, effort locking, account stickiness, auth/fallback/retry changes, or new telemetry schema.
@@ -61,16 +61,14 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 3. Run the required gates, inspect and commit intended changes, push origin/main, build/recreate the existing Compose service and verify health/revision. Record completion; a documentation-only completion commit may follow the deployed runtime commit.
 
 ## Current Checkpoint
-- Closes: R4.
-- Smallest next action: create the three reviewed atomic commits, push origin/main, then build/recreate the existing Compose service with the committed runtime SHA.
-- Expected evidence: remote SHA, healthy new container, compiled revision and unchanged named volume; completion record.
-- Stop or replan if: push is rejected or the existing deployment cannot be rebuilt/verified without changing secrets or persistent data.
+- Closed: R1–R4; closure check satisfied.
+- Remaining mechanical action: commit and push this documentation-only completion record, confirm clean Git state, then stop. No runtime rebuild is needed for this record.
 
 ## Current State
-- Resolved: R1, R2 and R3; scoped runtime/test diff reviewed.
-- Last relevant evidence: 25 Node, six cache, 24 executor, 13 serial C20 and four effort tests passed; formatting, all-target clippy and diff whitespace checks passed. Production remains on the original container and named volume, with its image tagged for rollback.
+- Resolved: R1–R4; scoped runtime/test diff reviewed and deployed.
+- Last relevant evidence: all required checks passed; three implementation commits pushed; Compose release/dashboard build and deployment passed; health, compiled revision, original connection count and named volume verified.
 - Blocker: none under the user's approved plugin replacement.
-- Next: atomic commits, push and Compose deployment.
+- Next: push this documentation-only completion record and stop.
 
 ## Verification Commands
 All passed on the final implementation:
@@ -95,6 +93,13 @@ git diff --check
 - 2026-10-14: A0 canonical-header baseline failed (`None` vs the cache-key bytes). The unsupported-combination baseline separately failed (`reasoning.mode: null` vs `pro`), after returning the original upstream 400 with one attempt. Both fixes remain Codex-local and stateless.
 - 2026-10-14: final executor/cache gates passed. Parallel C20 run passed 12/13, including both new regressions; serial execution is the next bounded check for the existing TRACE-capture failure. No TRACE/runtime change was made.
 - 2026-10-14: serial C20 passed 13/13, focused effort tests 4/4, all-target clippy and whitespace checks passed. R1–R3 verified; old production image retained for rollback. Next: commit, push, deploy.
+- 2026-10-14: three atomic commits pushed to origin/main (`e8d942de`, `23360fdc`, `faa8b9a0`); normal Compose build/up started with the committed runtime SHA and without changing deployment configuration.
+- 2026-10-14: Compose rebuilt the dashboard and release binary, recreated production and reached healthy. Compiled `faa8b9a0` revision and original named volume/three connections verified; R4 closed. A pre-existing atomic-method deprecation warning in the Docker compiler did not fail the build and was not changed.
 
 ## Completion
-- Pending implementation, checks, push and deployment.
+- Resolved outcomes: R1, R2, R3 and R4 verified.
+- Artifacts: three atomic implementation commits on origin/main; deployed runtime `faa8b9a095b33f213d6264f1b3cb629d171568a6`; this separate documentation-only completion record.
+- Commands: the verification commands above, exact plugin byte comparison, Git push, existing Compose build/up with `OPENPROXY_BUILD_COMMIT`, non-generation `/health`, container health/mount inspection and compiled SHA extraction from the running container's binary.
+- Constraint and diff-scope check: only the Codex adapter, approved V2 plugin, nearest evidence/docs and obsolete V1 consumers changed. No new session/history/cache state, dependency, diagnostic schema, auth/fallback/retry change, external client edit, volume removal or deployment-secret modification. Real upstream cache hits and exact OpenCode 2.0.29 binary execution remain explicitly not verified.
+- Rollback: retag `openproxy:rollback-2b45f570` as `openproxy:prod`, then use `docker compose up -d --no-build --wait`; retain the named volume and environment. Code rollback targets are `faa8b9a0`, `23360fdc`, `e8d942de` in reverse order.
+- Final status: complete; no further substantive work.
