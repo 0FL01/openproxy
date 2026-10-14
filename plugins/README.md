@@ -1,14 +1,19 @@
-# OpenCode model discovery and usage sidebar
+# OpenCode V2 model discovery
 
-`openproxy-models.js` fetches OpenProxy's `/v1/models` when OpenCode loads its
-configuration. `openproxy-tui.js` enables its compact usage-limits sidebar.
-`openproxy-claude-mask.js` masks `ludka2` traffic as Claude Code (see below).
-Tested with OpenCode **1.18.34**. Plain JavaScript: no package installation or
-build step, embedded credentials, generated JSONC, or persistent client cache.
-Solid/OpenTUI imports are lazy and supplied by the TUI host; model discovery
-has no new runtime dependencies.
+`openproxy-models.js` is the working OpenCode V2 discovery implementation copied
+from the installed client plugin. It uses host-provided `@opencode/plugin`,
+`Plugin.define` and `setup(ctx)` to fetch OpenProxy's `/v1/models` and register
+one `ctx.model.transform`. No package installation or build step, embedded
+credentials, generated JSONC, or persistent client cache is required.
+OpenCode V1 is not supported by this discovery plugin.
 
-## Claude Code client mask (ludka2)
+The old `openproxy-tui.js` wrapper and its usage sidebar have been retired,
+not migrated. `openproxy-claude-mask.js` remains an independent **V1-only**
+implementation; it has not been ported or verified for V2. Do not install it as
+part of this V2 discovery setup. The discovery marker includes Claude models in
+the catalog; it does not implement the mask's inference hooks.
+
+## Legacy Claude Code client mask (ludka2, V1 only)
 
 `openproxy-claude-mask.js` registers client-side masking hooks so requests to
 the OpenProxy provider present themselves as a genuine Claude Code CLI run:
@@ -58,127 +63,102 @@ the fingerprints before they ever leave the machine.
 that present as Claude Code: the mask marker header, or a genuine
 `claude-cli/…` User-Agent. Unmasked clients get no `cc/*` rows in `/v1/models`
 and a `403` on direct claude inference — so a session without the mask plugin
-never burns subscription quota with flagged traffic. `openproxy-models.js`
-sends the same marker on its `/v1/models` and `/v1/usage/limits` requests, so
-the catalog and sidebar stay complete. Tests:
+never burns subscription quota with flagged traffic. The V2 discovery plugin
+sends the same marker on `/v1/models` so its catalog includes Claude models;
+that alone does not mark inference requests. Legacy mask tests:
 `node --test tests/opencode_mask.test.mjs`.
 
-## Install
+## Install discovery for OpenCode V2
 
-From the repository root, copy **all three plugin files**, not the tests:
+From the repository root, copy **only the discovery plugin**, not the tests:
 
 ```sh
 mkdir -p ~/.config/opencode/plugins
 cp plugins/openproxy-models.js ~/.config/opencode/plugins/openproxy-models.js
-cp plugins/openproxy-claude-mask.js ~/.config/opencode/plugins/openproxy-claude-mask.js
-cp plugins/openproxy-tui.js ~/.config/opencode/plugins/openproxy-tui.mjs
 ```
 
-The wrapper is installed with an `.mjs` extension so OpenCode's server plugin
-auto-discovery (`*.js`/`*.ts`) does not try to load its TUI-only export. Keep
-the installed files together. In **`~/.config/opencode/tui.json`** (or your
-existing `tui.jsonc`), add the TUI file entry:
+OpenCode V2 automatically discovers direct `.js`/`.ts` files under
+`~/.config/opencode/plugins/` (or `$XDG_CONFIG_HOME/opencode/plugins/`) and
+project `.opencode/plugins/`. No explicit `plugins` entry is needed for that
+location. A repository-root `plugins/` directory is not automatically discovered.
+See the [V2 plugin loading guide](https://opencode.ai/v2/docs/build/plugins).
 
-```jsonc
-{
-  "$schema": "https://opencode.ai/tui.json",
-  "plugin": ["./plugins/openproxy-tui.mjs"]
-}
+Keep the existing `ludka2` provider and its transport configuration. This plugin
+does not create or reconfigure providers, SDK packages, headers, or request
+options; the model editor applies its changes only where the provider is
+available. Remove obsolete sidebar file entries from your client plugin settings
+when retiring a V1 installation; discovery no longer exports that sidebar.
+
+Set `LUDKA2_API_URL` (including `/v1`) and `LUDKA2_API_KEY` directly in the
+environment of the OpenCode service/plugin host before startup, for example:
+
+```sh
+export LUDKA2_API_URL='http://127.0.0.1:4623/v1'
+export LUDKA2_API_KEY='your-openproxy-api-key'
+opencode service restart
+opencode
 ```
 
-Preserve other TUI settings and plugins. **Replace** the existing
-`oc-usage-limits-plugin@1.6.1` entry (or another version of that plugin) with
-this file entry to avoid duplicate panels and direct provider polling.
+Use your own URL and key; do not put credentials in the plugin or commit them.
+If a background service is already running, setting variables only in an attached
+TUI's shell does not update that service's environment: restart it from the
+intended environment. Discovery reads these variables during `setup`, **not**
+resolved provider settings. It sends the key as `Authorization: Bearer …` and
+adds `X-OpenProxy-Claude-Mask: 1` to the catalog request. URLs with credentials,
+query strings, fragments, or non-HTTP(S) schemes are rejected.
 
-OpenCode auto-loads `openproxy-models.js` and `openproxy-claude-mask.js`; no
-server `plugin` entry is needed. The provider ID is `ludka2`; change the
-provider-ID constant in both files if needed. Keep your existing provider
-options, including the SDK choice:
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "provider": {
-    "ludka2": {
-      "npm": "@ai-sdk/openai",
-      "name": "ludka2",
-      "options": {
-        "baseURL": "{env:LUDKA2_API_URL}",
-        "apiKey": "{env:LUDKA2_API_KEY}",
-        "timeout": false,
-        "setCacheKey": true,
-        "chunkTimeout": 6000000
-      }
-    }
-  },
-  "mcp": {
-    "codex_web": {
-      "type": "remote",
-      "url": "{env:LUDKA2_API_URL}/mcp",
-      "enabled": true,
-      "oauth": false,
-      "headers": {
-        "Authorization": "Bearer {env:LUDKA2_API_KEY}"
-      },
-      "timeout": 30000
-    }
-  }
-}
-```
-
-Set `LUDKA2_API_URL` (including `/v1`) and `LUDKA2_API_KEY` in the environment
-that launches OpenCode. The plugin uses the resolved provider options and sends
-the same API key as `Authorization: Bearer …`. Discovery allows 15 seconds per
-attempt within a 30-second total budget, independent of inference timeouts.
+Discovery allows 15 seconds per attempt within a 30-second total budget,
+independent of inference timeouts.
 Cold-start network failures, HTTP 408/425/429/5xx, unreadable JSON, and empty
 catalogs are retried up to three times after 250/750/1500 ms delays (bounded by
 the remaining budget). HTTP redirects are not followed.
-The remote MCP uses the same key directly—no local wrapper or search plugin is
-required—and OpenCode exposes its only tool as `codex_web_search`. The proxy
-uses the configured private Codex account against the standalone search index;
-it does not run a Responses generation model for the search.
 
-Quit and restart OpenCode after installation. To inspect the current catalog:
-
-```sh
-opencode models ludka2 --refresh
-opencode models ludka2 --verbose
-```
-
-`--refresh` itself refreshes models.dev; our fetch happens on initialization and
-also runs without that flag. A separate CLI process **does not update an already
-open TUI**: restart the TUI to load additions/removals. Upstream provider discovery
-inside OpenProxy retains its existing cache policy.
+Discovery fetches once per plugin setup, not periodically. Restart the service
+after installation or catalog changes to run setup again, then inspect the model
+picker. There is no additional hot-reload guarantee. OpenProxy retains its
+existing upstream discovery cache policy. The separate `/v1/mcp` search endpoint
+does not require a discovery or local search wrapper plugin.
 
 ## Metadata and local overrides
 
-The router determines which IDs exist. On a valid nonempty response the plugin
-replaces the in-memory list, excluding removed/disabled models even if locally configured.
-Local `models` entries override metadata for matching IDs (limits are merged
-field by field); other provider options and other providers are untouched.
-After merging, context and input limits above 500,000 tokens are capped at
-500,000; lower upstream limits are preserved.
-When neither the proxy nor a local override supplies a useful name, the plugin
-removes the router prefix for display and formats the slug (for example,
-`cx/gpt-5.6-luna` becomes `GPT-5.6 Luna`). The canonical source provider is
-always appended, so equivalent routes remain distinct: `GPT-5.6 Luna · codex`
+On a valid nonempty response the transform removes existing `ludka2` IDs absent
+from the catalog and updates or adds catalog rows. Other providers are untouched.
+V2's later ConfigProvider explicit overrides take precedence; the plugin does
+not redesign source registration or configuration ordering.
+
+Proxy limits merge field by field with the model editor's existing limits. The
+plugin writes a merged limit only when both context and output are positive
+integers. At that point context and input above 500,000 tokens are capped at
+500,000; lower values and the output limit are preserved. Later explicit config
+overrides are not recapped by this transform.
+
+When proxy metadata has no useful name, the plugin removes the router prefix
+for display and formats the slug (for example,
+`cx/gpt-5.6-luna` becomes `GPT-5.6 Luna`). When supplied, the canonical source
+provider is appended, so equivalent routes remain distinct: `GPT-5.6 Luna · codex`
 and `GPT-5.6 Luna · opencode-go`. The source comes from backend routing metadata,
 never from the configurable model prefix. The model ID used for requests is
-unchanged. Explicit proxy and local names retain priority before the source suffix.
+unchanged. Explicit proxy names take priority over generated names; later local
+overrides are owned by OpenCode. Older rows without `opencode.source` have no
+source suffix rather than guessing from the route prefix.
 Known acronym casing is preserved for the generated `GPT` and `GLM` names;
 `Glm 5.2` from proxy metadata is normalized to `GLM 5.2`.
-Repeated configuration hooks keep exactly one canonical source suffix; existing
+Repeated transforms keep exactly one canonical source suffix; proxy-supplied
 trailing duplicates such as ` · GLM · glm` are collapsed to ` · glm` without
 changing the base model name beyond acronym normalization.
 
 The updated router supplies an additive `opencode` object on `/v1/models` rows:
 name, canonical `source`, limits, modalities, reasoning/tool support, and
-reasoning-effort variants.
+reasoning-effort variants. V2 maps modalities to `capabilities.input/output`,
+tool support to `capabilities.tools`, and enabled variants to
+`[{ id, settings: { reasoningEffort } }]`; disabled variants are omitted. An
+explicit empty variant object clears variants. Legacy attachment/reasoning
+booleans are validated but not emitted as unsupported V2 fields.
 It reuses static, models.dev and Codex metadata. Missing metadata is **not
 guessed** from model names. Input limits and some
-output limits may be unknown. The plugin silently omits incomplete context/output
-limits to satisfy OpenCode's config schema; local overrides can fill the gaps.
-Discovery failures still warn and retain configured models. An older
+output limits may be unknown. Incomplete context/output pairs leave the model
+editor's existing limits unchanged; existing output limits can fill the gaps.
+Discovery failures warn and leave native models untouched. An older
 router still supports ID discovery and optional `context_length` /
 `max_completion_tokens`, but may not supply the richer metadata or consistently
 filter disabled custom models. Deploy the updated backend for those guarantees.
@@ -209,82 +189,31 @@ existing SQLite custom-model payload and survives rebuilds. `PUT` replaces the
 supplied `opencode` object; omit it to leave it unchanged, or send `{}` to clear
 its overrides. No new dashboard fields are added. Use the existing management
 authorization for edits; discovery needs only the inference API key. Do not
-include credentials, SDK overrides or transport settings in model metadata.
+include credentials, SDK overrides or transport settings in model metadata. The
+plugin copies only the supported metadata whitelist, never remote SDK, URL,
+header, or options overrides. Invalid supported metadata or duplicate IDs reject
+the entire catalog before a transform is registered.
 
-On timeout, HTTP error or invalid data the plugin keeps the original configured
-models and reports a sanitized warning. With no local entries there is no offline
-fallback catalog. JSONC on disk is never changed.
+On timeout, HTTP error or invalid data the plugin keeps native models and reports
+a sanitized warning without response bodies, raw network errors, URLs or keys.
+It supplies no offline fallback catalog. JSONC on disk is never changed.
 An empty catalog is treated as a cold-start failure: if it stays empty after
-retries, configured models are retained with a warning, even if the proxy has
+retries, native models are retained with a warning, even if the proxy has
 intentionally disabled all models.
-
-## Usage limits sidebar
-
-The sidebar reads the same resolved `provider.ludka2.options.baseURL`, `apiKey`
-and custom `headers` as discovery, respecting `disabled_providers` and
-`enabled_providers`. It sends one authenticated `GET /v1/usage/limits` at a time
-to OpenProxy with a 10-second timeout, a streaming 2 MiB response bound and
-redirects disabled. It polls the proxy
-every 60 seconds; an initial `loading` result gets one retry after 2.5 seconds.
-OpenProxy owns provider credentials and upstream refreshes; its **180-second
-cache TTL** permits a background refresh rather than indicating a failure. The
-client does not contact providers directly.
-
-The panel shows one block per provider, with a plan only when shared by all its
-connections. Matching quota windows and units are combined: normalized percentage
-quotas show mean usage, real counters sum used/total before calculating the
-percentage, and balances sum remaining amounts. Different units remain separate.
-The reset countdown shows the nearest known reset, when part of the pool renews.
-Unknown values are not counted as zero; incomplete aggregates are marked.
-Provider headings and percentages are bold. Each quota is one compact text row
-with an eight-character thin green bar (`━` filled, `─` empty) and an inline reset
-such as `↻2d3h`. Percentages are green below 70%, yellow from 70% and red from 90%;
-reset details use muted theme colors.
-A6API credits are shown as a monetary balance instead of a usage bar, for example
-`A6API` / `Balance $1.00 left`. USD balances are rounded to cents after aggregation;
-a positive balance below one cent reads `<$0.01 left`. Zero, unknown and unlimited
-balances remain distinct. A known key expiry appears on a separate `Expires 2d12h`
-line (or `Expired`), never as a replenishing reset countdown. The nearest known
-expiry is shown when several keys are grouped. Other providers keep their existing
-quota rendering.
-Connection labels and routine freshness/age text are hidden; warnings identify
-failures, partial, loading, unsupported or unavailable data. Claude connections
-report passively observed `5h`/`weekly (7d)` windows from the proxy's stored
-header snapshots (never a usage-endpoint poll); before the first request
-through the proxy the block reads `Loading…`. A cached `stale`
-result with `error: null` is normal, including while a refresh is pending, and
-does not warn. Any nonnull per-connection `error` appears as a short, sanitized
-message under its provider, including when other connections succeed. Optional
-`errorStatus` adds an HTTP code; `nextRefreshAt` adds a retry countdown, or
-`refreshing: true` shows `retrying` for a failed refresh in progress. These
-diagnostics do not trigger additional polls. Older backends remain supported;
-without an error they cannot distinguish a failed refresh from TTL expiry.
-
-The response is bounded to 128 connections; the panel reports when some limits
-are omitted. Countdown text updates every 30 seconds. On proxy failure or
-invalid data, the last valid response stays visible with a stale warning and a
-sanitized failure message. Aged quota values never warn: the client keeps
-polling in the background and refreshes silently, and neither server clock skew
-nor an old upstream observation can create stale warnings. A successful read
-clears proxy failure warnings; an upstream error clears when the backend reports
-`error: null`. Optional diagnostics validate atomically with the whole response.
-Timers and active requests stop when the plugin is disposed. Without a backend
-supporting this endpoint the panel shows unavailable. Quit and restart OpenCode
-after installing or changing either file or the TUI config; open a session with
-its sidebar visible to see the panel.
 
 ## Verification
 
 ```sh
 node --test tests/opencode_models.test.mjs
-node --test tests/opencode_models_sidebar.test.mjs
-OPENCODE_BINARY="$(command -v opencode)" node --test tests/opencode_models_cli.test.mjs
-OPENCODE_BINARY="$(command -v opencode)" node --test tests/opencode_models_tui_cli.test.mjs
+node --test tests/opencode_mask.test.mjs
 cargo test --lib v1_models
 cargo test --test models_custom_api --test api_auth_and_models
 ```
 
-The CLI smoke tests use temporary HOME/XDG directories and loopback fixtures,
-not your proxy, credentials, or OpenCode config. The TUI smoke test requires
-Python 3 with Unix PTY support and verifies actual rendering and a reactive
-loading-to-cached-refresh update in the installed binary without inference.
+The standalone discovery tests run on Node 22.23.3 and use a Node-native module
+resolution shim for identity `Plugin.define`, plus a minimal model editor,
+loopback HTTP and mocked responses. They import the unchanged runtime plugin
+without installing the host package. They do not use the live proxy, private
+credentials, or OpenCode config. The independent mask suite remains legacy-only.
+The V1 CLI/TUI/sidebar tests were retired rather than ported; no V2 service or
+rendering smoke test is claimed by these checks.

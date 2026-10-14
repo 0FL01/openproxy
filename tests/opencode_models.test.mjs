@@ -1,319 +1,215 @@
 import assert from "node:assert/strict"
-import { createServer } from "node:http"
 import { once } from "node:events"
+import { createServer } from "node:http"
+import { registerHooks } from "node:module"
 import { test } from "node:test"
-import discovery, { OpenProxySidebar } from "../plugins/openproxy-models.js"
-import sidebar from "../plugins/openproxy-tui.js"
-const OpenProxyModels = discovery.server
 
-test("target-exclusive v1 exports keep the sidebar out of legacy server discovery", () => {
-  assert.equal(discovery.id, "openproxy.models")
-  assert.deepEqual(Object.keys(discovery), ["id", "server"])
-  assert.equal(typeof discovery.server, "function")
-  assert.deepEqual(sidebar, { id: "openproxy.sidebar", tui: OpenProxySidebar })
+// OpenCode supplies this package at runtime. Keep standalone Node tests free of
+// dependencies and import the unmodified plugin through an identity define.
+const hooks = registerHooks({
+  resolve(specifier, context, next) {
+    if (specifier === "@opencode/plugin") {
+      return { url: `data:text/javascript,${encodeURIComponent("export const Plugin = { define: (plugin) => plugin }")}`, shortCircuit: true }
+    }
+    return next(specifier, context)
+  },
 })
+const { default: discovery } = await import("../plugins/openproxy-models.js").finally(() => hooks.deregister())
 
-test("discovery authenticates, refreshes inventory, preserves options and validates metadata atomically", async (t) => {
-  let status = 200
-  let body = {
-    object: "list",
-    data: [{
-      id: "cx/new/model",
-      opencode: {
-        name: "New Model",
-        source: "codex",
-        limit: { context: 628000, input: 450000, output: 128000 },
-        modalities: { input: ["text", "image"], output: ["text"] },
-        attachment: true,
-        reasoning: true,
-        variants: { high: { reasoningEffort: "high" } },
-        provider: { api: "https://example.invalid" }, // Must never reach the SDK.
-      },
-    }],
+function environment(t, url = "https://example.invalid/v1", key = "fixture-key") {
+  for (const [name, value] of Object.entries({ LUDKA2_API_URL: url, LUDKA2_API_KEY: key })) {
+    const previous = process.env[name]
+    process.env[name] = value
+    t.after(() => {
+      if (previous === undefined) delete process.env[name]
+      else process.env[name] = previous
+    })
   }
+}
+
+function nativeModel(id, overrides = {}) {
+  return {
+    id, providerID: "ludka2", name: id,
+    limit: {}, capabilities: { input: ["text"], output: ["text"], tools: false },
+    variants: [], settings: {}, ...overrides,
+  }
+}
+
+// Only the model editor contract is simulated: no V2 service/lifecycle harness.
+function context(initial = []) {
+  const state = { models: structuredClone(initial), registrations: 0, disposals: 0 }
+  state.ctx = { model: { async transform(edit) {
+    state.registrations++
+    edit({
+      list: (providerID) => state.models.filter((model) => model.providerID === providerID),
+      remove: (providerID, id) => { state.models = state.models.filter((model) => model.providerID !== providerID || model.id !== id) },
+      update(providerID, id, update) {
+        let model = state.models.find((model) => model.providerID === providerID && model.id === id)
+        if (!model) { model = nativeModel(id, { providerID }); state.models.push(model) }
+        update(model)
+      },
+    })
+    return { dispose: async () => { state.disposals++ } }
+  } } }
+  state.get = (id) => state.models.find((model) => model.providerID === "ludka2" && model.id === id)
+  return state
+}
+
+const response = (data) => new Response(JSON.stringify({ object: "list", data }))
+
+test("V2 setup authenticates catalog discovery and registers one safe model transform", async (t) => {
+  assert.equal(discovery.id, "openproxy.models")
+  assert.deepEqual(Object.keys(discovery), ["id", "setup"])
   let requests = 0
   const server = createServer((req, res) => {
     requests++
     assert.equal(req.url, "/v1/models")
     assert.equal(req.headers.authorization, "Bearer fixture-key")
-    assert.equal(req.headers["x-openproxy-fixture"], "keep")
+    assert.equal(req.headers.accept, "application/json")
     assert.equal(req.headers["x-openproxy-claude-mask"], "1")
-    res.writeHead(status, { "Content-Type": "application/json" })
-    res.end(JSON.stringify(body))
+    res.writeHead(200, { "Content-Type": "application/json" })
+    res.end(JSON.stringify({ object: "list", data: [{
+      id: "not-codex/glm-5.3",
+      context_length: 200000,
+      max_completion_tokens: 64000,
+      opencode: {
+        name: "Glm 5.3 · CODEX · codex", source: "codex",
+        limit: { context: 628000, input: 900000, output: 128000 },
+        modalities: { input: ["text", "image"], output: ["text"] },
+        attachment: true, reasoning: true, tool_call: true,
+        variants: {
+          high: { reasoningEffort: "high", settings: { baseURL: "https://untrusted.invalid" } },
+          none: { disabled: true },
+        },
+        package: "untrusted-package", sdk: "untrusted-sdk",
+        provider: { api: "https://untrusted.invalid" },
+        headers: { "X-Untrusted": "ignore" }, options: { apiKey: "ignore" },
+        settings: { baseURL: "https://untrusted.invalid" },
+      },
+    }, { id: "new/gpt-6-luna", opencode: { source: "a6api" } }] }))
   }).listen(0, "127.0.0.1")
   await once(server, "listening")
   t.after(() => { server.closeAllConnections(); server.close() })
+  environment(t, `http://127.0.0.1:${server.address().port}/v1/`)
+  const timeout = t.mock.method(AbortSignal, "timeout")
+  const warnings = t.mock.method(console, "warn", () => {})
+  const existing = nativeModel("not-codex/glm-5.3", { settings: { reasoningEffort: "low" } })
+  const untouched = nativeModel("keep-me", { providerID: "untouched" })
+  const state = context([existing, nativeModel("removed"), untouched])
+
+  const dispose = await discovery.setup(state.ctx)
+
+  assert.equal(requests, 1)
+  assert.equal(state.registrations, 1)
+  assert.deepEqual(timeout.mock.calls.map((call) => call.arguments[0]), [15000])
+  assert.equal(warnings.mock.callCount(), 0)
+  assert.deepEqual(state.get(existing.id), {
+    ...existing,
+    name: "GLM 5.3 · codex",
+    limit: { context: 500000, input: 500000, output: 128000 },
+    capabilities: { input: ["text", "image"], output: ["text"], tools: true },
+    variants: [{ id: "high", settings: { reasoningEffort: "high" } }],
+  })
+  assert.equal(state.get("removed"), undefined)
+  assert.equal(state.get("new/gpt-6-luna").name, "GPT-6 Luna · a6api")
+  assert.deepEqual(state.models.find((model) => model.providerID === "untouched"), untouched)
+  await dispose()
+  assert.equal(state.disposals, 1)
+})
+
+test("V2 metadata merges only complete limits, preserves unknown variants and never infers source", async (t) => {
+  environment(t)
+  t.mock.method(globalThis, "fetch", async () => response([
+    { id: "legacy/glm-5.3", context_length: 1048576, max_completion_tokens: 131072 },
+    { id: "merged", context_length: 204800, opencode: { tool_call: true } },
+    { id: "partial", opencode: { limit: { context: 400000 } } },
+    { id: "known-none", opencode: { variants: {} } },
+  ]))
+  const variant = { id: "native", settings: { reasoningEffort: "medium" } }
+  const state = context([
+    nativeModel("merged", { limit: { output: 32768 }, capabilities: { input: ["audio"], output: ["text"], tools: false }, variants: [variant] }),
+    nativeModel("known-none", { variants: [variant] }),
+  ])
+
+  await discovery.setup(state.ctx)
+
+  assert.equal(state.get("legacy/glm-5.3").name, "GLM 5.3")
+  assert.deepEqual(state.get("legacy/glm-5.3").limit, { context: 500000, output: 131072 })
+  assert.deepEqual(state.get("merged").limit, { context: 204800, output: 32768 })
+  assert.deepEqual(state.get("merged").capabilities, { input: ["audio"], output: ["text"], tools: true })
+  assert.deepEqual(state.get("merged").variants, [variant])
+  assert.deepEqual(state.get("partial").limit, {})
+  assert.deepEqual(state.get("known-none").variants, [])
+})
+
+test("invalid configuration, HTTP failure and invalid catalogs leave native models untouched without secrets", async (t) => {
+  environment(t)
   const warnings = []
   t.mock.method(console, "warn", (message) => warnings.push(message))
-  const options = {
-    baseURL: `http://127.0.0.1:${server.address().port}/v1/`,
-    apiKey: "fixture-key",
-    timeout: false,
-    chunkTimeout: 6000000,
-    setCacheKey: true,
-    headers: { "X-OpenProxy-Fixture": "keep" },
+  let reply = () => new Response("fixture-key https://example.invalid", { status: 401 })
+  const fetch = t.mock.method(globalThis, "fetch", async () => reply())
+  const initial = [nativeModel("existing")]
+  const state = context(initial)
+
+  process.env.LUDKA2_API_URL = "https://example.invalid/v1?token=fixture-key"
+  assert.equal(await discovery.setup(state.ctx), undefined)
+  assert.equal(fetch.mock.callCount(), 0)
+  assert.equal(warnings.at(-1), "[openproxy-models] invalid provider URL or credentials; keeping native models.")
+
+  process.env.LUDKA2_API_URL = "https://example.invalid/v1"
+  assert.equal(await discovery.setup(state.ctx), undefined)
+  assert.equal(fetch.mock.callCount(), 1)
+  assert.equal(warnings.at(-1), "[openproxy-models] model discovery failed; keeping native models.")
+
+  for (const data of [
+    [{ id: "valid" }, { id: "invalid", opencode: { source: " codex " } }],
+    [{ id: "duplicate" }, { id: "duplicate" }],
+  ]) {
+    reply = () => response(data)
+    assert.equal(await discovery.setup(state.ctx), undefined)
+    assert.equal(warnings.at(-1), "[openproxy-models] invalid models response; keeping native models.")
   }
-  const config = { provider: {
-    ludka2: { npm: "@ai-sdk/openai", options, models: {
-      "cx/new/model": { name: "Local name", limit: { context: 900000 } },
-      "cx/disabled": { name: "Disabled upstream" },
-    } },
-    untouched: { models: { "keep-me": {} } },
-  } }
-  const plugin = await OpenProxyModels()
-  await plugin.config(config)
-  const models = config.provider.ludka2.models
-  assert.deepEqual(Object.keys(models), ["cx/new/model"])
-  assert.deepEqual(models["cx/new/model"], {
-    name: "Local name · codex",
-    limit: { context: 500000, input: 450000, output: 128000 },
-    modalities: { input: ["text", "image"], output: ["text"] },
-    attachment: true,
-    reasoning: true,
-    variants: {
-      high: { reasoningEffort: "high" },
-      none: { disabled: true },
-      minimal: { disabled: true },
-      low: { disabled: true },
-      medium: { disabled: true },
-      xhigh: { disabled: true },
-      max: { disabled: true },
-    },
-  })
-  assert.strictEqual(config.provider.ludka2.options, options)
-  assert.equal(config.provider.ludka2.npm, "@ai-sdk/openai")
-  assert.deepEqual(config.provider.untouched.models, { "keep-me": {} })
-
-  status = 401
-  body = { error: "fixture-key should not be logged" }
-  await plugin.config(config)
-  assert.strictEqual(config.provider.ludka2.models, models)
-  assert.match(warnings.at(-1), /HTTP 401/)
-  assert.ok(warnings.every((message) => !message.includes("fixture-key")))
-
-  status = 200
-  body = { object: "list", data: [{ id: "valid" }, { id: "invalid", opencode: { limit: { context: -1 } } }] }
-  await plugin.config(config)
-  assert.strictEqual(config.provider.ludka2.models, models)
-  assert.match(warnings.at(-1), /invalid models response/)
-
-  body = { object: "list", data: [{ id: "opencode-go/added", context_length: 272000, max_completion_tokens: 128000 }] }
-  await plugin.config(config)
-  assert.deepEqual(config.provider.ludka2.models, {
-    "opencode-go/added": { name: "Added", limit: { context: 272000, output: 128000 } },
-  })
-  config.disabled_providers = ["ludka2"]
-  await plugin.config(config)
-  assert.equal(requests, 4)
+  assert.equal(state.registrations, 0)
+  assert.deepEqual(state.models, initial)
+  assert.ok(warnings.every((message) => !message.includes("fixture-key") && !message.includes("example.invalid")))
 })
 
-test("authoritative empty effort list disables SDK reasoning variants", async (t) => {
-  t.mock.method(console, "warn", () => {})
-  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({
-    object: "list",
-    data: [
-      { id: "known-none", opencode: { variants: {} } },
-      { id: "unknown" },
-    ],
-  }), { headers: { "Content-Type": "application/json" } }))
-  const config = { provider: { ludka2: {
-    options: { baseURL: "https://example.invalid/v1", apiKey: "fixture-key" },
-  } } }
+test("cold empty discovery retries before registering a successful catalog", async (t) => {
+  environment(t)
+  const warnings = t.mock.method(console, "warn", () => {})
+  let requests = 0
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    assert.equal(options.redirect, "error")
+    assert.ok(options.signal instanceof AbortSignal)
+    return response(++requests === 1 ? [] : [{ id: "ready" }])
+  })
+  const state = context([nativeModel("removed")])
 
-  await (await OpenProxyModels()).config(config)
+  await discovery.setup(state.ctx)
 
-  assert.deepEqual(config.provider.ludka2.models["known-none"].variants, Object.fromEntries(
-    ["none", "minimal", "low", "medium", "high", "xhigh", "max"].map((name) => [name, { disabled: true }]),
-  ))
-  assert.equal(Object.hasOwn(config.provider.ludka2.models.unknown, "variants"), false)
+  assert.equal(requests, 2)
+  assert.equal(state.registrations, 1)
+  assert.deepEqual(state.models.map((model) => model.id), ["ready"])
+  assert.equal(warnings.mock.callCount(), 0)
 })
 
-test("A6API inventory preserves canonical source and exact effort defaults with explicit local overrides", async (t) => {
-  const gptVariants = Object.fromEntries(["low", "medium", "high", "xhigh", "max"].map((effort) => [effort, { reasoningEffort: effort }]))
-  const otherVariants = Object.fromEntries(["low", "high", "max"].map((effort) => [effort, { reasoningEffort: effort }]))
-  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({
-    object: "list", data: [
-      { id: "my-a6/gpt-6-luna", opencode: { source: "a6api", reasoning: true, variants: gptVariants } },
-      { id: "a6api/glm-5.3", opencode: { source: "a6api", reasoning: true, variants: otherVariants } },
-      { id: "a6api/deepseek-v4.1-flash", opencode: { source: "a6api", reasoning: true, variants: otherVariants } },
-      { id: "cx/control", opencode: { source: "codex" } },
-    ],
-  }), { headers: { "Content-Type": "application/json" } }))
-  const config = { provider: { ludka2: {
-    options: { baseURL: "https://example.invalid/v1", apiKey: "fixture-key" },
-    models: {
-      "a6api/gpt-5.5": { name: "Old excluded A6 model" },
-      "cx/control": { name: "Local control" },
-    },
-  } } }
-  const plugin = await OpenProxyModels()
-  await plugin.config(config)
-
-  const defaultVariants = {
-    low: { reasoningEffort: "low" },
-    high: { reasoningEffort: "high" },
-    max: { reasoningEffort: "max" },
-    none: { disabled: true },
-    minimal: { disabled: true },
-    medium: { disabled: true },
-    xhigh: { disabled: true },
-  }
-  const defaults = config.provider.ludka2.models
-  assert.deepEqual(defaults, {
-    "my-a6/gpt-6-luna": {
-      name: "GPT-6 Luna · a6api", reasoning: true, variants: {
-        low: { reasoningEffort: "low" },
-        medium: { reasoningEffort: "medium" },
-        high: { reasoningEffort: "high" },
-        xhigh: { reasoningEffort: "xhigh" },
-        max: { reasoningEffort: "max" },
-        none: { disabled: true },
-        minimal: { disabled: true },
-      },
-    },
-    "a6api/glm-5.3": { name: "GLM 5.3 · a6api", reasoning: true, variants: defaultVariants },
-    "a6api/deepseek-v4.1-flash": { name: "Deepseek V4.1 Flash · a6api", reasoning: true, variants: defaultVariants },
-    "cx/control": { name: "Local control · codex" },
-  })
-
-  // Defaults above are asserted without a local effort override. Only the
-  // exact GLM route ID may explicitly re-enable medium in a separate config.
-  const overridden = { provider: { ludka2: {
-    options: config.provider.ludka2.options,
-    models: {
-      "a6api/glm-5.3": { variants: { medium: { reasoningEffort: "medium" } } },
-      "glm-5.3": { variants: { xhigh: { reasoningEffort: "xhigh" } } },
-      "cx/control": { name: "Local control" },
-    },
-  } } }
-  await plugin.config(overridden)
-  assert.deepEqual(overridden.provider.ludka2.models, {
-    ...defaults,
-    "a6api/glm-5.3": {
-      ...defaults["a6api/glm-5.3"],
-      variants: { ...defaultVariants, medium: { reasoningEffort: "medium" } },
-    },
-  })
-  assert.deepEqual(defaults["a6api/glm-5.3"].variants, defaultVariants)
-})
-
-test("GLM limits retain context usage while local output fills gaps and incomplete limits stay silent", async (t) => {
+test("network retries stay bounded and never expose raw errors or credentials", async (t) => {
+  environment(t)
   const warnings = []
   t.mock.method(console, "warn", (message) => warnings.push(message))
-  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({
-    object: "list", data: [
-      { id: "glm/glm-5.3", context_length: 1048576, max_completion_tokens: 131072 },
-      { id: "local", context_length: 204800 },
-      { id: "fixture-key", context_length: 500000 },
-    ],
-  })))
-  const config = { provider: { ludka2: {
-    options: { baseURL: "https://example.invalid/v1", apiKey: "fixture-key" },
-    models: { local: { limit: { output: 32768 } } },
-  } } }
-  await (await OpenProxyModels()).config(config)
-  const models = config.provider.ludka2.models
-  assert.deepEqual(models["glm/glm-5.3"].limit, { context: 500000, output: 131072 })
-  assert.equal(Math.round(124340 / models["glm/glm-5.3"].limit.context * 100), 25)
-  assert.deepEqual(models.local.limit, { context: 204800, output: 32768 })
-  assert.equal(Object.hasOwn(models["fixture-key"], "limit"), false)
-  assert.deepEqual(warnings, [])
-})
-
-test("discovery has its own timeout and preserves local models on network failure", async (t) => {
-  t.mock.method(console, "warn", () => {})
   const timeout = t.mock.method(AbortSignal, "timeout")
   const fetch = t.mock.method(globalThis, "fetch", async (_url, options) => {
-    assert.ok(options.signal instanceof AbortSignal)
     assert.equal(options.redirect, "error")
-    throw new DOMException("fixture-key", "TimeoutError")
+    throw new Error("fixture-key https://example.invalid/v1")
   })
-  const models = { existing: { name: "Existing" } }
-  const config = { provider: { ludka2: { options: { baseURL: "https://example.invalid/v1", apiKey: "fixture-key", timeout: false }, models } } }
-  await (await OpenProxyModels()).config(config)
-  assert.strictEqual(config.provider.ludka2.models, models)
+  const initial = [nativeModel("existing")]
+  const state = context(initial)
+
+  assert.equal(await discovery.setup(state.ctx), undefined)
+
   assert.equal(fetch.mock.callCount(), 4)
   assert.deepEqual(timeout.mock.calls.map((call) => call.arguments[0]), [15000, 15000, 15000, 15000])
-})
-
-test("cold discovery retries empty catalogs and retains models until a nonempty catalog validates", async (t) => {
-  const warnings = []
-  t.mock.method(console, "warn", (message) => warnings.push(message))
-  const models = { "glm/glm-5.3": { name: "My GLM" }, removed: { name: "Removed" } }
-  const config = { provider: { ludka2: {
-    options: { baseURL: "https://example.invalid/v1", apiKey: "fixture-key" }, models,
-  } } }
-  let requests = 0
-  let staysEmpty = false
-  let fallback = models
-  t.mock.method(globalThis, "fetch", async () => {
-    assert.strictEqual(config.provider.ludka2.models, fallback)
-    requests++
-    return new Response(JSON.stringify({ object: "list", data: staysEmpty || requests === 1 ? [] : [
-      { id: "glm/glm-5.3", opencode: { name: "GLM 5.3", source: "glm" } },
-    ] }))
-  })
-
-  await (await OpenProxyModels()).config(config)
-  assert.equal(requests, 2)
-  assert.deepEqual(config.provider.ludka2.models, { "glm/glm-5.3": { name: "My GLM · glm" } })
-  assert.deepEqual(warnings, [])
-
-  staysEmpty = true
-  fallback = config.provider.ludka2.models
-  await (await OpenProxyModels()).config(config)
-  assert.equal(requests, 6)
-  assert.strictEqual(config.provider.ludka2.models, fallback)
-  assert.match(warnings.at(-1), /empty models response/)
-})
-
-test("discovery generates readable names without changing model IDs", async (t) => {
-  t.mock.method(console, "warn", () => {})
-  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({
-    object: "list",
-    data: [
-      { id: "custom-cx/gpt-5.6-luna", opencode: { source: "codex" } },
-      { id: "custom-ocg/gpt-5.6-luna", opencode: { source: "opencode-go" } },
-      { id: "cx/gpt-5.6-sol-fast", opencode: { source: "codex" } },
-      { id: "cx/gpt-6-luna-fast", opencode: { name: "GPT-6-Luna-Fast", source: "codex" } },
-      { id: "cx/gpt-6.1-sol-fast", opencode: { name: "GPT-6.1-Sol-Fast", source: "codex" } },
-      { id: "cx/glm-5.2", opencode: { source: "codex" } },
-      { id: "cx/glm-4.6v", opencode: { name: "Glm 4.6v", source: "codex" } },
-      { id: "cx/explicit", opencode: { name: "Public Luna", source: "codex" } },
-      { id: "cx/same", opencode: { name: "cx/same", source: "codex" } },
-      { id: "cx/local", opencode: { source: "codex" } },
-      { id: "custom-glm/glm-5.3", opencode: { name: "Glm 5.3", source: "glm" } },
-      { id: "custom-glm/glm-5.3-flash", opencode: { source: "glm" } },
-    ],
-  }), { headers: { "Content-Type": "application/json" } }))
-  const config = { provider: { ludka2: {
-    options: { baseURL: "https://example.invalid/v1", apiKey: "fixture-key" },
-    models: {
-      "cx/local": { name: "User chosen name" },
-      "custom-glm/glm-5.3-flash": { name: "My Glm Flash · GLM · GLM · glm" },
-    },
-  } } }
-  await (await OpenProxyModels()).config(config)
-  assert.deepEqual(Object.keys(config.provider.ludka2.models), [
-    "custom-cx/gpt-5.6-luna", "custom-ocg/gpt-5.6-luna", "cx/gpt-5.6-sol-fast", "cx/gpt-6-luna-fast", "cx/gpt-6.1-sol-fast",
-    "cx/glm-5.2", "cx/glm-4.6v", "cx/explicit", "cx/same", "cx/local",
-    "custom-glm/glm-5.3", "custom-glm/glm-5.3-flash",
-  ])
-  assert.equal(config.provider.ludka2.models["custom-cx/gpt-5.6-luna"].name, "GPT-5.6 Luna · codex")
-  assert.equal(config.provider.ludka2.models["custom-ocg/gpt-5.6-luna"].name, "GPT-5.6 Luna · opencode-go")
-  assert.equal(config.provider.ludka2.models["cx/gpt-5.6-sol-fast"].name, "GPT-5.6 Sol Fast · codex")
-  assert.equal(config.provider.ludka2.models["cx/glm-5.2"].name, "GLM 5.2 · codex")
-  assert.equal(config.provider.ludka2.models["cx/glm-4.6v"].name, "GLM 4.6v · codex")
-  assert.equal(config.provider.ludka2.models["cx/explicit"].name, "Public Luna · codex")
-  assert.equal(config.provider.ludka2.models["cx/same"].name, "Same · codex")
-  assert.equal(config.provider.ludka2.models["cx/local"].name, "User chosen name · codex")
-  assert.equal(config.provider.ludka2.models["custom-glm/glm-5.3"].name, "GLM 5.3 · glm")
-  const discovered = config.provider.ludka2.models
-  for (let pass = 0; pass < 3; pass++) {
-    await (await OpenProxyModels()).config(config)
-    assert.deepEqual(config.provider.ludka2.models, discovered)
-  }
-  assert.equal(config.provider.ludka2.models["cx/gpt-6-luna-fast"].name, "GPT-6-Luna-Fast · codex")
-  assert.equal(config.provider.ludka2.models["cx/gpt-6.1-sol-fast"].name, "GPT-6.1-Sol-Fast · codex")
-  assert.equal(config.provider.ludka2.models["custom-glm/glm-5.3-flash"].name, "My GLM Flash · glm")
+  assert.equal(state.registrations, 0)
+  assert.deepEqual(state.models, initial)
+  assert.deepEqual(warnings, ["[openproxy-models] model discovery failed; keeping native models."])
 })
