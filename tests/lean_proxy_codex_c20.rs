@@ -8,6 +8,8 @@ use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use common::lean_harness::{MockUpstream, ScriptedResponse, TempTestDb};
 use common::test_api_key;
+use openproxy::db::sqlite::repo::request_repo;
+use openproxy::server::application_logs::request_log_flush_with_budget;
 use openproxy::server::codex_catalog::CodexModelCatalog;
 use openproxy::server::console_logs::{ConsoleLogBuffer, ConsoleLogMakeWriter};
 use openproxy::server::state::AppState;
@@ -101,6 +103,21 @@ async fn post_codex(app: &axum::Router, model: &str) -> axum::response::Response
 }
 
 async fn post_codex_responses(app: &axum::Router, model: &str) -> axum::response::Response {
+    post_codex_response_body(
+        app,
+        json!({
+            "model": format!("codex/{model}"),
+            "input": "stream failure",
+            "stream": true
+        }),
+    )
+    .await
+}
+
+async fn post_codex_response_body(
+    app: &axum::Router,
+    body: serde_json::Value,
+) -> axum::response::Response {
     let request = Request::builder()
         .method("POST")
         .uri("/v1/responses")
@@ -109,18 +126,233 @@ async fn post_codex_responses(app: &axum::Router, model: &str) -> axum::response
     app.clone()
         .oneshot(
             request
-                .body(Body::from(
-                    json!({
-                        "model": format!("codex/{model}"),
-                        "input": "stream failure",
-                        "stream": true
-                    })
-                    .to_string(),
-                ))
+                .body(Body::from(body.to_string()))
                 .expect("C20 Responses request"),
         )
         .await
         .expect("C20 Responses response")
+}
+
+#[tokio::test]
+async fn effort_switches_preserve_cache_affinity_history_and_private_diagnostics() {
+    let mut models: serde_json::Value =
+        serde_json::from_str(&catalog_payload(&[("gpt-6.1-sol", false)])).unwrap();
+    models["models"][0]["supported_reasoning_levels"] =
+        json!([{"effort":"low"}, {"effort":"high"}, {"effort":"max"}]);
+    let catalog =
+        MockUpstream::start([ScriptedResponse::json(StatusCode::OK, models.to_string())]).await;
+    // Usage is fabricated upstream data, not evidence of a physical cache hit.
+    let generation = MockUpstream::start((0..3).map(|index| {
+        ScriptedResponse::sse([
+            json!({"type":"response.created", "response":{"id":"resp_fixture", "model":"gpt-6.1-sol", "status":"in_progress", "output":[]}}),
+            json!({"type":"response.completed", "response":{"id":"resp_fixture", "model":"gpt-6.1-sol", "status":"completed", "output":[], "usage":{"input_tokens":1024 * (index + 1), "output_tokens":1, "input_tokens_details":{"cached_tokens":1024 * index}, "cache_creation_input_tokens":32}}}),
+        ].map(|event| format!("event: {}\ndata: {event}\n\n", event["type"].as_str().unwrap())))
+    }))
+    .await;
+    let mut connection = codex_connection("effort-fixture", 1);
+    connection.email = Some("private-fixture@example.invalid".into());
+    connection.provider_specific_data.insert(
+        "chatgptAccountId".into(),
+        json!("private-fixture-account-id"),
+    );
+    let (db, state) = state_with_catalog(
+        catalog.url("/models"),
+        generation.url("/responses"),
+        vec![connection.clone()],
+        Vec::new(),
+    )
+    .await;
+    state
+        .codex_models
+        .refresh_connection(&state, &connection, true)
+        .await
+        .unwrap();
+    let app = openproxy::build_app(state);
+    let mut input = vec![
+        json!({"role":"user", "content":[{"type":"input_text", "text":"private-fixture-original-prompt"}]}),
+    ];
+    let tools = json!([{"type":"function", "name":"lookup", "description":"fixture lookup", "parameters":{"type":"object", "properties":{}, "additionalProperties":false}}]);
+    let mut histories = Vec::new();
+    for (index, effort) in ["high", "low", "high"].iter().enumerate() {
+        if index > 0 {
+            input.push(json!({"role":"assistant", "content":[{"type":"output_text", "text":"private-fixture-answer"}]}));
+            if index == 1 {
+                input.push(json!({"type":"function_call", "call_id":"fixture_call", "name":"lookup", "arguments":"{}"}));
+                input.push(json!({"type":"function_call_output", "call_id":"fixture_call", "output":"private-fixture-tool-result"}));
+            }
+            input.push(json!({"type":"configuration_update", "reasoning":{"effort":effort}}));
+            input.push(json!({"role":"user", "content":[{"type":"input_text", "text":format!("private-fixture-turn-{index}")}]}));
+        }
+        histories.push(input.clone());
+        let response = post_codex_response_body(
+            &app,
+            json!({
+                "model":"cx/gpt-6.1-sol", "stream":true,
+                "prompt_cache_key":"private-fixture-cache-key",
+                "reasoning":{"effort":"high", "mode":"standard"},
+                "truncation":"disabled", "context_management":[],
+                "instructions":"private-fixture-instructions", "tools":tools,
+                "input":input
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("response.completed"));
+    }
+    let requests = generation.requests().await;
+    assert_eq!(requests.len(), 3);
+    for (index, request) in requests.iter().enumerate() {
+        assert_eq!(request.path, "/responses");
+        assert_eq!(request.headers["session-id"], "private-fixture-cache-key");
+        assert!(!request.headers.contains_key("session_id"));
+        assert_eq!(
+            request.headers["authorization"],
+            "Bearer fixture-effort-fixture-access"
+        );
+        assert_eq!(
+            request.headers["chatgpt-account-id"],
+            "private-fixture-account-id"
+        );
+        let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        assert_eq!(body["model"], "gpt-6.1-sol");
+        assert_eq!(body["prompt_cache_key"], "private-fixture-cache-key");
+        assert_eq!(
+            body["reasoning"],
+            json!({"effort":"high", "summary":"auto"})
+        );
+        assert!(body.get("truncation").is_none());
+        assert!(body.get("context_management").is_none());
+        assert_eq!(body["instructions"], "private-fixture-instructions");
+        assert_eq!(body["tools"], tools);
+        assert_eq!(body["input"], json!(histories[index]));
+        if index > 0 {
+            assert_eq!(
+                histories[index][..histories[index - 1].len()],
+                histories[index - 1]
+            );
+        }
+    }
+
+    assert!(request_log_flush_with_budget(Duration::from_secs(5)).await);
+    let mut rows = db
+        .db
+        .sqlite
+        .with_conn(|conn| {
+            request_repo::list(conn, &request_repo::RequestDetailFilter::default(), 10, 0)
+        })
+        .unwrap();
+    assert_eq!(rows.len(), 3);
+    rows.sort_by_key(|row| row.data["codexCache"]["inputCount"].as_u64().unwrap());
+    for (index, row) in rows.iter().enumerate() {
+        assert_eq!(row.status.as_deref(), Some("success"));
+        assert_eq!(row.connection_id.as_deref(), Some("effort-fixture"));
+        let data = &row.data["codexCache"];
+        assert_eq!(data["version"], 1);
+        assert_eq!(data["model"], "gpt-6.1-sol");
+        assert_eq!(data["inputCount"], histories[index].len());
+        for key in ["accountHmac", "cacheKeyHmac", "envelopeHmac"] {
+            assert!(!data[key].as_str().unwrap().is_empty());
+            assert_eq!(data[key], rows[0].data["codexCache"][key]);
+        }
+        assert!(data["sentAt"].is_string());
+        assert!(data["completedAt"].is_string());
+        assert_eq!(data["inputTokens"], 1024 * (index + 1));
+        assert_eq!(data["cachedTokens"], 1024 * index);
+        assert_eq!(data["cacheWriteTokens"], 32);
+        let serialized = row.data.to_string();
+        for sensitive in [
+            "private-fixture-",
+            "private-fixture@example.invalid",
+            "fixture-effort-fixture-access",
+            "fixture_call",
+        ] {
+            assert!(!serialized.contains(sensitive));
+        }
+        if index > 0 {
+            let previous = &rows[index - 1].data["codexCache"];
+            let boundary = data["inputPrefixes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["count"] == previous["inputCount"])
+                .unwrap();
+            assert_eq!(
+                boundary["hmac"],
+                previous["inputPrefixes"]
+                    .as_array()
+                    .unwrap()
+                    .last()
+                    .unwrap()["hmac"]
+            );
+        }
+    }
+    assert_eq!(catalog.request_count().await, 1);
+    catalog.shutdown().await;
+    generation.shutdown().await;
+}
+
+#[tokio::test]
+async fn unsupported_effort_combination_reaches_upstream_without_account_fanout() {
+    // A raw HTTP transport fixture, not OpenCode's normal pro-mode projection.
+    let catalog = MockUpstream::start((0..2).map(|_| {
+        ScriptedResponse::json(StatusCode::OK, catalog_payload(&[("gpt-6.1-sol", false)]))
+    }))
+    .await;
+    let error = json!({"error":{"type":"invalid_request_error", "code":"unsupported_combination", "message":"fixture configuration updates conflict"}});
+    let generation = MockUpstream::start([ScriptedResponse::json(
+        StatusCode::BAD_REQUEST,
+        error.to_string(),
+    )])
+    .await;
+    let connections = vec![
+        codex_connection("invalid-a", 1),
+        codex_connection("invalid-b", 2),
+    ];
+    let (_db, state) = state_with_catalog(
+        catalog.url("/models"),
+        generation.url("/responses"),
+        connections.clone(),
+        Vec::new(),
+    )
+    .await;
+    for connection in &connections {
+        state
+            .codex_models
+            .refresh_connection(&state, connection, true)
+            .await
+            .unwrap();
+    }
+    let app = openproxy::build_app(state);
+    let input = json!([
+        {"role":"user", "content":"fixture"},
+        {"type":"configuration_update", "reasoning":{"effort":"low"}},
+        {"type":"configuration_update", "reasoning":{"effort":"high"}}
+    ]);
+    let context = json!([{"type":"compaction", "compact_threshold":1000}]);
+    let response = post_codex_response_body(
+        &app,
+        json!({
+            "model":"cx/gpt-6.1-sol", "stream":true, "input":input,
+            "reasoning":{"effort":"high", "mode":"pro"},
+            "truncation":"auto", "context_management":context
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["error"]["code"], error["error"]["code"]);
+    assert_eq!(body["error"]["message"], error["error"]["message"]);
+    let requests = generation.requests().await;
+    assert_eq!(requests.len(), 1);
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["input"], input);
+    assert_eq!(body["reasoning"]["mode"], "pro");
+    assert_eq!(body["truncation"], "auto");
+    assert_eq!(body["context_management"], context);
+    catalog.shutdown().await;
+    generation.shutdown().await;
 }
 
 async fn post_mcp_search(app: &axum::Router, response_length: &str) -> axum::response::Response {

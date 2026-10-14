@@ -555,6 +555,9 @@ impl CodexExecutor {
             }
         };
         normalize_codex_input_items(&mut input_items);
+        let has_effort_updates = input_items
+            .iter()
+            .any(|item| item.get("type").and_then(Value::as_str) == Some("configuration_update"));
 
         let instructions = normalized_body
             .get("instructions")
@@ -616,6 +619,28 @@ impl CodexExecutor {
 
         if let Some(effort) = effort {
             request_body["reasoning"] = json!({ "effort": effort, "summary": "auto" });
+        }
+        if has_effort_updates {
+            // Let upstream validate conflicting combinations, rather than silently
+            // removing their settings. Keep legacy neutral omissions stable when
+            // the first update is appended to an otherwise unchanged envelope.
+            if let Some(mode) = body
+                .pointer("/reasoning/mode")
+                .filter(|value| !value.is_null() && value.as_str() != Some("standard"))
+            {
+                request_body["reasoning"]["mode"] = mode.clone();
+            }
+            if let Some(truncation) = body
+                .get("truncation")
+                .filter(|value| !value.is_null() && value.as_str() != Some("disabled"))
+            {
+                request_body["truncation"] = truncation.clone();
+            }
+            if let Some(management) = body.get("context_management").filter(|value| {
+                !value.is_null() && value.as_array().is_none_or(|items| !items.is_empty())
+            }) {
+                request_body["context_management"] = management.clone();
+            }
         }
 
         // Codex's /responses validator rejects tool schemas carrying Unicode
@@ -1546,6 +1571,95 @@ data: {"type":"response.output_text.delta","delta":"server_is_overloaded"}
         assert_eq!(out["instructions"], "");
         assert!(out.get("reasoning").is_none());
         assert!(out.get("include").is_none());
+    }
+
+    #[test]
+    fn codex_effort_updates_preserve_low_max_high_history() {
+        let executor = CodexExecutor::new(Arc::new(ClientPool::new()), None).unwrap();
+        let mut input = vec![json!({"role":"user", "content":"initial"})];
+        for (index, effort) in ["low", "max", "high"].iter().enumerate() {
+            if index > 0 {
+                input.push(json!({"role":"assistant", "content":[{"type":"output_text", "text":"answer"}]}));
+                input.push(json!({"type":"configuration_update", "reasoning":{"effort":effort}}));
+                input.push(json!({"role":"user", "content":"next"}));
+            }
+            let body = json!({"input":input, "reasoning":{"effort":"low"}, "prompt_cache_key":"stable-session"});
+            let out = executor
+                .transform_request_body(&body, "gpt-6.1-sol", true)
+                .unwrap();
+            assert_eq!(out["input"], body["input"]);
+            assert_eq!(out["reasoning"]["effort"], "low");
+            assert_eq!(out["prompt_cache_key"], "stable-session");
+        }
+    }
+
+    #[test]
+    fn codex_effort_switches_without_markers_keep_existing_behavior() {
+        let executor = CodexExecutor::new(Arc::new(ClientPool::new()), None).unwrap();
+        for model in ["gpt-6.1-sol", "gpt-5"] {
+            for effort in ["high", "low", "high"] {
+                let body = json!({
+                    "input":[{"role":"user", "content":"current history"}],
+                    "reasoning":{"effort":effort, "mode":"pro"},
+                    "truncation":"auto", "context_management":[{"type":"compaction"}]
+                });
+                let out = executor.transform_request_body(&body, model, true).unwrap();
+                assert_eq!(out["input"], body["input"]);
+                assert_eq!(out["reasoning"], json!({"effort":effort, "summary":"auto"}));
+                assert!(out.get("truncation").is_none());
+                assert!(out.get("context_management").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn codex_effort_updates_retain_conflicts_without_adding_neutral_defaults() {
+        let executor = CodexExecutor::new(Arc::new(ClientPool::new()), None).unwrap();
+        for (mode, truncation, management, retained) in [
+            (
+                json!("pro"),
+                json!("auto"),
+                json!([{"type":"compaction"}]),
+                true,
+            ),
+            (json!(7), json!({"unknown":true}), json!("unknown"), true),
+            (json!("standard"), json!("disabled"), json!([]), false),
+            (Value::Null, Value::Null, Value::Null, false),
+        ] {
+            let body = json!({
+                "input":[{"type":"configuration_update", "reasoning":{"effort":"low"}}, {"role":"user", "content":"current"}],
+                "reasoning":{"mode":mode}, "truncation":truncation, "context_management":management
+            });
+            let out = executor
+                .transform_request_body(&body, "gpt-6.1-sol", true)
+                .unwrap();
+            assert_eq!(out["input"], body["input"]);
+            if retained {
+                assert_eq!(out["reasoning"]["mode"], mode);
+                assert_eq!(out["truncation"], truncation);
+                assert_eq!(out["context_management"], management);
+            } else {
+                assert!(out.get("reasoning").is_none());
+                assert!(out.get("truncation").is_none());
+                assert!(out.get("context_management").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn codex_effort_history_replacement_and_explicit_compaction_remain_client_owned() {
+        let executor = CodexExecutor::new(Arc::new(ClientPool::new()), None).unwrap();
+        for input in [
+            json!([{"type":"compaction", "encrypted_content":"fixture"}, {"role":"user", "content":"rebased"}]),
+            json!([{"type":"compaction", "encrypted_content":"fixture"}, {"type":"configuration_update", "reasoning":{"effort":"low"}}, {"role":"user", "content":"rebased"}]),
+            json!([{"role":"user", "content":"initial"}, {"type":"compaction_trigger"}, {"type":"configuration_update", "reasoning":{"effort":"high"}}, {"role":"user", "content":"next"}]),
+        ] {
+            let out = executor
+                .transform_request_body(&json!({"input":input}), "gpt-6.1-sol", true)
+                .unwrap();
+            assert_eq!(out["input"], input);
+            assert!(out.get("reasoning").is_none());
+        }
     }
 
     #[test]
