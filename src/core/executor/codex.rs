@@ -485,25 +485,30 @@ impl CodexExecutor {
         &self,
         api_key: &str,
         stream: bool,
-        connection_id: Option<&str>,
         credentials: &ProviderConnection,
     ) -> Result<HeaderMap, CodexExecutorError> {
         let mut headers = build_codex_headers(api_key, credentials)?;
-
-        // 9router parity: session_id header for request session continuity.
-        let session_id = connection_id
-            .filter(|&cid| !cid.is_empty())
-            .unwrap_or("default");
-        headers.insert(
-            "session_id",
-            HeaderValue::from_str(session_id).map_err(CodexExecutorError::InvalidHeader)?,
-        );
 
         if stream {
             headers.insert("Accept", HeaderValue::from_static("text/event-stream"));
         }
 
         Ok(headers)
+    }
+
+    /// Use the final body key verbatim; account identity is not a client session.
+    fn cache_affinity(body: &Value) -> Option<HeaderValue> {
+        let key = body.get("prompt_cache_key")?.as_str()?;
+        if key.is_empty()
+            || key.bytes().any(|byte| byte.is_ascii_control())
+            || key.starts_with(' ')
+            || key.ends_with(' ')
+        {
+            return None;
+        }
+        let mut value = HeaderValue::from_str(key).ok()?;
+        value.set_sensitive(true);
+        Some(value)
     }
 
     /// Transform the request body from Chat Completions format to Codex Responses API format.
@@ -836,14 +841,8 @@ impl CodexExecutor {
                 CodexExecutorError::MissingCredentials("API key required".to_string())
             })?;
 
-        let connection_id = request
-            .credentials
-            .email
-            .as_deref()
-            .or(request.credentials.id.as_str().into())
-            .or(request.credentials.display_name.as_deref());
         // Always stream upstream (9router force stream); client JSON via chat sse_to_json
-        let headers = self.build_headers(api_key, true, connection_id, &request.credentials)?;
+        let mut headers = self.build_headers(api_key, true, &request.credentials)?;
 
         // Strip the `_compact` routing flag before send (JS codex.js:395
         // `delete body._compact` — the upstream never sees it).
@@ -866,6 +865,11 @@ impl CodexExecutor {
 
         let transformed_body = self.transform_request_body(&request.body, &actual_model, true)?;
         ensure_final_request_size(&transformed_body).map_err(CodexExecutorError::ImagePrefetch)?;
+        if !url.ends_with("/compact") {
+            if let Some(affinity) = Self::cache_affinity(&transformed_body) {
+                headers.insert("session-id", affinity);
+            }
+        }
 
         let client = self.pool.get("openai", request.proxy.as_ref())?;
         let builder = client
@@ -1171,17 +1175,44 @@ mod tests {
     fn test_codex_headers_advertise_current_client() {
         let executor = CodexExecutor::new(Arc::new(ClientPool::new()), None).unwrap();
         let headers = executor
-            .build_headers(
-                "token",
-                true,
-                Some("connection"),
-                &ProviderConnection::default(),
-            )
+            .build_headers("token", true, &ProviderConnection::default())
             .unwrap();
 
         assert_eq!(headers.get("Version").unwrap(), CODEX_CLIENT_VERSION);
         assert_eq!(headers.get(USER_AGENT).unwrap(), CODEX_USER_AGENT);
         assert_eq!(headers.get("originator").unwrap(), CODEX_ORIGINATOR);
+    }
+
+    #[test]
+    fn codex_cache_affinity_preserves_safe_bytes_without_new_length_policy() {
+        for key in [
+            "fixture-session".to_string(),
+            "сессия-缓存".to_string(),
+            "k".repeat(2048),
+        ] {
+            let header = CodexExecutor::cache_affinity(&json!({"prompt_cache_key":key})).unwrap();
+            assert_eq!(header.as_bytes(), key.as_bytes());
+            assert!(header.is_sensitive());
+        }
+        for key in [
+            "",
+            " ",
+            " leading",
+            "trailing ",
+            "a\r\nb",
+            "a\0b",
+            "a\tb",
+            "a\u{7f}b",
+        ] {
+            assert!(CodexExecutor::cache_affinity(&json!({"prompt_cache_key":key})).is_none());
+        }
+        for body in [
+            json!({}),
+            json!({"prompt_cache_key":null}),
+            json!({"prompt_cache_key":7}),
+        ] {
+            assert!(CodexExecutor::cache_affinity(&body).is_none());
+        }
     }
 
     #[tokio::test]
