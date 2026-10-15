@@ -3189,7 +3189,7 @@ async fn proxy_response_with_pending_tracking(
                     tool_name_map,
                     stop_on_response_completed,
                 );
-                dispatch.start_runtime_trace(&provider, &model, "reqwest");
+                dispatch.start_runtime_trace(&provider, &model, "reqwest", attempt_log.as_ref().map(AttemptLog::id));
                 dispatch.codex_cache = attempt_log.as_ref().map(AttemptLog::codex_cache)
                     .filter(|observation| observation.snapshot().is_some());
                 dispatch.tps = attempt_log.as_ref().map(AttemptLog::tps);
@@ -3223,7 +3223,7 @@ async fn proxy_response_with_pending_tracking(
                         Ok(Ok(Some(chunk))) => {
                             let read_at = std::time::Instant::now();
                             let batch = dispatch.feed_at(&chunk, read_at);
-                            dispatch.sync_trace_into(&mut attempt_log);
+                            dispatch.sync_attempt_log(&mut attempt_log, status, batch.error.is_some());
                             // Passthrough bytes are committed before observer
                             // failures; framing is observational on native routes.
                             if passthrough {
@@ -3239,7 +3239,7 @@ async fn proxy_response_with_pending_tracking(
                                 let terminal = dispatch.streaming_error(
                                     &error.message, "upstream_error", Some(error.code),
                                 );
-                                dispatch.sync_trace_into(&mut attempt_log);
+                                dispatch.sync_attempt_log(&mut attempt_log, status, true);
                                 dispatch.trace_end("observer_error", read_wait, Some((error.code, &error.message)));
                                 let usage = dispatch.usage.clone();
                                 if let Some(mut log) = attempt_log.take() {
@@ -3280,7 +3280,7 @@ async fn proxy_response_with_pending_tracking(
                     }
                 };
                 let batch = dispatch.finish();
-                dispatch.sync_trace_into(&mut attempt_log);
+                dispatch.sync_attempt_log(&mut attempt_log, status, batch.error.is_some());
                 for output in batch.output {
                     yield Ok::<Bytes, std::io::Error>(output);
                 }
@@ -3288,7 +3288,7 @@ async fn proxy_response_with_pending_tracking(
                     let terminal = dispatch.streaming_error(
                         &error.message, "upstream_error", Some(error.code),
                     );
-                    dispatch.sync_trace_into(&mut attempt_log);
+                    dispatch.sync_attempt_log(&mut attempt_log, status, true);
                     dispatch.trace_end("observer_error", eof_read_wait, Some((error.code, &error.message)));
                     let usage = dispatch.usage.clone();
                     if let Some(mut log) = attempt_log.take() {
@@ -3324,7 +3324,7 @@ async fn proxy_response_with_pending_tracking(
                     tool_name_map2,
                     stop_on_response_completed,
                 );
-                dispatch.start_runtime_trace(&provider, &model, "hyper");
+                dispatch.start_runtime_trace(&provider, &model, "hyper", attempt_log.as_ref().map(AttemptLog::id));
                 dispatch.codex_cache = attempt_log.as_ref().map(AttemptLog::codex_cache)
                     .filter(|observation| observation.snapshot().is_some());
                 dispatch.tps = attempt_log.as_ref().map(AttemptLog::tps);
@@ -3361,7 +3361,7 @@ async fn proxy_response_with_pending_tracking(
                         Ok(frame) => {
                             if let Ok(data) = frame.into_data() {
                                 let batch = dispatch.feed_at(&data, read_at);
-                                dispatch.sync_trace_into(&mut attempt_log);
+                                dispatch.sync_attempt_log(&mut attempt_log, status, batch.error.is_some());
                                 if passthrough {
                                     yield Ok::<Bytes, std::io::Error>(data);
                                 }
@@ -3372,7 +3372,7 @@ async fn proxy_response_with_pending_tracking(
                                     let terminal = dispatch.streaming_error(
                                         &error.message, "upstream_error", Some(error.code),
                                     );
-                                    dispatch.sync_trace_into(&mut attempt_log);
+                                    dispatch.sync_attempt_log(&mut attempt_log, status, true);
                                     dispatch.trace_end("observer_error", read_wait, Some((error.code, &error.message)));
                                     let usage = dispatch.usage.clone();
                                     if let Some(mut log) = attempt_log.take() {
@@ -3413,7 +3413,7 @@ async fn proxy_response_with_pending_tracking(
                     }
                 };
                 let batch = dispatch.finish();
-                dispatch.sync_trace_into(&mut attempt_log);
+                dispatch.sync_attempt_log(&mut attempt_log, status, batch.error.is_some());
                 for output in batch.output {
                     yield Ok::<Bytes, std::io::Error>(output);
                 }
@@ -3421,7 +3421,7 @@ async fn proxy_response_with_pending_tracking(
                     let terminal = dispatch.streaming_error(
                         &error.message, "upstream_error", Some(error.code),
                     );
-                    dispatch.sync_trace_into(&mut attempt_log);
+                    dispatch.sync_attempt_log(&mut attempt_log, status, true);
                     dispatch.trace_end("observer_error", eof_read_wait, Some((error.code, &error.message)));
                     let usage = dispatch.usage.clone();
                     if let Some(mut log) = attempt_log.take() {
@@ -3476,10 +3476,25 @@ struct StreamDispatch {
     /// Bounded metadata trace of upstream/emitted SSE events; active only
     /// for translated Claude streams (see `stream_trace::trace_applies`).
     trace: Option<crate::server::stream_trace::StreamEventTrace>,
+    // Protocol outcome for accounting, independent of optional runtime TRACE.
+    response_completed_for_log: bool,
+    response_failed_for_log: bool,
     // Runtime TRACE is independent of the persisted Claude event journal.
     runtime_trace_id: Option<String>,
     runtime_started_at: Option<tokio::time::Instant>,
     runtime_response_completed: bool,
+    runtime_upstream_eof: bool,
+    runtime_trace_ended: bool,
+}
+
+impl Drop for StreamDispatch {
+    fn drop(&mut self) {
+        if !self.runtime_trace_ended {
+            // The generator can be dropped while suspended at a downstream
+            // yield or read. This does not establish who cancelled the body.
+            self.trace_end("body_drop", None, None);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -3541,9 +3556,13 @@ impl StreamDispatch {
             target,
             next_response_sequence_number: 0,
             trace,
+            response_completed_for_log: false,
+            response_failed_for_log: false,
             runtime_trace_id: None,
             runtime_started_at: None,
             runtime_response_completed: false,
+            runtime_upstream_eof: false,
+            runtime_trace_ended: false,
         }
     }
 
@@ -3552,15 +3571,35 @@ impl StreamDispatch {
         self.feed_at(chunk, std::time::Instant::now())
     }
 
-    /// Sync the stream trace (when active) into the attempt log so it
-    /// survives finish and interrupted/drop paths.
-    fn sync_trace_into(&self, attempt_log: &mut Option<AttemptLog>) {
-        if let (Some(trace), Some(log)) = (&self.trace, attempt_log.as_mut()) {
-            log.observe_stream_trace(trace);
+    /// Capture metadata before downstream yield: a client may never poll again.
+    fn sync_attempt_log(
+        &self,
+        attempt_log: &mut Option<AttemptLog>,
+        status: StatusCode,
+        failed: bool,
+    ) {
+        if let Some(log) = attempt_log.as_mut() {
+            if let Some(trace) = &self.trace {
+                log.observe_stream_trace(trace);
+            }
+            log.observe_stream_completion(
+                self.response_completed_for_log
+                    && !self.response_failed_for_log
+                    && !failed
+                    && status.is_success(),
+                status.as_u16(),
+                self.usage.as_ref(),
+            );
         }
     }
 
-    fn start_runtime_trace(&mut self, provider: &str, model: &str, transport: &str) {
+    fn start_runtime_trace(
+        &mut self,
+        provider: &str,
+        model: &str,
+        transport: &str,
+        attempt_id: Option<&str>,
+    ) {
         if !tracing::enabled!(target: "openproxy::chat::stream", tracing::Level::TRACE) {
             return;
         }
@@ -3572,7 +3611,7 @@ impl StreamDispatch {
         let model = crate::server::application_logs::truncate_field(model);
         tracing::trace!(
             target: "openproxy::chat::stream",
-            stream_id = %id, provider, model, transport,
+            stream_id = %id, attempt_id, provider, model, transport,
             upstream_format = ?self.source, client_format = ?self.target,
             "stream_start"
         );
@@ -3580,11 +3619,15 @@ impl StreamDispatch {
     }
 
     fn trace_end(
-        &self,
+        &mut self,
         reason: &str,
         read_wait: Option<std::time::Duration>,
         diagnostic: Option<(&str, &str)>,
     ) {
+        if self.runtime_trace_ended {
+            return;
+        }
+        self.runtime_trace_ended = true;
         let Some(id) = self.runtime_trace_id.as_deref() else {
             return;
         };
@@ -3598,6 +3641,7 @@ impl StreamDispatch {
             read_wait_ms = ?read_wait.map(|wait| wait.as_millis()),
             next_response_sequence_number = self.next_responses_sequence_number(),
             native_response_completed = ?self.native_responses().then_some(self.runtime_response_completed),
+            upstream_eof = self.runtime_upstream_eof,
             error_code = ?code, error_message = %message,
             "stream_end"
         );
@@ -3750,6 +3794,7 @@ impl StreamDispatch {
     }
 
     fn finish(&mut self) -> DispatchBatch {
+        self.runtime_upstream_eof = true;
         let eof_at = std::time::Instant::now();
         let mut batch = DispatchBatch::default();
         if let Some(mut framer) = self.framer.take() {
@@ -3893,6 +3938,36 @@ impl StreamDispatch {
             .then(|| frame.payload())
             .flatten()
             .and_then(|payload| serde_json::from_str::<Value>(payload).ok());
+        if self.native_responses() {
+            let kind = parsed
+                .as_ref()
+                .and_then(|value| value.get("type"))
+                .and_then(Value::as_str);
+            let is_failure = |kind| {
+                matches!(
+                    kind,
+                    Some("error" | "response.failed" | "response.incomplete")
+                )
+            };
+            self.response_failed_for_log |= is_failure(frame.event())
+                || is_failure(kind)
+                || parsed.as_ref().is_some_and(|value| {
+                    let response = value.get("response").unwrap_or(value);
+                    value.get("error").is_some_and(|error| !error.is_null())
+                        || response.get("error").is_some_and(|error| !error.is_null())
+                        || matches!(
+                            response.get("status").and_then(Value::as_str),
+                            Some("failed" | "incomplete" | "cancelled")
+                        )
+                })
+                || (parsed.is_none()
+                    && frame
+                        .payload()
+                        .is_some_and(|payload| payload.trim() != "[DONE]"));
+            self.response_completed_for_log |= parsed.as_ref().is_some_and(|value| {
+                crate::server::upstream_tps::responses_completed(frame.event(), value, false)
+            });
+        }
         self.trace_upstream_terminal(&frame, parsed.as_ref());
         if let Some(observation) = &self.codex_cache {
             let diagnostic_value = if parsed.is_none() {
@@ -4956,7 +5031,7 @@ mod tests {
             None,
             false,
         );
-        dispatch.start_runtime_trace("codex", "fixture", "reqwest");
+        dispatch.start_runtime_trace("codex", "fixture", "reqwest", None);
         let fixture = format!(
             "data: {}\n\nevent: response.completed\ndata: {{\"type\":\"response.completed\",\"sequence_number\":10}}\n\n",
             json!({"type":"error","sequence_number":9,"code":"x".repeat(100),
@@ -4979,14 +5054,15 @@ mod tests {
             "no persisted Claude journal on native Responses"
         );
         assert_eq!(dispatch.next_responses_sequence_number(), 11);
+        let id = dispatch.runtime_trace_id.clone().unwrap();
+        drop(dispatch);
         let lines = logs.get_logs().await;
         assert_eq!(
             lines.len(),
             4,
             "start, two terminal observations, end: {lines:?}"
         );
-        let id = dispatch.runtime_trace_id.as_ref().unwrap();
-        assert!(lines.iter().all(|line| line.contains(id)));
+        assert!(lines.iter().all(|line| line.contains(&id)));
         let output = lines.join("\n");
         assert!(output.contains("event_kind=\"error\""), "{output}");
         assert!(
@@ -5002,6 +5078,240 @@ mod tests {
         assert!(!output.contains("private-response-content"));
         assert!(!output.contains(&"x".repeat(81)));
         assert!(!output.contains(&"m".repeat(201)));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_trace_body_drop_preserves_completed_responses_attempt() {
+        use crate::db::sqlite::repo::request_repo;
+        use crate::server::application_logs::{
+            request_log_flush_with_budget, RequestLogContext, RequestLogMode,
+        };
+        use crate::server::console_logs::{ConsoleLogBuffer, ConsoleLogMakeWriter};
+        use futures_util::StreamExt;
+
+        let logs = std::sync::Arc::new(ConsoleLogBuffer::new(20));
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_env_filter("openproxy::chat::stream=trace")
+            .without_time()
+            .with_writer(ConsoleLogMakeWriter::new(logs.clone()))
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let directory = tempfile::tempdir().unwrap();
+        let db = std::sync::Arc::new(crate::db::Db::load_from(directory.path()).await.unwrap());
+        let context = RequestLogContext::new_with_mode(
+            db.clone(),
+            &crate::types::ApiKey::default(),
+            "/v1/responses",
+            RequestLogMode::Durable,
+        );
+        let attempt = context.start_attempt("codex", "fixture").await.unwrap();
+        let attempt_id = attempt.id().to_owned();
+        attempt
+            .tps()
+            .timing()
+            .scope(async {
+                crate::core::executor::generation_timing::mark_generation_send();
+            })
+            .await;
+        let terminal = Bytes::from_static(b"event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":10,\"response\":{\"status\":\"completed\",\"output\":[],\"private\":\"private-response-content\",\"usage\":{\"input_tokens\":11,\"output_tokens\":7,\"input_tokens_details\":{\"cached_tokens\":5},\"private\":\"private-usage-content\"}}}\n\n");
+        let upstream = reqwest::Response::from(
+            axum::http::Response::builder()
+                .header("content-type", "text/event-stream")
+                .body(reqwest::Body::wrap_stream(
+                    futures_util::stream::iter([Ok::<_, std::io::Error>(terminal.clone())])
+                        .chain(futures_util::stream::pending()),
+                ))
+                .unwrap(),
+        );
+        let mut plan = RequestPlan::new(
+            Some("/v1/responses"),
+            &json!({"input":"private-prompt-content","stream":true}),
+            "codex",
+            "fixture",
+        );
+        plan.target_format = Format::OpenAiResponses;
+        plan.passthrough = true;
+        let response = super::proxy_response_with_pending_tracking(
+            super::UpstreamResponse::Reqwest(upstream),
+            "codex".into(),
+            "fixture".into(),
+            false,
+            &plan,
+            None,
+            None,
+            Some(attempt),
+        )
+        .await;
+        let mut body = response.into_body().into_data_stream();
+        assert_eq!(body.next().await.unwrap().unwrap(), terminal);
+        // Simulate a client stopping after its terminal event, before HTTP EOF.
+        drop(body);
+        assert!(request_log_flush_with_budget(std::time::Duration::from_secs(5)).await);
+        let row = db
+            .sqlite
+            .with_conn(|conn| request_repo::get(conn, &attempt_id))
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.status.as_deref(), Some("success"));
+        assert_eq!(row.data["statusCode"], 200);
+        assert_eq!(row.data["inputTokens"], 11);
+        assert_eq!(row.data["outputTokens"], 7);
+        assert_eq!(row.data["cachedTokens"], 5);
+        assert_eq!(row.data["upstreamTps"]["generatedOutputTokens"], 7);
+        assert_eq!(row.data["upstreamTps"]["endKind"], "protocol_terminal");
+        assert!(!row.data.to_string().contains("private-"));
+        assert!(row.data.get("errorKind").is_none());
+
+        let lines = logs.get_logs().await;
+        let events: Vec<Value> = lines
+            .iter()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap()["fields"].clone())
+            .collect();
+        assert_eq!(events.len(), 4, "{events:?}");
+        let start = events
+            .iter()
+            .find(|e| e["message"] == "stream_start")
+            .unwrap();
+        assert_eq!(start["attempt_id"], attempt_id);
+        let end = events
+            .iter()
+            .find(|e| e["message"] == "stream_end")
+            .unwrap();
+        assert_eq!(end["stream_id"], start["stream_id"]);
+        assert_eq!(end["reason"], "body_drop");
+        assert_eq!(end["native_response_completed"], "Some(true)");
+        assert_eq!(end["upstream_eof"], false);
+        let dropped = events
+            .iter()
+            .find(|e| e["message"] == "attempt_drop")
+            .unwrap();
+        assert_eq!(dropped["attempt_id"], attempt_id);
+        assert_eq!(dropped["finish_status"], "not_started");
+        assert_eq!(dropped["status"], "success");
+        assert_eq!(dropped["finish_enqueued"], true);
+        assert_eq!(dropped["interrupted_enqueued"], false);
+        assert!(lines
+            .iter()
+            .all(|line| !line.contains("private-response-content")
+                && !line.contains("private-prompt-content")));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn responses_completion_does_not_promote_early_drop_or_known_errors() {
+        use crate::db::sqlite::repo::request_repo;
+        use crate::server::application_logs::{
+            request_log_flush_with_budget, RequestLogContext, RequestLogMode,
+        };
+        use futures_util::StreamExt;
+
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::level_filters::LevelFilter::OFF)
+            .with_writer(std::io::sink)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let directory = tempfile::tempdir().unwrap();
+        let db = std::sync::Arc::new(crate::db::Db::load_from(directory.path()).await.unwrap());
+        let context = RequestLogContext::new_with_mode(
+            db.clone(),
+            &crate::types::ApiKey::default(),
+            "/v1/responses",
+            RequestLogMode::Durable,
+        );
+        let completed = Bytes::from_static(b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[]}}\n\n");
+        let oversized = Bytes::from(vec![b'x'; 1_050_000]);
+        let failure = b"event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\"}}\n\n";
+        let mut plan = RequestPlan::new(
+            Some("/v1/responses"),
+            &json!({"input":"fixture","stream":true}),
+            "codex",
+            "fixture",
+        );
+        plan.target_format = Format::OpenAiResponses;
+        plan.passthrough = true;
+        for (name, chunks, drain, expected) in [
+            (
+                "early_drop",
+                vec![Bytes::from_static(
+                    b"event: response.created\ndata: {\"type\":\"response.created\"}\n\n",
+                )],
+                false,
+                "interrupted",
+            ),
+            (
+                "completion_without_trace",
+                vec![completed.clone()],
+                false,
+                "success",
+            ),
+            (
+                "known_framing_error",
+                vec![Bytes::from(
+                    [completed.as_ref(), oversized.as_ref()].concat(),
+                )],
+                false,
+                "interrupted",
+            ),
+            (
+                "late_framing_error",
+                vec![completed.clone(), oversized],
+                true,
+                "error",
+            ),
+            (
+                "failed_then_completed",
+                vec![Bytes::from(
+                    [failure.as_slice(), completed.as_ref()].concat(),
+                )],
+                false,
+                "interrupted",
+            ),
+        ] {
+            let attempt = context.start_attempt("codex", name).await.unwrap();
+            let id = attempt.id().to_owned();
+            let upstream = reqwest::Response::from(
+                axum::http::Response::builder()
+                    .header("content-type", "text/event-stream")
+                    .body(reqwest::Body::wrap_stream(
+                        futures_util::stream::iter(chunks.into_iter().map(Ok::<_, std::io::Error>))
+                            .chain(futures_util::stream::pending()),
+                    ))
+                    .unwrap(),
+            );
+            let response = super::proxy_response_with_pending_tracking(
+                super::UpstreamResponse::Reqwest(upstream),
+                "codex".into(),
+                name.into(),
+                false,
+                &plan,
+                None,
+                None,
+                Some(attempt),
+            )
+            .await;
+            if drain {
+                let bytes = axum::body::to_bytes(response.into_body(), 2 * 1024 * 1024)
+                    .await
+                    .unwrap();
+                assert!(bytes.starts_with(&completed), "{name}");
+                assert!(String::from_utf8_lossy(&bytes).contains("upstream_sse_frame_too_large"));
+            } else {
+                let mut body = response.into_body().into_data_stream();
+                body.next().await.unwrap().unwrap();
+                drop(body);
+            }
+            assert!(request_log_flush_with_budget(std::time::Duration::from_secs(5)).await);
+            let row = db
+                .sqlite
+                .with_conn(|conn| request_repo::get(conn, &id))
+                .unwrap()
+                .unwrap();
+            assert_eq!(row.status.as_deref(), Some(expected), "{name}");
+            if expected == "error" {
+                assert_eq!(row.data["statusCode"], 502);
+                assert_eq!(row.data["errorKind"], "local_failure");
+            }
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -5028,7 +5338,7 @@ mod tests {
             None,
             false,
         );
-        dispatch.start_runtime_trace(&provider, &model, "reqwest");
+        dispatch.start_runtime_trace(&provider, &model, "reqwest", None);
         let frame = format!(
             "data: {}\n\n",
             json!({"type":"response.completed","sequence_number":1,
@@ -5071,10 +5381,11 @@ mod tests {
             None,
             false,
         );
-        native.start_runtime_trace("codex", "fixture", "reqwest");
+        native.start_runtime_trace("codex", "fixture", "reqwest", None);
         assert!(native.runtime_trace_id.is_none());
         assert!(native.runtime_started_at.is_none());
-        native.feed(b"data: {\"type\":\"response.completed\",\"sequence_number\":1}\n\n");
+        native.feed(b"data: {\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{\"status\":\"completed\"}}\n\n");
+        assert!(native.response_completed_for_log);
         native.trace_end("eof", None, None);
         assert!(logs.get_logs().await.is_empty());
 
@@ -5087,7 +5398,7 @@ mod tests {
             None,
             false,
         );
-        claude.start_runtime_trace("claude", "fixture", "reqwest");
+        claude.start_runtime_trace("claude", "fixture", "reqwest", None);
         claude.feed(b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_fixture\",\"model\":\"fixture\",\"role\":\"assistant\"}}\n\n");
         assert_eq!(
             claude.trace.as_ref().unwrap().snapshot().unwrap()["upstreamEvents"]["message_start"],

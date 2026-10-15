@@ -751,6 +751,17 @@
     ],
     "error_kind_policy": "explicit_literal_per_error_branch_never_inferred_from_status",
     "payload_bodies_stored": false,
+    "native_responses_completion": {
+      "success_evidence": "validated_response_completed_before_downstream_yield",
+      "body_drop_after_success": "preserve_success_final_usage_and_original_tps",
+      "early_drop": "interrupted",
+      "known_errors_revoke_success_fallback": true,
+      "trace_required": false,
+      "drop_persistence": "existing_bounded_best_effort_queue_in_both_modes",
+      "success_guarantees_downstream_delivery": false,
+      "upstream_reading_and_cancellation": "unchanged",
+      "historical_rows_and_startup_recovery": "unchanged"
+    },
     "codex_cache_diagnostics": {
       "scope": "private_requestDetails_data_generation_only_not_compact_or_search",
       "connection_id": "actual_configured_connection",

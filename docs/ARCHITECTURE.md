@@ -47,6 +47,28 @@ The sink starts after the database has loaded, using the actual `Db::data_dir`
 TRACE events to SQLite or changes the durability mode of the request journal.
 The existing bounded Claude `streamTrace` metadata remains unchanged.
 
+`stream_start.attempt_id` links a stream to the existing Application Logs
+`requestId` (a server-generated UUID, not a client session or provider ID).
+An early generator drop emits `stream_end` with `reason: "body_drop"`, the
+observed `native_response_completed` state and `upstream_eof`; it does not
+claim a user Stop or physical disconnect. `attempt_drop` records the same
+`attempt_id`, `finish_status` (`not_started` or the in-progress finish status),
+logging mode, selected drop `status`, and `finish_enqueued`. The retained
+`interrupted_enqueued` is true only for an enqueued interrupted update. Enqueue
+success is not proof of a SQLite write. These diagnostics do not change
+passthrough bytes, cancellation, or the public request-log schema.
+
+Native Responses attempt accounting recognizes a validated successful
+`response.completed` before downstream yield, independently of TRACE. If the
+body is then dropped before EOF, the existing bounded drop pipeline preserves
+`success`, final token counters and original TPS evidence instead of inventing
+an interruption. Early drops remain `interrupted`; observed protocol failures
+or framing errors revoke that fallback, and explicit error finishes still win.
+Reading continues normally after completion, so later observed errors are not
+suppressed. Duration still ends at finish/drop. Success describes the observed
+generation result, not guaranteed downstream delivery. Drop writes remain
+best-effort in both logging modes; old rows and startup recovery are unchanged.
+
 One filesystem thread consumes a nonblocking queue of at most 256 complete
 records, each at most 8 KiB (2 MiB queued payload). Full queues, oversized
 records and unavailable storage drop diagnostic records, never delay or fail

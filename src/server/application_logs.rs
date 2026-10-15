@@ -544,6 +544,8 @@ impl RequestLogContext {
                     stream_trace: None,
                     codex_cache: Default::default(),
                     tps: Default::default(),
+                    finishing_status: None,
+                    stream_completion: None,
                 })
             }
             // Durable: synchronous insert before upstream with backpressure.
@@ -591,6 +593,8 @@ impl RequestLogContext {
                         stream_trace: None,
                         codex_cache: Default::default(),
                         tps: Default::default(),
+                        finishing_status: None,
+                        stream_completion: None,
                     }),
                     Ok(Err(error)) => {
                         tracing::warn!(target: "openproxy::logs", %error, "failed to start request log");
@@ -641,9 +645,18 @@ pub struct AttemptLog {
     stream_trace: Option<Value>,
     codex_cache: crate::core::executor::codex_cache::CodexCacheObservation,
     tps: crate::server::upstream_tps::UpstreamTpsObservation,
+    // Runtime diagnostics only; never changes finish/drop persistence semantics.
+    finishing_status: Option<&'static str>,
+    /// Metadata-only successful native Responses result, captured before yield.
+    /// Explicit errors or a subsequent invalid observation revoke this fallback.
+    stream_completion: Option<Value>,
 }
 
 impl AttemptLog {
+    pub(crate) fn id(&self) -> &str {
+        &self.id
+    }
+
     pub(crate) fn tps(&self) -> crate::server::upstream_tps::UpstreamTpsObservation {
         self.tps.clone()
     }
@@ -671,8 +684,18 @@ impl AttemptLog {
         }
     }
 
+    pub(crate) fn observe_stream_completion(
+        &mut self,
+        completed: bool,
+        status_code: u16,
+        tokens: Option<&TokenUsage>,
+    ) {
+        self.stream_completion =
+            completed.then(|| self.finished_data(Some(status_code), tokens, None));
+    }
+
     pub async fn finish(
-        self,
+        mut self,
         status: &'static str,
         status_code: Option<u16>,
         tokens: Option<&TokenUsage>,
@@ -680,6 +703,10 @@ impl AttemptLog {
     ) {
         if self.finished.load(Ordering::Acquire) {
             return;
+        }
+        self.finishing_status = Some(status);
+        if status != "success" {
+            self.stream_completion = None;
         }
         let data = self.finished_data(status_code, tokens, error_kind);
         if self.lean {
@@ -753,14 +780,30 @@ impl Drop for AttemptLog {
         // task. Enqueue best-effort through the same bounded pipeline in both
         // modes; overflow is counted explicitly instead of growing. The writer
         // is a runtime-independent thread, so no runtime check is needed.
-        let data = self.finished_data(None, None, None);
-        try_enqueue_lean(
+        let (status, mut data) = match self.stream_completion.take() {
+            Some(data) => ("success", data),
+            None => ("interrupted", self.finished_data(None, None, None)),
+        };
+        // Duration still ends at finish/drop, not the protocol-terminal read.
+        data["durationMs"] = json!(self.started.elapsed().as_millis());
+        let enqueued = try_enqueue_lean(
             self.db.clone(),
             LogOpKind::Finish {
                 id: self.id.clone(),
-                status: "interrupted".to_string(),
+                status: status.to_string(),
                 data,
             },
+        );
+        tracing::trace!(
+            target: "openproxy::chat::stream",
+            attempt_id = %self.id,
+            finish_status = self.finishing_status.unwrap_or("not_started"),
+            lean = self.lean,
+            status,
+            finish_enqueued = enqueued,
+            interrupted_enqueued = status == "interrupted" && enqueued,
+            elapsed_ms = self.started.elapsed().as_millis() as u64,
+            "attempt_drop"
         );
     }
 }

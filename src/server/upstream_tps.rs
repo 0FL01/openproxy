@@ -36,6 +36,33 @@ struct ObservationState {
     last_read: Option<Instant>,
 }
 
+/// Original Responses finality, shared by throughput and attempt accounting.
+/// Token counters are deliberately not part of protocol success validation.
+pub(crate) fn responses_completed(event: Option<&str>, value: &Value, body: bool) -> bool {
+    let response = value.get("response").unwrap_or(value);
+    let kind = value.get("type").and_then(Value::as_str).or(event);
+    value.get("error").is_none_or(Value::is_null)
+        && response.get("error").is_none_or(Value::is_null)
+        && response.get("status").and_then(Value::as_str) == Some("completed")
+        && (body || kind == Some("response.completed"))
+        && (body || event.is_none_or(|event| event == "response.completed"))
+        && (body
+            || value
+                .get("type")
+                .is_none_or(|kind| kind.as_str() == Some("response.completed")))
+        && response
+            .get("incomplete_details")
+            .is_none_or(Value::is_null)
+        && response.get("output").is_none_or(|output| {
+            output.as_array().is_some_and(|items| {
+                items.iter().all(|item| {
+                    item.get("status")
+                        .is_none_or(|status| status.as_str() == Some("completed"))
+                })
+            })
+        })
+}
+
 impl UpstreamTpsObservation {
     pub(crate) fn timing(&self) -> GenerationTiming {
         self.timing.clone()
@@ -230,25 +257,7 @@ impl UpstreamTpsObservation {
                     &mut invalid,
                 );
                 state.failed |= invalid;
-                let completed = response.get("status").and_then(Value::as_str) == Some("completed")
-                    && (body || kind == Some("response.completed"))
-                    && (body || event.is_none_or(|event| event == "response.completed"))
-                    && (body
-                        || value
-                            .get("type")
-                            .is_none_or(|kind| kind.as_str() == Some("response.completed")))
-                    && response
-                        .get("incomplete_details")
-                        .is_none_or(Value::is_null)
-                    && response.get("output").is_none_or(|output| {
-                        output.as_array().is_some_and(|items| {
-                            items.iter().all(|item| {
-                                item.get("status")
-                                    .is_none_or(|status| status.as_str() == Some("completed"))
-                            })
-                        })
-                    });
-                if completed {
+                if responses_completed(event, value, body) {
                     merge_count(
                         &mut state.final_output,
                         response.pointer("/usage/output_tokens"),

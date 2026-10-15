@@ -100,6 +100,19 @@ Persisted types intentionally preserve unknown fields through `extra` and `provi
 
 | Claude subscription harness identity | C46 declares a provider-scoped carve-out to C09/C05 for first-party `claude`/`anthropic` connections with `auth_type == "oauth"` targeting `api.anthropic.com` only: the adapter applies Claude Code harness identity (deterministic reference system prompt, original client instructions relocated to messages as a user/assistant pair, stable device/session metadata, `claude-cli` UA, `oauth-2025-04-20` beta). API-key connections, third-party nodes, and all other providers are unchanged. Client `cache_control`/`prompt_cache_key` relocate with their content; synthetic blocks carry no markers; the classifier is a stateless function of UA/system. ToS/ban risk is owner-accepted and surfaced in the provider notice. |
 
+### Native Responses completion accounting
+
+C35/C43 interrupted-on-drop applies when no validated successful native
+Responses terminal has been observed. Before downstream yield, the proxy
+captures a successful `response.completed` and metadata-only final usage;
+a subsequent body drop preserves `success` through the same bounded best-effort
+drop queue in either logging mode. This is observed protocol success, not proof
+of complete downstream delivery. Missing usage does not fabricate counters.
+Known protocol/framing failures revoke this fallback, and explicit error
+finishes retain priority. The proxy does not stop or detach upstream reading
+at completion; later observed errors, native bytes, cancellation/admission
+lifetimes, legacy Duration, existing rows and startup recovery are unchanged.
+
 ### Private Codex cache telemetry carve-out
 
 The C35/C43 prohibition on correlation internals admits narrow passive metadata exceptions:
