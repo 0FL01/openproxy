@@ -64,3 +64,56 @@ test("a custom Fast name survives the model joining the catalog", () => {
     before.allRows.find((row) => row.id === "gpt-6.1-sol"),
   );
 });
+
+test("disabled custom rows stay restorable across catalog arrival and removal", () => {
+  const custom = Object.freeze({ providerAlias: "xai", id: "grok-user", name: "My Grok", kind: "llm" });
+  const customModels = Object.freeze([custom]);
+  const aliases = Object.freeze({ "my-route": "xai/grok-user" });
+  const disabledIds = Object.freeze(["grok-user"]);
+  const input = { providerAlias: "xai", customModels, modelAliases: aliases, disabledIds };
+  const catalog = Object.freeze([Object.freeze({
+    id: "grok-user", name: "Official name", kind: "llm", contextWindow: 256000,
+  })]);
+  const snapshot = JSON.stringify({ input, catalog });
+
+  for (const catalogModels of [[], catalog, []]) {
+    const result = buildAvailableModels({ ...input, catalogModels });
+    assert.equal(result.enabledRows.length, 0, "disabled custom must never appear active");
+    assert.equal(result.customRows.length, 0);
+    assert.equal(result.allRows.length, 1, "overlap must be deduplicated");
+    assert.equal(result.disabledRows.length, 1, "disabled custom must not disappear");
+    assert.equal(result.disabledRows[0].name, "My Grok");
+    assert.equal(result.disabledRows[0].fullModel, "xai/grok-user");
+    assert.equal(result.disabledRows[0].disabled, true);
+    assert.equal(result.disabledRows[0].contextWindow, catalogModels.length ? 256000 : undefined);
+  }
+  assert.equal(JSON.stringify({ input, catalog }), snapshot, "saved configuration is immutable");
+
+  const restored = buildAvailableModels({ ...input, catalogModels: catalog, disabledIds: [] });
+  assert.equal(restored.enabledRows.length, 1);
+  assert.equal(restored.enabledRows[0].name, "My Grok");
+  assert.equal(restored.disabledRows.length, 0);
+});
+
+test("custom and legacy IDs deduplicate against live/catalog rows without changing user data", () => {
+  const customModels = Object.freeze([
+    Object.freeze({ providerAlias: "xai", id: "grok-user", name: "User name" }),
+    Object.freeze({ providerAlias: "xai", id: "grok-user", name: "Duplicate name" }),
+    Object.freeze({ providerAlias: "xai", id: "grok-multi-agent-user", name: "Explicit agent" }),
+    Object.freeze({ providerAlias: "xai", id: "media-only", kind: "image" }),
+  ]);
+  const aliases = Object.freeze({ personal: "xai/grok-user", legacy: "xai/grok-legacy" });
+  const input = {
+    providerAlias: "xai", customModels, modelAliases: aliases,
+    catalogModels: [{ id: "grok-user", name: "Official", kind: "llm", contextWindow: null }],
+    liveModels: [{ id: "grok-user" }, { id: "grok-legacy" }],
+  };
+  const snapshot = JSON.stringify(input);
+  const result = buildAvailableModels(input);
+  assert.equal(result.allRows.length, 3);
+  assert.equal(new Set(result.allRows.map(row => row.id)).size, 3);
+  assert.equal(result.enabledRows.find(row => row.id === "grok-user").name, "User name");
+  assert.ok(result.enabledRows.find(row => row.id === "grok-multi-agent-user"), "explicit saved rows remain");
+  assert.ok(result.allRows.every(row => row.contextWindow === undefined), "unknown context gets no default");
+  assert.equal(JSON.stringify(input), snapshot);
+});

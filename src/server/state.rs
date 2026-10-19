@@ -19,6 +19,7 @@ use crate::server::codex_catalog::CodexModelCatalog;
 use crate::server::console_logs::{shared_console_log_buffer, ConsoleLogBuffer};
 use crate::server::quota_snapshots::QuotaSnapshots;
 use crate::server::trace_logs::TraceLogCounters;
+use crate::server::xai_catalog::XaiModelCatalog;
 
 /// Session info stored server-side
 #[derive(Debug, Clone)]
@@ -81,6 +82,7 @@ pub struct AppState {
     pub models_dev: Arc<ModelsDevCatalog>,
     pub commandcode_models: Arc<CommandCodeModelCatalog>,
     pub codex_models: Arc<CodexModelCatalog>,
+    pub xai_models: Arc<XaiModelCatalog>,
     pub antigravity_onboarding: Arc<AntigravityOnboardingCoordinator>,
     pub quota_auto_ping: Arc<QuotaAutoPingLifecycle>,
     pub quota_snapshots: Arc<QuotaSnapshots>,
@@ -115,6 +117,7 @@ impl AppState {
             models_dev: Arc::new(ModelsDevCatalog::default()),
             commandcode_models: Arc::new(CommandCodeModelCatalog::default()),
             codex_models: Arc::new(CodexModelCatalog::default()),
+            xai_models: Arc::new(XaiModelCatalog::default()),
             antigravity_onboarding: Arc::new(AntigravityOnboardingCoordinator::new()),
             quota_auto_ping: Arc::new(QuotaAutoPingLifecycle::new()),
             quota_snapshots: Arc::new(QuotaSnapshots::default()),

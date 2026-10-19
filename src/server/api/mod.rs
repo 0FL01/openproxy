@@ -318,6 +318,7 @@ async fn api_build() -> Response {
 }
 
 async fn api_catalog(State(state): State<AppState>) -> Response {
+    let xai_diagnostic = ensure_xai_catalog(&state).await;
     static CATALOG_JSON: &str = include_str!("../../core/model/provider_catalog.json");
     let mut catalog: Value =
         serde_json::from_str(CATALOG_JSON).expect("embedded provider_catalog.json should be valid");
@@ -361,6 +362,28 @@ async fn api_catalog(State(state): State<AppState>) -> Response {
     }
 
     let db = state.db.snapshot();
+    if let Some(entries) = catalog
+        .get_mut("providerModels")
+        .and_then(Value::as_array_mut)
+    {
+        if let Some(entry) = entries
+            .iter_mut()
+            .find(|entry| entry.get("alias").and_then(Value::as_str) == Some("xai"))
+        {
+            let mut models = entry
+                .get("models")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if let Some(inventory) = state.xai_models.published_selected(&db) {
+                models.extend(inventory.models.iter().map(|model| model.catalog_json()));
+            }
+            entry["models"] = Value::Array(models);
+        }
+    }
+    if let Some(diagnostic) = xai_diagnostic {
+        catalog["xaiCatalog"] = diagnostic;
+    }
     let codex = state.codex_models.union_active(&db);
     if let Some(entries) = catalog
         .get_mut("providerModels")
@@ -461,6 +484,31 @@ async fn api_catalog(State(state): State<AppState>) -> Response {
     }
 
     Json(catalog).into_response()
+}
+
+/// Admin aggregates remain useful when the selected xAI account has no catalog.
+/// Always project the current canonical account, never the result of an obsolete
+/// in-flight refresh or a union across accounts.
+pub(super) async fn ensure_xai_catalog(state: &AppState) -> Option<Value> {
+    let snapshot = state.db.snapshot();
+    let connection = crate::server::xai_catalog::selected_connection(&snapshot)?.clone();
+    let result = state
+        .xai_models
+        .models_for_connection(state, &connection)
+        .await;
+    let snapshot = state.db.snapshot();
+    crate::server::xai_catalog::selected_connection(&snapshot)?;
+    match state.xai_models.published_selected(&snapshot) {
+        Some(inventory) => Some(match inventory.warning {
+            Some(warning) => json!({ "status": "stale", "warning": warning }),
+            None => json!({ "status": "ready" }),
+        }),
+        None => Some(json!({
+            "status": "unavailable",
+            "warning": result.err().map(|error| error.message)
+                .unwrap_or_else(|| "xAI catalog unavailable; retry discovery".to_string()),
+        })),
+    }
 }
 
 pub(super) fn require_management_api_key(

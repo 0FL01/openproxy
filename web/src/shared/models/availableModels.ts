@@ -30,6 +30,7 @@ export interface AvailableModelRow {
   isFree: boolean;
   disabled: boolean;
   alias?: string;
+  contextWindow?: number | null;
 }
 
 export interface LiveModel {
@@ -44,6 +45,7 @@ export interface CatalogModelInput {
   type?: string;
   kind?: string;
   isFree?: boolean;
+  contextWindow?: number | null;
   [key: string]: unknown;
 }
 
@@ -59,12 +61,14 @@ export interface BuildAvailableModelsInput {
 }
 
 export interface BuildAvailableModelsResult {
-  /** Custom + legacyAlias rows. Always shown (not subject to freeOnly). */
+  /** Enabled custom + legacyAlias rows (not subject to freeOnly). */
   customRows: AvailableModelRow[];
   /** Catalog + live rows that are enabled and pass the freeOnly filter. */
   enabledCoreRows: AvailableModelRow[];
   /** Catalog + live rows that are disabled. */
   disabledCoreRows: AvailableModelRow[];
+  /** Every disabled row, including custom models not currently in the catalog. */
+  disabledRows: AvailableModelRow[];
   /** customRows + enabledCoreRows — the visible enabled set. */
   enabledRows: AvailableModelRow[];
   /** Every merged row (custom + enabled core + disabled core). */
@@ -96,8 +100,8 @@ function modelKind(model: CatalogModelInput): string | undefined {
  * Pure builder. Merges catalog + live + custom models into a single,
  * deduplicated, llm-filtered list with consistent id normalization.
  *
- * - Custom/legacyAlias rows are always returned (never freeOnly-filtered).
- * - Catalog/live rows respect `disabledIds` and the `freeOnly` filter.
+ * - Custom/legacyAlias rows are never freeOnly-filtered.
+ * - All rows respect `disabledIds`; catalog/live rows also respect freeOnly.
  */
 export function buildAvailableModels(
   input: BuildAvailableModelsInput
@@ -121,17 +125,25 @@ export function buildAvailableModels(
     id: string,
     name: string | undefined,
     source: "catalog" | "live",
-    explicitFree?: boolean
+    explicitFree?: boolean,
+    contextWindow?: number | null
   ) => {
     if (!id || coreById.has(id)) return;
+    const custom = customModels.find(
+      (model) => model?.providerAlias === providerAlias && model.id === id &&
+        (!type || (model.kind || model.type || "llm") === type)
+    );
     coreById.set(id, {
       id,
-      name: name || id,
+      name: typeof custom?.name === "string" && custom.name.trim() ? custom.name : name || id,
       fullModel: `${providerAlias}/${id}`,
       source,
       type,
       isFree: isFreeModelId(id, providerAlias, explicitFree),
       disabled: disabledSet.has(id),
+      ...(typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0
+        ? { contextWindow }
+        : {}),
     });
   };
 
@@ -140,34 +152,23 @@ export function buildAvailableModels(
     if (kind && kind !== type) continue;
     const isFree =
       typeof m.isFree === "boolean" ? m.isFree : undefined;
-    // Keep an explicit custom name when that model joins the catalog.
-    const custom = customModels.find(
-      (model) =>
-        model?.providerAlias === providerAlias &&
-        model.id === m.id &&
-        (!type || (model.kind || model.type || "llm") === type)
-    );
-    const name =
-      typeof custom?.name === "string" && custom.name.trim()
-        ? custom.name
-        : m.name;
-    pushCore(m.id, name, "catalog", isFree);
+    pushCore(m.id, m.name, "catalog", isFree, m.contextWindow);
   }
   for (const m of liveModels) {
     pushCore(m.id, m.name, "live", m.isFree);
   }
 
-  // 2. Custom + legacyAlias rows (always shown).
+  // 2. Custom + legacyAlias rows, excluding IDs already represented by core rows.
   const customRowsRaw = providerAlias === "a6api"
     ? []
     : getProviderCustomModelRows({
         customModels: customModels as CustomModelEntry[],
         modelAliases,
         providerAlias,
-        builtInModels: catalogModels as Array<{ id: string }>,
+        builtInModels: Array.from(coreById.values()),
         type,
       });
-  const customRows: AvailableModelRow[] = customRowsRaw.map((r) => ({
+  const allCustomRows: AvailableModelRow[] = customRowsRaw.map((r) => ({
     id: r.id,
     name: r.name || r.id,
     fullModel: r.fullModel,
@@ -184,15 +185,18 @@ export function buildAvailableModels(
     (r) => !r.disabled && (!freeOnly || r.isFree)
   );
   const disabledCoreRows = coreRows.filter((r) => r.disabled);
+  const customRows = allCustomRows.filter((r) => !r.disabled);
+  const disabledRows = [...allCustomRows.filter((r) => r.disabled), ...disabledCoreRows];
 
   const enabledRows = [...customRows, ...enabledCoreRows];
-  const allRows = [...customRows, ...coreRows];
+  const allRows = [...allCustomRows, ...coreRows];
   const allCoreIds = coreRows.map((r) => r.id);
 
   return {
     customRows,
     enabledCoreRows,
     disabledCoreRows,
+    disabledRows,
     enabledRows,
     allRows,
     allCoreIds,

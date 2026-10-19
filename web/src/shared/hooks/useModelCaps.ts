@@ -1,6 +1,8 @@
 
 import { useState, useEffect, useCallback } from "react";
 import type { ModelCaps } from "@/shared/constants/models";
+import { useCatalogStore } from "@/store/catalogStore";
+import { findXaiCatalogModel, xaiModelCaps } from "@/shared/utils/xaiCatalog";
 
 /**
  * Lightweight client-side capability heuristic for models not present in the
@@ -93,6 +95,7 @@ interface ModelsApiEntry {
  * heuristic when `/api/models` does not include `caps` (OpenProxy today).
  */
 export function useModelCaps() {
+  const modelsByAlias = useCatalogStore((state) => state.modelsByAlias);
   const [byFull, setByFull] = useState<Record<string, ModelCaps>>({});
   const [byId, setById] = useState<Record<string, ModelCaps>>({});
 
@@ -131,6 +134,11 @@ export function useModelCaps() {
   const getCaps = useCallback(
     (key: string | null | undefined): ModelCaps | null => {
       if (!key) return null;
+      // Resolve xAI before full/bare API entries and Grok heuristics. Even an
+      // absent runtime row is authoritative unknown, including explicit customs.
+      if (key.startsWith("xai/")) {
+        return xaiModelCaps(findXaiCatalogModel(key, modelsByAlias.xai || []));
+      }
       if (byFull[key]) return byFull[key];
       const bare = key.includes("/") ? key.slice(key.indexOf("/") + 1) : key;
       if (byId[bare]) return byId[bare];
@@ -138,7 +146,7 @@ export function useModelCaps() {
       const provider = key.includes("/") ? key.slice(0, key.indexOf("/")) : null;
       return inferCaps(provider, bare);
     },
-    [byFull, byId],
+    [byFull, byId, modelsByAlias],
   );
 
   return { getCaps };

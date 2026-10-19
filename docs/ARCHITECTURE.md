@@ -33,6 +33,32 @@ protocol-pair inventory is machine-readable in
   `codex_web_search`, which calls Codex's standalone index rather than a
   Responses generation model. Neither owns history, sessions, or a tool loop.
 
+## xAI model discovery
+
+xAI chat/vision inventory comes from authenticated `/v1/language-models`;
+`/v1/models` optionally adds context lengths, never membership. Official aliases
+are advertised as unchanged upstream model IDs. Multi-agent families and their
+aliases are excluded from automatic discovery because the current xAI transport
+is Chat Completions. Explicit user models remain configuration-owned.
+
+`server/xai_catalog.rs` maintains a credential-scoped, process-local cache shared
+by dashboard and client discovery: one-hour success freshness, 60-second failed
+automatic retry, and singleflight manual/automatic refresh. No worker, disk cache,
+configuration import or generation probe is created. Refresh uses the configured
+proxy, a pooled redirect-disabled client, a ten-second caller deadline, 1 MiB
+response limits and at most 2,048 expanded identities. Missing metadata remains
+unknown; optional context-enrichment failure does not discard valid model IDs.
+These transport limits apply to the new catalog GETs. OAuth 401 recovery joins
+the existing refresh coordinator; its legacy transport is unchanged, and an
+already-issued rotated token pair is still persisted if the catalog waiter ends.
+
+Same-identity last-good data survives refresh failure. Cold public discovery
+fails explicitly instead of silently omitting configured automatic xAI models;
+admin aggregates retain other providers and expose xAI diagnostics. Explicit
+enabled-model overrides remain usable without discovery. Generation and health
+never fetch this catalog. User overlays and canonical `opencode.source = "xai"`
+are preserved. The local CLI's static model list is not a server discovery view.
+
 ## Persistent stream diagnostics
 
 The server always enables **only** the `openproxy::chat::stream` TRACE target

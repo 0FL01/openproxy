@@ -71,35 +71,7 @@ pub(super) async fn test_provider_models(
 
     let provider = connection.provider.clone();
     let alias = provider_alias(&provider).to_string();
-    let mut models = if provider == "codex" {
-        provider_models::fetch_models_for_connection(&state, &connection)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|model| TestModelTarget {
-                name: model.name.clone(),
-                id: model.id,
-            })
-            .collect()
-    } else {
-        static_models_for_provider(&provider)
-    };
-
-    if provider != "codex"
-        && models.is_empty()
-        && (is_compatible_provider(&provider)
-            || provider_models::supports_models_discovery(&provider))
-    {
-        models = provider_models::fetch_models_for_connection(&state, &connection)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|model| TestModelTarget {
-                name: model.name.clone(),
-                id: model.id,
-            })
-            .collect();
-    }
+    let models = model_test_targets(&state, &connection).await;
 
     if models.is_empty() {
         return (
@@ -132,6 +104,44 @@ pub(super) async fn test_provider_models(
         results,
     })
     .into_response()
+}
+
+async fn model_test_targets(
+    state: &AppState,
+    connection: &crate::types::ProviderConnection,
+) -> Vec<TestModelTarget> {
+    let provider = connection.provider.as_str();
+    let mut models = if matches!(provider, "codex" | "xai") {
+        provider_models::fetch_models_for_connection(state, connection)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|model| TestModelTarget {
+                name: model.name.clone(),
+                id: model.id,
+            })
+            .collect()
+    } else {
+        static_models_for_provider(provider)
+    };
+
+    if !matches!(provider, "codex" | "xai")
+        && models.is_empty()
+        && (is_compatible_provider(provider)
+            || provider_models::supports_models_discovery(provider))
+    {
+        models = provider_models::fetch_models_for_connection(state, connection)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|model| TestModelTarget {
+                name: model.name.clone(),
+                id: model.id,
+            })
+            .collect();
+    }
+
+    models
 }
 
 fn static_models_for_provider(provider: &str) -> Vec<TestModelTarget> {
@@ -238,5 +248,52 @@ async fn read_error_text(response: Response, status: StatusCode) -> String {
     } else {
         let truncated: String = text.chars().take(120).collect();
         format!("HTTP {}: {truncated}", status.as_u16())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn xai_test_selection_uses_chat_inventory_not_static_media_without_paid_probes() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/language-models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "models": [{"id": "grok-chat-test-fixture"}]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": []})))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(crate::db::Db::load_from(dir.path()).await.unwrap());
+        let connection = crate::types::ProviderConnection {
+            id: "xai-test-selection".into(),
+            provider: "xai".into(),
+            auth_type: "apikey".into(),
+            api_key: Some("fixture-key".into()),
+            is_active: Some(true),
+            ..Default::default()
+        };
+        db.update(|snapshot| snapshot.provider_connections = vec![connection.clone()])
+            .await
+            .unwrap();
+        let mut state = AppState::new(db);
+        state.xai_models = Arc::new(crate::server::xai_catalog::XaiModelCatalog::with_urls(
+            format!("{}/language-models", server.uri()),
+            format!("{}/models", server.uri()),
+        ));
+        let targets = model_test_targets(&state, &connection).await;
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].id, "grok-chat-test-fixture");
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
     }
 }

@@ -507,10 +507,6 @@
       "video"
     ],
     "models": [
-      "grok-3",
-      "grok-4",
-      "grok-4-fast-reasoning",
-      "grok-code-fast-1",
       "grok-2-image-1212",
       "grok-imagine-video"
     ],

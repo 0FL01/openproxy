@@ -1,3 +1,6 @@
+import type { CatalogModel } from "@/store/catalogStore";
+import { findXaiCatalogModel, isXaiModelScope } from "./xaiCatalog";
+
 /**
  * Model-aware thinking level picker — port of 9router open-sse/providers/thinkingLevels.js
  * without the open-sse dependency.
@@ -251,8 +254,17 @@ export function matchPattern(pattern: string, model: string): boolean {
 export function getThinkingCapsForModel(
   provider: string | null | undefined,
   model: string | null | undefined,
+  xaiModels: ReadonlyArray<CatalogModel> = [],
 ): ThinkingCaps {
   if (!model) return { ...DEFAULT_CAPS };
+  if (isXaiModelScope(provider, model)) {
+    const row = findXaiCatalogModel(model, xaiModels);
+    return {
+      reasoning: row?.capabilities?.includes("reasoning") === true,
+      thinkingFormat: null,
+      thinkingCanDisable: row?.reasoningEfforts?.includes("none") === true,
+    };
+  }
 
   if (provider && PROVIDER_CAPS[provider]?.[model]) {
     return { ...DEFAULT_CAPS, ...PROVIDER_CAPS[provider][model] };
@@ -280,8 +292,14 @@ export function getThinkingCapsForModel(
 export function getThinkingLevels(
   provider: string | null | undefined,
   model: string | null | undefined,
+  xaiModels: ReadonlyArray<CatalogModel> = [],
 ): ThinkingLevel[] | null {
   if (!model) return null;
+  if (isXaiModelScope(provider, model)) {
+    const declared = findXaiCatalogModel(model, xaiModels)?.reasoningEfforts;
+    const levels = [...new Set((declared || []).filter((level) => typeof level === "string" && level && level !== "auto"))];
+    return levels.length ? levels as ThinkingLevel[] : null;
+  }
   const caps = getThinkingCapsForModel(provider, model);
   if (!caps.reasoning) return null;
 
@@ -306,21 +324,23 @@ export function getThinkingLevels(
 export function unionThinkingLevels(
   provider: string | null | undefined,
   modelIds: Iterable<string>,
+  xaiModels: ReadonlyArray<CatalogModel> = [],
 ): ThinkingLevel[] | null {
   const set = new Set<ThinkingLevel>();
   const seen = new Set<string>();
   for (const modelId of modelIds) {
     if (!modelId || seen.has(modelId)) continue;
     seen.add(modelId);
-    const lv = getThinkingLevels(provider, modelId);
+    const lv = getThinkingLevels(provider, modelId, xaiModels);
     if (!lv) continue;
     for (const l of lv) {
-      if (l !== "none") set.add(l);
+      if (l !== "none" || provider === "xai") set.add(l);
     }
   }
   if (set.size === 0) return null;
   // Stable-ish order: known ladder first, then any leftovers.
   const order: ThinkingLevel[] = [
+    "none",
     "minimal",
     "low",
     "medium",

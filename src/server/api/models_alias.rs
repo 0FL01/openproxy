@@ -66,6 +66,7 @@ async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> Respo
         return response;
     }
 
+    let xai_diagnostic = super::ensure_xai_catalog(&state).await;
     let snapshot = state.db.snapshot();
     let disabled_map = super::models_disabled::disabled_models_from_db(&snapshot);
     let catalog = crate::core::model::catalog::provider_catalog();
@@ -182,7 +183,38 @@ async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> Respo
         }));
     }
 
-    Json(serde_json::json!({ "models": models })).into_response()
+    if let Some(inventory) = state.xai_models.published_selected(&snapshot) {
+        for model in inventory.models.iter() {
+            if disabled_map
+                .get("xai")
+                .is_some_and(|ids| ids.iter().any(|id| id == &model.id))
+            {
+                continue;
+            }
+            let full_model = format!("xai/{}", model.id);
+            let alias = snapshot
+                .model_aliases
+                .get(&full_model)
+                .map(model_alias_path)
+                .unwrap_or_else(|| model.id.clone());
+            let mut row = model.catalog_json();
+            row["provider"] = json!("xai");
+            row["model"] = json!(model.id);
+            row["fullModel"] = json!(full_model);
+            row["alias"] = json!(alias);
+            row["caps"] = json!({
+                "vision": model.capabilities.iter().any(|cap| cap == "vision"),
+                "reasoning": model.capabilities.iter().any(|cap| cap == "reasoning"),
+            });
+            models.push(row);
+        }
+    }
+
+    let mut payload = json!({ "models": models });
+    if let Some(diagnostic) = xai_diagnostic {
+        payload["xaiCatalog"] = diagnostic;
+    }
+    Json(payload).into_response()
 }
 
 // PUT /api/models — update model alias (with duplicate check)

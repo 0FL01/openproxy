@@ -469,7 +469,16 @@ async fn fetch_provider_models_response(
                 .await
         }
         "xai" => {
-            fetch_first_party_openai_style_models(connection, "https://api.x.ai/v1/models").await
+            let inventory = state
+                .xai_models
+                .refresh_connection(state, connection, true)
+                .await
+                .map_err(|error| RouteError::new(error.status, error.message))?;
+            Ok(response_with_models(
+                connection,
+                inventory.models.iter().map(xai_provider_model).collect(),
+                inventory.warning,
+            ))
         }
         "mistral" => {
             fetch_first_party_openai_style_models(connection, "https://api.mistral.ai/v1/models")
@@ -580,6 +589,28 @@ async fn fetch_provider_models_response(
         other => Err(RouteError::bad_request(format!(
             "Provider {other} does not support models listing"
         ))),
+    }
+}
+
+fn xai_provider_model(metadata: &crate::server::xai_catalog::XaiModelMetadata) -> ProviderModel {
+    let mut value = metadata.catalog_json();
+    let object = value
+        .as_object_mut()
+        .expect("xAI catalog model must be an object");
+    object.remove("id");
+    object.remove("name");
+    object.insert(
+        "opencode".to_string(),
+        serde_json::to_value(super::v1_models::xai_opencode_metadata(metadata))
+            .expect("xAI metadata serializes"),
+    );
+    ProviderModel {
+        id: metadata.id.clone(),
+        name: metadata.name.clone(),
+        extra: object
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
     }
 }
 

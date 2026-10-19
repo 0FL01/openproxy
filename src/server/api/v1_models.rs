@@ -51,6 +51,44 @@ async fn list_models_for_kinds(
         }
     }
 
+    // Authentication can reload the database. Discovery is demand-driven and
+    // must use the canonical account after that reload, not the earlier view.
+    let snapshot = state.db.snapshot();
+    let selected_xai = crate::server::xai_catalog::selected_connection(&snapshot).cloned();
+    let mut retry_after = 60;
+    let mut discovery_error = None;
+    if kind_filter.contains(&LLM_KIND) {
+        if let Some(connection) = selected_xai.as_ref() {
+            // A nonempty *raw* enabled array is an override even if none of its
+            // values normalize into IDs. Preserve that existing distinction.
+            if !enabled_model_ids(connection).1 {
+                if let Err(error) = state
+                    .xai_models
+                    .models_for_connection(&state, connection)
+                    .await
+                {
+                    retry_after = error.retry_after;
+                    discovery_error = Some(error.message);
+                }
+            }
+        }
+    }
+    let snapshot = state.db.snapshot();
+    if kind_filter.contains(&LLM_KIND)
+        && (selected_xai.is_some()
+            || crate::server::xai_catalog::selected_connection(&snapshot).is_some())
+    {
+        let current = crate::server::xai_catalog::selected_connection(&snapshot);
+        if current.is_none()
+            || current.is_some_and(|connection| {
+                !enabled_model_ids(connection).1
+                    && state.xai_models.published_selected(&snapshot).is_none()
+            })
+        {
+            return xai_unavailable_response(discovery_error.as_deref(), retry_after);
+        }
+    }
+
     let mut data = build_models_list(&state, &snapshot, kind_filter).await;
 
     // Claude/Anthropic subscription models are served only to clients that
@@ -72,6 +110,22 @@ async fn list_models_for_kinds(
         })
         .into_response(),
     )
+}
+
+fn xai_unavailable_response(message: Option<&str>, retry_after: u64) -> Response {
+    let mut response = (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({ "error": {
+            "message": message.unwrap_or("xAI catalog unavailable; retry discovery"),
+            "type": "server_error",
+            "code": "xai_catalog_unavailable",
+        } })),
+    )
+        .into_response();
+    if let Ok(value) = HeaderValue::from_str(&retry_after.to_string()) {
+        response.headers_mut().insert(header::RETRY_AFTER, value);
+    }
+    with_cors_response(response)
 }
 
 async fn build_models_list(
@@ -97,6 +151,7 @@ async fn build_models_list(
     } else {
         None
     };
+    let xai_inventory = state.xai_models.published_selected(snapshot);
     let disabled_map = super::models_disabled::disabled_models_from_db(snapshot);
     let models_dev = if active_connections.iter().any(|connection| {
         crate::core::model::models_dev::is_opencode_provider(&connection.provider)
@@ -213,6 +268,17 @@ async fn build_models_list(
                 }
             } else if provider_id == "a6api" {
                 raw_model_ids = crate::core::model::a6api_active_model_ids(snapshot);
+            } else if provider_id == "xai" && !had_enabled_models {
+                // The service inventory is chat-only. Preserve static media,
+                // but never treat it as evidence of automatic chat models.
+                raw_model_ids = provider_models
+                    .iter()
+                    .filter(|model| model.kind != LLM_KIND && model.kind != "chat")
+                    .map(|model| model.id.clone())
+                    .collect();
+                if let Some(inventory) = &xai_inventory {
+                    raw_model_ids.extend(inventory.models.iter().map(|model| model.id.clone()));
+                }
             } else if !had_enabled_models {
                 raw_model_ids = if provider_id == "commandcode" {
                     commandcode_catalog
@@ -244,6 +310,7 @@ async fn build_models_list(
             if raw_model_ids.is_empty()
                 && provider_id != "codex"
                 && provider_id != "commandcode"
+                && provider_id != "xai"
                 && !UPSTREAM_CONNECTION_RE.is_match(provider_id)
                 && super::provider_models::supports_models_discovery(provider_id)
             {
@@ -315,16 +382,34 @@ async fn build_models_list(
                 {
                     continue;
                 }
-                let kind = static_model_kind_by_id
-                    .get(model_id.as_str())
-                    .copied()
-                    .unwrap_or_else(|| infer_kind_from_unknown_model_id(&model_id));
+                let xai_model = xai_inventory
+                    .as_ref()
+                    .filter(|_| provider_id == "xai")
+                    .and_then(|inventory| {
+                        inventory.models.iter().find(|model| model.id == model_id)
+                    });
+                let kind = if xai_model.is_some() {
+                    LLM_KIND
+                } else {
+                    static_model_kind_by_id
+                        .get(model_id.as_str())
+                        .copied()
+                        .unwrap_or_else(|| infer_kind_from_unknown_model_id(&model_id))
+                };
                 if !kind_filter.contains(&kind) {
                     continue;
                 }
 
                 // Look up context_window from catalog for this model.
-                let ctx_len = if provider_id == "codex" {
+                let ctx_len = if provider_id == "xai" {
+                    xai_model
+                        .and_then(|model| model.context_window)
+                        .or_else(|| {
+                            catalog
+                                .find_model(provider_id, &model_id)
+                                .and_then(|model| model.context_window)
+                        })
+                } else if provider_id == "codex" {
                     codex_inventory
                         .as_ref()
                         .and_then(|inventory| {
@@ -533,6 +618,13 @@ async fn build_models_list(
                     efforts: Some(&entry.reasoning_efforts),
                 }));
             }
+            if let Some(entry) = xai_inventory
+                .as_ref()
+                .filter(|_| provider_id == "xai")
+                .and_then(|inventory| inventory.models.iter().find(|entry| entry.id == model_id))
+            {
+                metadata.overlay(xai_opencode_metadata(entry));
+            }
             // C46/R7: static `cc` catalog rows carry no limits; overlay the
             // capabilities table so the OpenCode plugin keeps
             // `limit{context,output}`. `overlay` fills gaps only, so catalog
@@ -647,6 +739,36 @@ async fn build_models_list(
     }
 
     deduped_models
+}
+
+pub(super) fn xai_opencode_metadata(
+    entry: &crate::server::xai_catalog::XaiModelMetadata,
+) -> OpenCodeModelConfig {
+    let mut metadata = OpenCodeModelConfig::from_facts(ModelMetadataFacts {
+        name: Some(entry.name.clone()),
+        context: entry.context_window,
+        input: None,
+        output: None,
+        capabilities: &entry.capabilities,
+        modalities: entry
+            .input_modalities
+            .as_deref()
+            .zip(entry.output_modalities.as_deref()),
+        attachment: entry
+            .input_modalities
+            .as_ref()
+            .map(|values| values.iter().any(|value| value == "image")),
+        reasoning: entry.reasoning_efforts.as_ref().map(|_| {
+            entry
+                .capabilities
+                .iter()
+                .any(|capability| capability == "reasoning")
+        }),
+        tool_call: None,
+        efforts: entry.reasoning_efforts.as_deref(),
+    });
+    metadata.source = Some("xai".to_string());
+    metadata
 }
 
 fn provider_matches_kinds(
@@ -935,7 +1057,7 @@ pub async fn models_info(
     headers: HeaderMap,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    use crate::core::model::{get_model_info, parse_model, resolve_provider_alias};
+    use crate::core::model::{get_model_info, parse_model};
     let model_str = params.get("model").map(String::as_str).unwrap_or("");
     if model_str.is_empty() {
         return (
@@ -943,11 +1065,47 @@ pub async fn models_info(
             Json(json!({ "error": { "message": "model parameter required", "type": "invalid_request_error" } })),
         ).into_response();
     }
-    let snapshot = state.db.snapshot();
-    let resolved = get_model_info(model_str, &snapshot);
+    let mut snapshot = state.db.snapshot();
+    let mut resolved = get_model_info(model_str, &snapshot);
+    // Keep the runtime extension narrowly scoped to xAI chat metadata. Static
+    // media info and every other provider keep their existing projection.
+    let catalog = provider_catalog();
+    if resolved.provider.as_deref() == Some("xai")
+        && catalog
+            .find_model("xai", &resolved.model)
+            .is_none_or(|model| matches!(model.kind.as_str(), "llm" | "chat"))
+    {
+        if snapshot.settings.require_login {
+            if let Err(error) = require_api_key_with_reload(&headers, &state.db).await {
+                return with_cors_response(super::auth_error_response(error));
+            }
+        }
+        snapshot = state.db.snapshot();
+        if let Some(connection) =
+            crate::server::xai_catalog::selected_connection(&snapshot).cloned()
+        {
+            if !enabled_model_ids(&connection).1 {
+                let result = state
+                    .xai_models
+                    .models_for_connection(&state, &connection)
+                    .await;
+                snapshot = state.db.snapshot();
+                if state.xai_models.published_selected(&snapshot).is_none()
+                    && !crate::server::xai_catalog::selected_connection(&snapshot)
+                        .is_some_and(|connection| enabled_model_ids(connection).1)
+                {
+                    let error = result.err();
+                    return xai_unavailable_response(
+                        error.as_ref().map(|error| error.message.as_str()),
+                        error.as_ref().map_or(60, |error| error.retry_after),
+                    );
+                }
+            }
+        }
+        resolved = get_model_info(model_str, &snapshot);
+    }
 
     // Look up catalog-level model metadata if available
-    let catalog = provider_catalog();
     let (catalog_model, provider_info) = match &resolved.provider {
         Some(provider_id) => {
             let parsed = parse_model(model_str);
@@ -990,6 +1148,33 @@ pub async fn models_info(
             info["capabilities"] = json!(v);
         }
         info["kind"] = json!(cm.kind);
+    }
+
+    if resolved.provider.as_deref() == Some("xai") {
+        if let Some(inventory) = state.xai_models.published_selected(&snapshot) {
+            if let Some(model) = inventory
+                .models
+                .iter()
+                .find(|model| model.id == resolved.model)
+            {
+                let fields = model.catalog_json();
+                if let Some(fields) = fields.as_object() {
+                    for (key, value) in fields {
+                        if key != "id" {
+                            info[key] = value.clone();
+                        }
+                    }
+                }
+                let metadata = xai_opencode_metadata(model);
+                if let Some(vision) = metadata.attachment {
+                    info["vision"] = json!(vision);
+                }
+                if let Some(reasoning) = metadata.reasoning {
+                    info["reasoning"] = json!(reasoning);
+                }
+                info["opencode"] = json!(metadata);
+            }
+        }
     }
 
     // Merge provider-level fields
@@ -1208,6 +1393,25 @@ mod tests {
         let models = build_models_list(&test_state().await, &snapshot, &[LLM_KIND]).await;
         assert!(models.iter().any(|m| m.id == "tr/MiniMax-M3"),
             "custom model with provider_alias 'tr' should appear in /v1/models even without connections");
+    }
+
+    #[tokio::test]
+    async fn xai_static_media_survive_without_a_chat_publication() {
+        let snapshot = AppDb {
+            provider_connections: vec![ProviderConnection {
+                id: "xai-media-fixture".into(),
+                provider: "xai".into(),
+                is_active: Some(true),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let models = build_models_list(&test_state().await, &snapshot, &["image", "video"]).await;
+        let ids = models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["xai/grok-2-image-1212", "xai/grok-imagine-video"]);
     }
 
     #[tokio::test]

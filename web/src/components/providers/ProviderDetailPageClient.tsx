@@ -48,6 +48,9 @@ export default function ProviderDetailPageClient() {
   const [mounted, setMounted] = useState<boolean>(false);
   useEnsureCatalog();
   const reloadCatalog = useCatalogStore((state) => state.reload);
+  const catalogError = useCatalogStore((state) => state.error);
+  const xaiCatalog = useCatalogStore((state) => state.xaiCatalog);
+  const catalogModelsByAlias = useCatalogStore((state) => state.modelsByAlias);
   const { getCaps } = useModelCaps();
   useEffect(() => {
     setMounted(true);
@@ -65,6 +68,11 @@ export default function ProviderDetailPageClient() {
   const am = useAvailableModels(providerId);
   const [connections, setConnections] = useState([]);
   const connectionsRequestRef = useRef(0);
+  const [connectionsError, setConnectionsError] = useState("");
+  const [connectionsLoaded, setConnectionsLoaded] = useState(false);
+  const [xaiCatalogPending, setXaiCatalogPending] = useState(false);
+  const [xaiCatalogWarning, setXaiCatalogWarning] = useState("");
+  const xaiCatalogRequestRef = useRef(0);
   const [loading, setLoading] = useState(true);
   const [providerNode, setProviderNode] = useState(null);
   const [proxyPools, setProxyPools] = useState([]);
@@ -156,8 +164,8 @@ export default function ProviderDetailPageClient() {
   const resolveThinkingSuffix = (modelId: string): string | null => {
     if (!thinkingMode || thinkingMode === "auto") return null;
     // Normalize legacy "off" → "none" for suffix copy.
-    const mode = thinkingMode === "off" ? "none" : thinkingMode;
-    const levels = getThinkingLevels(providerId, modelId);
+    const mode = providerId !== "xai" && thinkingMode === "off" ? "none" : thinkingMode;
+    const levels = getThinkingLevels(providerId, modelId, catalogModelsByAlias.xai);
     // Only append when this model supports the selected level (9router parity).
     return levels && levels.includes(mode as never) ? mode : null;
   };
@@ -176,12 +184,19 @@ export default function ProviderDetailPageClient() {
       if ((entry.kind || entry.type || "llm") !== "llm") continue;
       modelIds.push(entry.id);
     }
-    const union = unionThinkingLevels(providerId, modelIds);
+    const union = unionThinkingLevels(providerId, modelIds, catalogModelsByAlias.xai);
     if (union) return union;
+    if (providerId === "xai") return ["auto"];
     // Fall back to THINKING_CONFIG (always includes auto).
     const cfg = levelsFromThinkingConfig(thinkingConfig?.options);
     return cfg ? (["auto", ...cfg] as string[]) : null;
   })();
+
+  useEffect(() => {
+    if (providerId === "xai" && !providerThinkingLevels?.includes(thinkingMode)) {
+      setThinkingMode("auto");
+    }
+  }, [providerId, thinkingMode, providerThinkingLevels?.join("|")]);
   
   const handleDisableModel = async (modelId: string) => {
     await am.disable([modelId]);
@@ -249,11 +264,18 @@ export default function ProviderDetailPageClient() {
         if (!res.ok) throw new Error(`Failed to load connections: ${res.status}`);
         const data = await res.json();
         if (!Array.isArray(data.connections)) throw new Error("Invalid connections response");
+        const currentConnections = data.connections.filter(c => c.provider === providerId);
         if (isCurrent()) {
-          setConnections(data.connections.filter(c => c.provider === providerId));
+          setConnections(currentConnections);
+          setConnectionsError("");
+          setConnectionsLoaded(true);
+          return currentConnections;
         }
+        return null;
       } catch (error) {
         console.log("Error fetching connections:", error);
+        if (isCurrent()) setConnectionsError(error instanceof Error ? error.message : "Failed to load connections");
+        return null;
       } finally {
         if (isCurrent() && !isCompatible) setLoading(false);
       }
@@ -300,7 +322,60 @@ export default function ProviderDetailPageClient() {
       await connectionsTask;
       if (isCurrent() && isCompatible) setLoading(false);
     }
+    return connectionsTask;
   }, [providerId, isCompatible]);
+
+  const refreshXaiCatalog = useCallback(async (force = false) => {
+    if (providerId !== "xai") return;
+    const requestId = ++xaiCatalogRequestRef.current;
+    const isCurrent = () => requestId === xaiCatalogRequestRef.current;
+    setXaiCatalogPending(true);
+    setXaiCatalogWarning("");
+    let warning = "";
+    try {
+      if (force) {
+        // Read the canonical DB vector, not UI priority/optimistic order. Missing
+        // isActive means active, matching the backend's source selection.
+        const canonicalConnections = await fetchConnections();
+        if (!isCurrent()) return;
+        if (!canonicalConnections) throw new Error("Could not load xAI connections. Try refreshing again.");
+        const source = canonicalConnections.find((connection) => connection.isActive !== false);
+        if (!source) throw new Error("No active xAI connection. Add or enable a connection to discover models.");
+        const res = await fetch(`/api/providers/${encodeURIComponent(source.id)}/models`, { cache: "no-store" });
+        if (!res.ok) throw new Error(`xAI model refresh failed (${res.status}). Showing the last available catalog.`);
+      }
+    } catch (error) {
+      warning = error instanceof Error ? error.message : "xAI model refresh failed";
+    } finally {
+      // Always project the backend catalog, including after a failed force. The
+      // store queues this behind any older fetch and the awaited promise includes it.
+      await reloadCatalog();
+      if (isCurrent()) {
+        setXaiCatalogWarning(warning);
+        setXaiCatalogPending(false);
+      }
+    }
+  }, [providerId, fetchConnections, reloadCatalog]);
+
+  const reloadProviderCatalog = useCallback(
+    () => providerId === "xai" ? refreshXaiCatalog() : reloadCatalog(),
+    [providerId, refreshXaiCatalog, reloadCatalog],
+  );
+
+  useEffect(() => {
+    // Ordinary page entry is demand/TTL discovery, never a per-connection force.
+    if (providerId === "xai") void refreshXaiCatalog();
+    return () => { xaiCatalogRequestRef.current += 1; };
+  }, [providerId, refreshXaiCatalog]);
+
+  const xaiWarning = providerId === "xai" ? (
+    xaiCatalogWarning || connectionsError || catalogError || xaiCatalog?.warning ||
+    (xaiCatalog?.status === "stale" ? "xAI discovery is temporarily unavailable. Showing the last available catalog." : "") ||
+    (xaiCatalog?.status === "unavailable" ? "xAI model discovery is unavailable. Try Refresh models." : "") ||
+    (connectionsLoaded && !connections.some((connection) => connection.isActive !== false)
+      ? "No active xAI connection. Add or enable a connection to discover models."
+      : "")
+  ) : "";
 
   const handleUpdateNode = async (formData) => {
     try {
@@ -597,7 +672,7 @@ export default function ProviderDetailPageClient() {
       const res = await fetch(`/api/providers/${target.id}`, { method: "DELETE" });
       if (res.ok) {
         setConnections((prev) => prev.filter((c) => c.id !== target.id));
-        if (providerId === "codex" || providerId === "commandcode" || providerId === "a6api") await reloadCatalog();
+        if (providerId === "codex" || providerId === "commandcode" || providerId === "a6api" || providerId === "xai") await reloadProviderCatalog();
         notify.success("Connection deleted");
       } else {
         notify.error("Failed to delete connection");
@@ -613,7 +688,7 @@ export default function ProviderDetailPageClient() {
 
   const handleOAuthSuccess = async () => {
     await fetchConnections();
-    if (providerId === "codex" || providerId === "commandcode" || providerId === "a6api") await reloadCatalog();
+    if (providerId === "codex" || providerId === "commandcode" || providerId === "a6api" || providerId === "xai") await reloadProviderCatalog();
     setShowOAuthModal(false);
   };
 
@@ -635,7 +710,7 @@ export default function ProviderDetailPageClient() {
 
       if (res.ok) {
         await fetchConnections();
-        if (providerId === "codex" || providerId === "commandcode" || providerId === "a6api") await reloadCatalog();
+        if (providerId === "codex" || providerId === "commandcode" || providerId === "a6api" || providerId === "xai") await reloadProviderCatalog();
         setShowAddApiKeyModal(false);
         return;
       }
@@ -656,7 +731,7 @@ export default function ProviderDetailPageClient() {
       });
       if (res.ok) {
         await fetchConnections();
-        if (providerId === "codex" || providerId === "commandcode" || providerId === "a6api") await reloadCatalog();
+        if (providerId === "codex" || providerId === "commandcode" || providerId === "a6api" || providerId === "xai") await reloadProviderCatalog();
         setShowEditModal(false);
       }
     } catch (error) {
@@ -673,7 +748,10 @@ export default function ProviderDetailPageClient() {
       });
       if (res.ok) {
         setConnections(prev => prev.map(c => c.id === id ? { ...c, isActive } : c));
-        if (providerId === "codex" || providerId === "commandcode" || providerId === "a6api") await reloadCatalog();
+        if (providerId === "codex" || providerId === "commandcode" || providerId === "a6api" || providerId === "xai") {
+          if (providerId === "xai") await fetchConnections();
+          await reloadProviderCatalog();
+        }
       }
     } catch (error) {
       console.log("Error updating connection status:", error);
@@ -776,6 +854,7 @@ export default function ProviderDetailPageClient() {
       }
       if (failed > 0) notify.error(`Updated with ${failed} failed request(s).`);
       await fetchConnections();
+      if (providerId === "xai") await reloadProviderCatalog();
       setShowBulkProxyModal(false);
     } finally {
       setBulkUpdatingProxy(false);
@@ -825,7 +904,10 @@ export default function ProviderDetailPageClient() {
       }
       setConnections((prev) => prev.filter((c) => !idsToDelete.includes(c.id)));
       setSelectedConnectionIds([]);
-      if (providerId === "a6api") await reloadCatalog();
+      if (providerId === "a6api" || providerId === "xai") {
+        if (providerId === "xai") await fetchConnections();
+        await reloadProviderCatalog();
+      }
       if (failed > 0) {
         notify.error(
           `Deleted ${idsToDelete.length - failed} connection(s), ${failed} failed.`,
@@ -894,6 +976,7 @@ export default function ProviderDetailPageClient() {
                           ? { ...c, providerSpecificData: { ...c.providerSpecificData, proxyPoolId: proxyPoolId || null } }
                           : c
                       ));
+                      if (providerId === "xai") await reloadProviderCatalog();
                     }
                   } catch (error) {
                     console.log("Error updating proxy:", error);
@@ -1007,7 +1090,7 @@ export default function ProviderDetailPageClient() {
     // Single source of truth: catalog + live + custom, merged by the hook.
     const customModelRows = am.customRows;
     const displayModels = am.enabledCoreRows;
-    const disabledDisplayModels = am.disabledCoreRows;
+    const disabledDisplayModels = am.disabledRows;
 
     return (
       <div className="flex flex-wrap gap-3">
@@ -1216,7 +1299,9 @@ export default function ProviderDetailPageClient() {
               )}
             </div>
             <p className="text-text-muted">
-              {connections.length} connection{connections.length === 1 ? "" : "s"}
+              {providerId === "xai" && connectionsError && connections.length === 0
+                ? "Connections unavailable"
+                : <>{connections.length} connection{connections.length === 1 ? "" : "s"}</>}
             </p>
           </div>
         </div>
@@ -1401,7 +1486,12 @@ export default function ProviderDetailPageClient() {
             </div>
           </div>
 
-          {connections.length === 0 ? (
+          {providerId === "xai" && connectionsError && connections.length === 0 ? (
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm text-text-muted">Connections could not be loaded.</p>
+              <Button size="sm" variant="secondary" onClick={() => fetchConnections()}>Retry</Button>
+            </div>
+          ) : connections.length === 0 ? (
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-3">
                 <div className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-primary/10 text-primary shrink-0">
@@ -1558,6 +1648,11 @@ export default function ProviderDetailPageClient() {
             const activeIds = am.enabledRows.map((r) => r.id);
             return (
               <div className="flex flex-wrap items-center gap-2">
+                {providerId === "xai" && (
+                  <Button size="sm" variant="secondary" icon="refresh" aria-label={xaiCatalogPending ? "Refreshing models..." : "Refresh models"} disabled={xaiCatalogPending} onClick={() => refreshXaiCatalog(true)}>
+                    {xaiCatalogPending ? "Refreshing models..." : "Refresh models"}
+                  </Button>
+                )}
                 {hasFreeModels && providerId !== "opencode-zen" && (
                   <button
                     type="button"
@@ -1573,7 +1668,7 @@ export default function ProviderDetailPageClient() {
                     Free only
                   </button>
                 )}
-                {am.disabledCoreRows.length > 0 && (
+                {am.disabledRows.length > 0 && (
                   <Button size="sm" variant="secondary" icon="restart_alt" onClick={handleEnableAll}>
                     Active All
                   </Button>
@@ -1587,6 +1682,16 @@ export default function ProviderDetailPageClient() {
             );
           })()}
         </div>
+        {providerId === "xai" && xaiCatalogPending && (
+          <p role="status" className="mb-3 text-xs text-text-muted">Loading xAI model catalog...</p>
+        )}
+        {xaiWarning && (
+          <p role="alert" className="mb-3 break-words text-xs text-amber-600 dark:text-amber-400">{xaiWarning}</p>
+        )}
+        {providerId === "xai" && !xaiCatalogPending && xaiCatalog?.status !== "unavailable" &&
+          xaiCatalog && !(catalogModelsByAlias.xai || []).some((model) => model.kind === "llm") && (
+          <p role="status" className="mb-3 text-xs text-text-muted">This xAI connection returned no chat/vision models. Saved custom models remain available.</p>
+        )}
         {!!modelsTestError && (
           <p className="text-xs text-red-500 mb-3 break-words">{modelsTestError}</p>
         )}
@@ -1631,7 +1736,7 @@ export default function ProviderDetailPageClient() {
           // and never goes through handleSaveApiKey, so fetchConnections only
           // runs here.
           fetchConnections();
-          if (providerId === "a6api") void reloadCatalog();
+          if (providerId === "a6api" || providerId === "xai") void reloadProviderCatalog();
         }}
       />
       <EditConnectionModal

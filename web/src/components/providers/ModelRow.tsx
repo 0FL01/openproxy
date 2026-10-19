@@ -5,6 +5,7 @@ import type { ModelCaps } from "@/shared/constants/models";
 interface Model {
   id: string;
   name?: string;
+  contextWindow?: number | null;
 }
 
 interface ModelRowProps {
@@ -42,6 +43,10 @@ export default function ModelRow({ model, fullModel, alias, copied, onCopy, test
     : undefined;
 
   const displayModel = thinkingSuffix ? `${fullModel}(${thinkingSuffix})` : fullModel;
+  const context = model.contextWindow;
+  const contextLabel = typeof context === "number" && Number.isFinite(context) && context > 0
+    ? `${new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(context)} ctx`
+    : null;
 
   return (
     <div className={`group min-w-0 max-w-full rounded-lg border px-3 py-2 ${borderColor} hover:bg-sidebar/50`}>
@@ -70,6 +75,11 @@ export default function ModelRow({ model, fullModel, alias, copied, onCopy, test
           <span className="flex min-w-0 items-center text-[9px] gap-1 pl-1">
             {model.name && <span className="truncate text-[9px] italic text-text-muted/70">{model.name}</span>}
             <CapacityBadges caps={caps} colorOverride="text-text-muted/70" size={12} />
+            {contextLabel && (
+              <span className="shrink-0 text-text-muted/70" title={`Context window: ${context!.toLocaleString("en-US")} tokens`}>
+                {contextLabel}
+              </span>
+            )}
           </span>
         </div>
         {onTest && (

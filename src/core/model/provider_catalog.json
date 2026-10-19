@@ -1625,26 +1625,6 @@
    "alias": "xai",
    "models": [
     {
-     "id": "grok-4",
-     "name": "Grok 4",
-     "kind": "llm"
-    },
-    {
-     "id": "grok-4-fast-reasoning",
-     "name": "Grok 4 Fast Reasoning",
-     "kind": "llm"
-    },
-    {
-     "id": "grok-code-fast-1",
-     "name": "Grok Code Fast",
-     "kind": "llm"
-    },
-    {
-     "id": "grok-3",
-     "name": "Grok 3",
-     "kind": "llm"
-    },
-    {
      "id": "grok-2-image-1212",
      "name": "Grok 2 Image",
      "kind": "image"

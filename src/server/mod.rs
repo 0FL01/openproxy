@@ -12,3 +12,4 @@ pub mod state;
 pub(crate) mod stream_trace;
 pub mod trace_logs;
 pub(crate) mod upstream_tps;
+pub mod xai_catalog;
