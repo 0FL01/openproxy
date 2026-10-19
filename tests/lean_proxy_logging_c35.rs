@@ -179,12 +179,12 @@ async fn lean_start_finish_preserves_order_and_metadata_only() {
     let usage = openproxy::types::TokenUsage {
         prompt_tokens: Some(11),
         completion_tokens: Some(22),
-        total_tokens: Some(33),
+        total_tokens: Some(135),
         input_tokens: None,
         output_tokens: None,
         cached_tokens: Some(4),
         cache_read_input_tokens: None,
-        reasoning_tokens: None,
+        reasoning_tokens: Some(94),
         cache_creation_input_tokens: None,
         extra: Default::default(),
     };
@@ -220,6 +220,8 @@ async fn lean_start_finish_preserves_order_and_metadata_only() {
         row.data.get("cachedTokens").and_then(|v| v.as_u64()),
         Some(4)
     );
+    assert_eq!(row.data["reasoningTokens"], 94);
+    assert_eq!(row.data["totalTokens"], 135);
     // Metadata only: no prompt/response bodies or connection secrets. The
     // private correlation column and explicit-chat HMAC are passive metadata.
     assert!(uuid::Uuid::parse_str(row.correlation_id.as_deref().unwrap()).is_ok());
@@ -260,12 +262,177 @@ async fn lean_start_finish_preserves_order_and_metadata_only() {
                 "inputTokens",
                 "outputTokens",
                 "cachedTokens",
+                "reasoningTokens",
+                "totalTokens",
                 "chatSession",
                 "upstreamTps"
             ]
             .contains(&key.as_str()),
             "unexpected log data key: {key}"
         );
+    }
+}
+
+#[tokio::test]
+async fn selected_usage_counters_preserve_null_zero_precedence_and_privacy_in_both_modes() {
+    let _serial = serial_guard().await;
+    for mode in [RequestLogMode::Durable, RequestLogMode::Lean] {
+        let tmp = TempTestDb::new().await;
+        let ctx = RequestLogContext::new_with_mode(tmp.db.clone(), &test_key(), "test", mode);
+        let known = serde_json::json!({
+            "prompt_tokens": 32, "input_tokens": 999,
+            "completion_tokens": 9, "output_tokens": 999,
+            "cached_tokens": 6, "cache_read_input_tokens": 999,
+            "reasoning_tokens": 94, "total_tokens": 135,
+            "extra_private": {"request": "secret-prompt", "response": "secret-body"}
+        });
+        for (name, raw, expected) in [
+            (
+                "known",
+                Some(known.clone()),
+                [Some(32), Some(9), Some(6), Some(94), Some(135)],
+            ),
+            (
+                "zero",
+                Some(serde_json::json!({
+                    "prompt_tokens": 0, "input_tokens": 999,
+                    "completion_tokens": 0, "output_tokens": 999,
+                    "cached_tokens": 0, "cache_read_input_tokens": 999,
+                    "reasoning_tokens": 0, "total_tokens": 0,
+                    "extra_private": "secret"
+                })),
+                [Some(0), Some(0), Some(0), Some(0), Some(0)],
+            ),
+            (
+                "fallback",
+                Some(serde_json::json!({
+                    "input_tokens": 32, "output_tokens": 9, "cache_read_input_tokens": 6,
+                    "reasoning_tokens": 94, "total_tokens": 135
+                })),
+                [Some(32), Some(9), Some(6), Some(94), Some(135)],
+            ),
+            (
+                "missing-breakdown",
+                Some(serde_json::json!({
+                    "prompt_tokens": 32, "completion_tokens": 9, "cached_tokens": 6,
+                    "completion_tokens_details": {"reasoning_tokens": 94},
+                    "rawPayload": {"total_tokens": 135, "private": "secret"}
+                })),
+                [Some(32), Some(9), Some(6), None, None],
+            ),
+            ("no-usage", None, [None; 5]),
+            (
+                "error",
+                Some(known),
+                [Some(32), Some(9), Some(6), Some(94), Some(135)],
+            ),
+            ("interrupted", None, [None; 5]),
+        ] {
+            let attempt = ctx.start_attempt("test", name).await.unwrap();
+            assert!(request_log_flush_with_budget(Duration::from_secs(5)).await);
+            let pending = tmp
+                .db
+                .sqlite
+                .with_conn(|conn| {
+                    request_repo::list(
+                        conn,
+                        &request_repo::RequestDetailFilter {
+                            model: Some(name),
+                            ..Default::default()
+                        },
+                        10,
+                        0,
+                    )
+                })
+                .unwrap();
+            assert_eq!(pending.len(), 1, "{mode:?}: {name}");
+            let id = &pending[0].id;
+            assert_eq!(pending[0].status.as_deref(), Some("pending"));
+            for field in [
+                "inputTokens",
+                "outputTokens",
+                "cachedTokens",
+                "reasoningTokens",
+                "totalTokens",
+            ] {
+                assert_eq!(
+                    pending[0].data.get(field),
+                    Some(&serde_json::Value::Null),
+                    "{name}: pending {field}"
+                );
+            }
+            let usage: Option<openproxy::types::TokenUsage> =
+                raw.map(|value| serde_json::from_value(value).unwrap());
+            if name == "interrupted" {
+                drop(attempt);
+            } else {
+                attempt
+                    .finish(
+                        if name == "error" { "error" } else { "success" },
+                        Some(if name == "error" { 502 } else { 200 }),
+                        usage.as_ref(),
+                        None,
+                    )
+                    .await;
+            }
+            assert!(request_log_flush_with_budget(Duration::from_secs(5)).await);
+            let row = wait_for_row(&tmp.db, id, Duration::from_secs(5)).await;
+            assert_eq!(
+                row.status.as_deref(),
+                Some(if name == "interrupted" {
+                    "interrupted"
+                } else if name == "error" {
+                    "error"
+                } else {
+                    "success"
+                })
+            );
+            let fields = [
+                "inputTokens",
+                "outputTokens",
+                "cachedTokens",
+                "reasoningTokens",
+                "totalTokens",
+            ];
+            for (field, expected) in fields.into_iter().zip(expected) {
+                assert_eq!(
+                    row.data[field],
+                    serde_json::json!(expected),
+                    "{mode:?}: {name}: {field}"
+                );
+            }
+            let allowed = [
+                "route",
+                "statusCode",
+                "durationMs",
+                "inputTokens",
+                "outputTokens",
+                "cachedTokens",
+                "reasoningTokens",
+                "totalTokens",
+                "chatSession",
+            ];
+            assert_eq!(row.data.as_object().unwrap().len(), allowed.len());
+            assert!(row
+                .data
+                .as_object()
+                .unwrap()
+                .keys()
+                .all(|key| allowed.contains(&key.as_str())));
+            for private in [
+                "secret",
+                "extra_private",
+                "rawPayload",
+                "completion_tokens_details",
+                "request",
+                "response",
+            ] {
+                assert!(
+                    !row.data.to_string().contains(private),
+                    "{mode:?}: {name}: leaked {private}"
+                );
+            }
+        }
     }
 }
 

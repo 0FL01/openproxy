@@ -201,6 +201,10 @@ fn should_bypass_compat_conversion(
 /// Responses API SSE events for a non-streaming request, we collect them
 /// and reconstruct the final JSON.
 async fn convert_to_responses_api(response: Response, stream_request: bool) -> Response {
+    let xai_chat = response
+        .extensions()
+        .get::<chat::RoutedResponseFormats>()
+        .is_some_and(|formats| formats.xai_chat);
     let status = response.status();
     if !status.is_success() {
         return response;
@@ -236,7 +240,7 @@ async fn convert_to_responses_api(response: Response, stream_request: bool) -> R
             body_value
         };
 
-        let responses_json = chat_completion_to_responses_json(&chat_completion);
+        let responses_json = chat_completion_to_responses_json(&chat_completion, xai_chat);
         return Json(responses_json).into_response();
     }
 
@@ -296,7 +300,7 @@ async fn convert_to_responses_api(response: Response, stream_request: bool) -> R
                 } else {
                     body_value
                 };
-            let responses_json = chat_completion_to_responses_json(&chat_completion);
+            let responses_json = chat_completion_to_responses_json(&chat_completion, xai_chat);
             return Json(responses_json).into_response();
         }
     }
@@ -481,7 +485,7 @@ fn convert_responses_sse_event(
 
     if value.get("object").and_then(Value::as_str) == Some("chat.completion") {
         *native_responses_stream = true;
-        let response = chat_completion_to_responses_json(&value);
+        let response = chat_completion_to_responses_json(&value, false);
         return Ok(vec![Bytes::from(format_sse_event(
             "response.completed",
             &json!({"type": "response.completed", "response": response}),
@@ -593,7 +597,7 @@ fn precommit_framing_error_response(error: FrameError) -> Response {
 
 /// Convert a completed chat-completion JSON object to a Responses API JSON object.
 /// Used for non-streaming responses.
-fn chat_completion_to_responses_json(source: &Value) -> Value {
+fn chat_completion_to_responses_json(source: &Value, xai_chat: bool) -> Value {
     let response_id = source
         .get("id")
         .and_then(|v| v.as_str())
@@ -691,7 +695,11 @@ fn chat_completion_to_responses_json(source: &Value) -> Value {
         }
     }
 
-    if let Some(u) = source.get("usage") {
+    if xai_chat {
+        usage = source.get("usage").and_then(
+            crate::core::translator::response::openai_responses::xai_chat_usage_to_responses,
+        );
+    } else if let Some(u) = source.get("usage") {
         let mut mapped = json!({});
         if let Some(m) = mapped.as_object_mut() {
             if let Some(v) = u.get("prompt_tokens").and_then(Value::as_u64) {
@@ -2427,6 +2435,7 @@ mod tests {
             client: Format::OpenAiResponses,
             upstream: Format::OpenAiResponses,
             native_passthrough: true,
+            xai_chat: false,
         });
         assert!(should_bypass_compat_conversion(
             routed,
@@ -2666,7 +2675,7 @@ mod tests {
             "usage": { "prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8 }
         });
 
-        let resp = chat_completion_to_responses_json(&chat);
+        let resp = chat_completion_to_responses_json(&chat, false);
 
         assert_eq!(resp["object"], "response");
         assert_eq!(resp["status"], "completed");
@@ -2802,7 +2811,7 @@ mod tests {
             }]
         });
 
-        let resp = chat_completion_to_responses_json(&chat);
+        let resp = chat_completion_to_responses_json(&chat, false);
 
         assert_eq!(resp["output"].as_array().unwrap().len(), 1);
         assert_eq!(resp["output"][0]["type"], "function_call");
@@ -2830,7 +2839,7 @@ mod tests {
             "usage": { "total_tokens": 42 }
         });
 
-        let resp = chat_completion_to_responses_json(&chat);
+        let resp = chat_completion_to_responses_json(&chat, false);
 
         // First output item is reasoning (separate top-level item per Responses API spec)
         assert_eq!(resp["output"][0]["type"], "reasoning");

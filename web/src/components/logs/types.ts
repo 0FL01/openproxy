@@ -30,6 +30,8 @@ export interface ApplicationLog {
   inputTokens?: number | null;
   outputTokens?: number | null;
   cachedTokens?: number | null;
+  reasoningTokens?: number | null;
+  totalTokens?: number | null;
   tokensPerSecond: number | null;
   generatedOutputTokens: number | null;
   upstreamDurationMs: number | null;

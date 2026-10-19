@@ -491,6 +491,8 @@ impl RequestLogContext {
             "inputTokens": Value::Null,
             "outputTokens": Value::Null,
             "cachedTokens": Value::Null,
+            "reasoningTokens": Value::Null,
+            "totalTokens": Value::Null,
             "chatSession": self.chat_session,
         })
     }
@@ -767,6 +769,16 @@ impl AttemptLog {
             "cachedTokens".into(),
             json!(tokens.and_then(|tokens| tokens.cached_tokens.or(tokens.cache_read_input_tokens))),
         );
+        // Selected-attempt usage only: neither counter is reconstructed from
+        // input/output or arbitrary provider extras, which may overlap.
+        data.insert(
+            "reasoningTokens".into(),
+            json!(tokens.and_then(|tokens| tokens.reasoning_tokens)),
+        );
+        data.insert(
+            "totalTokens".into(),
+            json!(tokens.and_then(|tokens| tokens.total_tokens)),
+        );
         Value::Object(data)
     }
 }
@@ -891,6 +903,8 @@ struct RequestLogRecord {
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
     cached_tokens: Option<u64>,
+    reasoning_tokens: Option<u64>,
+    total_tokens: Option<u64>,
     tokens_per_second: Option<f64>,
     generated_output_tokens: Option<u64>,
     upstream_duration_ms: Option<f64>,
@@ -1110,6 +1124,8 @@ fn request_log_from_row(row: request_repo::RequestDetailRow) -> RequestLogRecord
         input_tokens: row.data.get("inputTokens").and_then(Value::as_u64),
         output_tokens: row.data.get("outputTokens").and_then(Value::as_u64),
         cached_tokens: row.data.get("cachedTokens").and_then(Value::as_u64),
+        reasoning_tokens: row.data.get("reasoningTokens").and_then(Value::as_u64),
+        total_tokens: row.data.get("totalTokens").and_then(Value::as_u64),
         tokens_per_second: tps.map(|(tokens, micros)| tokens as f64 * 1_000_000.0 / micros as f64),
         generated_output_tokens: tps.map(|(tokens, _)| tokens),
         upstream_duration_ms: tps.map(|(_, micros)| micros as f64 / 1_000.0),

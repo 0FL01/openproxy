@@ -13,6 +13,38 @@ decode speed. Reasoning is included when the original protocol's generated count
 includes it. Unknown final usage or timing, live/error/interrupted and legacy rows
 show **—**; existing Output Tokens and Duration keep their previous meanings.
 
+## xAI token accounting and Responses clients
+
+For xAI Chat streaming, OpenProxy requests final usage unless the client explicitly
+supplies `stream_options.include_usage`; an absent member in a valid options object
+defaults to `true`. Native Chat response bytes are unchanged. Application Logs
+retains the original xAI input, completion, cache, reasoning and total counters;
+nullable `reasoningTokens` and `totalTokens` are additive metadata. Unknown counts
+show **—**, explicit zero shows **0**, and missing totals are never reconstructed.
+Cache and reasoning can overlap the input/output counters, depending on protocol.
+
+Only when translating resolved xAI Chat usage to Responses, checked complete
+counter relationships distinguish exclusive reasoning (`total = prompt + completion
++ reasoning`) from already-inclusive output (`total = prompt + completion`). For
+the documented 32 input / 9 completion / 94 reasoning / 135 total / 6 cache example,
+Responses output is 103 with reasoning subset 94. Input remains 32, including cache.
+Missing or inconsistent evidence never triggers an arithmetic adjustment.
+
+The translated xAI stream releases its synthetic `response.completed` only after
+validated upstream HTTP EOF and existing attempt finalization. Text/tool output
+continues streaming immediately. Original protocol errors, malformed tails or a
+post-terminal EOF deadline prevent successful completion. The existing 180-second
+stall interval also bounds post-terminal read waiting absolutely; heartbeats do
+not extend it. This is not a wall-clock bound across downstream backpressure or
+SQLite writes. Native Responses success-on-drop semantics remain unchanged.
+
+Dashboard TPS still uses original Chat completion tokens (9 in the example),
+not the normalized Responses output (103). OpenCode may use visible output plus
+reasoning and its own client timing, so the two displayed speeds need not match.
+OpenCode 2.0.29 already enables its TPS footer by default; detailed token diagnostics
+use its existing opt-in `debug.turn_tokens`. OpenProxy does not edit client settings
+or require a plugin update. These counters measure tokens, not dollar billing.
+
 Private attempt metadata retains validated final inputs rather than derived TPS.
 Explicit inbound chat IDs are HMAC-SHA256 fingerprints scoped to installation
 secret and authenticated API-key ID. Changing the secret or replacing the API-key

@@ -736,6 +736,8 @@
       "inputTokens",
       "outputTokens",
       "cachedTokens",
+      "reasoningTokens",
+      "totalTokens",
       "errorKind",
       "codexCache",
       "chatSession",

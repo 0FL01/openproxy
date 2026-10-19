@@ -485,6 +485,8 @@ async fn assert_successful_attempts(server: &BinaryServer, expected: usize) {
                             | "inputTokens"
                             | "outputTokens"
                             | "cachedTokens"
+                            | "reasoningTokens"
+                            | "totalTokens"
                             | "chatSession"
                             | "streamTrace"
                             | "upstreamTps"

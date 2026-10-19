@@ -132,6 +132,9 @@ pub struct ResponseTransformState {
     pub gemini: GeminiResponseState,
     /// Responses API state
     pub responses: ResponsesResponseState,
+    /// Canonical xAI Chat -> Responses streaming policy. The resolved route
+    /// opts in explicitly; all other providers keep the default behavior.
+    pub xai_chat: bool,
     /// Ollama streaming state
     pub ollama: OllamaResponseState,
     /// Generic scratch map for Value-based response transforms

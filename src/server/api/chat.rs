@@ -145,13 +145,19 @@ pub(super) struct RoutedResponseFormats {
     pub client: Format,
     pub upstream: Format,
     pub native_passthrough: bool,
+    pub xai_chat: bool,
 }
 
-fn mark_routed_response_formats(mut response: Response, plan: &RequestPlan) -> Response {
+fn mark_routed_response_formats(
+    mut response: Response,
+    plan: &RequestPlan,
+    provider: &str,
+) -> Response {
     response.extensions_mut().insert(RoutedResponseFormats {
         client: plan.source_format,
         upstream: plan.target_format,
         native_passthrough: plan.passthrough,
+        xai_chat: provider == "xai" && plan.target_format == Format::OpenAi,
     });
     response
 }
@@ -338,19 +344,24 @@ fn strip_message_control_chars(body: &mut Value) {
     }
 }
 
-fn inject_glm_stream_usage(body: &mut Value) {
+fn inject_stream_usage(body: &mut Value, fill_missing_member: bool) {
     let Some(obj) = body.as_object_mut() else {
         return;
     };
-    if obj.get("stream").and_then(Value::as_bool) != Some(true)
-        || obj.contains_key("stream_options")
-    {
+    if obj.get("stream").and_then(Value::as_bool) != Some(true) {
         return;
     }
-    obj.insert(
-        "stream_options".to_string(),
-        serde_json::json!({"include_usage": true}),
-    );
+    match obj.entry("stream_options") {
+        serde_json::map::Entry::Vacant(entry) => {
+            entry.insert(json!({"include_usage": true}));
+        }
+        serde_json::map::Entry::Occupied(mut entry) if fill_missing_member => {
+            if let Some(options) = entry.get_mut().as_object_mut() {
+                options.entry("include_usage").or_insert(Value::Bool(true));
+            }
+        }
+        _ => {}
+    }
 }
 
 pub async fn chat_completions_for_endpoint(
@@ -941,14 +952,14 @@ async fn execute_single_model(
         obj.insert("stream".into(), Value::Bool(plan.stream));
     }
 
-    // Z.ai's and A6API's OpenAI-compatible streaming endpoints report the
+    // These OpenAI-compatible streaming endpoints report the
     // final token usage chunk when `stream_options.include_usage` is enabled.
     // The target format is known here, so the flag cannot leak onto GLM's
     // Claude transport, which does not accept this field.
     if plan.target_format == Format::OpenAi
-        && matches!(plan.provider.as_str(), "glm" | "glm-cn" | "a6api")
+        && matches!(plan.provider.as_str(), "glm" | "glm-cn" | "a6api" | "xai")
     {
-        inject_glm_stream_usage(&mut body);
+        inject_stream_usage(&mut body, plan.provider == "xai");
     }
 
     // Codex has one additional existing remote-image shape under `input`.
@@ -1768,7 +1779,7 @@ async fn forward_with_provider_fallback(
                     if !stream {
                         let response =
                             proxy_response(result.response, provider, plan, attempt_log).await;
-                        let response = mark_routed_response_formats(response, plan);
+                        let response = mark_routed_response_formats(response, plan, provider);
                         return Ok(response);
                     }
                     let normalize_for_dashboard =
@@ -1784,7 +1795,7 @@ async fn forward_with_provider_fallback(
                         attempt_log,
                     )
                     .await;
-                    let response = mark_routed_response_formats(response, plan);
+                    let response = mark_routed_response_formats(response, plan, provider);
                     return Ok(response);
                 }
 
@@ -3189,13 +3200,17 @@ async fn proxy_response_with_pending_tracking(
                     tool_name_map,
                     stop_on_response_completed,
                 );
+                dispatch.configure_xai_chat(&provider);
                 dispatch.start_runtime_trace(&provider, &model, "reqwest", attempt_log.as_ref().map(AttemptLog::id));
                 dispatch.codex_cache = attempt_log.as_ref().map(AttemptLog::codex_cache)
                     .filter(|observation| observation.snapshot().is_some());
                 dispatch.tps = attempt_log.as_ref().map(AttemptLog::tps);
                 let eof_read_wait = loop {
                     let read_started = dispatch.runtime_started_at.map(|_| tokio::time::Instant::now());
-                    let next = tokio::time::timeout(SSE_STALL_TIMEOUT, upstream.try_next()).await;
+                    let next = match dispatch.read_budget() {
+                        Some(wait) => tokio::time::timeout(wait, upstream.try_next()).await.map_err(|_| ()),
+                        None => Err(()),
+                    };
                     let read_wait = read_started.map(|at| at.elapsed());
                     match next {
                         Err(_elapsed) => {
@@ -3281,6 +3296,16 @@ async fn proxy_response_with_pending_tracking(
                 };
                 let batch = dispatch.finish();
                 dispatch.sync_attempt_log(&mut attempt_log, status, batch.error.is_some());
+                if dispatch.xai_chat() && batch.error.is_none() {
+                    // OpenCode closes at response.completed. This synthetic
+                    // terminal is released only after upstream EOF, so finish
+                    // the existing attempt before yielding it, not on drop.
+                    dispatch.trace_end("eof", eof_read_wait, None);
+                    let usage = dispatch.usage.clone();
+                    if let Some(log) = attempt_log.take() {
+                        log.finish("success", Some(status.as_u16()), usage.as_ref(), None).await;
+                    }
+                }
                 for output in batch.output {
                     yield Ok::<Bytes, std::io::Error>(output);
                 }
@@ -3324,13 +3349,17 @@ async fn proxy_response_with_pending_tracking(
                     tool_name_map2,
                     stop_on_response_completed,
                 );
+                dispatch.configure_xai_chat(&provider);
                 dispatch.start_runtime_trace(&provider, &model, "hyper", attempt_log.as_ref().map(AttemptLog::id));
                 dispatch.codex_cache = attempt_log.as_ref().map(AttemptLog::codex_cache)
                     .filter(|observation| observation.snapshot().is_some());
                 dispatch.tps = attempt_log.as_ref().map(AttemptLog::tps);
                 let eof_read_wait = loop {
                     let read_started = dispatch.runtime_started_at.map(|_| tokio::time::Instant::now());
-                    let next = tokio::time::timeout(SSE_STALL_TIMEOUT, body.frame()).await;
+                    let next = match dispatch.read_budget() {
+                        Some(wait) => tokio::time::timeout(wait, body.frame()).await.map_err(|_| ()),
+                        None => Err(()),
+                    };
                     let read_wait = read_started.map(|at| at.elapsed());
                     let read_at = std::time::Instant::now();
                     let frame_result = match next {
@@ -3414,6 +3443,13 @@ async fn proxy_response_with_pending_tracking(
                 };
                 let batch = dispatch.finish();
                 dispatch.sync_attempt_log(&mut attempt_log, status, batch.error.is_some());
+                if dispatch.xai_chat() && batch.error.is_none() {
+                    dispatch.trace_end("eof", eof_read_wait, None);
+                    let usage = dispatch.usage.clone();
+                    if let Some(log) = attempt_log.take() {
+                        log.finish("success", Some(status.as_u16()), usage.as_ref(), None).await;
+                    }
+                }
                 for output in batch.output {
                     yield Ok::<Bytes, std::io::Error>(output);
                 }
@@ -3467,6 +3503,7 @@ struct StreamDispatch {
     framer: Option<TextStreamFramer>,
     stop_on_response_completed: bool,
     usage: Option<TokenUsage>,
+    xai_eof_deadline: Option<tokio::time::Instant>,
     dashboard_transformer:
         Option<Box<dyn crate::core::translator::response_transform::StreamingTransformer>>,
     translation_state: Option<crate::core::translator::registry::ResponseTransformState>,
@@ -3549,6 +3586,7 @@ impl StreamDispatch {
                 .map(TextStreamFramer::new),
             stop_on_response_completed,
             usage: None,
+            xai_eof_deadline: None,
             codex_cache: None,
             dashboard_transformer,
             translation_state,
@@ -3563,6 +3601,33 @@ impl StreamDispatch {
             runtime_response_completed: false,
             runtime_upstream_eof: false,
             runtime_trace_ended: false,
+        }
+    }
+
+    fn configure_xai_chat(&mut self, provider: &str) {
+        if provider == "xai"
+            && self.source == Format::OpenAi
+            && self.target == Format::OpenAiResponses
+        {
+            if let Some(state) = self.translation_state.as_mut() {
+                state.xai_chat = true;
+            }
+        }
+    }
+
+    fn xai_chat(&self) -> bool {
+        self.translation_state
+            .as_ref()
+            .is_some_and(|state| state.xai_chat)
+    }
+
+    fn read_budget(&self) -> Option<Duration> {
+        match self.xai_eof_deadline {
+            Some(deadline) => {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                (!remaining.is_zero()).then_some(remaining.min(SSE_STALL_TIMEOUT))
+            }
+            None => Some(SSE_STALL_TIMEOUT),
         }
     }
 
@@ -3931,7 +3996,20 @@ impl StreamDispatch {
             && frame
                 .payload()
                 .is_some_and(|payload| payload.contains('\n'));
-        let parse_source = dashboard_multiline_data
+        let xai_chat = self.xai_chat();
+        if xai_chat
+            && matches!(
+                frame.event(),
+                Some("error" | "response.failed" | "response.incomplete")
+            )
+        {
+            return Err(StreamLimitError {
+                code: "upstream_stream_failed",
+                message: "Upstream xAI Chat stream reported a protocol error".to_string(),
+            });
+        }
+        let parse_source = xai_chat
+            || dashboard_multiline_data
             || (self.dashboard_transformer.is_none() && self.translation_state.is_none())
             || (self.stop_on_response_completed && frame.event() != Some("response.completed"));
         let parsed = parse_source
@@ -3981,8 +4059,10 @@ impl StreamDispatch {
         }
         if let Some(value) = parsed.as_ref() {
             self.observe_response_sequence(value);
-            if let Some(usage) = extract_token_usage_from_value(value) {
-                self.usage = Some(usage);
+            if !xai_chat {
+                if let Some(usage) = extract_token_usage_from_value(value) {
+                    self.usage = Some(usage);
+                }
             }
             if self.stop_on_response_completed
                 && self.translation_state.is_none()
@@ -4025,6 +4105,32 @@ impl StreamDispatch {
                 Ok(chunks) => self.trace_translated_chunks(&mut batch.output, chunks),
                 Err(error) => return Err(error),
             }
+        }
+        if xai_chat
+            && self.translation_state.as_ref().is_some_and(
+                crate::core::translator::response::openai_responses::xai_chat_terminal_ready,
+            )
+        {
+            // Only finish/trailer observations are final. Never promote a
+            // running usage snapshot, or the normalized client usage, into
+            // original xAI accounting.
+            if let Some(usage) = parsed
+                .as_ref()
+                .and_then(extract_token_usage_from_value)
+                .filter(|usage| {
+                    usage.prompt_tokens.is_some()
+                        || usage.completion_tokens.is_some()
+                        || usage.total_tokens.is_some()
+                        || usage.reasoning_tokens.is_some()
+                        || usage.cached_tokens.is_some()
+                })
+            {
+                self.usage = Some(usage);
+            }
+            self.xai_eof_deadline
+                .get_or_insert_with(|| tokio::time::Instant::now() + SSE_STALL_TIMEOUT);
+        } else if xai_chat {
+            self.usage = None;
         }
         if !parse_source {
             // Only inspect output produced for this frame. Re-scanning the
@@ -4980,6 +5086,127 @@ mod tests {
     use crate::core::translator::registry::Format;
     use crate::core::translator::response_transform::OpenAiTransformer;
     use crate::types::{AppDb, CustomModel, ProviderConnection};
+
+    #[test]
+    fn xai_usage_default_preserves_explicit_options_and_other_provider_behavior() {
+        for options in [
+            json!({}),
+            json!({"include_usage":false,"other":7}),
+            json!({"include_usage":true}),
+            Value::Null,
+            json!("invalid"),
+        ] {
+            let mut body = json!({"stream":true,"stream_options":options});
+            let before = body.clone();
+            super::inject_stream_usage(&mut body, false);
+            assert_eq!(body, before, "legacy providers retain exact options");
+            super::inject_stream_usage(&mut body, true);
+            if options == json!({}) {
+                assert_eq!(body["stream_options"], json!({"include_usage":true}));
+            } else {
+                assert_eq!(body, before);
+            }
+        }
+        let mut body = json!({"stream":false});
+        super::inject_stream_usage(&mut body, true);
+        assert!(body.get("stream_options").is_none());
+        body["stream"] = json!(true);
+        super::inject_stream_usage(&mut body, true);
+        assert_eq!(body["stream_options"], json!({"include_usage":true}));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn xai_eof_budget_cannot_be_extended_by_heartbeats() {
+        let chunks = async_stream::stream! {
+            yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":32,\"completion_tokens\":9,\"total_tokens\":135,\"completion_tokens_details\":{\"reasoning_tokens\":94}}}\n\ndata: [DONE]\n\n"));
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+                yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b": heartbeat\n\n"));
+            }
+        };
+        let upstream = reqwest::Response::from(
+            Response::builder()
+                .header("content-type", "text/event-stream")
+                .body(reqwest::Body::wrap_stream(chunks))
+                .unwrap(),
+        );
+        let plan = RequestPlan::new(
+            Some("/v1/responses"),
+            &json!({"input":"fixture","stream":true}),
+            "xai",
+            "fixture",
+        );
+        let start = tokio::time::Instant::now();
+        let response = super::proxy_response_with_pending_tracking(
+            super::UpstreamResponse::Reqwest(upstream),
+            "xai".into(),
+            "fixture".into(),
+            false,
+            &plan,
+            None,
+            None,
+            None,
+        )
+        .await;
+        let bytes = tokio::time::timeout(
+            super::SSE_STALL_TIMEOUT + std::time::Duration::from_secs(1),
+            axum::body::to_bytes(response.into_body(), 256 * 1024),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let text = std::str::from_utf8(&bytes).unwrap();
+        assert!(text.contains("response.output_text.delta"), "{text}");
+        assert!(text.contains("event: error"), "{text}");
+        assert!(!text.contains("response.completed"), "{text}");
+        assert_eq!(start.elapsed(), super::SSE_STALL_TIMEOUT);
+    }
+
+    #[test]
+    fn xai_available_content_precedes_late_errors_independent_of_chunking() {
+        let content = b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+        for tail in [
+            b"data: {invalid}\n\n".to_vec(),
+            [
+                b"data: ".as_slice(),
+                vec![b'x'; crate::core::stream_framing::DEFAULT_MAX_SSE_FRAME_BYTES + 1].as_slice(),
+            ]
+            .concat(),
+        ] {
+            for split in [false, true] {
+                let mut dispatch = StreamDispatch::new(
+                    Format::OpenAi,
+                    Format::OpenAiResponses,
+                    "text/event-stream",
+                    None,
+                    None,
+                    None,
+                    false,
+                );
+                dispatch.configure_xai_chat("xai");
+                let chunks = if split {
+                    vec![content.to_vec(), tail.clone()]
+                } else {
+                    vec![[content.as_slice(), tail.as_slice()].concat()]
+                };
+                let mut output = Vec::new();
+                let mut error = None;
+                for chunk in chunks {
+                    let batch = dispatch.feed(&chunk);
+                    output.extend(batch.output);
+                    error = error.or(batch.error);
+                }
+                let output = output
+                    .iter()
+                    .map(|bytes| std::str::from_utf8(bytes).unwrap())
+                    .collect::<String>();
+                assert!(output.contains("response.output_text.delta"), "{output}");
+                assert!(!output.contains("response.completed"), "{output}");
+                assert!(!output.contains("[DONE]"), "{output}");
+                assert!(error.is_some());
+            }
+        }
+    }
 
     #[tokio::test]
     async fn dashboard_collector_rejects_refusal_even_for_a_native_upstream_request() {

@@ -72,13 +72,15 @@ test("TPS visibility, provider preferences and scoped polling survive reload/err
       });
       return { asOf, windows, availableProviders, groups: all.slice((pageNumber - 1) * pageSize, pageNumber * pageSize), pagination: { page: pageNumber, pageSize, totalItems: all.length, totalPages: Math.ceil(all.length / pageSize) } };
     };
-    const raw = { requestId: "raw-fixture", timestamp: asOf, route: "fixture", provider: "raw-provider", model: "raw-model", status: "success", durationMs: 500, inputTokens: 4, outputTokens: 5, cachedTokens: 0, tokensPerSecond: 2, generatedOutputTokens: 1, upstreamDurationMs: 500, apiKeyId: "consumer", apiKeyName: "Fixture" };
+    const raw = { requestId: "raw-fixture", timestamp: asOf, route: "fixture", provider: "raw-provider", model: "raw-model", status: "success", durationMs: 500, inputTokens: 32, outputTokens: 9, cachedTokens: 6, reasoningTokens: 94, totalTokens: 135, tokensPerSecond: 18, generatedOutputTokens: 9, upstreamDurationMs: 500, apiKeyId: "consumer", apiKeyName: "Fixture" };
+    const legacy = { requestId: "legacy-fixture", timestamp: asOf, route: "fixture", provider: "raw-provider", model: "legacy-model", status: "success", durationMs: 500, tokensPerSecond: null, generatedOutputTokens: null, upstreamDurationMs: null };
+    const zero = { ...raw, requestId: "zero-fixture", model: "zero-model", inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0, totalTokens: 0, tokensPerSecond: 0, generatedOutputTokens: 0 };
     await page.route("**/api/**", async (route) => {
       const url = new URL(route.request().url());
       let status = 200, body = {};
       if (url.pathname === "/api/auth/status") body = { requireLogin: false, authenticated: true };
       else if (url.pathname === "/api/keys") body = { keys: [{ id: "consumer", name: "Fixture" }] };
-      else if (url.pathname === "/api/request-logs") body = { requests: [raw], pagination: { page: Number(url.searchParams.get("page")), pageSize: 20, totalItems: 50, totalPages: 3 } };
+      else if (url.pathname === "/api/request-logs") body = { requests: [raw, legacy, zero], pagination: { page: Number(url.searchParams.get("page")), pageSize: 20, totalItems: 50, totalPages: 3 } };
       else if (url.pathname === "/api/request-logs/tps-stats") {
         calls.push(Object.fromEntries(url.searchParams));
         const capturedMode = mode, capturedDelay = responseDelay;
@@ -117,6 +119,32 @@ test("TPS visibility, provider preferences and scoped polling survive reload/err
     assert.equal(await hide.isChecked(), false);
     assert.equal(await panel.locator("time").getAttribute("datetime"), asOf);
     console.log("TPS browser: default controls, zero/coverage/asOf and complete provider choices passed");
+
+    const rawTable = page.getByRole("table").nth(1);
+    const rawRow = (model) => rawTable.getByRole("row").filter({ has: page.getByText(model, { exact: true }) });
+    const tokens = (model) => rawRow(model).locator("td").nth(5);
+    assert.equal(await tokens("raw-model").innerText(), "32 / 9\nTotal 135");
+    assert.equal(await tokens("legacy-model").innerText(), "— / —");
+    assert.equal(await tokens("zero-model").innerText(), "0 / 0\nTotal 0");
+    const tokenCard = page.getByRole("heading", { name: "Tokens", exact: true }).locator("..");
+    const fieldValue = (label) => tokenCard.getByText(label, { exact: true }).locator("..").locator("div").nth(1).innerText();
+    for (const [model, expected] of [
+      ["raw-model", ["32", "9", "6", "94", "135"]],
+      ["legacy-model", ["—", "—", "—", "—", "—"]],
+      ["zero-model", ["0", "0", "0", "0", "0"]],
+    ]) {
+      await rawRow(model).click(); await tick(301);
+      await page.getByRole("heading", { name: "Request details", exact: true }).waitFor();
+      assert.deepEqual(await Promise.all(["Input", "Output", "Cache Read", "Reasoning", "Total"].map(fieldValue)), expected);
+      await tokenCard.getByText("Cache read and reasoning may overlap input/output; do not sum these fields to calculate Total.", { exact: false }).waitFor();
+      await page.getByText("Reasoning is included only when the original provider completion counter includes it.", { exact: false }).waitFor();
+      if (model === "raw-model") await page.getByText("9 ÷ (500 / 1000) = 18.0 tokens/s", { exact: true }).waitFor();
+      if (model === "zero-model") await page.getByText("0 ÷ (500 / 1000) = 0.0 tokens/s", { exact: true }).waitFor();
+      if (model === "legacy-model") await page.getByText("— · Final original usage and completion timing are unavailable.", { exact: true }).waitFor();
+      await page.keyboard.press("Escape"); await tick(301);
+      assert.equal(await page.getByRole("heading", { name: "Request details", exact: true }).count(), 0);
+    }
+    console.log("TPS browser: selected-attempt token breakdown, known total, legacy dashes, true zero and unchanged TPS formula passed");
 
     await pagination.getByRole("button", { name: "Next page" }).click();
     await tick();

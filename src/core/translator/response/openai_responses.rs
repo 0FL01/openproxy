@@ -613,6 +613,181 @@ fn have_chat_usage(state: &serde_json::Map<String, Value>) -> bool {
     state.get("usage").is_some_and(|v| v.is_object())
 }
 
+/// Map original xAI Chat counters without inventing missing usage. xAI may
+/// report completion_tokens exclusive of reasoning; only a checked equality
+/// against the original total establishes when reasoning must be included.
+pub(crate) fn xai_chat_usage_to_responses(usage: &Value) -> Option<Value> {
+    let input = usage.get("prompt_tokens").and_then(Value::as_u64);
+    let completion = usage.get("completion_tokens").and_then(Value::as_u64);
+    let reasoning = usage
+        .pointer("/completion_tokens_details/reasoning_tokens")
+        .and_then(Value::as_u64);
+    let total = usage.get("total_tokens").and_then(Value::as_u64);
+    let output = match (input, completion, reasoning, total) {
+        (Some(p), Some(c), Some(r), Some(t)) if p.checked_add(c) != Some(t) => p
+            .checked_add(c)
+            .and_then(|sum| sum.checked_add(r))
+            .filter(|sum| *sum == t)
+            .and_then(|_| c.checked_add(r))
+            .or(completion),
+        _ => completion,
+    };
+    let mut mapped = serde_json::Map::new();
+    for (key, value) in [
+        ("input_tokens", input),
+        ("output_tokens", output),
+        ("total_tokens", total),
+    ] {
+        if let Some(value) = value {
+            mapped.insert(key.to_string(), Value::from(value));
+        }
+    }
+    if let Some(cached) = usage
+        .pointer("/prompt_tokens_details/cached_tokens")
+        .and_then(Value::as_u64)
+        .filter(|cached| input.is_none_or(|input| *cached <= input))
+    {
+        mapped.insert(
+            "input_tokens_details".to_string(),
+            serde_json::json!({"cached_tokens": cached}),
+        );
+    }
+    if let Some(reasoning) = reasoning.filter(|r| output.is_none_or(|output| *r <= output)) {
+        mapped.insert(
+            "output_tokens_details".to_string(),
+            serde_json::json!({"reasoning_tokens": reasoning}),
+        );
+    }
+    (!mapped.is_empty()).then_some(Value::Object(mapped))
+}
+
+fn is_xai_chat(state: &serde_json::Map<String, Value>) -> bool {
+    state.get("_xaiChat").and_then(Value::as_bool) == Some(true)
+}
+
+/// All observed choices must have a recognized generation finish before the
+/// transport may arm its EOF budget.
+pub(crate) fn xai_chat_terminal_ready(state: &ResponseTransformState) -> bool {
+    state.xai_chat
+        && state.failure.is_none()
+        && state
+            .responses
+            .state
+            .get("_xaiChoices")
+            .and_then(Value::as_object)
+            .is_some_and(|choices| {
+                !choices.is_empty() && choices.values().all(|v| v.as_bool() == Some(true))
+            })
+}
+
+fn observe_xai_chat(
+    state: &mut ResponseTransformState,
+    chunk: &Value,
+) -> Result<(), crate::core::translator::limits::StreamLimitError> {
+    use crate::core::translator::limits::{wire_index, StreamLimitError};
+
+    if chunk.get("error").is_some_and(|error| !error.is_null())
+        || matches!(
+            chunk.get("type").and_then(Value::as_str),
+            Some("error" | "response.failed" | "response.incomplete")
+        )
+        || chunk.get("object").and_then(Value::as_str) == Some("error")
+    {
+        return Err(StreamLimitError {
+            code: "upstream_stream_failed",
+            message: "Upstream xAI Chat stream reported a protocol error".to_string(),
+        });
+    }
+    if chunk
+        .get("choices")
+        .is_some_and(|choices| !choices.is_null() && !choices.is_array())
+    {
+        return Err(StreamLimitError {
+            code: "upstream_stream_invalid_terminal",
+            message: "Upstream xAI Chat stream has invalid choices".to_string(),
+        });
+    }
+    let choices = chunk.get("choices").and_then(Value::as_array);
+    let mut finish_frame = false;
+    if let Some(choices) = choices {
+        for choice in choices {
+            let index = wire_index(choice.get("index"), "choices[].index")?;
+            // The shared accounting has already enforced the choice bound.
+            let key = index.to_string();
+            if choice.get("error").is_some_and(|error| !error.is_null()) {
+                return Err(StreamLimitError {
+                    code: "upstream_stream_failed",
+                    message: "Upstream xAI Chat choice reported a protocol error".to_string(),
+                });
+            }
+            let finish = choice.get("finish_reason").filter(|v| !v.is_null());
+            if finish.is_some_and(|reason| {
+                !matches!(
+                    reason.as_str(),
+                    Some("stop" | "length" | "tool_calls" | "function_call" | "content_filter")
+                )
+            }) {
+                return Err(StreamLimitError {
+                    code: "upstream_stream_invalid_terminal",
+                    message: "Upstream xAI Chat choice has an invalid finish_reason".to_string(),
+                });
+            }
+            let finished = finish.is_some();
+            if choice
+                .get("delta")
+                .is_some_and(|delta| !delta.is_null() && !delta.is_object())
+            {
+                return Err(StreamLimitError {
+                    code: "upstream_stream_invalid_terminal",
+                    message: "Upstream xAI Chat choice has an invalid delta".to_string(),
+                });
+            }
+            let observed = state_obj_mut(&mut state.responses.state, "_xaiChoices");
+            if observed.get(&key).and_then(Value::as_bool) == Some(true)
+                && choice
+                    .get("delta")
+                    .and_then(Value::as_object)
+                    .is_some_and(|delta| {
+                        delta.values().any(|value| match value {
+                            Value::Null => false,
+                            Value::String(text) => !text.is_empty(),
+                            Value::Array(items) => !items.is_empty(),
+                            Value::Object(object) => !object.is_empty(),
+                            _ => true,
+                        })
+                    })
+            {
+                return Err(StreamLimitError {
+                    code: "upstream_stream_invalid_terminal",
+                    message: "Upstream xAI Chat choice continued after its finish_reason"
+                        .to_string(),
+                });
+            }
+            observed
+                .entry(key)
+                .and_modify(|value| {
+                    if finished {
+                        *value = Value::Bool(true);
+                    }
+                })
+                .or_insert(Value::Bool(finished));
+            finish_frame |= finished;
+        }
+    }
+
+    let ready = xai_chat_terminal_ready(state);
+    if !ready {
+        // A newly observed unfinished choice revokes any provisional snapshot.
+        state.responses.state.remove("usage");
+    } else if (finish_frame || choices.is_none_or(Vec::is_empty))
+        && let Some(usage) = chunk.get("usage").and_then(xai_chat_usage_to_responses)
+    {
+        // Snapshots replace each other; running usage never enters this slot.
+        state.responses.state.insert("usage".to_string(), usage);
+    }
+    Ok(())
+}
+
 fn buffer_chat_usage(state: &mut serde_json::Map<String, Value>, chunk: &Value) {
     let Some(usage) = chunk.get("usage").filter(|v| v.is_object()) else {
         return;
@@ -830,7 +1005,7 @@ fn emit_finish_block(state: &mut serde_json::Map<String, Value>, events: &mut Ve
     for k in &func_keys {
         close_tool_call(state, events, k);
     }
-    if have_chat_usage(state) {
+    if !is_xai_chat(state) && have_chat_usage(state) {
         send_completed(state, events);
     } else {
         state.insert("needCompleted".to_string(), Value::Bool(true));
@@ -841,7 +1016,9 @@ pub fn chat_to_responses_response(
     chunk: &Value,
     state: &mut serde_json::Map<String, Value>,
 ) -> Vec<Value> {
-    buffer_chat_usage(state, chunk);
+    if !is_xai_chat(state) {
+        buffer_chat_usage(state, chunk);
+    }
     if chunk
         .get("choices")
         .and_then(|v| v.as_array())
@@ -849,7 +1026,8 @@ pub fn chat_to_responses_response(
     {
         // Standard OpenAI split usage tail: `choices:[] + usage` arrives after
         // the `finish_reason` chunk. Flush the deferred terminal once.
-        if state.get("needCompleted").and_then(|v| v.as_bool()) == Some(true)
+        if !is_xai_chat(state)
+            && state.get("needCompleted").and_then(|v| v.as_bool()) == Some(true)
             && state.get("completedSent").and_then(|v| v.as_bool()) != Some(true)
             && state.get("started").and_then(|v| v.as_bool()) == Some(true)
         {
@@ -1036,6 +1214,16 @@ pub fn chat_to_responses_response(
             }
 
             if return_after_thinking {
+                if is_xai_chat(state) {
+                    return emit_tool_calls_and_finish(
+                        chunk,
+                        state,
+                        &mut events,
+                        idx,
+                        &idx_str,
+                        &delta,
+                    );
+                }
                 return events;
             }
             if content.is_empty() {
@@ -1509,6 +1697,25 @@ pub fn chat_to_responses_streaming(
     chunk: &[u8],
     state: &mut crate::core::translator::registry::ResponseTransformState,
 ) -> Vec<String> {
+    if state.xai_chat {
+        if state.failure.is_some()
+            || chunk == b"[DONE]"
+            || state
+                .responses
+                .state
+                .get("completedSent")
+                .and_then(Value::as_bool)
+                == Some(true)
+        {
+            // xAI's usage can follow its Chat sentinel. Only transport EOF
+            // constructs our terminal and downstream sentinel.
+            return Vec::new();
+        }
+        state
+            .responses
+            .state
+            .insert("_xaiChat".to_string(), Value::Bool(true));
+    }
     if chunk == b"[DONE]" {
         // Flush a deferred terminal before the stream end so a finish chunk
         // without usage still yields exactly one `response.completed`.
@@ -1540,10 +1747,21 @@ pub fn chat_to_responses_streaming(
         return vec!["data: [DONE]\n\n".to_string()];
     }
     let Ok(value) = serde_json::from_slice::<Value>(chunk) else {
+        if state.xai_chat {
+            return state.fail(crate::core::translator::limits::StreamLimitError {
+                code: "upstream_stream_invalid_json",
+                message: "Upstream xAI Chat stream contains invalid JSON".to_string(),
+            });
+        }
         return Vec::new();
     };
     if let Err(error) =
         crate::core::translator::registry::track_openai_accumulation(state, &value, 4, true)
+    {
+        return state.fail(error);
+    }
+    if state.xai_chat
+        && let Err(error) = observe_xai_chat(state, &value)
     {
         return state.fail(error);
     }
@@ -1556,10 +1774,39 @@ pub fn chat_to_responses_streaming(
 
 /// EOF synthesis for `OpenAi -> OpenAiResponses/Codex`: emit the deferred
 /// terminal when upstream closed cleanly without `[DONE]` or a usage tail.
-/// No-op on failure, duplicate calls, or streams that never started.
+/// xAI requires validated generation-end evidence and keeps all terminals here,
+/// after the real transport EOF. Other providers retain the split-tail policy.
+/// No-op on failure or duplicate calls.
 pub fn chat_to_responses_finish(
     state: &mut crate::core::translator::registry::ResponseTransformState,
 ) -> Vec<String> {
+    if state.xai_chat {
+        if state.failure.is_some()
+            || state
+                .responses
+                .state
+                .get("completedSent")
+                .and_then(Value::as_bool)
+                == Some(true)
+        {
+            return Vec::new();
+        }
+        if !xai_chat_terminal_ready(state) {
+            return state.fail(crate::core::translator::limits::StreamLimitError {
+                code: "upstream_stream_truncated",
+                message: "Upstream xAI Chat stream ended before every observed choice finished"
+                    .to_string(),
+            });
+        }
+        let mut events = Vec::new();
+        send_completed(&mut state.responses.state, &mut events);
+        if let Some(error) = take_arithmetic_failure(&mut state.responses.state) {
+            return state.fail(error);
+        }
+        let mut output = format_responses_events(events);
+        output.push("data: [DONE]\n\n".to_string());
+        return output;
+    }
     let pending = state
         .responses
         .state
@@ -1677,6 +1924,496 @@ mod tests {
     use super::*;
     use crate::core::translator::registry::{global_registry, Format, ResponseTransformState};
     use serde_json::json;
+
+    fn xai_state() -> ResponseTransformState {
+        ResponseTransformState {
+            xai_chat: true,
+            ..Default::default()
+        }
+    }
+
+    fn xai_feed(state: &mut ResponseTransformState, value: Value) -> Vec<String> {
+        chat_to_responses_streaming(&serde_json::to_vec(&value).unwrap(), state)
+    }
+
+    fn xai_choice(delta: Value, finish: Value) -> Value {
+        json!({
+            "id": "xai-chat",
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]
+        })
+    }
+
+    fn xai_completed(output: &[String]) -> Value {
+        let frame = output
+            .iter()
+            .find(|frame| frame.starts_with("event: response.completed\n"))
+            .expect("completed event");
+        let data = frame.split_once("\ndata: ").unwrap().1.trim();
+        serde_json::from_str::<Value>(data).unwrap()["response"].clone()
+    }
+
+    fn assert_xai_no_terminal(output: &[String]) {
+        assert!(
+            !output
+                .iter()
+                .any(|frame| frame.contains("response.completed") || frame.contains("[DONE]")),
+            "terminal must wait for actual EOF: {output:?}"
+        );
+    }
+
+    #[test]
+    fn xai_chat_usage_exclusive_and_inclusive_reasoning() {
+        for completion in [9, 103] {
+            let usage = json!({
+                "prompt_tokens": 32,
+                "completion_tokens": completion,
+                "total_tokens": 135,
+                "prompt_tokens_details": {"cached_tokens": 6},
+                "completion_tokens_details": {"reasoning_tokens": 94},
+                "unrelated": "not copied"
+            });
+            assert_eq!(
+                xai_chat_usage_to_responses(&usage),
+                Some(json!({
+                    "input_tokens": 32,
+                    "output_tokens": 103,
+                    "total_tokens": 135,
+                    "input_tokens_details": {"cached_tokens": 6},
+                    "output_tokens_details": {"reasoning_tokens": 94}
+                }))
+            );
+        }
+    }
+
+    #[test]
+    fn xai_chat_usage_omits_unknown_invalid_and_empty_fields() {
+        for invalid in [
+            Value::Null,
+            json!(-1),
+            json!(1.5),
+            json!(1.0),
+            json!("9"),
+            json!(true),
+            serde_json::from_str("18446744073709551616").unwrap(),
+        ] {
+            let usage = json!({
+                "prompt_tokens": invalid,
+                "completion_tokens": invalid,
+                "total_tokens": invalid,
+                "prompt_tokens_details": {"cached_tokens": invalid},
+                "completion_tokens_details": {"reasoning_tokens": invalid}
+            });
+            assert_eq!(xai_chat_usage_to_responses(&usage), None, "{usage}");
+        }
+        for empty in [
+            Value::Null,
+            json!([]),
+            json!({}),
+            json!({"estimated": true}),
+            json!({"prompt_tokens_details": {}, "completion_tokens_details": null}),
+        ] {
+            assert_eq!(xai_chat_usage_to_responses(&empty), None, "{empty}");
+        }
+        assert_eq!(
+            xai_chat_usage_to_responses(&json!({"completion_tokens": 9})),
+            Some(json!({"output_tokens": 9}))
+        );
+        assert_eq!(
+            xai_chat_usage_to_responses(&json!({
+                "prompt_tokens_details": {"cached_tokens": 6},
+                "completion_tokens_details": {"reasoning_tokens": 4}
+            })),
+            Some(json!({
+                "input_tokens_details": {"cached_tokens": 6},
+                "output_tokens_details": {"reasoning_tokens": 4}
+            }))
+        );
+    }
+
+    #[test]
+    fn xai_chat_usage_checked_arithmetic_and_contradictory_details() {
+        for (usage, expected) in [
+            (
+                json!({"prompt_tokens": 32, "completion_tokens": 9, "total_tokens": 999,
+                    "prompt_tokens_details": {"cached_tokens": 33},
+                    "completion_tokens_details": {"reasoning_tokens": 94}}),
+                json!({"input_tokens": 32, "output_tokens": 9, "total_tokens": 999}),
+            ),
+            (
+                json!({"prompt_tokens": 32, "completion_tokens": 9,
+                    "completion_tokens_details": {"reasoning_tokens": 4}}),
+                json!({"input_tokens": 32, "output_tokens": 9,
+                    "output_tokens_details": {"reasoning_tokens": 4}}),
+            ),
+            (
+                json!({"prompt_tokens": u64::MAX, "completion_tokens": 1, "total_tokens": 0,
+                    "completion_tokens_details": {"reasoning_tokens": 1}}),
+                json!({"input_tokens": u64::MAX, "output_tokens": 1, "total_tokens": 0,
+                    "output_tokens_details": {"reasoning_tokens": 1}}),
+            ),
+            (
+                json!({"prompt_tokens": 0, "completion_tokens": u64::MAX, "total_tokens": 1,
+                    "completion_tokens_details": {"reasoning_tokens": 2}}),
+                json!({"input_tokens": 0, "output_tokens": u64::MAX, "total_tokens": 1,
+                    "output_tokens_details": {"reasoning_tokens": 2}}),
+            ),
+            (
+                json!({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+                    "prompt_tokens_details": {"cached_tokens": 0},
+                    "completion_tokens_details": {"reasoning_tokens": 0}}),
+                json!({"input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+                    "input_tokens_details": {"cached_tokens": 0},
+                    "output_tokens_details": {"reasoning_tokens": 0}}),
+            ),
+        ] {
+            assert_eq!(
+                xai_chat_usage_to_responses(&usage),
+                Some(expected),
+                "{usage}"
+            );
+        }
+    }
+
+    #[test]
+    fn xai_chat_stream_waits_for_eof_and_latest_authoritative_usage() {
+        let mut state = xai_state();
+        let mut running = xai_choice(json!({"content": "hi"}), Value::Null);
+        running["usage"] = json!({"completion_tokens": 1});
+        let output = xai_feed(&mut state, running);
+        assert!(output.join("").contains("response.output_text.delta"));
+        assert_xai_no_terminal(&output);
+        assert!(!xai_chat_terminal_ready(&state));
+        assert!(!state.responses.state.contains_key("usage"));
+        // Provisional usage-only frames must not arm the EOF budget either.
+        assert_xai_no_terminal(&xai_feed(
+            &mut state,
+            json!({"choices": [], "usage": {"completion_tokens": 2}}),
+        ));
+        assert!(!xai_chat_terminal_ready(&state));
+        assert!(!state.responses.state.contains_key("usage"));
+
+        let mut finish = xai_choice(json!({}), json!("stop"));
+        finish["usage"] = json!({"completion_tokens": 9});
+        let output = xai_feed(&mut state, finish);
+        assert!(output.join("").contains("response.output_item.done"));
+        assert_xai_no_terminal(&output);
+        assert!(xai_chat_terminal_ready(&state));
+
+        for empty in [
+            Value::Null,
+            json!({}),
+            json!({"choices": []}),
+            json!({"usage": null}),
+            json!({"usage": {}}),
+        ] {
+            assert_xai_no_terminal(&xai_feed(&mut state, empty));
+            assert_eq!(state.responses.state["usage"], json!({"output_tokens": 9}));
+        }
+        assert!(chat_to_responses_streaming(b"[DONE]", &mut state).is_empty());
+        let tail = json!({"choices": [], "usage": {
+            "prompt_tokens": 32, "completion_tokens": 9, "total_tokens": 135,
+            "prompt_tokens_details": {"cached_tokens": 6},
+            "completion_tokens_details": {"reasoning_tokens": 94}
+        }});
+        assert_xai_no_terminal(&xai_feed(&mut state, tail));
+        // A later final snapshot replaces, never sums with, the earlier one.
+        assert_xai_no_terminal(&xai_feed(
+            &mut state,
+            json!({"choices": [], "usage": {"completion_tokens": 0}}),
+        ));
+        assert!(chat_to_responses_streaming(b"[DONE]", &mut state).is_empty());
+        let eof = chat_to_responses_finish(&mut state);
+        assert_eq!(xai_completed(&eof)["usage"], json!({"output_tokens": 0}));
+        assert_eq!(
+            eof.iter()
+                .filter(|s| s.contains("response.completed"))
+                .count(),
+            1
+        );
+        assert_eq!(eof.last().unwrap(), "data: [DONE]\n\n");
+        assert!(chat_to_responses_finish(&mut state).is_empty());
+        assert!(chat_to_responses_streaming(b"[DONE]", &mut state).is_empty());
+    }
+
+    #[test]
+    fn xai_chat_stream_without_final_usage_omits_running_snapshot() {
+        for final_usage in [
+            None,
+            Some(Value::Null),
+            Some(json!({})),
+            Some(json!({"completion_tokens": -1})),
+        ] {
+            let mut state = xai_state();
+            let mut running = xai_choice(json!({"content": "hi"}), Value::Null);
+            running["usage"] =
+                json!({"prompt_tokens": 32, "completion_tokens": 1, "total_tokens": 33});
+            xai_feed(&mut state, running);
+            let mut finish = xai_choice(json!({}), json!("stop"));
+            if let Some(usage) = final_usage {
+                finish["usage"] = usage;
+            }
+            assert_xai_no_terminal(&xai_feed(&mut state, finish));
+            assert!(chat_to_responses_streaming(b"[DONE]", &mut state).is_empty());
+            let eof = chat_to_responses_finish(&mut state);
+            assert!(xai_completed(&eof).get("usage").is_none(), "{eof:?}");
+        }
+    }
+
+    #[test]
+    fn xai_chat_stream_finish_and_usage_tail_map_inclusive_output() {
+        for on_finish in [true, false] {
+            let mut state = xai_state();
+            let usage = json!({"prompt_tokens": 32, "completion_tokens": 9, "total_tokens": 135,
+                "completion_tokens_details": {"reasoning_tokens": 94}});
+            let mut finish = xai_choice(json!({"content": "hi"}), json!("stop"));
+            if on_finish {
+                finish["usage"] = usage.clone();
+            }
+            assert_xai_no_terminal(&xai_feed(&mut state, finish));
+            if !on_finish {
+                assert_xai_no_terminal(&xai_feed(
+                    &mut state,
+                    json!({"choices": [], "usage": usage}),
+                ));
+            }
+            assert_eq!(
+                xai_completed(&chat_to_responses_finish(&mut state))["usage"]["output_tokens"],
+                103
+            );
+        }
+    }
+
+    #[test]
+    fn xai_chat_stream_tool_deltas_and_item_done_are_not_deferred() {
+        let mut state = xai_state();
+        let tool = xai_choice(
+            json!({"tool_calls": [{"index": 0, "id": "call_1",
+            "function": {"name": "lookup", "arguments": "{}"}}]}),
+            Value::Null,
+        );
+        let output = xai_feed(&mut state, tool);
+        assert!(output
+            .join("")
+            .contains("response.function_call_arguments.delta"));
+        assert!(!xai_chat_terminal_ready(&state));
+        let output = xai_feed(&mut state, xai_choice(json!({}), json!("tool_calls")));
+        assert!(output
+            .join("")
+            .contains("response.function_call_arguments.done"));
+        assert!(output.join("").contains("response.output_item.done"));
+        assert_xai_no_terminal(&output);
+        assert!(xai_chat_terminal_ready(&state));
+        assert_eq!(chat_to_responses_finish(&mut state).len(), 2);
+    }
+
+    #[test]
+    fn xai_chat_stream_finishing_inside_think_still_closes_items_immediately() {
+        let mut state = xai_state();
+        let output = xai_feed(
+            &mut state,
+            xai_choice(json!({"content": "<think>reasoning"}), json!("stop")),
+        );
+        assert!(output
+            .join("")
+            .contains("response.reasoning_summary_text.done"));
+        assert!(output.join("").contains("response.output_item.done"));
+        assert_xai_no_terminal(&output);
+        assert!(xai_chat_terminal_ready(&state));
+        assert_eq!(chat_to_responses_finish(&mut state).len(), 2);
+    }
+
+    #[test]
+    fn xai_chat_stream_rejects_truncation_and_invalid_finishes() {
+        for finish in [
+            Value::Null,
+            json!(""),
+            json!("unknown"),
+            json!(1),
+            json!(false),
+        ] {
+            let mut state = xai_state();
+            xai_feed(
+                &mut state,
+                xai_choice(json!({"content": "partial"}), finish),
+            );
+            assert!(!xai_chat_terminal_ready(&state));
+            assert!(chat_to_responses_streaming(b"[DONE]", &mut state).is_empty());
+            assert!(chat_to_responses_finish(&mut state).is_empty());
+            assert!(state.failure.is_some());
+        }
+        for incomplete in [
+            json!({"choices": []}),
+            json!({"usage": {"completion_tokens": 4}}),
+            Value::Null,
+        ] {
+            let mut state = xai_state();
+            xai_feed(&mut state, incomplete);
+            assert!(chat_to_responses_finish(&mut state).is_empty());
+            assert_eq!(state.failure.unwrap().code, "upstream_stream_truncated");
+        }
+        let mut state = xai_state();
+        xai_feed(&mut state, json!({"choices": [{"finish_reason": "stop"}]}));
+        assert_eq!(state.failure.unwrap().code, "upstream_stream_invalid_index");
+
+        let mut state = xai_state();
+        xai_feed(
+            &mut state,
+            xai_choice(json!({"content": "partial"}), Value::Null),
+        );
+        assert!(chat_to_responses_finish(&mut state).is_empty());
+        assert_eq!(state.failure.unwrap().code, "upstream_stream_truncated");
+
+        for malformed in [
+            json!({"choices": {"finish_reason": "stop"}}),
+            xai_choice(json!("invalid delta"), json!("stop")),
+        ] {
+            let mut state = xai_state();
+            xai_feed(&mut state, malformed);
+            assert_eq!(
+                state.failure.unwrap().code,
+                "upstream_stream_invalid_terminal"
+            );
+        }
+    }
+
+    #[test]
+    fn xai_chat_stream_rejects_protocol_errors_even_after_finish() {
+        for error in [
+            json!({"error": {"message": "failed"}}),
+            json!({"error": "failed"}),
+            json!({"type": "error", "message": "failed"}),
+            json!({"type": "response.failed"}),
+            json!({"object": "error"}),
+            json!({"choices": [{"index": 0, "error": {"message": "failed"}}]}),
+        ] {
+            let mut state = xai_state();
+            xai_feed(
+                &mut state,
+                xai_choice(json!({"content": "hi"}), json!("stop")),
+            );
+            assert!(xai_chat_terminal_ready(&state));
+            assert!(xai_feed(&mut state, error).is_empty());
+            assert!(!xai_chat_terminal_ready(&state));
+            assert!(chat_to_responses_finish(&mut state).is_empty());
+            assert_eq!(state.failure.unwrap().code, "upstream_stream_failed");
+        }
+        let mut state = xai_state();
+        xai_feed(&mut state, xai_choice(json!({}), json!("stop")));
+        assert!(chat_to_responses_streaming(b"{", &mut state).is_empty());
+        assert!(chat_to_responses_finish(&mut state).is_empty());
+        assert_eq!(state.failure.unwrap().code, "upstream_stream_invalid_json");
+    }
+
+    #[test]
+    fn xai_chat_stream_finish_gate_tracks_all_observed_choices() {
+        let mut state = xai_state();
+        xai_feed(
+            &mut state,
+            json!({"choices": [
+                {"index": 0, "delta": {"content": "one"}},
+                {"index": 1, "delta": {"content": "two"}}
+            ]}),
+        );
+        xai_feed(&mut state, xai_choice(json!({}), json!("stop")));
+        assert!(!xai_chat_terminal_ready(&state));
+        assert!(chat_to_responses_finish(&mut state).is_empty());
+        assert_eq!(state.failure.unwrap().code, "upstream_stream_truncated");
+
+        let mut state = xai_state();
+        xai_feed(
+            &mut state,
+            json!({"choices": [
+            {"index": 0, "finish_reason": "stop"},
+            {"index": 1, "finish_reason": null}
+        ], "usage": {"completion_tokens": 4}}),
+        );
+        assert!(!xai_chat_terminal_ready(&state));
+        assert!(!state.responses.state.contains_key("usage"));
+        xai_feed(
+            &mut state,
+            json!({"choices": [{"index": 1, "finish_reason": "length"}]}),
+        );
+        assert!(xai_chat_terminal_ready(&state));
+        assert!(xai_completed(&chat_to_responses_finish(&mut state))
+            .get("usage")
+            .is_none());
+
+        let mut state = xai_state();
+        let mut first = xai_choice(json!({}), json!("stop"));
+        first["usage"] = json!({"completion_tokens": 4});
+        xai_feed(&mut state, first);
+        assert!(xai_chat_terminal_ready(&state));
+        assert!(state.responses.state.contains_key("usage"));
+        xai_feed(&mut state, json!({"choices": [{"index": 5, "delta": {}}]}));
+        assert!(!xai_chat_terminal_ready(&state));
+        assert!(!state.responses.state.contains_key("usage"));
+        xai_feed(
+            &mut state,
+            json!({"choices": [{"index": 5, "finish_reason": "stop"}]}),
+        );
+        assert!(xai_chat_terminal_ready(&state));
+        assert!(xai_completed(&chat_to_responses_finish(&mut state))
+            .get("usage")
+            .is_none());
+    }
+
+    #[test]
+    fn xai_chat_stream_choice_tracking_keeps_existing_bounds() {
+        use crate::core::translator::limits::{MAX_STREAM_CHOICES, MAX_STREAM_WIRE_INDEX};
+
+        let mut state = xai_state();
+        xai_feed(
+            &mut state,
+            json!({"choices": [{
+                "index": MAX_STREAM_WIRE_INDEX + 1, "finish_reason": "stop"
+            }]}),
+        );
+        assert_eq!(state.failure.unwrap().code, "upstream_stream_index_limit");
+
+        let mut state = xai_state();
+        for index in 0..MAX_STREAM_CHOICES {
+            xai_feed(
+                &mut state,
+                json!({"choices": [{"index": index, "delta": {}}]}),
+            );
+        }
+        assert!(state.failure.is_none());
+        xai_feed(
+            &mut state,
+            json!({"choices": [{"index": MAX_STREAM_CHOICES, "delta": {}}]}),
+        );
+        assert_eq!(state.failure.unwrap().code, "upstream_stream_state_limit");
+        assert_eq!(
+            state.responses.state["_xaiChoices"]
+                .as_object()
+                .unwrap()
+                .len(),
+            MAX_STREAM_CHOICES
+        );
+    }
+
+    #[test]
+    fn xai_chat_policy_is_explicit_and_default_behavior_is_unchanged() {
+        let mut state = ResponseTransformState::default();
+        assert!(!state.xai_chat);
+        state.generic.insert("provider".to_string(), json!("xai"));
+        state
+            .responses
+            .state
+            .insert("xai_chat".to_string(), json!(true));
+        let mut finish = xai_choice(json!({"content": "hi"}), json!("stop"));
+        finish["model"] = json!("grok-unknown");
+        finish["usage"] = json!({"prompt_tokens": 32, "completion_tokens": 9, "total_tokens": 135,
+            "completion_tokens_details": {"reasoning_tokens": 94}});
+        let output = xai_feed(&mut state, finish);
+        assert_eq!(xai_completed(&output)["usage"]["output_tokens"], 9);
+        assert!(!xai_chat_terminal_ready(&state));
+        assert_eq!(
+            chat_to_responses_streaming(b"[DONE]", &mut state),
+            vec!["data: [DONE]\n\n"]
+        );
+        assert!(chat_to_responses_finish(&mut state).is_empty());
+    }
 
     #[test]
     fn chat_to_responses_streaming_buffers_split_multi_frame_chunks() {

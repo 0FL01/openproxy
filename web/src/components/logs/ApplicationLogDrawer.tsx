@@ -109,16 +109,19 @@ export default function ApplicationLogDrawer({ log, onClose }: Props) {
                 <p className="mt-3 break-all font-mono text-xs text-text-muted">{log.generatedOutputTokens} ÷ ({log.upstreamDurationMs} / 1000) = {log.tokensPerSecond.toFixed(1)} tokens/s</p>
               </>
             ) : <p className="text-sm text-text-muted">— · Final original usage and completion timing are unavailable.</p>}
-            <p className="mt-3 text-xs text-text-muted">Original provider-generated output divided by observed upstream time. Includes network, initial wait and downstream backpressure; this is observed throughput, not GPU decode speed.</p>
+            <p className="mt-3 text-xs text-text-muted">Original provider-generated output divided by observed upstream time. Reasoning is included only when the original provider completion counter includes it. Includes network, initial wait and downstream backpressure; this is observed throughput, not GPU decode speed.</p>
           </div>
 
           <div className="rounded-lg border border-border bg-bg-subtle p-4">
             <h3 className="mb-3 text-sm font-semibold text-text-main">Tokens</h3>
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-              <Field label="Input" value={(log.inputTokens ?? 0).toLocaleString()} />
+              <Field label="Input" value={log.inputTokens?.toLocaleString() ?? null} />
+              <Field label="Output" value={log.outputTokens?.toLocaleString() ?? null} />
               <Field label="Cache Read" value={log.cachedTokens?.toLocaleString() ?? null} />
-              <Field label="Output" value={(log.outputTokens ?? 0).toLocaleString()} />
+              <Field label="Reasoning" value={log.reasoningTokens?.toLocaleString() ?? null} />
+              <Field label="Total" value={log.totalTokens?.toLocaleString() ?? null} />
             </div>
+            <p className="mt-3 text-xs text-text-muted">Counters come from the selected attempt’s usage. Cache read and reasoning may overlap input/output; do not sum these fields to calculate Total. Missing counters are shown as —.</p>
           </div>
         </div>
       )}

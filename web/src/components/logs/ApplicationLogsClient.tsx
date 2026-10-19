@@ -206,7 +206,10 @@ export default function ApplicationLogsClient() {
                   <td className="max-w-[240px] p-4"><div className="truncate font-mono text-text-main">{log.model}</div></td>
                   <td className="p-4 text-text-main">{log.provider || "—"}</td><td className="p-4 font-mono text-text-main">{log.route || "—"}</td>
                   <td className="p-4 text-text-main"><div className="font-medium">{log.apiKeyName || "—"}</div>{log.apiKeyId && <div className="mt-1 max-w-[180px] truncate font-mono text-xs text-text-muted">{log.apiKeyId}</div>}</td>
-                  <td className="p-4 text-right font-mono text-text-main">{(log.inputTokens ?? 0).toLocaleString()} / {(log.outputTokens ?? 0).toLocaleString()}</td>
+                  <td className="p-4 text-right font-mono text-text-main" title="Input / Output · Total when known">
+                    {log.inputTokens?.toLocaleString() ?? "—"} / {log.outputTokens?.toLocaleString() ?? "—"}
+                    {log.totalTokens != null && <div className="mt-1 text-xs text-text-muted">Total {log.totalTokens.toLocaleString()}</div>}
+                  </td>
                   <td className="p-4 text-right font-mono text-text-main">{log.status === "success" && log.tokensPerSecond != null ? log.tokensPerSecond.toFixed(1) : "—"}</td>
                   <td className="p-4 text-right font-mono text-text-main">{log.durationMs.toLocaleString()} ms</td>
                  <td className="whitespace-nowrap p-4 text-text-muted">{new Date(log.timestamp).toLocaleString()}</td>

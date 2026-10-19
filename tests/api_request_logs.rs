@@ -46,8 +46,11 @@ async fn request_logs_return_metadata_and_filter_results() {
                         "route": "work",
                         "statusCode": 200,
                         "durationMs": 42,
-                        "inputTokens": 10,
-                        "outputTokens": 20,
+                        "inputTokens": 32,
+                        "outputTokens": 9,
+                        "cachedTokens": 6,
+                        "reasoningTokens": 94,
+                        "totalTokens": 135,
                         "codexCache": {"accountHmac": "private-fingerprint"},
                         "chatSession": {"version": 1, "hmac": "private-chat-fingerprint", "source": "x-session-id"},
                         "upstreamTps": {"version": 1, "generatedOutputTokens": 7, "elapsedMicros": 250000, "endKind": "protocol_terminal", "privateExtra": "secret"},
@@ -115,7 +118,13 @@ async fn request_logs_return_metadata_and_filter_results() {
     let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(payload["requests"][0]["requestId"], "request-1");
     assert_eq!(payload["requests"][0]["route"], "work");
-    assert_eq!(payload["requests"][0]["inputTokens"], 10);
+    assert_eq!(payload["requests"][0]["inputTokens"], 32);
+    assert_eq!(payload["requests"][0]["outputTokens"], 9);
+    assert_eq!(payload["requests"][0]["cachedTokens"], 6);
+    assert_eq!(payload["requests"][0]["reasoningTokens"], 94);
+    assert_eq!(payload["requests"][0]["totalTokens"], 135);
+    assert!(payload["requests"][1]["reasoningTokens"].is_null());
+    assert!(payload["requests"][1]["totalTokens"].is_null());
     assert_eq!(payload["requests"][0]["apiKeyId"], "consumer-key-id");
     assert!(!payload.to_string().contains("codexCache"));
     assert!(!payload.to_string().contains("private-fingerprint"));
@@ -328,6 +337,8 @@ async fn request_logs_tps_requires_valid_final_inputs_and_success_preserving_zer
             "inputTokens",
             "outputTokens",
             "cachedTokens",
+            "reasoningTokens",
+            "totalTokens",
             "apiKeyId",
             "apiKeyName",
             "tokensPerSecond",
@@ -345,4 +356,145 @@ async fn request_logs_tps_requires_valid_final_inputs_and_success_preserving_zer
             .all(|key| allowed.contains(&key.as_str())));
     }
     assert!(!payload.to_string().contains("private"));
+}
+
+#[tokio::test]
+async fn request_logs_project_only_unsigned_reasoning_and_total_scalars() {
+    let temp = tempdir().unwrap();
+    let db = Arc::new(Db::load_from(temp.path()).await.unwrap());
+    db.update(|state| state.settings.require_login = false)
+        .await
+        .unwrap();
+    let mut cases = vec![
+        (
+            "known",
+            json!({"reasoningTokens": 94, "totalTokens": 135}),
+            Some(94),
+            Some(135),
+        ),
+        (
+            "zero",
+            json!({"reasoningTokens": 0, "totalTokens": 0}),
+            Some(0),
+            Some(0),
+        ),
+        (
+            "max",
+            json!({"reasoningTokens": u64::MAX, "totalTokens": u64::MAX}),
+            Some(u64::MAX),
+            Some(u64::MAX),
+        ),
+        ("legacy", json!({}), None, None),
+        (
+            "reasoning-only",
+            json!({"reasoningTokens": 94}),
+            Some(94),
+            None,
+        ),
+        ("total-only", json!({"totalTokens": 135}), None, Some(135)),
+    ];
+    for (name, value) in [
+        ("null", json!(null)),
+        ("negative", json!(-1)),
+        ("fraction", json!(1.5)),
+        ("integral-float", json!(1.0)),
+        ("overflow", json!(18446744073709551616.0)),
+        ("string", json!("94")),
+        ("boolean", json!(true)),
+        ("array", json!([94])),
+        ("object", json!({"private": "secret"})),
+    ] {
+        cases.push((
+            name,
+            json!({"reasoningTokens": value, "totalTokens": value}),
+            None,
+            None,
+        ));
+    }
+    // Other usage-shaped data must never supply a missing top-level scalar.
+    db.sqlite.with_conn(|conn| {
+        for (name, counters, _, _) in &cases {
+            let mut data = json!({
+                "inputTokens": 32, "outputTokens": 9, "cachedTokens": 6,
+                "usage": {"reasoning_tokens": 94, "total_tokens": 135, "extra": "private-usage"},
+                "extra": {"reasoningTokens": 94, "totalTokens": 135, "rawPayload": "private-payload"},
+                "request": "private-prompt", "response": "private-response"
+            });
+            data.as_object_mut().unwrap().extend(counters.as_object().unwrap().clone());
+            request_repo::insert(conn, &NewRequestDetail {
+                id: name, timestamp: "2026-10-03T12:00:00Z", provider: Some("test"), model: Some("test"),
+                connection_id: Some("private-connection"), status: "success", api_key_id: None,
+                api_key_name: None, correlation_id: Some("private-correlation"), data: &data,
+            })?;
+        }
+        Ok(())
+    }).unwrap();
+    let response = openproxy::build_app(AppState::new(db))
+        .oneshot(
+            Request::builder()
+                .uri("/api/request-logs?pageSize=100")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let rows = payload["requests"].as_array().unwrap();
+    assert_eq!(rows.len(), cases.len());
+    let allowed = [
+        "requestId",
+        "timestamp",
+        "route",
+        "provider",
+        "model",
+        "status",
+        "statusCode",
+        "durationMs",
+        "inputTokens",
+        "outputTokens",
+        "cachedTokens",
+        "reasoningTokens",
+        "totalTokens",
+        "apiKeyId",
+        "apiKeyName",
+        "tokensPerSecond",
+        "generatedOutputTokens",
+        "upstreamDurationMs",
+    ];
+    for (name, _, reasoning, total) in cases {
+        let row = rows.iter().find(|row| row["requestId"] == name).unwrap();
+        assert_eq!(
+            row["reasoningTokens"],
+            json!(reasoning),
+            "{name}: reasoning"
+        );
+        assert_eq!(row["totalTokens"], json!(total), "{name}: total");
+        assert_eq!(row["inputTokens"], 32);
+        assert_eq!(row["outputTokens"], 9);
+        assert_eq!(row["cachedTokens"], 6);
+        assert_eq!(row.as_object().unwrap().len(), allowed.len());
+        assert!(row
+            .as_object()
+            .unwrap()
+            .keys()
+            .all(|key| allowed.contains(&key.as_str())));
+    }
+    for forbidden in [
+        "private",
+        "secret",
+        "usage",
+        "extra",
+        "rawPayload",
+        "request\"",
+        "response\"",
+    ] {
+        assert!(
+            !payload.to_string().contains(forbidden),
+            "leaked {forbidden}"
+        );
+    }
 }
