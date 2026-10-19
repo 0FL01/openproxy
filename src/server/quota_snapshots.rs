@@ -69,17 +69,15 @@ impl Default for QuotaSnapshots {
 impl QuotaSnapshots {
     pub(crate) fn read(self: &Arc<Self>, state: &AppState) -> (Vec<AccountLimits>, bool) {
         let snapshot = state.db.snapshot();
-        let mut connections = snapshot
+        let mut eligible = snapshot
             .provider_connections
             .iter()
-            .filter(|connection| connection.is_active.unwrap_or(true));
-        let connections: Vec<_> = connections.by_ref().take(MAX_ACCOUNTS).collect();
-        let truncated = snapshot
-            .provider_connections
-            .iter()
-            .filter(|connection| connection.is_active.unwrap_or(true))
-            .count()
-            > MAX_ACCOUNTS;
+            // Omit xAI quota cards for existing clients without hiding its models.
+            .filter(|connection| {
+                connection.is_active.unwrap_or(true) && connection.provider != "xai"
+            });
+        let connections: Vec<_> = eligible.by_ref().take(MAX_ACCOUNTS).collect();
+        let truncated = eligible.next().is_some();
         let now = Instant::now();
         let mut entries = self.entries.lock();
         if entries.stopped {
@@ -817,6 +815,107 @@ mod tests {
         assert_eq!(row.error_status, None);
         assert!(!row.refreshing);
         assert_eq!(owner.entries.lock().accounts[&connection.id].failures, 0);
+        state.signal_shutdown();
+    }
+
+    #[tokio::test]
+    async fn limits_endpoint_omits_xai_but_preserves_other_providers() {
+        let (_directory, state, connection) = state().await;
+        state
+            .db
+            .update(|db| {
+                for auth_type in ["apikey", "oauth"] {
+                    db.provider_connections.push(ProviderConnection {
+                        id: format!("xai-{auth_type}"),
+                        provider: "xai".into(),
+                        auth_type: auth_type.into(),
+                        is_active: None,
+                        ..Default::default()
+                    });
+                }
+                db.provider_connections.push(ProviderConnection {
+                    id: "other-unsupported".into(),
+                    provider: "openai".into(),
+                    ..Default::default()
+                });
+            })
+            .await
+            .unwrap();
+        state.quota_snapshots.read(&state);
+        state
+            .quota_snapshots
+            .observe(&state, &connection, &quotas());
+        let response = usage::snapshot_routes()
+            .with_state(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/usage/limits")
+                    .header("authorization", "Bearer reader-fixture")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 2 * 1024 * 1024)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        let accounts = body["accounts"].as_array().unwrap();
+        assert_eq!(accounts.len(), 2);
+        assert_eq!(accounts[0]["provider"], "commandcode");
+        assert_eq!(accounts[0]["status"], "fresh");
+        assert_eq!(accounts[0]["quotas"]["5h"]["used"], 25.0);
+        assert_eq!(accounts[1]["provider"], "openai");
+        assert_eq!(accounts[1]["status"], "unsupported");
+        assert_eq!(body["truncated"], false);
+        assert_eq!(state.db.snapshot().provider_connections.len(), 4);
+        let entries = state.quota_snapshots.entries.lock();
+        assert_eq!(entries.accounts.len(), 2);
+        assert!(!entries.accounts.contains_key("xai-apikey"));
+        assert!(!entries.accounts.contains_key("xai-oauth"));
+        drop(entries);
+        state.signal_shutdown();
+    }
+
+    #[tokio::test]
+    async fn hidden_xai_accounts_do_not_consume_capacity_or_mark_limits_truncated() {
+        let (_directory, state, connection) = state().await;
+        let owner = &state.quota_snapshots;
+        let _permits: Vec<_> = (0..4)
+            .map(|_| owner.permits.clone().try_acquire_owned().unwrap())
+            .collect();
+        for visible_count in [0, MAX_ACCOUNTS, MAX_ACCOUNTS + 1] {
+            state
+                .db
+                .update(|db| {
+                    db.provider_connections = (0..MAX_ACCOUNTS + 2)
+                        .map(|index| ProviderConnection {
+                            id: format!("xai-{index}"),
+                            provider: "xai".into(),
+                            ..connection.clone()
+                        })
+                        .chain((0..visible_count).map(|index| ProviderConnection {
+                            id: format!("visible-{index}"),
+                            ..connection.clone()
+                        }))
+                        .chain(std::iter::once(ProviderConnection {
+                            id: "inactive".into(),
+                            is_active: Some(false),
+                            ..connection.clone()
+                        }))
+                        .collect();
+                })
+                .await
+                .unwrap();
+            let (accounts, truncated) = owner.read(&state);
+            assert_eq!(accounts.len(), visible_count.min(MAX_ACCOUNTS));
+            assert_eq!(truncated, visible_count > MAX_ACCOUNTS);
+            assert!(accounts
+                .iter()
+                .all(|account| account.provider == "commandcode"));
+            assert_eq!(owner.entries.lock().accounts.len(), accounts.len());
+        }
         state.signal_shutdown();
     }
 
