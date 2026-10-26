@@ -12,6 +12,7 @@ import { test } from "node:test";
 const enabled = process.env.RUN_UI_PARITY_TESTS === "1";
 const mode = process.env.UI_PARITY_MODE || "compare";
 const selectedScreen = process.env.UI_PARITY_SCREEN;
+const selectedSection = process.env.UI_PARITY_SECTION;
 const referenceDir = resolve(process.env.UI_REFERENCE_DIR || "tests/ui/reference");
 const artifactDir = resolve(process.env.UI_ARTIFACT_DIR || ".ui-browser/artifacts");
 const appUrl = "https://app:4623";
@@ -34,6 +35,14 @@ const screens = [
   { section: "endpoint", name: "created-key", action: "created" },
   { section: "endpoint", name: "delete-key-dialog", action: "delete" },
   { section: "endpoint", name: "pause-key-dialog", action: "pause" },
+  { section: "providers", name: "ready" },
+  { section: "providers", name: "search-match", action: "search-match", desktopOnly: true },
+  { section: "providers", name: "search-empty", action: "search-empty", desktopOnly: true },
+  { section: "providers", name: "free-filter", action: "free-filter" },
+  { section: "providers", name: "scroll-api-keys", action: "scroll-api-keys" },
+  { section: "providers", name: "show-all-scroll-bottom", action: "show-all-scroll-bottom" },
+  { section: "providers", name: "add-openai-dialog", action: "add-openai-dialog" },
+  { section: "providers", name: "add-openai-dialog-scroll-bottom", action: "add-openai-dialog-scroll-bottom" },
 ];
 const viewports = [
   { name: "desktop", width: 1440, height: 900 },
@@ -43,6 +52,8 @@ const viewports = [
 test("dashboard states match the synthetic visual reference", { skip: !enabled, timeout: 480_000 }, async (t) => {
   assert(["record", "compare"].includes(mode), "UI_PARITY_MODE must be record or compare");
   assert(!selectedScreen || screens.some((screen) => `${screen.section}-${screen.name}` === selectedScreen), "unknown UI_PARITY_SCREEN");
+  assert(!selectedSection || screens.some((screen) => screen.section === selectedSection), "unknown UI_PARITY_SECTION");
+  assert(!selectedScreen || !selectedSection || selectedScreen.startsWith(`${selectedSection}-`), "UI_PARITY_SCREEN and UI_PARITY_SECTION disagree");
   const { chromium } = await import(process.env.DASHBOARD_PLAYWRIGHT_MODULE || "playwright");
   // Partial rasterization caused nondeterministic antialiasing at rounded edges.
   const launchArgs = ["--force-color-profile=srgb", "--disable-partial-raster"];
@@ -69,7 +80,9 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
       for (const theme of ["light", "dark"]) {
         for (const screen of screens) {
           if (selectedScreen && `${screen.section}-${screen.name}` !== selectedScreen) continue;
+          if (selectedSection && screen.section !== selectedSection) continue;
           if (screen.mobileOnly && viewport.name !== "mobile") continue;
+          if (screen.desktopOnly && viewport.name !== "desktop") continue;
           if (screen.colorScheme && screen.colorScheme !== theme) continue;
           const name = `${screen.section}-${screen.name}-${viewport.name}-${theme}`;
           await t.test(name, async () => {
@@ -98,7 +111,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   await page.addInitScript((theme) => localStorage.setItem("theme", JSON.stringify({ state: { theme }, version: 0 })), screen.storedTheme);
                 }
                 let created = false;
-                let authenticated = screen.section === "endpoint";
+                let authenticated = screen.section !== "login";
                 page.on("pageerror", (error) => errors.push(error.message));
                 await page.clock.setFixedTime(new Date("2026-10-01T12:00:00Z"));
                 await context.route("**/*", async (route) => {
@@ -106,13 +119,18 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   const url = new URL(request.url());
                   const path = url.pathname;
                   const method = request.method();
-                  const assets = path === "/login" || path === "/dashboard/endpoint" || path === "/favicon.svg" || path.startsWith("/_astro/") || path.startsWith("/assets/") || path.startsWith("/i18n/");
+                  const assets = path === "/login" || path === "/dashboard/endpoint" || path === "/favicon.svg" || path.startsWith("/_astro/") || path.startsWith("/assets/") || path.startsWith("/i18n/") ||
+                    (screen.section === "providers" && (path === "/dashboard/providers" || /^\/providers\/[a-z0-9_-]+\.png$/.test(path)));
                   if (url.origin === appUrl && method === "GET" && assets) return route.continue();
-                  const valid = url.origin === appUrl && (
+                  const providerGet = screen.section === "providers" && method === "GET" && (
+                    (!url.search && ["/api/auth/status", "/api/settings", "/api/build", "/api/catalog", "/api/providers", "/api/provider-nodes"].includes(path)) ||
+                    (path === "/api/proxy-pools" && url.search === "?isActive=true")
+                  );
+                  const valid = url.origin === appUrl && (providerGet || (screen.section !== "providers" && (
                     (method === "GET" && ["/api/auth/status", "/api/settings", "/api/keys", "/api/build", "/api/catalog"].includes(path)) ||
                     (method === "POST" && path === "/api/auth/login" && !!screen.login) ||
                     (method === "POST" && path === "/api/keys" && screen.action === "created")
-                  );
+                  )));
                   if (!valid) {
                     unexpected.push(`${method} ${url.origin}${path}`);
                     return route.abort("blockedbyclient");
@@ -141,6 +159,19 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     body = { commit: fixtureCommit };
                   } else if (path === "/api/catalog") {
                     body = { providerIdToAlias: {}, providerModels: [], xaiCatalog: { status: "ready" } };
+                  } else if (path === "/api/providers") {
+                    body = { connections: [
+                      { id: "fixture-compatible-connection", provider: "openai-compatible-fixture", authType: "apikey", testStatus: "active", isActive: true },
+                      { id: "fixture-codex-connection", provider: "codex", authType: "oauth", testStatus: "success", isActive: true },
+                      { id: "fixture-openai-connection", provider: "openai", authType: "apikey", testStatus: "active", isActive: true },
+                    ] };
+                  } else if (path === "/api/provider-nodes") {
+                    body = { nodes: [
+                      { id: "openai-compatible-fixture", type: "openai-compatible", name: "Fixture Connected", apiType: "chat" },
+                      { id: "anthropic-compatible-fixture", type: "anthropic-compatible", name: "Fixture Disconnected" },
+                    ] };
+                  } else if (path === "/api/proxy-pools") {
+                    body = { proxyPools: [] };
                   } else if (path === "/api/keys") {
                     if (request.method() === "POST") {
                       created = true;
@@ -159,11 +190,11 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   await route.fulfill({ status, headers, json: body });
                 });
 
-                const path = screen.section === "login" ? "/login" : "/dashboard/endpoint";
+                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : "/dashboard/endpoint";
                 const response = await page.goto(`${appUrl}${path}`, { waitUntil: "domcontentloaded" });
                 assert(response?.ok(), `failed to load ${path}`);
                 if (mode === "record") {
-                  const component = screen.section === "login" ? "LoginPageClient." : "EndpointPageClient.";
+                  const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : "EndpointPageClient.";
                   const html = await response.body();
                   assert(html.includes(`component-url="/_astro/${component}`), "record mode requires the Astro reference");
                   const hash = createHash("sha256").update(html).digest("hex");
@@ -175,6 +206,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   assert.equal(await page.locator('script[src*="/assets/openproxy-dashboard-"]').count(), 1, "compare mode requires the Dioxus candidate");
                 }
                 if (screen.section === "login") await page.getByRole("heading", { name: "OpenProxy" }).waitFor();
+                else if (screen.section === "providers") await page.getByRole("heading", { name: "Custom Providers (OpenAI/Anthropic Compatible)" }).waitFor();
                 else await page.getByText("Fixture key", { exact: true }).waitFor();
                 await page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}" });
                 const missingFonts = await page.evaluate(async () => {
@@ -199,6 +231,87 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   } else if (!screen.hasPassword) {
                     await page.getByText("Security risk: no password set.", { exact: false }).waitFor();
                   }
+                } else if (screen.section === "providers") {
+                  if (viewport.name === "desktop") await page.getByText(fixtureCommit.slice(0, 8), { exact: true }).first().waitFor();
+                  const connected = page.locator('a[href="/dashboard/providers/openai-compatible-fixture"]');
+                  const disconnected = page.locator('a[href="/dashboard/providers/anthropic-compatible-fixture"]');
+                  await connected.getByText("1 Connected", { exact: true }).waitFor();
+                  await disconnected.getByText("No connections", { exact: true }).waitFor();
+                  await page.locator('a[href="/dashboard/providers/codex"]').getByText("1 Connected", { exact: true }).waitFor();
+                  await page.locator('a[href="/dashboard/providers/openai"]').getByText("1 Connected", { exact: true }).waitFor();
+                  if (screen.action === "search-match" || screen.action === "search-empty") {
+                    await page.getByPlaceholder("Search providers...").fill(screen.action === "search-match" ? "fIxTuRe" : "no-such-fixture-provider");
+                    if (screen.action === "search-match") {
+                      await connected.getByText("1 Connected", { exact: true }).waitFor();
+                      await disconnected.getByText("No connections", { exact: true }).waitFor();
+                      assert.equal(await page.getByRole("heading", { name: "OAuth Providers" }).count(), 0, "search must filter unrelated providers");
+                    } else {
+                      await page.getByText("No providers match your search", { exact: true }).waitFor();
+                      assert.equal(await connected.count(), 0, "empty search must filter fixture providers");
+                    }
+                  } else if (screen.action === "free-filter") {
+                    // A click is required here: Astro removes the checked input immediately.
+                    await page.getByLabel("Show only free tier").click();
+                    await page.getByRole("heading", { name: "Free Tier Providers" }).waitFor({ state: "detached" });
+                    assert.equal(await page.getByLabel("Show only free tier").count(), 0, "Astro removes the filter with its section");
+                    assert.equal(await page.locator('a[href="/dashboard/providers/codex"]').count(), 0, "free filter must exclude Codex");
+                    await page.locator('a[href="/dashboard/providers/kilocode"]').first().waitFor();
+                    await page.locator("main .overflow-y-auto").evaluate((element) => { element.scrollTop = 0; });
+                  } else if (screen.action === "scroll-api-keys") {
+                    await page.getByRole("heading", { name: "API Key Providers" }).evaluate((element) => element.scrollIntoView({ block: "start", behavior: "instant" }));
+                    const scrollTop = await page.locator("main .overflow-y-auto").evaluate((element) => element.scrollTop);
+                    assert(scrollTop > 0, "provider list must scroll to the API-key section");
+                    assert(await page.locator('a[href="/dashboard/providers/openai"]').evaluate((element) => {
+                      const rect = element.getBoundingClientRect();
+                      const parent = element.closest(".overflow-y-auto").getBoundingClientRect();
+                      return rect.top >= parent.top && rect.bottom <= parent.bottom;
+                    }), "connected API-key provider must be in the viewport");
+                    await page.getByRole("button", { name: /Show all \d+ providers/ }).waitFor();
+                  } else if (screen.action === "show-all-scroll-bottom") {
+                    const showAll = page.getByRole("button", { name: /Show all \d+ providers/ });
+                    await showAll.click();
+                    await showAll.waitFor({ state: "detached" });
+                    const lastCard = page.locator('a[href="/dashboard/providers/xiaomi-tokenplan"]');
+                    await lastCard.waitFor();
+                    const scrollTop = await page.locator("main .overflow-y-auto").evaluate((element) => {
+                      element.scrollTop = element.scrollHeight;
+                      return element.scrollTop;
+                    });
+                    assert(scrollTop > 0, "expanded provider list must overflow");
+                    assert(await lastCard.evaluate((element) => {
+                      const rect = element.getBoundingClientRect();
+                      return rect.bottom > 0 && rect.top < window.innerHeight;
+                    }), "last expanded provider must be in the viewport");
+                  } else if (screen.action === "add-openai-dialog" || screen.action === "add-openai-dialog-scroll-bottom") {
+                    await page.getByRole("button", { name: /Add OpenAI Compatible/ }).click();
+                    const heading = page.getByRole("heading", { name: "Add OpenAI Compatible", exact: true });
+                    await heading.waitFor();
+                    assert.equal(await page.getByPlaceholder("OpenAI Compatible (Prod)").inputValue(), "");
+                    assert.equal(await page.getByPlaceholder("oc-prod").inputValue(), "");
+                    assert.equal(await page.getByRole("combobox").inputValue(), "chat");
+                    assert(await page.getByRole("button", { name: "Create", exact: true }).isDisabled());
+                    assert(await page.getByRole("button", { name: "Check", exact: true }).isDisabled());
+                    if (screen.action === "add-openai-dialog-scroll-bottom") {
+                      const body = heading.locator("../../..").locator(".overflow-y-auto");
+                      const scrollTop = await body.evaluate((element) => {
+                        element.scrollTop = element.scrollHeight;
+                        return element.scrollTop;
+                      });
+                      assert(scrollTop > 0, "compatible dialog must overflow");
+                      const createVisible = await page.getByRole("button", { name: "Create", exact: true }).evaluate((element) => {
+                        const rect = element.getBoundingClientRect();
+                        const parent = element.closest(".overflow-y-auto").getBoundingClientRect();
+                        return rect.top >= parent.top && rect.bottom <= parent.bottom;
+                      });
+                      assert(createVisible, "dialog actions must be visible after scrolling");
+                    }
+                  }
+                  // The list contains both real local PNGs and intentional fallbacks for missing icons.
+                  await page.waitForFunction(() => Array.from(document.images).every((image) => image.complete));
+                  await page.evaluate(async () => {
+                    await Promise.all(Array.from(document.images, (image) => image.decode().catch(() => {})));
+                    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                  });
                 } else {
                   if (viewport.name === "desktop") await page.getByText(fixtureCommit.slice(0, 8), { exact: true }).first().waitFor();
                   if (screen.insecure) await page.getByText("Endpoint is exposed without an API key.").waitFor();

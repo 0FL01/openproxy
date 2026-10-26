@@ -27,7 +27,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Acceptance: synthetic fixtures, fixed browser/fonts/time/viewport/theme, reproducible self-comparison, and reference PNGs; candidate screenshots match at zero differing pixels apart from specifically documented unavoidable masks with independent content checks.
   - Primary evidence: repeatable browser parity scenarios for desktop and mobile, all sections and meaningful states.
   - Status: in_progress
-  - Evidence: Astro Endpoint self-comparison exhibited rounded-edge nondeterminism; experiments identified Chrome partial rasterization as the likely cause. The harness now disables that path and rejects references without matching browser version and launch flags. All 22 login and 38 Endpoint synthetic reference screenshots self-repeated at AE=0 with the corrected settings. The scroll case was corrected to use an overflowing synthetic key list and verified to actually scroll. The integrated Dioxus candidate matches all 60 screenshots at AE=0; references and comparisons for other sections remain pending.
+  - Evidence: Astro Endpoint self-comparison exhibited rounded-edge nondeterminism; experiments identified Chrome partial rasterization as the likely cause. The harness now disables that path and rejects references without matching browser version and launch flags. All 22 login and 38 Endpoint synthetic reference screenshots self-repeated at AE=0 with the corrected settings. The scroll case was corrected to use an overflowing synthetic key list and verified to actually scroll. The integrated Dioxus candidate matches all 60 screenshots at AE=0. Another 28 Providers-list references self-repeated at AE=0; their Dioxus comparison and the remaining sections are pending.
 - R3: Full Dioxus/Rust frontend preserves all current routes, layout, visual states, interactions, localization and API behavior.
   - Source: user request "фронтенд фулл на расте" and approved RECON plan.
   - Acceptance: all current routes and interactions match the reference, including authentication, OAuth callback, persisted model customizations and `/v1/models` discovery; browser application logic is Rust/WASM, with Dioxus-generated JS bridge and CSS allowed.
@@ -51,7 +51,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Acceptance: intended commits are present on the remote working branch; no production service, data, configuration or deployment is changed.
   - Primary evidence: git commit and remote branch SHA; isolated test deployment only.
   - Status: in_progress
-  - Evidence: goal commit `269d55fa`, login slice `27c38be6`, checkpoint `da01a7b0`, isolated-browser fixture `2fb691fe`, visual references `e2514d20` and overflow-scenario correction `d8e98d88` were pushed to `origin/feat/dioxus-dashboard`; production was not deployed or modified.
+  - Evidence: goal commit `269d55fa`, login slice `27c38be6`, checkpoint `da01a7b0`, isolated-browser fixture `2fb691fe`, visual references `e2514d20`, overflow-scenario correction `d8e98d88` and shell/Endpoint slice `c36f3e6f` were pushed to `origin/feat/dioxus-dashboard`; production was not deployed or modified.
 
 ### Constraints and Non-goals
 
@@ -96,6 +96,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-10-26: R4 reference probe measured actual Monaco actions and representative behavior using synthetic data in a loopback-only network namespace; no editor implementation or parity is claimed.
 - 2026-10-26: R1 MCP screenshot succeeded with the sandboxed fixture. R2/R3: 22 login screenshots matched and an isolated real-backend login passed; the browser fixture has since changed and needs revalidation. Endpoint reference self-comparison exposed a 21-pixel nondeterminism, without a mask or parity claim.
 - 2026-10-26: R1 fixture verified and pushed in `2fb691fe`. Chrome's partial rasterization was isolated as the likely cause of reference-edge instability; the comparison harness pins the corrected browser flags and rejects incompatible reference metadata. Endpoint differences remain under investigation.
+- 2026-10-26: R2/R3 login and Endpoint slices matched all 60 synthetic references at AE=0 after restoring the reference skeleton. Real isolated login/key persistence and frontend browser checks passed; the slice was pushed in `c36f3e6f`. Providers is the next checkpoint.
 
 ## Completion
 
