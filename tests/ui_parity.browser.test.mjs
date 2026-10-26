@@ -148,6 +148,10 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     } else {
                       body = { keys: [
                         { id: "fixture", name: "Fixture key", key: "fixture-token-123", createdAt: "2026-10-01T12:00:00Z", isActive: !screen.paused },
+                        ...(screen.action === "scroll-bottom" ? Array.from({ length: 10 }, (_, index) => ({
+                          id: `scroll-${index}`, name: `Fixture scroll ${index}`, key: `fixture-token-scroll-${index}`,
+                          createdAt: "2026-10-01T12:00:00Z", isActive: true,
+                        })) : []),
                         ...(created ? [{ id: "new", name: "Fixture new", key: "fixture-token-new", createdAt: "2026-10-01T12:00:00Z", isActive: true }] : []),
                       ] };
                     }
@@ -208,7 +212,11 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       await page.getByRole("heading", { name: "API Key Created" }).waitFor();
                     }
                   } else if (screen.action === "scroll-bottom") {
-                    await page.locator("main .overflow-y-auto").evaluate((element) => { element.scrollTop = element.scrollHeight; });
+                    const scrollTop = await page.locator("main .overflow-y-auto").evaluate((element) => {
+                      element.scrollTop = element.scrollHeight;
+                      return element.scrollTop;
+                    });
+                    assert(scrollTop > 0, "scroll-bottom fixture must overflow");
                   } else if (screen.action === "sidebar") {
                     await page.locator("header button").filter({ has: page.getByText("menu", { exact: true }) }).click();
                     await page.getByRole("link", { name: /Providers/ }).waitFor();
