@@ -528,6 +528,45 @@ async fn fast_aliases_preserve_protocols_and_route_only_to_fast_supporters() {
 }
 
 #[tokio::test]
+async fn max_suffix_reaches_codex_upstream_without_downgrading() {
+    let mut models: serde_json::Value =
+        serde_json::from_str(&catalog_payload(&[("gpt-6.1-terra", false)])).unwrap();
+    models["models"][0]["supported_reasoning_levels"] = json!([{"effort":"max"}]);
+    let catalog =
+        MockUpstream::start([ScriptedResponse::json(StatusCode::OK, models.to_string())]).await;
+    let generation = MockUpstream::start([ScriptedResponse::sse([concat!(
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"
+    )])])
+    .await;
+    let connection = codex_connection("max-effort", 1);
+    let (_db, state) = state_with_catalog(
+        catalog.url("/models"),
+        generation.url("/responses"),
+        vec![connection.clone()],
+        Vec::new(),
+    )
+    .await;
+    state
+        .codex_models
+        .refresh_connection(&state, &connection, true)
+        .await
+        .unwrap();
+
+    let app = openproxy::build_app(state);
+    let response = post_codex(&app, "gpt-6.1-terra(max)").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    drop(response);
+    let requests = generation.requests().await;
+    assert_eq!(requests.len(), 1);
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["model"], "gpt-6.1-terra");
+    assert_eq!(body["reasoning"]["effort"], "max");
+    catalog.shutdown().await;
+    generation.shutdown().await;
+}
+
+#[tokio::test]
 async fn known_chat_uses_published_inventory_while_forced_refresh_is_held() {
     let release_refresh = Arc::new(Notify::new());
     let catalog = MockUpstream::start([

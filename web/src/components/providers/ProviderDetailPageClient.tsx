@@ -157,15 +157,16 @@ export default function ProviderDetailPageClient() {
     ? (providerNode?.prefix || providerId)
     : providerAlias;
   const thinkingConfig = AI_PROVIDERS[providerId]?.thinkingConfig || THINKING_CONFIG.extended;
+  const thinkingCatalogModels = catalogModelsByAlias[providerStorageAlias];
 
-  // Model-aware thinking levels (9router getThinkingLevels parity). Prefer
+  // Model-aware thinking levels. Prefer published catalog metadata, then the
   // format/capability matrix; fall back to provider THINKING_CONFIG when no
   // reasoning models are known for this provider yet.
   const resolveThinkingSuffix = (modelId: string): string | null => {
     if (!thinkingMode || thinkingMode === "auto") return null;
     // Normalize legacy "off" → "none" for suffix copy.
     const mode = providerId !== "xai" && thinkingMode === "off" ? "none" : thinkingMode;
-    const levels = getThinkingLevels(providerId, modelId, catalogModelsByAlias.xai);
+    const levels = getThinkingLevels(providerId, modelId, thinkingCatalogModels);
     // Only append when this model supports the selected level (9router parity).
     return levels && levels.includes(mode as never) ? mode : null;
   };
@@ -184,7 +185,7 @@ export default function ProviderDetailPageClient() {
       if ((entry.kind || entry.type || "llm") !== "llm") continue;
       modelIds.push(entry.id);
     }
-    const union = unionThinkingLevels(providerId, modelIds, catalogModelsByAlias.xai);
+    const union = unionThinkingLevels(providerId, modelIds, thinkingCatalogModels);
     if (union) return union;
     if (providerId === "xai") return ["auto"];
     // Fall back to THINKING_CONFIG (always includes auto).

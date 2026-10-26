@@ -5,7 +5,8 @@ import { findXaiCatalogModel, isXaiModelScope } from "./xaiCatalog";
  * Model-aware thinking level picker — port of 9router open-sse/providers/thinkingLevels.js
  * without the open-sse dependency.
  *
- * Resolution order for a (provider, model):
+ * Published Codex and xAI models use their exact catalog reasoning levels.
+ * Fallback resolution order for a (provider, model):
  *   1. reasoning capability required (else null)
  *   2. PATTERN_THINKING model-id overrides (gpt-5.6-sol, *codex*, …)
  *   3. FORMAT_LEVELS[caps.thinkingFormat]
@@ -292,11 +293,14 @@ export function getThinkingCapsForModel(
 export function getThinkingLevels(
   provider: string | null | undefined,
   model: string | null | undefined,
-  xaiModels: ReadonlyArray<CatalogModel> = [],
+  catalogModels: ReadonlyArray<CatalogModel> = [],
 ): ThinkingLevel[] | null {
   if (!model) return null;
-  if (isXaiModelScope(provider, model)) {
-    const declared = findXaiCatalogModel(model, xaiModels)?.reasoningEfforts;
+  const codexModel = provider === "codex"
+    ? catalogModels.find((entry) => entry.id === model && entry.kind === "llm")
+    : undefined;
+  if (codexModel || isXaiModelScope(provider, model)) {
+    const declared = (codexModel || findXaiCatalogModel(model, catalogModels))?.reasoningEfforts;
     const levels = [...new Set((declared || []).filter((level) => typeof level === "string" && level && level !== "auto"))];
     return levels.length ? levels as ThinkingLevel[] : null;
   }
@@ -324,14 +328,14 @@ export function getThinkingLevels(
 export function unionThinkingLevels(
   provider: string | null | undefined,
   modelIds: Iterable<string>,
-  xaiModels: ReadonlyArray<CatalogModel> = [],
+  catalogModels: ReadonlyArray<CatalogModel> = [],
 ): ThinkingLevel[] | null {
   const set = new Set<ThinkingLevel>();
   const seen = new Set<string>();
   for (const modelId of modelIds) {
     if (!modelId || seen.has(modelId)) continue;
     seen.add(modelId);
-    const lv = getThinkingLevels(provider, modelId, xaiModels);
+    const lv = getThinkingLevels(provider, modelId, catalogModels);
     if (!lv) continue;
     for (const l of lv) {
       if (l !== "none" || provider === "xai") set.add(l);

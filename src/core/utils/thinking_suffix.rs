@@ -368,7 +368,8 @@ pub fn apply_thinking_level(
                 }
                 return;
             }
-            let effort = if level == "max" {
+            // Codex supports Max even when its target is the shared Responses format.
+            let effort = if level == "max" && provider != "codex" {
                 "xhigh"
             } else {
                 level.as_str()

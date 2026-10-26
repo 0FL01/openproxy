@@ -115,6 +115,19 @@ test("xAI thinking uses exact declared efforts, retains none, and never guesses 
   assert.deepEqual(thinking.getThinkingLevels("openrouter", "grok-4-custom", models), ["none", "minimal", "low", "medium", "high", "xhigh"], "other-provider heuristics stay unchanged");
 });
 
+test("Codex thinking uses published efforts for both model suffixes and the picker", () => {
+  const levels = ["low", "medium", "high", "xhigh", "max"];
+  const codexModels = [{
+    id: "gpt-6.1-terra",
+    kind: "llm",
+    capabilities: ["reasoning"],
+    reasoningEfforts: levels,
+  }];
+  assert.deepEqual(thinking.getThinkingLevels("codex", "gpt-6.1-terra", codexModels), levels);
+  assert.deepEqual(thinking.unionThinkingLevels("codex", ["gpt-6.1-terra"], codexModels), ["auto", ...levels]);
+  assert.equal(thinking.getThinkingLevels("codex", "gpt-5.6-sol", codexModels).includes("max"), true, "unpublished custom models retain existing heuristics");
+});
+
 test("reactive xAI caps beat both exact API collisions and bare-ID/Grok heuristics", async () => {
   let current = { modelsByAlias: { xai: [] } };
   let stateIndex = 0;
