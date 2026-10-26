@@ -26,14 +26,14 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: "pixel perfect" and "сравнивать каждый пункт в разделе"; approved RECON plan.
   - Acceptance: synthetic fixtures, fixed browser/fonts/time/viewport/theme, reproducible self-comparison, and reference PNGs; candidate screenshots match at zero differing pixels apart from specifically documented unavoidable masks with independent content checks.
   - Primary evidence: repeatable browser parity scenarios for desktop and mobile, all sections and meaningful states.
-  - Status: pending
-  - Evidence: pending.
+  - Status: in_progress
+  - Evidence: initial synthetic login/Endpoint parity scenarios are being prepared; none has passed or produced a reference yet.
 - R3: Full Dioxus/Rust frontend preserves all current routes, layout, visual states, interactions, localization and API behavior.
   - Source: user request "фронтенд фулл на расте" and approved RECON plan.
   - Acceptance: all current routes and interactions match the reference, including authentication, OAuth callback, persisted model customizations and `/v1/models` discovery; browser application logic is Rust/WASM, with Dioxus-generated JS bridge and CSS allowed.
   - Primary evidence: R2 visual scenarios and existing focused frontend/API regression tests adapted to the new frontend.
-  - Status: pending
-  - Evidence: pending.
+  - Status: in_progress
+  - Evidence: isolated Dioxus login slice builds, passes synthetic browser/auth tests and retains reference CSS/assets; it is not yet verified against Astro or a real isolated backend. All other routes remain pending.
 - R4: Translator retains full actually available Monaco editor behavior and appearance without any third-party JavaScript editor.
   - Source: user selected "Полный паритет" after being informed that this excludes a third-party JS editor.
   - Acceptance: feature and visual parity against the configured existing Monaco across its available actions, JSON/plaintext and all seven Translator stages; no third-party JS editor ships.
@@ -50,8 +50,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: user request 2026-10-26.
   - Acceptance: intended commits are present on the remote working branch; no production service, data, configuration or deployment is changed.
   - Primary evidence: git commit and remote branch SHA; isolated test deployment only.
-  - Status: pending
-  - Evidence: pending.
+  - Status: in_progress
+  - Evidence: goal commit `269d55fa` was pushed to `origin/feat/dioxus-dashboard`; production was not deployed or modified.
 
 ### Constraints and Non-goals
 
@@ -70,26 +70,28 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R1 and the smallest initial R3 frontend build slice, independently.
-- Smallest next action: prepare the isolated MCP/browser test environment and a buildable Dioxus web application; record exact smoke evidence before extending either slice.
-- Expected evidence: browser/MCP screenshot on isolated data and a successful Dioxus WASM build.
-- Stop or replan if: sandbox, build or browser/reference constraints cannot be met without violating the frozen contract.
+- Closes: R1 and the first R2/R3 login-parity slice.
+- Smallest next action: make sandboxed Chromium start in the isolated container, verify MCP screenshot, then record and compare the login reference and Dioxus slice.
+- Expected evidence: browser/MCP screenshot on isolated data and reproducible visual/behavioral comparison on the same pinned browser.
+- Stop or replan if: browser/reference constraints cannot be met without violating the frozen contract.
 
 ## Current State
 
-- Resolved: none.
-- Last relevant evidence: read-only RECON; working tree was clean on `main` at `82c48877`; `origin` is the OpenProxy fork and work is on `feat/dioxus-dashboard`. Rust 1.98.1, wasm target, Node 22 and Docker are installed; `dx` is not installed.
-- Blocker: none established.
-- Next: implement and verify the current checkpoint; then capture synthetic baseline and proceed section by section.
+- Resolved: none of the end-to-end outcomes yet.
+- Last relevant evidence: Dioxus 0.7.10 release WASM build, three auth unit tests, WASM clippy/format and sandboxed synthetic login smoke passed; the latter reproduces and fixes empty-password submission parity. Baseline `cargo fmt`, all-target/all-feature clippy, eight provider-model tests and 25 OpenCode plugin tests passed. The isolated browser image and app start and OpenCode discovers MCP, but Chrome's sandboxed namespace creation failed with `Operation not permitted`; no MCP screenshot or visual comparison has passed yet.
+- Blocker: browser namespace policy; user has authorized changing test-container permissions, and a narrowly scoped seccomp adjustment is being tried.
+- Next: finish the browser smoke and visual comparison, then migrate the remaining sections and Translator editor.
 
 ## Material Decisions
 
 - 2026-10-26: User selected full Monaco parity without a third-party JS editor. Dioxus-generated browser bridge is an unavoidable allowed runtime component.
 - 2026-10-26: Use a feature branch for work and pushes; production deployment is expressly excluded.
+- 2026-10-26: User authorized any necessary **test-container** permissions and requested no further questions. Prefer a browser-only minimal seccomp adjustment and keep Chromium sandbox, TLS verification, isolated network and production boundaries intact.
 
 ## Checkpoint History
 
 - 2026-10-26: Frozen goal from user request and RECON; no implementation verified yet.
+- 2026-10-26: R3 partial login slice built and synthetic behavior checked; R1 MCP catalog works but navigation is blocked by the container namespace policy. Visual parity remains unverified.
 
 ## Completion
 
