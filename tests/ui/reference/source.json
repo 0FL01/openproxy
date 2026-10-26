@@ -10,6 +10,7 @@
   "routes": {
     "/login": "99277fd866f59ee878d55089ee31f3d4feb640363b66d98448761e3a304a59ab",
     "/dashboard/endpoint": "62214223a568c6aa6d0196658d356c20165ba5941e3da229b455e134e506d710",
-    "/dashboard/providers": "6d7ca365820719de3a9b6560f8279676da2c6c659dd4d31bdb7494248608c0c7"
+    "/dashboard/providers": "6d7ca365820719de3a9b6560f8279676da2c6c659dd4d31bdb7494248608c0c7",
+    "/dashboard/providers/new": "fcea1c021432e9511629ec93725ed741a39b36801a5032de2effd9a362c6fe55"
   }
 }

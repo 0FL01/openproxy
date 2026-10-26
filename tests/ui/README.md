@@ -50,9 +50,45 @@ assets; all other requests, including external origins and API writes, are
 blocked and fail the scenario. The base URL displayed by the dialog is Astro's
 default text: nothing is validated or sent to it.
 
-Not yet covered: provider detail or `/providers/new` pages, model customization
-and persistence, connection creation/toggling and real OAuth, batch testing,
+This list slice does not yet cover provider detail, model customization and
+persistence, connection creation/toggling and real OAuth, batch testing,
 failure/loading/error/disabled states, an empty custom-provider list, the
 Anthropic/API-key dialogs, dialog validation or submission, search clearing,
-localization and real-backend behavior. No candidate parity is claimed for
+localization or real-backend behavior. No candidate parity is claimed for
 Providers by recording these references.
+
+## Add New Provider slice
+
+`UI_PARITY_SECTION=providers-new` selects the 30 captures for
+`/dashboard/providers/new`. Each scenario has desktop/mobile and light/dark
+captures except the last, which is a mobile-only overflow state.
+
+| Scenario | State captured |
+|---|---|
+| `providers-new-ready` | Nothing selected; “Connect Provider” is disabled. |
+| `providers-new-search-match` | Mixed-case `cOdEx` filters the native select to the one Codex option. |
+| `providers-new-search-retains-selection` | Select Codex, then search `no-such-provider`; the count is zero but the selected option and OAuth panel remain. |
+| `providers-new-oauth` | Select `oauth:codex`; show the OAuth hint and “Start OAuth” without starting it. |
+| `providers-new-no-auth` | Select `free:opencode-zen`; show “No auth required” and “Open Provider”. |
+| `providers-new-api-key` | Select `apikey:openai`; show the blank name/key form and “Add Key on List”. |
+| `providers-new-compatible` | Select `compatible:openai-compatible`; show the compatible setup hint and action. |
+| `providers-new-api-key-scroll-bottom` | Mobile only: scroll the overflowing blank API-key form to its actions. |
+
+These states use the provider options bundled in the Astro build, not live
+account data. The only intercepted APIs are exact, queryless GETs for
+`/api/auth/status`, `/api/settings`, `/api/build` and `/api/catalog`, returning
+the authenticated synthetic shell, fixed commit and empty catalog. Required
+same-origin page, bundle, font assets and the selected `codex.png`,
+`opencode-zen.png` and `openai.png` provider icons are allowed; all other
+requests, including API writes and external requests, are blocked and fail the
+test. No provider credentials are entered; the key field's `sk-...` text is
+only Astro's empty-field placeholder.
+
+At the mobile viewport the Astro primary action is visibly compressed into a
+thin strip (for example in `providers-new-oauth-mobile-dark.png`); the reference
+records that existing appearance rather than silently fixing it.
+
+The native select's open popup, provider navigation, OAuth, key entry and
+submission, compatible setup navigation, the Anthropic-compatible option,
+other provider categories, localization and backend success/error behavior
+are not covered. These are Astro references, not Dioxus parity evidence.

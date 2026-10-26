@@ -43,6 +43,14 @@ const screens = [
   { section: "providers", name: "show-all-scroll-bottom", action: "show-all-scroll-bottom" },
   { section: "providers", name: "add-openai-dialog", action: "add-openai-dialog" },
   { section: "providers", name: "add-openai-dialog-scroll-bottom", action: "add-openai-dialog-scroll-bottom" },
+  { section: "providers-new", name: "ready" },
+  { section: "providers-new", name: "search-match", action: "search-match" },
+  { section: "providers-new", name: "search-retains-selection", action: "search-retains-selection" },
+  { section: "providers-new", name: "oauth", action: "oauth" },
+  { section: "providers-new", name: "no-auth", action: "no-auth" },
+  { section: "providers-new", name: "api-key", action: "api-key" },
+  { section: "providers-new", name: "api-key-scroll-bottom", action: "api-key-scroll-bottom", mobileOnly: true },
+  { section: "providers-new", name: "compatible", action: "compatible" },
 ];
 const viewports = [
   { name: "desktop", width: 1440, height: 900 },
@@ -53,7 +61,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
   assert(["record", "compare"].includes(mode), "UI_PARITY_MODE must be record or compare");
   assert(!selectedScreen || screens.some((screen) => `${screen.section}-${screen.name}` === selectedScreen), "unknown UI_PARITY_SCREEN");
   assert(!selectedSection || screens.some((screen) => screen.section === selectedSection), "unknown UI_PARITY_SECTION");
-  assert(!selectedScreen || !selectedSection || selectedScreen.startsWith(`${selectedSection}-`), "UI_PARITY_SCREEN and UI_PARITY_SECTION disagree");
+  assert(!selectedScreen || !selectedSection || screens.some((screen) => screen.section === selectedSection && `${screen.section}-${screen.name}` === selectedScreen), "UI_PARITY_SCREEN and UI_PARITY_SECTION disagree");
   const { chromium } = await import(process.env.DASHBOARD_PLAYWRIGHT_MODULE || "playwright");
   // Partial rasterization caused nondeterministic antialiasing at rounded edges.
   const launchArgs = ["--force-color-profile=srgb", "--disable-partial-raster"];
@@ -119,14 +127,17 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   const url = new URL(request.url());
                   const path = url.pathname;
                   const method = request.method();
-                  const assets = path === "/login" || path === "/dashboard/endpoint" || path === "/favicon.svg" || path.startsWith("/_astro/") || path.startsWith("/assets/") || path.startsWith("/i18n/") ||
-                    (screen.section === "providers" && (path === "/dashboard/providers" || /^\/providers\/[a-z0-9_-]+\.png$/.test(path)));
+                  const assets = (screen.section !== "providers-new" && (path === "/login" || path === "/dashboard/endpoint")) || path === "/favicon.svg" || path.startsWith("/_astro/") || path.startsWith("/assets/") || path.startsWith("/i18n/") ||
+                    (screen.section === "providers" && (path === "/dashboard/providers" || /^\/providers\/[a-z0-9_-]+\.png$/.test(path))) ||
+                    (screen.section === "providers-new" && !url.search && ["/dashboard/providers/new", "/providers/codex.png", "/providers/opencode-zen.png", "/providers/openai.png"].includes(path));
                   if (url.origin === appUrl && method === "GET" && assets) return route.continue();
                   const providerGet = screen.section === "providers" && method === "GET" && (
                     (!url.search && ["/api/auth/status", "/api/settings", "/api/build", "/api/catalog", "/api/providers", "/api/provider-nodes"].includes(path)) ||
                     (path === "/api/proxy-pools" && url.search === "?isActive=true")
                   );
-                  const valid = url.origin === appUrl && (providerGet || (screen.section !== "providers" && (
+                  const providerNewGet = screen.section === "providers-new" && method === "GET" && !url.search &&
+                    ["/api/auth/status", "/api/settings", "/api/build", "/api/catalog"].includes(path);
+                  const valid = url.origin === appUrl && (providerGet || providerNewGet || (!["providers", "providers-new"].includes(screen.section) && (
                     (method === "GET" && ["/api/auth/status", "/api/settings", "/api/keys", "/api/build", "/api/catalog"].includes(path)) ||
                     (method === "POST" && path === "/api/auth/login" && !!screen.login) ||
                     (method === "POST" && path === "/api/keys" && screen.action === "created")
@@ -190,11 +201,11 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   await route.fulfill({ status, headers, json: body });
                 });
 
-                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : "/dashboard/endpoint";
+                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : screen.section === "providers-new" ? "/dashboard/providers/new" : "/dashboard/endpoint";
                 const response = await page.goto(`${appUrl}${path}`, { waitUntil: "domcontentloaded" });
                 assert(response?.ok(), `failed to load ${path}`);
                 if (mode === "record") {
-                  const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : "EndpointPageClient.";
+                  const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : screen.section === "providers-new" ? "ProvidersNewPageClient." : "EndpointPageClient.";
                   const html = await response.body();
                   assert(html.includes(`component-url="/_astro/${component}`), "record mode requires the Astro reference");
                   const hash = createHash("sha256").update(html).digest("hex");
@@ -207,6 +218,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 }
                 if (screen.section === "login") await page.getByRole("heading", { name: "OpenProxy" }).waitFor();
                 else if (screen.section === "providers") await page.getByRole("heading", { name: "Custom Providers (OpenAI/Anthropic Compatible)" }).waitFor();
+                else if (screen.section === "providers-new") await page.getByRole("heading", { name: "Add New Provider" }).waitFor();
                 else await page.getByText("Fixture key", { exact: true }).waitFor();
                 await page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}" });
                 const missingFonts = await page.evaluate(async () => {
@@ -231,6 +243,61 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   } else if (!screen.hasPassword) {
                     await page.getByText("Security risk: no password set.", { exact: false }).waitFor();
                   }
+                } else if (screen.section === "providers-new") {
+                  if (viewport.name === "desktop") await page.getByText(fixtureCommit.slice(0, 8), { exact: true }).first().waitFor();
+                  const select = page.getByRole("combobox");
+                  assert.equal(await select.inputValue(), "");
+                  assert(await page.getByRole("button", { name: "Connect Provider" }).isDisabled());
+                  if (screen.action === "search-match") {
+                    await page.getByPlaceholder("Search providers...").fill("cOdEx");
+                    await page.getByText(/^1 of \d+ providers$/).waitFor();
+                    assert.deepEqual(await select.locator("option").evaluateAll((options) => options.map((option) => option.value)), ["", "oauth:codex"]);
+                  } else if (screen.action === "search-retains-selection") {
+                    await select.selectOption("oauth:codex");
+                    await page.getByPlaceholder("Search providers...").fill("no-such-provider");
+                    await page.getByText(/^0 of \d+ providers$/).waitFor();
+                    assert.equal(await select.inputValue(), "oauth:codex");
+                    assert.deepEqual(await select.locator("option").evaluateAll((options) => options.map((option) => option.value)), ["", "oauth:codex"]);
+                    await page.getByRole("button", { name: "Start OAuth" }).waitFor();
+                  } else if (screen.action === "oauth") {
+                    await select.selectOption("oauth:codex");
+                    await page.getByText("Connect with your subscription account via browser OAuth.").waitFor();
+                    await page.getByText("You will be redirected to complete OAuth for", { exact: false }).waitFor();
+                    await page.getByRole("button", { name: "Start OAuth" }).waitFor();
+                  } else if (screen.action === "no-auth") {
+                    await select.selectOption("free:opencode-zen");
+                    await page.getByText("Free-tier OAuth / no-auth providers. · No auth required").waitFor();
+                    await page.getByRole("button", { name: "Open Provider" }).waitFor();
+                    assert.equal(await page.getByPlaceholder("sk-...").count(), 0);
+                  } else if (screen.action === "api-key" || screen.action === "api-key-scroll-bottom") {
+                    await select.selectOption("apikey:openai");
+                    assert.equal(await page.getByPlaceholder("e.g. Production key").inputValue(), "");
+                    assert.equal(await page.getByPlaceholder("sk-...").inputValue(), "");
+                    await page.getByText("Leave blank to open the providers list with this provider pre-selected (?add=).").waitFor();
+                    const addKey = page.getByRole("button", { name: "Add Key on List" });
+                    await addKey.waitFor();
+                    if (screen.action === "api-key-scroll-bottom") {
+                      const scrollTop = await page.locator("main .overflow-y-auto").evaluate((element) => {
+                        element.scrollTop = element.scrollHeight;
+                        return element.scrollTop;
+                      });
+                      assert(scrollTop > 0, "mobile API-key form must overflow");
+                      assert(await addKey.evaluate((element) => {
+                        const rect = element.getBoundingClientRect();
+                        const parent = element.closest(".overflow-y-auto").getBoundingClientRect();
+                        return rect.top >= parent.top && rect.bottom <= parent.bottom;
+                      }), "API-key action must be visible after scrolling");
+                    }
+                  } else if (screen.action === "compatible") {
+                    await select.selectOption("compatible:openai-compatible");
+                    await page.getByText("Add a custom OpenAI- or Anthropic-compatible base URL from the providers list.", { exact: false }).waitFor();
+                    await page.getByRole("button", { name: "Open Compatible Setup" }).waitFor();
+                  }
+                  await page.waitForFunction(() => Array.from(document.images).every((image) => image.complete));
+                  await page.evaluate(async () => {
+                    await Promise.all(Array.from(document.images, (image) => image.decode().catch(() => {})));
+                    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                  });
                 } else if (screen.section === "providers") {
                   if (viewport.name === "desktop") await page.getByText(fixtureCommit.slice(0, 8), { exact: true }).first().waitFor();
                   const connected = page.locator('a[href="/dashboard/providers/openai-compatible-fixture"]');
