@@ -113,3 +113,8 @@ rustc-ice-*.txt
 .omo/run-continuation/
 .opencode/
 .tmp/
+
+# Local synthetic browser captures; never commit browser artifacts or data.
+/.ui-browser/artifacts/
+/.ui-browser/.npm-cache/
+/.ui-browser/.opencode-check/

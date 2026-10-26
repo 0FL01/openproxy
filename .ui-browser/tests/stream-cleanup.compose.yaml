@@ -1,0 +1,30 @@
+# Paths are relative to .ui-browser/compose.yaml, the first Compose file.
+services:
+  backend:
+    entrypoint: !override ["node", "/tests/stream-backend.mjs"]
+    command: !override []
+    environment: !override
+      HOME: /tmp
+    volumes: !override
+      - type: bind
+        source: ./tests/stream-backend.mjs
+        target: /tests/stream-backend.mjs
+        read_only: true
+        bind:
+          create_host_path: false
+  app:
+    volumes: !override
+      - type: bind
+        source: ./proxy.mjs
+        target: /opt/ui-browser/proxy.mjs
+        read_only: true
+        bind:
+          create_host_path: false
+  browser:
+    volumes: !override
+      - type: bind
+        source: ./tests/stream-cleanup.test.mjs
+        target: /tests/stream-cleanup.test.mjs
+        read_only: true
+        bind:
+          create_host_path: false

@@ -1,0 +1,80 @@
+name: openproxy-ui-browser-r1
+
+services:
+  backend:
+    image: openproxy-ui-browser-r1:local
+    platform: linux/amd64
+    user: "1000:1000"
+    entrypoint: ["/runtime/openproxy"]
+    command: ["--host", "0.0.0.0", "--port", "4623", "--data-dir", "/tmp/openproxy-data", "--web-dir", "/ui", "--no-open"]
+    environment:
+      HOME: /tmp
+      # This is an intentionally public, throwaway test credential only.
+      INITIAL_PASSWORD: synthetic-browser-only
+      AUTH_COOKIE_SECURE: "true"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=256m,uid=1000,gid=1000,mode=0700
+    volumes:
+      - type: bind
+        source: ../target/debug/openproxy
+        target: /runtime/openproxy
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${OPENPROXY_UI_WEB_DIR:-../web/dist}
+        target: /ui
+        read_only: true
+        bind:
+          create_host_path: false
+    cap_drop: [ALL]
+    networks: [isolated]
+
+  app:
+    image: openproxy-ui-browser-r1:local
+    platform: linux/amd64
+    user: "1000:1000"
+    entrypoint: ["node", "/opt/ui-browser/proxy.mjs"]
+    read_only: true
+    cap_drop: [ALL]
+    networks: [isolated]
+
+  browser:
+    image: openproxy-ui-browser-r1:local
+    platform: linux/amd64
+    build:
+      context: .
+    user: "1000:1000"
+    entrypoint: ["/opt/ui-browser/entrypoint.sh"]
+    init: true
+    read_only: true
+    shm_size: 1gb
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=512m,uid=1000,gid=1000,mode=0700
+    environment:
+      HOME: /tmp
+      XDG_CONFIG_HOME: /tmp/config
+      XDG_CACHE_HOME: /tmp/cache
+      CHROME_DEVTOOLS_MCP_NO_CONFIG_DISCOVERY: "1"
+      CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS: "1"
+      CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS: "1"
+    # Docker 29.4.3's profile plus narrowly scoped user-namespace clone.
+    security_opt:
+      - seccomp=./seccomp-chrome.json
+    cap_drop: [SYS_ADMIN]
+    command:
+      - /opt/ui-browser/node_modules/.bin/chrome-devtools-mcp
+      - --headless
+      - --isolated
+      - --executable-path=/opt/chrome-linux64/chrome
+      - --viewport=1280x720
+      - --no-performance-crux
+      - --no-usage-statistics
+    networks: [isolated]
+
+networks:
+  isolated:
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated

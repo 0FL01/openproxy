@@ -20,20 +20,20 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: user request and approved browser plan.
   - Acceptance: non-root sandboxed browser, stdio MCP, no externally published CDP; test app and synthetic data isolated from production; MCP can load and capture the test UI.
   - Primary evidence: MCP discovery and screenshot smoke against the isolated app.
-  - Status: in_progress
-  - Evidence: pending.
+  - Status: verified
+  - Evidence: browser-only seccomp allows Chromium's namespace sandbox without `SYS_ADMIN`. The rebuilt project-local MCP uses an internal Docker network with isolated gateway; `python3 -B .ui-browser/smoke.py` authenticated to the synthetic app and captured a 1280×720 PNG, and the reconnected OpenCode MCP opened its login page. A CDP font test confirmed Latin and Cyrillic glyphs use pinned offline Inter subsets.
 - R2: Preserve a reproducible visual and behavioral reference for every existing frontend section and significant state.
   - Source: "pixel perfect" and "сравнивать каждый пункт в разделе"; approved RECON plan.
   - Acceptance: synthetic fixtures, fixed browser/fonts/time/viewport/theme, reproducible self-comparison, and reference PNGs; candidate screenshots match at zero differing pixels apart from specifically documented unavoidable masks with independent content checks.
   - Primary evidence: repeatable browser parity scenarios for desktop and mobile, all sections and meaningful states.
   - Status: in_progress
-  - Evidence: initial synthetic login/Endpoint parity scenarios are being prepared; none has passed or produced a reference yet.
+  - Evidence: on the rebuilt localized-font image, 22 Astro login references self-repeated and the isolated Dioxus login matched all 22 at zero changed pixels. Astro Endpoint self-comparison exhibited rounded-edge nondeterminism; experiments identified Chrome partial rasterization as the likely cause. The harness now disables that path and rejects references without matching browser version and launch flags. Fresh login-ready, Endpoint-ready, no-key-required and mobile-sidebar references self-repeated with exact comparisons; candidate comparisons with the new setting remain pending.
 - R3: Full Dioxus/Rust frontend preserves all current routes, layout, visual states, interactions, localization and API behavior.
   - Source: user request "фронтенд фулл на расте" and approved RECON plan.
   - Acceptance: all current routes and interactions match the reference, including authentication, OAuth callback, persisted model customizations and `/v1/models` discovery; browser application logic is Rust/WASM, with Dioxus-generated JS bridge and CSS allowed.
   - Primary evidence: R2 visual scenarios and existing focused frontend/API regression tests adapted to the new frontend.
   - Status: in_progress
-  - Evidence: isolated Dioxus login slice builds, passes synthetic browser/auth tests and retains reference CSS/assets; it is not yet verified against Astro or a real isolated backend. All other routes remain pending.
+  - Evidence: the isolated Dioxus login passed the R2 comparisons above and a real isolated backend session test including HttpOnly, Secure and SameSite=Lax cookie attributes. A local uncommitted Dioxus shell and Endpoint build created a synthetic API key through the real isolated backend and found it again after reload. After header/date and raster corrections, its ready-state comparisons still differ by 196/149/179/161 pixels across desktop/mobile and light/dark; no parity is claimed. Two runtime regressions found in browser review are being fixed. The 34 reference locale catalogs are now bundled locally and Russian was exercised synthetically. All other routes remain pending.
 - R4: Translator retains full actually available Monaco editor behavior and appearance without any third-party JavaScript editor.
   - Source: user selected "Полный паритет" after being informed that this excludes a third-party JS editor.
   - Acceptance: feature and visual parity against the configured existing Monaco across its available actions, JSON/plaintext and all seven Translator stages; no third-party JS editor ships.
@@ -51,7 +51,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Acceptance: intended commits are present on the remote working branch; no production service, data, configuration or deployment is changed.
   - Primary evidence: git commit and remote branch SHA; isolated test deployment only.
   - Status: in_progress
-  - Evidence: goal commit `269d55fa` and login slice `27c38be6` were pushed to `origin/feat/dioxus-dashboard`; production was not deployed or modified.
+  - Evidence: goal commit `269d55fa`, login slice `27c38be6` and checkpoint commit `da01a7b0` were pushed to `origin/feat/dioxus-dashboard`; production was not deployed or modified.
 
 ### Constraints and Non-goals
 
@@ -70,17 +70,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R1 and the first R2/R3 login-parity slice.
-- Smallest next action: make sandboxed Chromium start in the isolated container, verify MCP screenshot, then record and compare the login reference and Dioxus slice.
-- Expected evidence: browser/MCP screenshot on isolated data and reproducible visual/behavioral comparison on the same pinned browser.
+- Closes: R1 and the first R2/R3 login and Endpoint parity slices.
+- Smallest next action: finish and verify the rebuilt isolated browser fixture, resolve the observed reference screenshot instability, then re-record and compare the login and Endpoint references against the current Dioxus build.
+- Expected evidence: rebuilt-image MCP screenshot, real-backend login, reproducible reference images and zero-pixel Dioxus comparison on the pinned browser.
 - Stop or replan if: browser/reference constraints cannot be met without violating the frozen contract.
 
 ## Current State
 
-- Resolved: none of the end-to-end outcomes yet.
-- Last relevant evidence: Dioxus 0.7.10 release WASM build, three auth unit tests, WASM clippy/format and sandboxed synthetic login smoke passed; the latter reproduces and fixes empty-password submission parity. An Astro build in `/tmp/opencode` reproduced the existing login/Endpoint HTML, key bundles and CSS byte-for-byte. Baseline `cargo fmt`, all-target/all-feature clippy, eight provider-model unit tests, seven isolated custom-model API tests, an isolated auth API test and 25 OpenCode plugin tests passed. The isolated browser image and app start and OpenCode discovers MCP, but Chrome's sandboxed namespace creation failed with `Operation not permitted`; no MCP screenshot or visual comparison has passed yet.
-- Blocker: browser namespace policy; user has authorized changing test-container permissions, and a narrowly scoped seccomp adjustment is being tried.
-- Next: finish the browser smoke and visual comparison, then migrate the remaining sections and Translator editor.
+- Resolved: R1, subject to committing the fixture.
+- Last relevant evidence: the rebuilt sandboxed MCP opened the synthetic Astro login through the active OpenCode session; an isolated Dioxus build matched 22 login screenshots with the previous raster settings and authenticated against an isolated backend. Fresh reference self-comparisons pass after disabling partial rasterization. Existing backend/provider/plugin baseline tests passed as recorded above.
+- Blocker: none external. Browser review reproduced two candidate regressions: theme switching when browser storage is blocked, and a cancelled 401 session recheck when its key row is deleted. Both are being fixed before committing the shell. The new raster setting requires freshly recorded references and candidate comparisons; old references are rejected automatically.
+- Next: finish the shell fixes, compare them against fresh references, commit/push the verified fixture and frontend checkpoint, then continue the remaining routes and Translator editor.
 
 ## Material Decisions
 
@@ -94,6 +94,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-10-26: Frozen goal from user request and RECON; no implementation verified yet.
 - 2026-10-26: R3 partial login slice built and synthetic behavior checked; R1 MCP catalog works but navigation is blocked by the container namespace policy. Visual parity remains unverified.
 - 2026-10-26: R4 reference probe measured actual Monaco actions and representative behavior using synthetic data in a loopback-only network namespace; no editor implementation or parity is claimed.
+- 2026-10-26: R1 MCP screenshot succeeded with the sandboxed fixture. R2/R3: 22 login screenshots matched and an isolated real-backend login passed; the browser fixture has since changed and needs revalidation. Endpoint reference self-comparison exposed a 21-pixel nondeterminism, without a mask or parity claim.
 
 ## Completion
 

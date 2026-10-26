@@ -1,0 +1,9 @@
+{
+  "name": "openproxy-ui-browser",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "chrome-devtools-mcp": "1.11.0",
+    "playwright": "1.63.0"
+  }
+}
