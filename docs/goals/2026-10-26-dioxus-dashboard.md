@@ -38,8 +38,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: user selected "Полный паритет" after being informed that this excludes a third-party JS editor.
   - Acceptance: feature and visual parity against the configured existing Monaco across its available actions, JSON/plaintext and all seven Translator stages; no third-party JS editor ships.
   - Primary evidence: browser comparisons and action scenarios against the reference editor, including keyboard, selection, IME, history and accessibility.
-  - Status: pending
-  - Evidence: pending. No equivalent Rust editor was established during RECON; a basic syntax-highlighted textarea is not sufficient.
+  - Status: in_progress
+  - Evidence: isolated `web/dist` Translator with local Monaco 0.55.1, synthetic APIs and sandboxed Chromium 153 measured 129 supported actions in a settled JSON model and 126 in plaintext; registration alone is not proof of behavior. Editing, undo/redo, find/replace and formatting were exercised. Monaco format used four spaces, while the page's Format button used two. Google Fonts were blocked, so no visual parity was established. No equivalent Rust editor was found; a basic syntax-highlighted textarea is not sufficient.
 - R5: Standard builds package the Dioxus frontend into the existing OpenProxy binary without stale assets or breaking dashboard/API serving contracts.
   - Source: full frontend replacement and approved RECON plan.
   - Acceptance: `web/dist` contains only the new build, embedded/disk dashboard modes, deep links and WASM MIME/cache behavior work; Docker, CI and release builds use the new frontend; existing frozen backend/API and plugin contracts remain intact.
@@ -51,7 +51,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Acceptance: intended commits are present on the remote working branch; no production service, data, configuration or deployment is changed.
   - Primary evidence: git commit and remote branch SHA; isolated test deployment only.
   - Status: in_progress
-  - Evidence: goal commit `269d55fa` was pushed to `origin/feat/dioxus-dashboard`; production was not deployed or modified.
+  - Evidence: goal commit `269d55fa` and login slice `27c38be6` were pushed to `origin/feat/dioxus-dashboard`; production was not deployed or modified.
 
 ### Constraints and Non-goals
 
@@ -78,7 +78,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 ## Current State
 
 - Resolved: none of the end-to-end outcomes yet.
-- Last relevant evidence: Dioxus 0.7.10 release WASM build, three auth unit tests, WASM clippy/format and sandboxed synthetic login smoke passed; the latter reproduces and fixes empty-password submission parity. Baseline `cargo fmt`, all-target/all-feature clippy, eight provider-model tests and 25 OpenCode plugin tests passed. The isolated browser image and app start and OpenCode discovers MCP, but Chrome's sandboxed namespace creation failed with `Operation not permitted`; no MCP screenshot or visual comparison has passed yet.
+- Last relevant evidence: Dioxus 0.7.10 release WASM build, three auth unit tests, WASM clippy/format and sandboxed synthetic login smoke passed; the latter reproduces and fixes empty-password submission parity. An Astro build in `/tmp/opencode` reproduced the existing login/Endpoint HTML, key bundles and CSS byte-for-byte. Baseline `cargo fmt`, all-target/all-feature clippy, eight provider-model unit tests, seven isolated custom-model API tests, an isolated auth API test and 25 OpenCode plugin tests passed. The isolated browser image and app start and OpenCode discovers MCP, but Chrome's sandboxed namespace creation failed with `Operation not permitted`; no MCP screenshot or visual comparison has passed yet.
 - Blocker: browser namespace policy; user has authorized changing test-container permissions, and a narrowly scoped seccomp adjustment is being tried.
 - Next: finish the browser smoke and visual comparison, then migrate the remaining sections and Translator editor.
 
@@ -87,11 +87,13 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-10-26: User selected full Monaco parity without a third-party JS editor. Dioxus-generated browser bridge is an unavoidable allowed runtime component.
 - 2026-10-26: Use a feature branch for work and pushes; production deployment is expressly excluded.
 - 2026-10-26: User authorized any necessary **test-container** permissions and requested no further questions. Prefer a browser-only minimal seccomp adjustment and keep Chromium sandbox, TLS verification, isolated network and production boundaries intact.
+- 2026-10-26: An initial backend auth test inadvertently read the pre-existing host `~/.openproxy/api_key_secret`; the file timestamp was unchanged and its value was not output. It did not access the production container/volume. The test was repeated successfully with isolated `DATA_DIR`/`TMPDIR` and synthetic secrets; subsequent backend tests use the same isolation.
 
 ## Checkpoint History
 
 - 2026-10-26: Frozen goal from user request and RECON; no implementation verified yet.
 - 2026-10-26: R3 partial login slice built and synthetic behavior checked; R1 MCP catalog works but navigation is blocked by the container namespace policy. Visual parity remains unverified.
+- 2026-10-26: R4 reference probe measured actual Monaco actions and representative behavior using synthetic data in a loopback-only network namespace; no editor implementation or parity is claimed.
 
 ## Completion
 
