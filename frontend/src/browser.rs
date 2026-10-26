@@ -38,7 +38,7 @@ pub fn start() {
         let location = window.location();
         if location
             .pathname()
-            .is_ok_and(|path| path == "/dashboard/providers")
+            .is_ok_and(|path| path == "/dashboard/providers" || path == "/dashboard/providers/new")
         {
             PROVIDER_INITIAL_LOCATION.with(|initial| {
                 *initial.borrow_mut() = Some((
@@ -108,6 +108,8 @@ enum Route {
     Endpoint {},
     #[route("/dashboard/providers")]
     Providers {},
+    #[route("/dashboard/providers/new")]
+    ProvidersNew {},
     #[route("/login")]
     Login {},
 }
@@ -131,30 +133,36 @@ fn Endpoint() -> Element {
 fn Providers() -> Element {
     // Keep the deep link in the address bar even while session verification is
     // pending or fails; the provider page consumes it only after auth succeeds.
-    use_effect(|| {
-        PROVIDER_INITIAL_LOCATION.with(|initial| {
-            let initial = initial.borrow();
-            let Some((search, hash)) = initial.as_ref() else {
-                return;
-            };
-            let Some(window) = web_sys::window() else {
-                return;
-            };
-            let location = window.location();
-            if location
-                .pathname()
-                .is_ok_and(|path| path == "/dashboard/providers")
-                && (location.search().unwrap_or_default() != *search
-                    || location.hash().unwrap_or_default() != *hash)
-            {
-                let next = format!("/dashboard/providers{search}{hash}");
-                if let Ok(history) = window.history() {
-                    let _ = history.replace_state_with_url(&js_sys::Object::new(), "", Some(&next));
-                }
-            }
-        });
-    });
+    use_effect(|| restore_provider_location("/dashboard/providers"));
     rsx! { shell::Dashboard {} }
+}
+
+#[component]
+fn ProvidersNew() -> Element {
+    use_effect(|| restore_provider_location("/dashboard/providers/new"));
+    rsx! { shell::Dashboard {} }
+}
+
+fn restore_provider_location(path: &str) {
+    PROVIDER_INITIAL_LOCATION.with(|initial| {
+        let initial = initial.borrow();
+        let Some((search, hash)) = initial.as_ref() else {
+            return;
+        };
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let location = window.location();
+        if location.pathname().is_ok_and(|current| current == path)
+            && (location.search().unwrap_or_default() != *search
+                || location.hash().unwrap_or_default() != *hash)
+        {
+            let next = format!("{path}{search}{hash}");
+            if let Ok(history) = window.history() {
+                let _ = history.replace_state_with_url(&js_sys::Object::new(), "", Some(&next));
+            }
+        }
+    });
 }
 
 #[component]

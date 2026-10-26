@@ -1,6 +1,13 @@
 use super::{
-    apply_theme, current_theme, endpoint::EndpointPage, i18n::I18n, json_body, navigate,
-    providers::ProvidersPage, request, theme_is_dark, ui::Button, ui::Modal, AbortOnDrop,
+    apply_theme, current_theme,
+    endpoint::EndpointPage,
+    i18n::I18n,
+    json_body, navigate,
+    providers::{NewProviderPage, ProvidersPage},
+    request, theme_is_dark,
+    ui::Button,
+    ui::Modal,
+    AbortOnDrop,
 };
 use dioxus::prelude::*;
 use gloo_timers::future::TimeoutFuture;
@@ -236,9 +243,11 @@ fn DashboardContent() -> Element {
     let mut sidebar_open = use_signal(|| false);
     let mut toasts = use_context::<Signal<Vec<Toast>>>();
     let search = use_signal(String::new);
-    let is_providers = web_sys::window()
+    let pathname = web_sys::window()
         .and_then(|window| window.location().pathname().ok())
-        .is_some_and(|pathname| pathname == "/dashboard/providers");
+        .unwrap_or_default();
+    let is_providers = pathname == "/dashboard/providers";
+    let is_providers_new = pathname == "/dashboard/providers/new";
     rsx! {
         div { class: "flex h-screen w-full overflow-hidden bg-canvas",
             div { class: "fixed top-4 right-4 z-[80] flex w-[min(92vw,380px)] flex-col gap-2",
@@ -259,10 +268,10 @@ fn DashboardContent() -> Element {
             }
             main { class: "flex flex-col flex-1 h-full min-w-0 relative transition-colors duration-300 isolate",
                 div { class: "landing-grid absolute inset-0 pointer-events-none -z-10", aria_hidden: "true" }
-                Header { on_menu: move |_| sidebar_open.set(true), search, is_providers }
+                Header { on_menu: move |_| sidebar_open.set(true), search, is_providers, is_providers_new }
                 div { class: "flex-1 overflow-y-auto custom-scrollbar p-6 lg:p-10",
                     div { class: "max-w-7xl mx-auto",
-                        if is_providers { ProvidersPage { search } } else { EndpointPage {} }
+                        if is_providers { ProvidersPage { search } } else if is_providers_new { NewProviderPage {} } else { EndpointPage {} }
                     }
                 }
             }
@@ -543,7 +552,12 @@ pub(super) fn cookie_locale() -> String {
 }
 
 #[component]
-fn Header(on_menu: EventHandler<()>, mut search: Signal<String>, is_providers: bool) -> Element {
+fn Header(
+    on_menu: EventHandler<()>,
+    mut search: Signal<String>,
+    is_providers: bool,
+    is_providers_new: bool,
+) -> Element {
     let mut menu = use_signal(|| false);
     let mut lang_open = use_signal(|| false);
     let mut locale = use_signal(cookie_locale);
@@ -566,8 +580,11 @@ fn Header(on_menu: EventHandler<()>, mut search: Signal<String>, is_providers: b
     let pathname = web_sys::window()
         .and_then(|w| w.location().pathname().ok())
         .unwrap_or_default();
-    let show_title = pathname == "/dashboard" || pathname.contains("/endpoint") || is_providers;
-    let (title, description, page_icon) = if is_providers {
+    let show_title = pathname == "/dashboard"
+        || pathname.contains("/endpoint")
+        || is_providers
+        || is_providers_new;
+    let (title, description, page_icon) = if is_providers || is_providers_new {
         ("Providers", "Manage your AI provider connections", "dns")
     } else {
         ("Endpoint", "API endpoint configuration", "api")

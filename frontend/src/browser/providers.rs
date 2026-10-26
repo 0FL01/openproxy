@@ -12,8 +12,10 @@ use wasm_bindgen::JsValue;
 
 mod compatible;
 mod key_modal;
+mod new;
 use compatible::CompatibleModal;
 use key_modal::KeyModal;
+pub(super) use new::NewProviderPage;
 
 const GRID: &str = "grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4";
 const CARD: &str = "bg-canvas border border-hairline text-ink rounded-mini-lg shadow-none p-3 h-full hover:bg-black/[0.01] dark:hover:bg-white/[0.01] transition-colors cursor-pointer";

@@ -2,12 +2,12 @@
 
 This is a separate, browser-only Rust/WASM application. It implements `/login`,
 the shared dashboard shell and Endpoint page at `/`, `/dashboard`, and
-`/dashboard/endpoint`, and the list at `/dashboard/providers` against the
-existing same-origin APIs. It does not replace the Astro frontend or alter how
-OpenProxy is packaged or served. Provider detail and new-provider pages and
-other dashboard pages are not implemented in this slice; their links remain
-ordinary browser navigations, not substitute pages. Login and logout use full
-browser redirects, as the current frontend does.
+`/dashboard/endpoint`, and the list and chooser at `/dashboard/providers` and
+`/dashboard/providers/new` against the existing same-origin APIs. It does not
+replace the Astro frontend or alter how OpenProxy is packaged or served.
+Provider detail and other dashboard pages are not implemented in this slice;
+their links remain ordinary browser navigations, not substitute pages. Login
+and logout use full browser redirects, as the current frontend does.
 
 ## Build and test
 
@@ -43,6 +43,7 @@ An optional isolated behavioral smoke test is available after the release build:
 CHROME_BIN=/path/to/chromium node tests/login-smoke.cjs
 CHROME_BIN=/path/to/chromium node tests/endpoint-smoke.cjs
 CHROME_BIN=/path/to/chromium node tests/providers-smoke.cjs
+CHROME_BIN=/path/to/chromium node tests/providers-new-smoke.cjs
 
 # Optional snapshot drift check, with the repository's web dependencies installed:
 node tests/provider-metadata.cjs
@@ -82,14 +83,19 @@ build if the reference changes.
 the original strings. The release build minifies the JSON without changing its
 values. Refresh the copies deliberately when the reference catalogs change.
 
-`src/browser/provider_data.json` is the list-specific projection of
+`src/browser/provider_data.json` is the list and chooser projection of
 `web/src/shared/constants/providers.ts`, including category order, card fields,
-free-tier membership, and the canonical rate-limit labels. The provider PNGs in
+free-tier membership, and the canonical rate-limit labels. The separate
+`src/browser/provider_sites.json` contains the chooser's API-key and website
+links. The provider PNGs in
 `public/providers/` are unchanged copies of the icons used by those categories
 and compatible cards. `tests/provider-metadata.cjs` checks the snapshot and
-icon bytes against the reference (and flags new hidden, non-LLM, or cookie
-categories that require code changes). Refresh both deliberately when the
-reference registry or icons change; the standalone build does not depend on
+icon bytes and links against the reference (and flags new hidden, non-LLM,
+deprecated, or cookie metadata that requires code changes). It also checks the
+chooser's changing search-count text against the catalogs: that text is skipped
+by the translator because none of the current catalogs translates its literal
+text runs. Refresh the snapshots deliberately when the reference registry,
+icons, or these catalog entries change; the standalone build does not depend on
 TypeScript or the Astro application.
 
 The current reference cookie-provider registry is empty; that section would

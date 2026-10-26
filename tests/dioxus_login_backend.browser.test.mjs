@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 
 // Run only in the isolated .ui-browser network with the Dioxus build mounted.
-test("Dioxus login, key creation, and provider toggle work with an isolated backend", {
+test("Dioxus login, key creation, provider list, and new-provider save work with an isolated backend", {
   skip: process.env.RUN_DIOXUS_BACKEND_TEST !== "1",
   timeout: 90_000,
 }, async () => {
@@ -18,12 +19,17 @@ test("Dioxus login, key creation, and provider toggle work with an isolated back
       const fixtureKeyName = `Fixture Integration Key ${Date.now()}`;
       const fixtureProviderName = "Fixture Browser Connection";
       const fixtureProviderKey = "synthetic-provider-fixture-only";
+      const newProviderName = "Fixture New Page Connection";
+      // Generated in memory, sent only to the disposable backend's tmpfs.
+      const newProviderKey = `fixture-${randomUUID()}`;
       const fixturePassword = "synthetic-browser-only";
       let createdFixtureKey = false;
       let fixtureProviderId;
       let validations = 0;
       let providerCreates = 0;
       let providerUpdates = 0;
+      let newProviderCreates = 0;
+      let detailNavigations = 0;
       let blockedApis = 0;
       let blockedExternal = 0;
       await context.route("**/*", async (route) => {
@@ -48,6 +54,17 @@ test("Dioxus login, key creation, and provider toggle work with an isolated back
           providerCreates++;
           return route.continue();
         }
+        if (request.method() === "POST" && url.pathname === "/api/providers" && !url.search &&
+            body?.provider === "deepseek" && body?.name === newProviderName && body?.apiKey === newProviderKey &&
+            body?.priority === 1 && body?.testStatus === "unknown" && Object.keys(body).length === 5) {
+          newProviderCreates++;
+          return route.continue();
+        }
+        if (request.method() === "GET" && url.pathname === "/dashboard/providers/deepseek" && !url.search &&
+            request.isNavigationRequest() && newProviderCreates === 1) {
+          detailNavigations++;
+          return route.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><h1>Fixture detail destination</h1>" });
+        }
         if (request.method() === "PUT" && fixtureProviderId && url.pathname === `/api/providers/${encodeURIComponent(fixtureProviderId)}` &&
             !url.search && body?.isActive === false && Object.keys(body).length === 1) {
           providerUpdates++;
@@ -63,12 +80,12 @@ test("Dioxus login, key creation, and provider toggle work with an isolated back
           return route.continue();
         }
         const allowed = (request.method() === "GET" && (
-          ["/login", "/dashboard", "/dashboard/providers", "/favicon.svg"].includes(url.pathname) ||
+          (!url.search && ["/login", "/dashboard", "/dashboard/providers", "/dashboard/providers/new", "/favicon.svg"].includes(url.pathname)) ||
+          (url.pathname === "/dashboard/providers" && url.search === "?add=openai") ||
           (!url.search && ["/api/auth/status", "/api/build", "/api/settings", "/api/keys", "/api/providers", "/api/provider-nodes"].includes(url.pathname)) ||
           (url.pathname === "/api/proxy-pools" && url.search === "?isActive=true") ||
-          /^\/providers\/[a-z0-9_-]+\.png$/.test(url.pathname) ||
-          url.pathname.startsWith("/assets/") ||
-          url.pathname.startsWith("/_astro/")
+          (!url.search && (/^\/providers\/[a-z0-9_-]+\.png$/.test(url.pathname) ||
+            url.pathname.startsWith("/assets/") || url.pathname.startsWith("/_astro/")))
         )) || (request.method() === "POST" && url.pathname === "/api/auth/login" && !url.search && body?.password === fixturePassword && Object.keys(body).length === 1);
         if (!allowed && url.pathname.startsWith("/api/")) blockedApis++;
         return allowed ? route.continue() : route.abort("blockedbyclient");
@@ -173,6 +190,60 @@ test("Dioxus login, key creation, and provider toggle work with an isolated back
       assert.equal(validations, 1, "provider validation must be intercepted");
       assert.equal(providerCreates, 1);
       assert.equal(providerUpdates, 1);
+      assert.equal(blockedApis, 0, "unexpected API requests must be blocked");
+      assert.equal(blockedExternal, 0, "external requests must be blocked");
+
+      // The new page saves directly, without validation or a provider request.
+      await page.goto("https://app:4623/dashboard/providers/new");
+      await page.getByRole("heading", { name: "Add New Provider" }).waitFor();
+      await page.getByRole("combobox").selectOption("apikey:deepseek");
+      await page.getByLabel("Display Name").fill(newProviderName);
+      await page.getByLabel("API Key", { exact: true }).evaluate((input, value) => {
+        input.value = value;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }, newProviderKey);
+      const [newCreatedResponse] = await Promise.all([
+        page.waitForResponse((response) =>
+          response.url() === "https://app:4623/api/providers" && response.request().method() === "POST"),
+        page.getByRole("button", { name: "Save API Key" }).click(),
+      ]);
+      assert.equal(newCreatedResponse.status(), 201, "new-page creation must be handled by the backend");
+      await page.waitForURL("https://app:4623/dashboard/providers/deepseek");
+      await page.getByRole("heading", { name: "Fixture detail destination" }).waitFor();
+      assert.equal(detailNavigations, 1, "save must navigate to the selected provider detail");
+
+      await page.goto("https://app:4623/dashboard/providers/new");
+      await page.getByRole("heading", { name: "Add New Provider" }).waitFor();
+      // Read only non-secret fields, both before and after reloading the page.
+      const readNewProvider = () => page.evaluate(async (name) => {
+        const response = await fetch("/api/providers", { cache: "no-store" });
+        const data = await response.json();
+        const items = Array.isArray(data.connections) ? data.connections : [];
+        const connection = items.find((item) => item.provider === "deepseek" && item.name === name);
+        return {
+          status: response.status, count: items.length, id: connection?.id, provider: connection?.provider,
+          name: connection?.name, authType: connection?.authType, isActive: connection?.isActive,
+          testStatus: connection?.testStatus, hasApiKey: connection?.hasApiKey,
+        };
+      }, newProviderName);
+      const savedNew = await readNewProvider();
+      assert.equal(savedNew.status, 200);
+      assert.equal(typeof savedNew.id, "string");
+      assert.ok(savedNew.id.length > 0 && savedNew.id !== fixtureProviderId);
+      await page.reload();
+      await page.getByRole("heading", { name: "Add New Provider" }).waitFor();
+      const persistedNew = await readNewProvider();
+      assert.equal(persistedNew.status, 200);
+      assert.equal(persistedNew.count, 2);
+      assert.equal(persistedNew.id, savedNew.id);
+      assert.equal(persistedNew.provider, "deepseek");
+      assert.equal(persistedNew.name, newProviderName);
+      assert.equal(persistedNew.authType, "apikey");
+      assert.equal(persistedNew.isActive, true);
+      assert.equal(persistedNew.testStatus, "unknown");
+      assert.equal(persistedNew.hasApiKey, true);
+      assert.equal(newProviderCreates, 1);
+      assert.equal(validations, 1, "the new-page save must not validate with a provider");
       assert.equal(blockedApis, 0, "unexpected API requests must be blocked");
       assert.equal(blockedExternal, 0, "external requests must be blocked");
     } finally {
