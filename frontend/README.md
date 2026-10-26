@@ -1,10 +1,12 @@
 # Dioxus dashboard migration slice
 
-This is a separate, browser-only Rust/WASM application. It implements the
-`/login` route against the existing same-origin authentication API; it does
-not replace the Astro frontend or alter how OpenProxy is packaged or served.
-Other dashboard routes are not implemented here. Login navigations use full
-browser redirects to `/dashboard` or `/login`, as the current frontend does.
+This is a separate, browser-only Rust/WASM application. It implements `/login`
+and the shared dashboard shell and Endpoint page at `/`, `/dashboard`, and
+`/dashboard/endpoint` against the existing same-origin APIs. It does not
+replace the Astro frontend or alter how OpenProxy is packaged or served.
+Other dashboard pages are not implemented in this slice; their sidebar links
+are retained as ordinary browser navigations, not substitute pages. Login and
+logout use full browser redirects, as the current frontend does.
 
 ## Build and test
 
@@ -15,6 +17,8 @@ directory:
 
 ```sh
 cargo test --locked
+cargo fmt --check
+cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings
 dx build --web --release --cargo-args=--locked
 ```
 
@@ -32,20 +36,22 @@ An optional isolated behavioral smoke test is available after the release build:
 ```sh
 # Install Playwright separately and provide a sandbox-capable Chromium if needed.
 CHROME_BIN=/path/to/chromium node tests/login-smoke.cjs
+CHROME_BIN=/path/to/chromium node tests/endpoint-smoke.cjs
 ```
 
-The smoke test requires Node and the `playwright` package. It starts a local
-ephemeral HTTP server and intercepts authentication requests with synthetic
-responses; it never connects to an OpenProxy instance. It explicitly requests
-the Chromium sandbox and does not disable it. This is a narrow interaction
-check, not the visual parity suite.
+The smoke tests require Node and the `playwright` package. They start local
+ephemeral HTTP servers with synthetic responses, never an OpenProxy instance.
+They explicitly request the Chromium sandbox and do not disable it. These
+are narrow interaction checks, not the visual parity suite. The Endpoint smoke
+requires a full Chrome/Chromium build that enforces blocked site-data settings;
+headless-shell builds can ignore that preference.
 
 To run the slice, serve the build at the origin root with SPA fallback for the
-`/login` deep link, and forward `/api/` to a **separately isolated test server**
-on the same origin. The app uses same-origin cookies, not a mock authentication
-implementation. Do not point this preview at production data or credentials.
-The build is not a complete dashboard: a successful login redirects to the
-existing `/dashboard`, which this slice does not serve.
+implemented deep links, and forward `/api/` to a **separately isolated test
+server** on the same origin. The reference translation catalogs are included
+at `/i18n/literals/`. The app uses same-origin cookies, not a mock
+authentication implementation. Do not point this preview at production data
+or credentials.
 
 ## Reference assets and known gaps
 
@@ -62,6 +68,11 @@ be considered in visual tests. These reference assets are included to keep
 this slice independently buildable; refresh them deliberately from the Astro
 build if the reference changes.
 
+`public/i18n/literals/` contains unchanged copies of the reference catalogs in
+`web/public/i18n/literals/` for all non-English supported locales; English uses
+the original strings. The release build minifies the JSON without changing its
+values. Refresh the copies deliberately when the reference catalogs change.
+
 The vendored Material Symbols Outlined font originates from the
 `material-symbols` npm package v0.46.0 and is licensed under Apache-2.0; see
 [`LICENSE.material-symbols`](LICENSE.material-symbols).
@@ -69,6 +80,9 @@ The vendored Material Symbols Outlined font originates from the
 Theme is read from the existing `theme` localStorage setting in Rust before
 the Dioxus app starts. Unlike the Astro inline script, WASM cannot apply that
 setting synchronously before the first browser paint; a flash before WASM
-startup is possible. Login behavior and appearance have not yet been verified
-against the reference in an isolated browser, and no claim of pixel parity,
-production compatibility, or completeness of the dashboard is made here.
+startup is possible. The dashboard skeleton is also rendered by WASM, so it
+does not provide Astro's pre-WASM first-paint coverage. Login and the dashboard
+share the reference's literal-text translation behavior: missing catalog entries
+and input placeholder attributes remain untranslated, and in-place changes to
+an existing text node are not observed automatically. No claim of pixel parity,
+production compatibility, or completeness of the dashboard is made.

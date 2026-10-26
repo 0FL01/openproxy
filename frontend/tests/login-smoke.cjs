@@ -7,7 +7,7 @@ const path = require("node:path");
 const { chromium } = require("playwright");
 
 const publicDir = path.resolve(__dirname, "../target/dx/openproxy-dashboard/release/web/public");
-const mime = { ".html": "text/html", ".js": "text/javascript", ".wasm": "application/wasm", ".css": "text/css", ".woff2": "font/woff2", ".svg": "image/svg+xml" };
+const mime = { ".html": "text/html", ".js": "text/javascript", ".json": "application/json", ".wasm": "application/wasm", ".css": "text/css", ".woff2": "font/woff2", ".svg": "image/svg+xml" };
 
 const server = http.createServer(async (req, res) => {
   const pathname = new URL(req.url, "http://localhost").pathname;
@@ -45,8 +45,7 @@ async function main() {
     await page.addInitScript(() => localStorage.setItem("theme", JSON.stringify({ state: { theme: "dark" }, version: 0 })));
     const pageErrors = [];
     page.on("pageerror", (err) => pageErrors.push(String(err)));
-    await page.route("https://fonts.googleapis.com/**", (route) => route.abort());
-    await page.route("https://fonts.gstatic.com/**", (route) => route.abort());
+    await page.route("**/*", (route) => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
 
     let state;
     const reset = () => {
@@ -227,6 +226,45 @@ async function main() {
     await timeoutEntered;
     await password().waitFor({ timeout: 7000 });
     state.releaseStatus();
+
+    // The reference normalizes the legacy zh cookie to zh-CN and translates
+    // literal text nodes, including later login and password-change errors.
+    reset();
+    state.status.hasPassword = false;
+    state.loginCode = 401;
+    state.login = { error: "Invalid password" };
+    await context.addCookies([{ name: "locale", value: "zh", url: origin }]);
+    const catalogRequest = page.waitForResponse((response) => response.url() === `${origin}/i18n/literals/zh-CN.json`, { timeout: 5000 });
+    await gotoLogin();
+    const catalogResponse = await catalogRequest;
+    assert.equal(catalogResponse.status(), 200);
+    const catalog = await catalogResponse.json();
+    assert.equal(catalog.Password, "密码");
+    assert.equal(catalog["Invalid password"], "密码错误");
+    assert.equal(catalog["Passwords do not match"], "密码不匹配");
+    assert.equal(catalog["Sign In"], undefined);
+    const chinesePassword = page.getByLabel(/^密码\s*\*$/);
+    await chinesePassword.waitFor();
+    await page.getByText("输入密码以访问仪表盘", { exact: true }).waitFor();
+    await page.getByText("安全风险：未设置密码。远程登录时将要求您设置一个密码。", { exact: true }).waitFor();
+    // Neither untranslated literals nor input placeholder attributes are rewritten.
+    assert.equal(await chinesePassword.getAttribute("placeholder"), "Enter your password");
+    await chinesePassword.fill("synthetic-wrong");
+    await page.getByRole("button", { name: "Sign In" }).click();
+    await page.getByText("密码错误", { exact: true }).waitFor();
+
+    state.loginCode = 200;
+    state.login = { success: true, mustChangePassword: true };
+    await chinesePassword.fill("synthetic-old");
+    await page.getByRole("button", { name: "Sign In" }).click();
+    const chineseNewPassword = page.getByLabel(/^新密码\s*\*$/);
+    await chineseNewPassword.waitFor();
+    await page.getByText("Choose a new password before continuing", { exact: true }).waitFor();
+    await chineseNewPassword.fill("synthetic-new");
+    await page.getByLabel(/^Confirm password\s*\*$/).fill("different");
+    await page.getByRole("button", { name: "设置密码" }).click();
+    await page.getByText("密码不匹配", { exact: true }).waitFor();
+
     assert.deepEqual(pageErrors, []);
     await context.close();
     console.log("Synthetic login browser smoke passed");

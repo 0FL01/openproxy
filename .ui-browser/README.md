@@ -214,10 +214,18 @@ docker compose --project-name openproxy-ui-dioxus --project-directory .ui-browse
   -e DASHBOARD_PLAYWRIGHT_MODULE=/opt/ui-browser/node_modules/playwright/index.mjs \
   -e DASHBOARD_CHROMIUM_EXECUTABLE=/opt/chrome-linux64/chrome \
   browser node --test /test/ui_parity.browser.test.mjs
+docker compose --project-name openproxy-ui-dioxus --project-directory .ui-browser -f .ui-browser/compose.yaml run --rm --no-deps --pull never -T \
+  -v "$PWD/tests/dioxus_login_backend.browser.test.mjs:/test/dioxus_login_backend.browser.test.mjs:ro" \
+  -e RUN_DIOXUS_BACKEND_TEST=1 \
+  -e DASHBOARD_PLAYWRIGHT_MODULE=/opt/ui-browser/node_modules/playwright/index.mjs \
+  -e DASHBOARD_CHROMIUM_EXECUTABLE=/opt/chrome-linux64/chrome \
+  browser node --test /test/dioxus_login_backend.browser.test.mjs
 docker compose --project-name openproxy-ui-dioxus --project-directory .ui-browser -f .ui-browser/compose.yaml stop app backend
 unset OPENPROXY_UI_WEB_DIR
 ```
 
 Record mode verifies Astro's component identity; compare mode requires the
 Dioxus loader, so comparing the reference to itself is rejected. Before the
-full migration, select only implemented states with `UI_PARITY_SCREEN`.
+full migration, select only implemented states with `UI_PARITY_SCREEN`. The
+real-backend test creates a synthetic API key in the disposable database and
+checks that it survives a page reload; it never reads or prints the key value.

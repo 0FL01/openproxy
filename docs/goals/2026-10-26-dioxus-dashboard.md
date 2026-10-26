@@ -27,13 +27,13 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Acceptance: synthetic fixtures, fixed browser/fonts/time/viewport/theme, reproducible self-comparison, and reference PNGs; candidate screenshots match at zero differing pixels apart from specifically documented unavoidable masks with independent content checks.
   - Primary evidence: repeatable browser parity scenarios for desktop and mobile, all sections and meaningful states.
   - Status: in_progress
-  - Evidence: Astro Endpoint self-comparison exhibited rounded-edge nondeterminism; experiments identified Chrome partial rasterization as the likely cause. The harness now disables that path and rejects references without matching browser version and launch flags. All 22 login and 38 Endpoint synthetic reference screenshots self-repeated at AE=0 with the corrected settings. The scroll case was corrected to use an overflowing synthetic key list and verified to actually scroll. The updated Dioxus candidate matches all 22 login screenshots, while Endpoint still differs and other candidate states remain to be checked.
+  - Evidence: Astro Endpoint self-comparison exhibited rounded-edge nondeterminism; experiments identified Chrome partial rasterization as the likely cause. The harness now disables that path and rejects references without matching browser version and launch flags. All 22 login and 38 Endpoint synthetic reference screenshots self-repeated at AE=0 with the corrected settings. The scroll case was corrected to use an overflowing synthetic key list and verified to actually scroll. The integrated Dioxus candidate matches all 60 screenshots at AE=0; references and comparisons for other sections remain pending.
 - R3: Full Dioxus/Rust frontend preserves all current routes, layout, visual states, interactions, localization and API behavior.
   - Source: user request "фронтенд фулл на расте" and approved RECON plan.
   - Acceptance: all current routes and interactions match the reference, including authentication, OAuth callback, persisted model customizations and `/v1/models` discovery; browser application logic is Rust/WASM, with Dioxus-generated JS bridge and CSS allowed.
   - Primary evidence: R2 visual scenarios and existing focused frontend/API regression tests adapted to the new frontend.
   - Status: in_progress
-  - Evidence: the isolated Dioxus login passed the R2 comparisons above and a real isolated backend session test including HttpOnly, Secure and SameSite=Lax cookie attributes. A local uncommitted Dioxus shell and Endpoint build created a synthetic API key through the real isolated backend and found it again after reload. After header/date and raster corrections, its ready-state comparisons still differ by 196/149/179/161 pixels across desktop/mobile and light/dark; no parity is claimed. Reproduced blocked-storage theme and cancelled-session-recheck regressions were fixed and their UI/browser checks passed. The 34 reference locale catalogs are bundled locally and Russian was exercised synthetically. All other routes remain pending.
+  - Evidence: the Dioxus login/shell/Endpoint slice matches all 60 R2 screenshots at AE=0 and passed an isolated real-backend session test including HttpOnly, Secure and SameSite=Lax cookie attributes, synthetic key creation and persistence after reload. A missing retained dashboard skeleton was restored to match Astro's compositing. Reproduced blocked-storage theme and cancelled-session-recheck regressions were fixed and their UI/browser checks passed. The 34 reference locale catalogs are bundled; Russian dashboard and Chinese login behavior were exercised synthetically. All other routes remain pending.
 - R4: Translator retains full actually available Monaco editor behavior and appearance without any third-party JavaScript editor.
   - Source: user selected "Полный паритет" after being informed that this excludes a third-party JS editor.
   - Acceptance: feature and visual parity against the configured existing Monaco across its available actions, JSON/plaintext and all seven Translator stages; no third-party JS editor ships.
@@ -51,7 +51,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Acceptance: intended commits are present on the remote working branch; no production service, data, configuration or deployment is changed.
   - Primary evidence: git commit and remote branch SHA; isolated test deployment only.
   - Status: in_progress
-  - Evidence: goal commit `269d55fa`, login slice `27c38be6`, checkpoint `da01a7b0`, isolated-browser fixture `2fb691fe`, and synthetic visual references `e2514d20` were pushed to `origin/feat/dioxus-dashboard`; production was not deployed or modified.
+  - Evidence: goal commit `269d55fa`, login slice `27c38be6`, checkpoint `da01a7b0`, isolated-browser fixture `2fb691fe`, visual references `e2514d20` and overflow-scenario correction `d8e98d88` were pushed to `origin/feat/dioxus-dashboard`; production was not deployed or modified.
 
 ### Constraints and Non-goals
 
@@ -70,17 +70,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R1 and the first R2/R3 login and Endpoint parity slices.
-- Smallest next action: finish and verify the rebuilt isolated browser fixture, resolve the observed reference screenshot instability, then re-record and compare the login and Endpoint references against the current Dioxus build.
-- Expected evidence: rebuilt-image MCP screenshot, real-backend login, reproducible reference images and zero-pixel Dioxus comparison on the pinned browser.
-- Stop or replan if: browser/reference constraints cannot be met without violating the frozen contract.
+- Closes: the next R2/R3 slice for Providers and model customization.
+- Smallest next action: capture synthetic reference states for the provider workflow and port the matching list, creation and detail interactions to the Rust frontend.
+- Expected evidence: exact pinned-browser visual comparisons and focused isolated-backend tests for model customization, persistence and discovery.
+- Stop or replan if: the provider workflow cannot be preserved within the frozen frontend and API boundaries.
 
 ## Current State
 
 - Resolved: R1; fixture commit `2fb691fe` is pushed.
-- Last relevant evidence: the rebuilt sandboxed MCP opened the synthetic Astro login through the active OpenCode session; an isolated Dioxus build matched 22 login screenshots with the previous raster settings and authenticated against an isolated backend. Fresh reference self-comparisons pass after disabling partial rasterization. Existing backend/provider/plugin baseline tests passed as recorded above.
-- Blocker: none external. Blocked-storage theme switching and the cancelled 401 recheck were fixed and verified with synthetic browser interactions. The new raster setting requires freshly recorded references and candidate comparisons; old references are rejected automatically. Endpoint still has measured pixel differences.
-- Next: compare the fixed shell against fresh references, resolve the measured Endpoint pixel differences, commit/push the frontend checkpoint, then continue the remaining routes and Translator editor.
+- Last relevant evidence: the sandboxed MCP opened the synthetic Astro login through the active OpenCode session; the integrated Dioxus candidate matched all 60 login/Endpoint screenshots and passed login/key creation against the isolated backend. Existing backend/provider/plugin baseline tests passed as recorded above.
+- Blocker: none external. Blocked-storage theme switching and the cancelled 401 recheck were fixed and verified with synthetic browser interactions. The skeleton and theme cannot appear before WASM startup as Astro's synchronous HTML/script did.
+- Next: migrate the Providers workflow and its model customization, then the other remaining routes and Translator editor.
 
 ## Material Decisions
 

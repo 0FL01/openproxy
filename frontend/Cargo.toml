@@ -12,6 +12,7 @@ serde_json = "1"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 dioxus = { version = "=0.7.10", default-features = false, features = ["lib", "launch", "router", "web"] }
 gloo-timers = { version = "0.3", features = ["futures"] }
+js-sys = "0.3"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["AbortController", "AbortSignal", "Document", "DomTokenList", "Element", "Headers", "Location", "MediaQueryList", "Request", "RequestCredentials", "RequestInit", "Response", "Storage", "Window"] }
+web-sys = { version = "0.3", features = ["AbortController", "AbortSignal", "Clipboard", "CssStyleDeclaration", "Document", "DomTokenList", "Element", "Event", "EventTarget", "Headers", "HtmlElement", "HtmlTextAreaElement", "KeyboardEvent", "Location", "MediaQueryList", "MutationObserver", "MutationObserverInit", "MutationRecord", "Navigator", "Node", "NodeList", "Request", "RequestCache", "RequestCredentials", "RequestInit", "Response", "ScrollBehavior", "ScrollIntoViewOptions", "Storage", "TreeWalker", "Window"] }

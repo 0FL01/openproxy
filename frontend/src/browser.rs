@@ -6,6 +6,11 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{AbortController, AbortSignal, Request, RequestCredentials, RequestInit, Response};
 
+mod endpoint;
+mod i18n;
+mod shell;
+mod ui;
+
 // Preserve the reference bytes; dx otherwise re-minifies CSS in the public dir.
 // The CLI injects this in the initial HTML head, before WASM starts.
 #[used]
@@ -21,25 +26,15 @@ const BUTTON_CLASS: &str = "inline-flex items-center justify-center gap-2 rounde
 const ERROR_CLASS: &str = "text-sm text-[color:var(--color-danger)] bg-[color:var(--color-danger)]/10 border border-[color:var(--color-danger)]/20 rounded-mini-md px-3 py-2";
 
 pub fn start() {
-    apply_theme();
+    apply_theme(&current_theme());
     dioxus::launch(App);
 }
 
-fn apply_theme() {
-    let Some(window) = web_sys::window() else {
-        return;
-    };
-    let Some(root) = window
-        .document()
-        .and_then(|document| document.document_element())
-    else {
-        return;
-    };
-    let raw = match window.local_storage() {
-        Ok(Some(storage)) => storage.get_item("theme").ok().flatten(),
-        _ => None,
-    };
-    let theme = raw.as_deref().map_or_else(
+fn current_theme() -> String {
+    let raw = web_sys::window()
+        .and_then(|window| window.local_storage().ok().flatten())
+        .and_then(|storage| storage.get_item("theme").ok().flatten());
+    raw.as_deref().map_or_else(
         || "system".to_owned(),
         |raw| match serde_json::from_str::<Value>(raw) {
             Ok(value) => value["state"]["theme"]
@@ -48,13 +43,30 @@ fn apply_theme() {
                 .to_owned(),
             Err(_) => raw.to_owned(),
         },
-    );
-    let system_dark = window
-        .match_media("(prefers-color-scheme: dark)")
-        .ok()
-        .flatten()
-        .is_some_and(|query| query.matches());
-    let dark = theme == "dark" || (theme == "system" && system_dark);
+    )
+}
+
+fn theme_is_dark(theme: &str) -> bool {
+    theme == "dark"
+        || (theme == "system"
+            && web_sys::window()
+                .and_then(|window| {
+                    window
+                        .match_media("(prefers-color-scheme: dark)")
+                        .ok()
+                        .flatten()
+                })
+                .is_some_and(|query| query.matches()))
+}
+
+fn apply_theme(theme: &str) {
+    let Some(root) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.document_element())
+    else {
+        return;
+    };
+    let dark = theme_is_dark(theme);
     if dark {
         let _ = root.class_list().add_1("dark");
         let _ = root.set_attribute("style", "background-color: #181715; color-scheme: dark;");
@@ -66,12 +78,35 @@ fn apply_theme() {
 
 #[derive(Clone, Debug, PartialEq, Routable)]
 enum Route {
+    #[route("/")]
+    Root {},
+    #[route("/dashboard")]
+    Dashboard {},
+    #[route("/dashboard/endpoint")]
+    Endpoint {},
     #[route("/login")]
     Login {},
 }
 
 #[component]
+fn Root() -> Element {
+    rsx! { shell::Dashboard {} }
+}
+
+#[component]
+fn Dashboard() -> Element {
+    rsx! { shell::Dashboard {} }
+}
+
+#[component]
+fn Endpoint() -> Element {
+    rsx! { shell::Dashboard {} }
+}
+
+#[component]
 fn App() -> Element {
+    let i18n = use_hook(i18n::I18n::new);
+    use_context_provider(|| i18n.clone());
     rsx! { Router::<Route> {} }
 }
 
@@ -84,6 +119,9 @@ async fn request(
     let init = RequestInit::new();
     init.set_method(method);
     init.set_credentials(RequestCredentials::SameOrigin);
+    if path == "/api/auth/status" || path == "/api/build" {
+        init.set_cache(web_sys::RequestCache::NoStore);
+    }
     if let Some(body) = body {
         init.set_body(&JsValue::from_str(&body.to_string()));
     }
@@ -192,6 +230,13 @@ fn SubmitButton(label: String, loading: bool, disabled: bool) -> Element {
 
 #[component]
 fn Login() -> Element {
+    let i18n = use_context::<i18n::I18n>();
+    use_future(move || {
+        let i18n = i18n.clone();
+        async move {
+            i18n.reload(&shell::cookie_locale()).await;
+        }
+    });
     let mut password = use_signal(String::new);
     let mut new_password = use_signal(String::new);
     let mut confirm_password = use_signal(String::new);
