@@ -13,8 +13,8 @@ light and dark, with fixed fonts, time, locale and device scale.
 `UI_PARITY_SECTION=providers` selects these 28 captures without running the
 other sections. `UI_PARITY_SCREEN` selects one full scenario name from the
 first column; desktop-only scenarios produce two captures, the others four.
-The default, unfiltered compare includes all reference sections, including
-Providers, which still needs a Dioxus implementation.
+The default, unfiltered compare includes all reference sections; select a
+section or screen when testing a partially migrated dashboard.
 
 | Scenario | State captured |
 |---|---|
@@ -50,7 +50,7 @@ assets; all other requests, including external origins and API writes, are
 blocked and fail the scenario. The base URL displayed by the dialog is Astro's
 default text: nothing is validated or sent to it.
 
-This list slice does not yet cover provider detail, model customization and
+This list slice does not cover provider detail, model customization and
 persistence, connection creation/toggling and real OAuth, batch testing,
 failure/loading/error/disabled states, an empty custom-provider list, the
 Anthropic/API-key dialogs, dialog validation or submission, search clearing,
@@ -92,3 +92,65 @@ The native select's open popup, provider navigation, OAuth, key entry and
 submission, compatible setup navigation, the Anthropic-compatible option,
 other provider categories, localization and backend success/error behavior
 are not covered. These are Astro references, not Dioxus parity evidence.
+
+## Kilo Code provider detail slice
+
+`UI_PARITY_SECTION=provider-kilocode` selects 32 captures for
+`/dashboard/providers/kilocode`: each scenario runs at both viewports and in
+both themes. The model scenarios scroll the page's main container to the
+Available Models card; the initial state stays at the top.
+
+| Scenario | State captured |
+|---|---|
+| `provider-kilocode-ready` | The detail header, bundled free-tier information and an active synthetic connection. |
+| `provider-kilocode-available-models` | The scrolled card with catalog, free, custom and disabled models, including a favorite and capability/context metadata. |
+| `provider-kilocode-disable-model` | Disable the enabled catalog model `fixture-standard`; it appears with the pre-disabled models. |
+| `provider-kilocode-restore-model` | Restore the disabled custom model `fixture-custom-disabled`; its saved custom name returns. |
+| `provider-kilocode-free-only` | Enable Free only; the paid catalog rows disappear while the free and custom rows remain. |
+| `provider-kilocode-add-model-dialog` | Open Add Custom Model and enter `kc/fixture-new-model`; the form shows the stripped ID and display prefix. No test is sent. |
+| `provider-kilocode-add-model-saved` | Submit that model; its new custom row is visible. |
+| `provider-kilocode-disable-all-dialog` | Open the confirmation for four active models, without confirming. |
+
+Each fresh browser context receives synthetic, credential-free data:
+
+- `GET /api/providers` returns one active Kilo Code OAuth connection with
+  fixture metadata only; `/api/provider-nodes` and
+  `/api/proxy-pools?isActive=true` are empty.
+- `GET /api/catalog` maps `kilocode` to `kc` and returns `fixture-standard`,
+  `fixture-vision` and `fixture-disabled`; `/api/providers/kilo/free-models`
+  returns `fixture-free` without calling Kilo Code. `/api/models` supplies
+  fixture capability metadata.
+- `GET /api/models/custom` returns named `fixture-custom` and
+  `fixture-custom-disabled`; `GET /api/models/disabled?providerAlias=kc`
+  initially disables the latter and `fixture-disabled`. The initial empty
+  `providerAlias=` read is also allowed while Astro mounts.
+  `/api/models/alias` is empty; `/api/models/favorites` marks
+  `fixture-standard` as a favorite. `/api/providers/filters` starts with
+  `kc.freeOnly=false`.
+- Queryless `GET /api/auth/status` and `/api/settings` provide the authenticated
+  shell. `GET /api/build` returns `{ "commit": null }`, the backend's supported
+  missing-build-metadata case; the desktop sidebar therefore shows `—`. This
+  avoids observed nondeterministic pixel differences when the commit label
+  changes after navigation, without masking any pixels. Only the detail route, its
+  `/providers/kilocode.png` icon, and normal same-origin bundles, fonts and
+  shell assets are allowed through.
+
+Only the exact mutation for the selected scenario is accepted, with its full
+method, query and JSON body checked: `POST /api/models/disabled` for
+`kc/fixture-standard`, `DELETE /api/models/disabled?providerAlias=kc&id=fixture-custom-disabled`,
+`PUT /api/providers/filters` with `freeOnly=true`, or `POST /api/models/custom`
+with the stripped ID. Responses and subsequent reads use state held **only in
+that browser context's fixture**; it is reset before the second capture. After
+each mutation screenshot the test reloads and verifies the UI against those
+in-memory responses, not SQLite persistence.
+All other requests and mutations—including `/api/models/test`, OAuth, real
+provider traffic and external origins—are blocked and fail the test.
+
+At 390px the enabled model IDs are truncated to similar `kc/fixtur...`
+labels, and the custom-model dialog's Test button reaches past its content
+edge. These are existing Astro appearances preserved by the reference.
+
+This slice does not cover real backend persistence or `/v1/models`, adding or
+testing connections, OAuth, custom-model test/delete, confirming Disable All,
+Active All, alias/favorite changes, errors, other providers, or localization.
+The screenshots are Astro references, not a claim of Dioxus detail parity.

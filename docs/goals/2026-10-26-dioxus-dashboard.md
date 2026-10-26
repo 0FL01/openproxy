@@ -27,7 +27,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Acceptance: synthetic fixtures, fixed browser/fonts/time/viewport/theme, reproducible self-comparison, and reference PNGs; candidate screenshots match at zero differing pixels apart from specifically documented unavoidable masks with independent content checks.
   - Primary evidence: repeatable browser parity scenarios for desktop and mobile, all sections and meaningful states.
   - Status: in_progress
-  - Evidence: the harness pins Chrome and disables its nondeterministic partial rasterization. The Providers-list candidate matched 22 login, 38 Endpoint and 28 Providers-list synthetic reference screenshots at AE=0; the scrolling cases use overflowing fixtures. The newer Providers-new candidate matches all 30 new-page references and 12 representative prior shared-shell screenshots at AE=0. References and comparisons for other sections remain pending.
+  - Evidence: the harness pins Chrome and disables its nondeterministic partial rasterization. The Providers-list candidate matched 22 login, 38 Endpoint and 28 Providers-list synthetic reference screenshots at AE=0; the scrolling cases use overflowing fixtures. The newer Providers-new candidate matches all 30 new-page references and 12 representative prior shared-shell screenshots at AE=0. Thirty-two new synthetic Kilo Code detail references self-repeated at AE=0; comparison with the partial Dioxus detail implementation is in progress. References and comparisons for other sections remain pending.
 - R3: Full Dioxus/Rust frontend preserves all current routes, layout, visual states, interactions, localization and API behavior.
   - Source: user request "фронтенд фулл на расте" and approved RECON plan.
   - Acceptance: all current routes and interactions match the reference, including authentication, OAuth callback, persisted model customizations and `/v1/models` discovery; browser application logic is Rust/WASM, with Dioxus-generated JS bridge and CSS allowed.
@@ -51,7 +51,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Acceptance: intended commits are present on the remote working branch; no production service, data, configuration or deployment is changed.
   - Primary evidence: git commit and remote branch SHA; isolated test deployment only.
   - Status: in_progress
-  - Evidence: goal commit `269d55fa`, login slice `27c38be6`, checkpoint `da01a7b0`, isolated-browser fixture `2fb691fe`, visual references `e2514d20`, overflow-scenario correction `d8e98d88`, shell/Endpoint slice `c36f3e6f`, Providers-list references `7f34767e`, Providers-new references `eaf309c6` and Providers-list slice `b4bc66b8` were pushed to `origin/feat/dioxus-dashboard`; production was not deployed or modified.
+  - Evidence: goal commit `269d55fa`, login slice `27c38be6`, checkpoint `da01a7b0`, isolated-browser fixture `2fb691fe`, visual references `e2514d20`, overflow-scenario correction `d8e98d88`, shell/Endpoint slice `c36f3e6f`, Providers-list references `7f34767e`, Providers-new references `eaf309c6`, Providers-list slice `b4bc66b8` and Providers-new slice `9ef2e9ac` were pushed to `origin/feat/dioxus-dashboard`; production was not deployed or modified.
 
 ### Constraints and Non-goals
 
@@ -98,7 +98,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-10-26: R1 fixture verified and pushed in `2fb691fe`. Chrome's partial rasterization was isolated as the likely cause of reference-edge instability; the comparison harness pins the corrected browser flags and rejects incompatible reference metadata. Endpoint differences remain under investigation.
 - 2026-10-26: R2/R3 login and Endpoint slices matched all 60 synthetic references at AE=0 after restoring the reference skeleton. Real isolated login/key persistence and frontend browser checks passed; the slice was pushed in `c36f3e6f`. Providers is the next checkpoint.
 - 2026-10-26: R2/R3 Providers-list candidate matched 28 synthetic reference screenshots at AE=0 and retained all 60 earlier matches. Synthetic provider creation and disabling persisted against the isolated backend with mocked upstream validation; the slice was pushed in `b4bc66b8`. Thirty new-provider reference screenshots self-repeated at AE=0; their Dioxus implementation is pending.
-- 2026-10-26: R2/R3 Providers-new candidate matched 30 new-page and 12 representative shared-shell screenshots at AE=0. Independent synthetic behavior review and the real isolated-backend save/persistence test passed. Provider detail and model customization remain the next slice.
+- 2026-10-26: R2/R3 Providers-new candidate matched 30 new-page and 12 representative shared-shell screenshots at AE=0. Independent synthetic behavior review and the real isolated-backend save/persistence test passed; the slice was pushed in `9ef2e9ac`. Provider detail and model customization remain the next slice.
+- 2026-10-26: R2 Kilo Code detail reference recorded 32 synthetic screenshots for connections and model customization; two independent recordings self-repeated at AE=0. The Dioxus detail implementation is partial and its visual and real-backend comparisons are in progress.
 
 ## Completion
 

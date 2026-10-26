@@ -6,6 +6,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
+import { isDeepStrictEqual } from "node:util";
 
 // Run inside the isolated .ui-browser Compose network, never against production.
 // UI_PARITY_MODE=record captures synthetic reference images; compare is the default.
@@ -51,6 +52,14 @@ const screens = [
   { section: "providers-new", name: "api-key", action: "api-key" },
   { section: "providers-new", name: "api-key-scroll-bottom", action: "api-key-scroll-bottom", mobileOnly: true },
   { section: "providers-new", name: "compatible", action: "compatible" },
+  { section: "provider-kilocode", name: "ready" },
+  { section: "provider-kilocode", name: "available-models", action: "available-models" },
+  { section: "provider-kilocode", name: "disable-model", action: "disable-model" },
+  { section: "provider-kilocode", name: "restore-model", action: "restore-model" },
+  { section: "provider-kilocode", name: "free-only", action: "free-only" },
+  { section: "provider-kilocode", name: "add-model-dialog", action: "add-model-dialog" },
+  { section: "provider-kilocode", name: "add-model-saved", action: "add-model-saved" },
+  { section: "provider-kilocode", name: "disable-all-dialog", action: "disable-all-dialog" },
 ];
 const viewports = [
   { name: "desktop", width: 1440, height: 900 },
@@ -108,7 +117,14 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
               const writes = [];
               const unexpected = [];
               let scenarioReady = false;
-              const expectedWrites = screen.login
+              let verifyAfterCapture = null;
+              const kiloWrites = {
+                "disable-model": [{ method: "POST", path: "/api/models/disabled", body: { providerAlias: "kc", ids: ["fixture-standard"] } }],
+                "restore-model": [{ method: "DELETE", path: "/api/models/disabled?providerAlias=kc&id=fixture-custom-disabled", body: null }],
+                "free-only": [{ method: "PUT", path: "/api/providers/filters", body: { alias: "kc", freeOnly: true } }],
+                "add-model-saved": [{ method: "POST", path: "/api/models/custom", body: { providerAlias: "kc", id: "fixture-new-model", type: "llm" } }],
+              };
+              const expectedWrites = screen.section === "provider-kilocode" ? (kiloWrites[screen.action] || []) : screen.login
                 ? [{ method: "POST", path: "/api/auth/login", body: { password: "fixture-password" } }]
                 : screen.action === "created"
                   ? [{ method: "POST", path: "/api/keys", body: { name: "Fixture new" } }]
@@ -120,6 +136,12 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 }
                 let created = false;
                 let authenticated = screen.section !== "login";
+                let kiloDisabled = ["fixture-custom-disabled", "fixture-disabled"];
+                let kiloCustom = [
+                  { providerAlias: "kc", id: "fixture-custom", name: "Fixture Custom", type: "llm" },
+                  { providerAlias: "kc", id: "fixture-custom-disabled", name: "Fixture Disabled Custom", type: "llm" },
+                ];
+                let kiloFreeOnly = false;
                 page.on("pageerror", (error) => errors.push(error.message));
                 await page.clock.setFixedTime(new Date("2026-10-01T12:00:00Z"));
                 await context.route("**/*", async (route) => {
@@ -127,9 +149,10 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   const url = new URL(request.url());
                   const path = url.pathname;
                   const method = request.method();
-                  const assets = (screen.section !== "providers-new" && (path === "/login" || path === "/dashboard/endpoint")) || path === "/favicon.svg" || path.startsWith("/_astro/") || path.startsWith("/assets/") || path.startsWith("/i18n/") ||
+                  const assets = (!["providers-new", "provider-kilocode"].includes(screen.section) && (path === "/login" || path === "/dashboard/endpoint")) || path === "/favicon.svg" || path.startsWith("/_astro/") || path.startsWith("/assets/") || path.startsWith("/i18n/") ||
                     (screen.section === "providers" && (path === "/dashboard/providers" || /^\/providers\/[a-z0-9_-]+\.png$/.test(path))) ||
-                    (screen.section === "providers-new" && !url.search && ["/dashboard/providers/new", "/providers/codex.png", "/providers/opencode-zen.png", "/providers/openai.png"].includes(path));
+                    (screen.section === "providers-new" && !url.search && ["/dashboard/providers/new", "/providers/codex.png", "/providers/opencode-zen.png", "/providers/openai.png"].includes(path)) ||
+                    (screen.section === "provider-kilocode" && !url.search && ["/dashboard/providers/kilocode", "/providers/kilocode.png"].includes(path));
                   if (url.origin === appUrl && method === "GET" && assets) return route.continue();
                   const providerGet = screen.section === "providers" && method === "GET" && (
                     (!url.search && ["/api/auth/status", "/api/settings", "/api/build", "/api/catalog", "/api/providers", "/api/provider-nodes"].includes(path)) ||
@@ -137,7 +160,14 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   );
                   const providerNewGet = screen.section === "providers-new" && method === "GET" && !url.search &&
                     ["/api/auth/status", "/api/settings", "/api/build", "/api/catalog"].includes(path);
-                  const valid = url.origin === appUrl && (providerGet || providerNewGet || (!["providers", "providers-new"].includes(screen.section) && (
+                  const kiloGet = screen.section === "provider-kilocode" && method === "GET" && (
+                    (!url.search && ["/api/auth/status", "/api/settings", "/api/build", "/api/catalog", "/api/providers", "/api/provider-nodes", "/api/providers/kilo/free-models", "/api/providers/filters", "/api/models", "/api/models/custom", "/api/models/alias", "/api/models/favorites"].includes(path)) ||
+                    (path === "/api/proxy-pools" && url.search === "?isActive=true") ||
+                    (path === "/api/models/disabled" && ["?providerAlias=", "?providerAlias=kc"].includes(url.search))
+                  );
+                  const kiloMutation = screen.section === "provider-kilocode" && method !== "GET" &&
+                    expectedWrites.some((write) => write.method === method && write.path === `${path}${url.search}`);
+                  const valid = url.origin === appUrl && (providerGet || providerNewGet || kiloGet || kiloMutation || (!["providers", "providers-new", "provider-kilocode"].includes(screen.section) && (
                     (method === "GET" && ["/api/auth/status", "/api/settings", "/api/keys", "/api/build", "/api/catalog"].includes(path)) ||
                     (method === "POST" && path === "/api/auth/login" && !!screen.login) ||
                     (method === "POST" && path === "/api/keys" && screen.action === "created")
@@ -146,7 +176,14 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     unexpected.push(`${method} ${url.origin}${path}`);
                     return route.abort("blockedbyclient");
                   }
-                  if (method !== "GET") writes.push({ method, path, body: request.postDataJSON() });
+                  if (method !== "GET") {
+                    const write = { method, path: screen.section === "provider-kilocode" ? `${path}${url.search}` : path, body: request.postDataJSON() };
+                    if (screen.section === "provider-kilocode" && !isDeepStrictEqual(write, expectedWrites[writes.length])) {
+                      unexpected.push(`unexpected mutation ${method} ${url.origin}${path}${url.search}`);
+                      return route.abort("blockedbyclient");
+                    }
+                    writes.push(write);
+                  }
                   let status = 200;
                   let body = {};
                   const headers = {};
@@ -167,22 +204,51 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   } else if (path === "/api/settings") {
                     body = { requireLogin: true, requireApiKey: !screen.insecure, hasPassword: true };
                   } else if (path === "/api/build") {
-                    body = { commit: fixtureCommit };
+                    body = { commit: screen.section === "provider-kilocode" ? null : fixtureCommit };
                   } else if (path === "/api/catalog") {
-                    body = { providerIdToAlias: {}, providerModels: [], xaiCatalog: { status: "ready" } };
+                    body = screen.section === "provider-kilocode"
+                      ? { providerIdToAlias: { kilocode: "kc" }, providerModels: [{ alias: "kc", models: [
+                        { id: "fixture-standard", name: "Fixture Standard", kind: "llm", contextWindow: 128000 },
+                        { id: "fixture-vision", name: "Fixture Vision", kind: "llm", contextWindow: 256000 },
+                        { id: "fixture-disabled", name: "Fixture Disabled", kind: "llm" },
+                      ] }] }
+                      : { providerIdToAlias: {}, providerModels: [], xaiCatalog: { status: "ready" } };
                   } else if (path === "/api/providers") {
-                    body = { connections: [
+                    body = screen.section === "provider-kilocode" ? { connections: [
+                      { id: "fixture-kilo-connection", provider: "kilocode", name: "Fixture connection", authType: "oauth", testStatus: "active", isActive: true, priority: 1 },
+                    ] } : { connections: [
                       { id: "fixture-compatible-connection", provider: "openai-compatible-fixture", authType: "apikey", testStatus: "active", isActive: true },
                       { id: "fixture-codex-connection", provider: "codex", authType: "oauth", testStatus: "success", isActive: true },
                       { id: "fixture-openai-connection", provider: "openai", authType: "apikey", testStatus: "active", isActive: true },
                     ] };
                   } else if (path === "/api/provider-nodes") {
-                    body = { nodes: [
+                    body = screen.section === "provider-kilocode" ? { nodes: [] } : { nodes: [
                       { id: "openai-compatible-fixture", type: "openai-compatible", name: "Fixture Connected", apiType: "chat" },
                       { id: "anthropic-compatible-fixture", type: "anthropic-compatible", name: "Fixture Disconnected" },
                     ] };
                   } else if (path === "/api/proxy-pools") {
                     body = { proxyPools: [] };
+                  } else if (path === "/api/providers/kilo/free-models") {
+                    body = { models: [{ id: "fixture-free", name: "Fixture Free" }] };
+                  } else if (path === "/api/providers/filters") {
+                    if (method === "PUT") {
+                      kiloFreeOnly = request.postDataJSON().freeOnly;
+                      return route.fulfill({ status: 204 });
+                    }
+                    body = { filters: { kc: { freeOnly: kiloFreeOnly } } };
+                  } else if (path === "/api/models/disabled") {
+                    if (method === "POST") kiloDisabled = [...new Set([...kiloDisabled, ...request.postDataJSON().ids])].sort();
+                    else if (method === "DELETE") kiloDisabled = kiloDisabled.filter((id) => id !== url.searchParams.get("id"));
+                    body = method === "GET" ? { ids: url.searchParams.get("providerAlias") === "kc" ? kiloDisabled : [] } : { success: true };
+                  } else if (path === "/api/models/custom") {
+                    if (method === "POST") kiloCustom = [...kiloCustom, request.postDataJSON()];
+                    body = method === "GET" ? { models: kiloCustom } : { success: true, added: true };
+                  } else if (path === "/api/models/alias") {
+                    body = { aliases: {} };
+                  } else if (path === "/api/models/favorites") {
+                    body = { favorites: { kc: ["fixture-standard"] } };
+                  } else if (path === "/api/models") {
+                    body = { models: [{ provider: "kilocode", model: "fixture-vision", fullModel: "kilocode/fixture-vision", caps: { vision: true, reasoning: true } }] };
                   } else if (path === "/api/keys") {
                     if (request.method() === "POST") {
                       created = true;
@@ -201,11 +267,11 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   await route.fulfill({ status, headers, json: body });
                 });
 
-                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : screen.section === "providers-new" ? "/dashboard/providers/new" : "/dashboard/endpoint";
+                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : screen.section === "providers-new" ? "/dashboard/providers/new" : screen.section === "provider-kilocode" ? "/dashboard/providers/kilocode" : "/dashboard/endpoint";
                 const response = await page.goto(`${appUrl}${path}`, { waitUntil: "domcontentloaded" });
                 assert(response?.ok(), `failed to load ${path}`);
                 if (mode === "record") {
-                  const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : screen.section === "providers-new" ? "ProvidersNewPageClient." : "EndpointPageClient.";
+                  const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : screen.section === "providers-new" ? "ProvidersNewPageClient." : screen.section === "provider-kilocode" ? "ProviderDetailPageClient." : "EndpointPageClient.";
                   const html = await response.body();
                   assert(html.includes(`component-url="/_astro/${component}`), "record mode requires the Astro reference");
                   const hash = createHash("sha256").update(html).digest("hex");
@@ -219,6 +285,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 if (screen.section === "login") await page.getByRole("heading", { name: "OpenProxy" }).waitFor();
                 else if (screen.section === "providers") await page.getByRole("heading", { name: "Custom Providers (OpenAI/Anthropic Compatible)" }).waitFor();
                 else if (screen.section === "providers-new") await page.getByRole("heading", { name: "Add New Provider" }).waitFor();
+                else if (screen.section === "provider-kilocode") await page.getByRole("checkbox", { name: "Select connection Fixture connection" }).waitFor();
                 else await page.getByText("Fixture key", { exact: true }).waitFor();
                 await page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}" });
                 const missingFonts = await page.evaluate(async () => {
@@ -243,6 +310,154 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   } else if (!screen.hasPassword) {
                     await page.getByText("Security risk: no password set.", { exact: false }).waitFor();
                   }
+                } else if (screen.section === "provider-kilocode") {
+                  const modelCode = (id) => page.locator("code").filter({ hasText: new RegExp(`^kc/${id}$`) });
+                  const modelRow = (id) => page.locator("div.group").filter({ has: modelCode(id) });
+                  const restored = (id) => page.getByTitle("Restore model").filter({ hasText: id });
+                  const modelsHeading = page.getByRole("heading", { name: "Available Models", exact: true });
+                  const waitBase = async () => {
+                    await page.getByRole("checkbox", { name: "Select connection Fixture connection" }).waitFor();
+                    await modelsHeading.waitFor();
+                    await modelCode("fixture-free").waitFor();
+                    await modelCode("fixture-custom").waitFor();
+                  };
+                  const scrollModels = async () => {
+                    const scrollTop = await page.locator("main .overflow-y-auto").evaluate((element) => {
+                      element.scrollTop = element.scrollHeight;
+                      return element.scrollTop;
+                    });
+                    assert(scrollTop > 0, "detail page must scroll to Available Models");
+                    assert(await modelsHeading.evaluate((element) => {
+                      const rect = element.getBoundingClientRect();
+                      const parent = element.closest(".overflow-y-auto").getBoundingClientRect();
+                      return rect.top >= parent.top && rect.bottom <= parent.bottom;
+                    }), "Available Models heading must be visible after scrolling");
+                  };
+                  const waitWrite = (method, path) => page.waitForResponse((response) => {
+                    const url = new URL(response.url());
+                    return response.request().method() === method && `${url.pathname}${url.search}` === path;
+                  });
+                  const waitBuild = async () => {
+                    if (viewport.name === "desktop") await page.waitForFunction(() =>
+                      Array.from(document.querySelectorAll('[aria-label="Build commit unavailable"]')).some((element) => {
+                        const rect = element.getBoundingClientRect();
+                        return rect.width > 0 && rect.height > 0 && rect.left >= 0 && rect.right <= innerWidth &&
+                          rect.top >= 0 && rect.bottom <= innerHeight && getComputedStyle(element).visibility !== "hidden";
+                      }));
+                  };
+                  const reloadDetail = async () => {
+                    // The screenshot is already captured; verify read-back on a fresh document.
+                    await page.waitForLoadState("networkidle");
+                    assert((await page.reload({ waitUntil: "domcontentloaded" }))?.ok());
+                    await page.waitForLoadState("networkidle");
+                  };
+                  await waitBuild();
+                  await waitBase();
+                  await modelCode("fixture-standard").waitFor();
+                  await modelRow("fixture-standard").getByRole("button", { name: "Remove from favorites" }).waitFor();
+                  await modelRow("fixture-standard").getByText("128K ctx", { exact: true }).waitFor();
+                  await modelRow("fixture-vision").getByText("visibility", { exact: true }).waitFor();
+                  await modelRow("fixture-vision").getByText("neurology", { exact: true }).waitFor();
+                  await modelRow("fixture-vision").getByText("256K ctx", { exact: true }).waitFor();
+                  await restored("fixture-disabled").waitFor();
+                  await restored("fixture-custom-disabled").waitFor();
+                  await page.getByTitle("Show only free models").waitFor();
+                  if (screen.action) await scrollModels();
+                  if (screen.action === "disable-model") {
+                    const response = waitWrite("POST", "/api/models/disabled");
+                    await modelRow("fixture-standard").hover();
+                    await modelRow("fixture-standard").getByTitle("Disable model").click();
+                    assert((await response).ok());
+                    await restored("fixture-standard").waitFor();
+                    await modelCode("fixture-standard").waitFor({ state: "detached" });
+                    await restored("fixture-disabled").waitFor();
+                    await restored("fixture-custom-disabled").waitFor();
+                    await page.waitForLoadState("networkidle");
+                    await scrollModels();
+                    verifyAfterCapture = async () => {
+                      await reloadDetail();
+                      await waitBase();
+                      await restored("fixture-standard").waitFor();
+                      await restored("fixture-disabled").waitFor();
+                      await restored("fixture-custom-disabled").waitFor();
+                      assert.equal(await modelCode("fixture-standard").count(), 0);
+                    };
+                  } else if (screen.action === "restore-model") {
+                    const response = waitWrite("DELETE", "/api/models/disabled?providerAlias=kc&id=fixture-custom-disabled");
+                    await restored("fixture-custom-disabled").click();
+                    assert((await response).ok());
+                    await modelRow("fixture-custom-disabled").getByText("Fixture Disabled Custom", { exact: true }).waitFor();
+                    await restored("fixture-disabled").waitFor();
+                    assert.equal(await restored("fixture-custom-disabled").count(), 0);
+                    await page.waitForLoadState("networkidle");
+                    await scrollModels();
+                    verifyAfterCapture = async () => {
+                      await reloadDetail();
+                      await waitBase();
+                      await modelRow("fixture-custom-disabled").getByText("Fixture Disabled Custom", { exact: true }).waitFor();
+                      await restored("fixture-disabled").waitFor();
+                      assert.equal(await restored("fixture-custom-disabled").count(), 0);
+                    };
+                  } else if (screen.action === "free-only") {
+                    const response = waitWrite("PUT", "/api/providers/filters");
+                    await page.getByTitle("Show only free models").click();
+                    assert((await response).ok());
+                    await modelCode("fixture-standard").waitFor({ state: "detached" });
+                    await restored("fixture-disabled").waitFor();
+                    await restored("fixture-custom-disabled").waitFor();
+                    assert.equal(await modelCode("fixture-vision").count(), 0);
+                    assert.match(await page.getByTitle("Show only free models").getAttribute("class"), /\bborder-primary\b/);
+                    await page.waitForLoadState("networkidle");
+                    await scrollModels();
+                    verifyAfterCapture = async () => {
+                      await reloadDetail();
+                      await waitBase();
+                      await modelCode("fixture-standard").waitFor({ state: "detached" });
+                      await restored("fixture-disabled").waitFor();
+                      await restored("fixture-custom-disabled").waitFor();
+                      assert.equal(await modelCode("fixture-vision").count(), 0);
+                      assert.match(await page.getByTitle("Show only free models").getAttribute("class"), /\bborder-primary\b/);
+                    };
+                  } else if (screen.action === "add-model-dialog" || screen.action === "add-model-saved") {
+                    await page.getByRole("button", { name: /Add Model/ }).click();
+                    const heading = page.getByRole("heading", { name: "Add Custom Model", exact: true });
+                    await heading.waitFor();
+                    const modal = heading.locator("../../..");
+                    await page.getByPlaceholder("e.g. claude-opus-4-5").fill("kc/fixture-new-model");
+                    assert.equal(await modal.locator("code").first().textContent(), "fixture-new-model");
+                    assert.equal(await modal.locator("code").last().textContent(), "kc/fixture-new-model");
+                    const add = modal.getByRole("button", { name: "Add Model", exact: true });
+                    assert(await add.isEnabled());
+                    if (screen.action === "add-model-saved") {
+                      const response = waitWrite("POST", "/api/models/custom");
+                      await add.click();
+                      assert((await response).ok());
+                      await heading.waitFor({ state: "detached" });
+                      await modelCode("fixture-new-model").waitFor();
+                      await restored("fixture-disabled").waitFor();
+                      await restored("fixture-custom-disabled").waitFor();
+                      await page.waitForLoadState("networkidle");
+                      await scrollModels();
+                      verifyAfterCapture = async () => {
+                        await reloadDetail();
+                        await waitBase();
+                        await modelCode("fixture-new-model").waitFor();
+                        await restored("fixture-disabled").waitFor();
+                        await restored("fixture-custom-disabled").waitFor();
+                      };
+                    }
+                  } else if (screen.action === "disable-all-dialog") {
+                    await page.getByRole("button", { name: /Disable All/ }).click();
+                    await page.getByRole("heading", { name: "Disable all models", exact: true }).waitFor();
+                    await page.getByText("Disable all 4 model(s) for this provider?").waitFor();
+                  }
+                  await page.mouse.move(1, 1);
+                  await page.waitForFunction(() => Array.from(document.images).every((image) => image.complete));
+                  await page.evaluate(async () => {
+                    await Promise.all(Array.from(document.images, (image) => image.decode().catch(() => {})));
+                    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                  });
+                  await waitBuild();
                 } else if (screen.section === "providers-new") {
                   if (viewport.name === "desktop") await page.getByText(fixtureCommit.slice(0, 8), { exact: true }).first().waitFor();
                   const select = page.getByRole("combobox");
@@ -417,8 +632,10 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   }
                 }
 
+                const image = await page.screenshot({ fullPage: true, animations: "disabled" });
+                if (verifyAfterCapture) await verifyAfterCapture();
                 scenarioReady = true;
-                return await page.screenshot({ fullPage: true, animations: "disabled" });
+                return image;
               } finally {
                 await context.close();
                 assert.deepEqual(unexpected, [], "unexpected network requests were blocked");
