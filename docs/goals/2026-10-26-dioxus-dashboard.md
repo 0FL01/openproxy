@@ -27,13 +27,13 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Acceptance: synthetic fixtures, fixed browser/fonts/time/viewport/theme, reproducible self-comparison, and reference PNGs; candidate screenshots match at zero differing pixels apart from specifically documented unavoidable masks with independent content checks.
   - Primary evidence: repeatable browser parity scenarios for desktop and mobile, all sections and meaningful states.
   - Status: in_progress
-  - Evidence: on the rebuilt localized-font image, 22 Astro login references self-repeated and the isolated Dioxus login matched all 22 at zero changed pixels. Astro Endpoint self-comparison exhibited rounded-edge nondeterminism; experiments identified Chrome partial rasterization as the likely cause. The harness now disables that path and rejects references without matching browser version and launch flags. Fresh login-ready, Endpoint-ready, no-key-required and mobile-sidebar references self-repeated with exact comparisons; candidate comparisons with the new setting remain pending.
+  - Evidence: Astro Endpoint self-comparison exhibited rounded-edge nondeterminism; experiments identified Chrome partial rasterization as the likely cause. The harness now disables that path and rejects references without matching browser version and launch flags. All 22 login and 38 Endpoint synthetic reference screenshots self-repeated at AE=0 with the corrected settings; the updated Dioxus candidate matches all 22 login screenshots, while Endpoint still differs and other candidate states remain to be checked.
 - R3: Full Dioxus/Rust frontend preserves all current routes, layout, visual states, interactions, localization and API behavior.
   - Source: user request "фронтенд фулл на расте" and approved RECON plan.
   - Acceptance: all current routes and interactions match the reference, including authentication, OAuth callback, persisted model customizations and `/v1/models` discovery; browser application logic is Rust/WASM, with Dioxus-generated JS bridge and CSS allowed.
   - Primary evidence: R2 visual scenarios and existing focused frontend/API regression tests adapted to the new frontend.
   - Status: in_progress
-  - Evidence: the isolated Dioxus login passed the R2 comparisons above and a real isolated backend session test including HttpOnly, Secure and SameSite=Lax cookie attributes. A local uncommitted Dioxus shell and Endpoint build created a synthetic API key through the real isolated backend and found it again after reload. After header/date and raster corrections, its ready-state comparisons still differ by 196/149/179/161 pixels across desktop/mobile and light/dark; no parity is claimed. Two runtime regressions found in browser review are being fixed. The 34 reference locale catalogs are now bundled locally and Russian was exercised synthetically. All other routes remain pending.
+  - Evidence: the isolated Dioxus login passed the R2 comparisons above and a real isolated backend session test including HttpOnly, Secure and SameSite=Lax cookie attributes. A local uncommitted Dioxus shell and Endpoint build created a synthetic API key through the real isolated backend and found it again after reload. After header/date and raster corrections, its ready-state comparisons still differ by 196/149/179/161 pixels across desktop/mobile and light/dark; no parity is claimed. Reproduced blocked-storage theme and cancelled-session-recheck regressions were fixed and their UI/browser checks passed. The 34 reference locale catalogs are bundled locally and Russian was exercised synthetically. All other routes remain pending.
 - R4: Translator retains full actually available Monaco editor behavior and appearance without any third-party JavaScript editor.
   - Source: user selected "Полный паритет" after being informed that this excludes a third-party JS editor.
   - Acceptance: feature and visual parity against the configured existing Monaco across its available actions, JSON/plaintext and all seven Translator stages; no third-party JS editor ships.
@@ -51,7 +51,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Acceptance: intended commits are present on the remote working branch; no production service, data, configuration or deployment is changed.
   - Primary evidence: git commit and remote branch SHA; isolated test deployment only.
   - Status: in_progress
-  - Evidence: goal commit `269d55fa`, login slice `27c38be6` and checkpoint commit `da01a7b0` were pushed to `origin/feat/dioxus-dashboard`; production was not deployed or modified.
+  - Evidence: goal commit `269d55fa`, login slice `27c38be6`, checkpoint `da01a7b0` and isolated-browser fixture `2fb691fe` were pushed to `origin/feat/dioxus-dashboard`; production was not deployed or modified.
 
 ### Constraints and Non-goals
 
@@ -77,10 +77,10 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current State
 
-- Resolved: R1, subject to committing the fixture.
+- Resolved: R1; fixture commit `2fb691fe` is pushed.
 - Last relevant evidence: the rebuilt sandboxed MCP opened the synthetic Astro login through the active OpenCode session; an isolated Dioxus build matched 22 login screenshots with the previous raster settings and authenticated against an isolated backend. Fresh reference self-comparisons pass after disabling partial rasterization. Existing backend/provider/plugin baseline tests passed as recorded above.
-- Blocker: none external. Browser review reproduced two candidate regressions: theme switching when browser storage is blocked, and a cancelled 401 session recheck when its key row is deleted. Both are being fixed before committing the shell. The new raster setting requires freshly recorded references and candidate comparisons; old references are rejected automatically.
-- Next: finish the shell fixes, compare them against fresh references, commit/push the verified fixture and frontend checkpoint, then continue the remaining routes and Translator editor.
+- Blocker: none external. Blocked-storage theme switching and the cancelled 401 recheck were fixed and verified with synthetic browser interactions. The new raster setting requires freshly recorded references and candidate comparisons; old references are rejected automatically. Endpoint still has measured pixel differences.
+- Next: compare the fixed shell against fresh references, resolve the measured Endpoint pixel differences, commit/push the frontend checkpoint, then continue the remaining routes and Translator editor.
 
 ## Material Decisions
 
@@ -95,6 +95,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-10-26: R3 partial login slice built and synthetic behavior checked; R1 MCP catalog works but navigation is blocked by the container namespace policy. Visual parity remains unverified.
 - 2026-10-26: R4 reference probe measured actual Monaco actions and representative behavior using synthetic data in a loopback-only network namespace; no editor implementation or parity is claimed.
 - 2026-10-26: R1 MCP screenshot succeeded with the sandboxed fixture. R2/R3: 22 login screenshots matched and an isolated real-backend login passed; the browser fixture has since changed and needs revalidation. Endpoint reference self-comparison exposed a 21-pixel nondeterminism, without a mask or parity claim.
+- 2026-10-26: R1 fixture verified and pushed in `2fb691fe`. Chrome's partial rasterization was isolated as the likely cause of reference-edge instability; the comparison harness pins the corrected browser flags and rejects incompatible reference metadata. Endpoint differences remain under investigation.
 
 ## Completion
 

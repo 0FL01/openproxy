@@ -1,0 +1,14 @@
+{
+  "frontend": "astro",
+  "browser": {
+    "version": "155.0.8059.79",
+    "args": [
+      "--force-color-profile=srgb",
+      "--disable-partial-raster"
+    ]
+  },
+  "routes": {
+    "/login": "99277fd866f59ee878d55089ee31f3d4feb640363b66d98448761e3a304a59ab",
+    "/dashboard/endpoint": "62214223a568c6aa6d0196658d356c20165ba5941e3da229b455e134e506d710"
+  }
+}
