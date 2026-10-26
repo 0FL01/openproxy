@@ -1939,6 +1939,8 @@ name = "openproxy-dashboard"
 version = "0.1.0"
 dependencies = [
  "dioxus",
+ "futures-channel",
+ "futures-util",
  "gloo-timers",
  "js-sys",
  "serde_json",

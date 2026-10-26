@@ -1,12 +1,13 @@
 # Dioxus dashboard migration slice
 
-This is a separate, browser-only Rust/WASM application. It implements `/login`
-and the shared dashboard shell and Endpoint page at `/`, `/dashboard`, and
-`/dashboard/endpoint` against the existing same-origin APIs. It does not
-replace the Astro frontend or alter how OpenProxy is packaged or served.
-Other dashboard pages are not implemented in this slice; their sidebar links
-are retained as ordinary browser navigations, not substitute pages. Login and
-logout use full browser redirects, as the current frontend does.
+This is a separate, browser-only Rust/WASM application. It implements `/login`,
+the shared dashboard shell and Endpoint page at `/`, `/dashboard`, and
+`/dashboard/endpoint`, and the list at `/dashboard/providers` against the
+existing same-origin APIs. It does not replace the Astro frontend or alter how
+OpenProxy is packaged or served. Provider detail and new-provider pages and
+other dashboard pages are not implemented in this slice; their links remain
+ordinary browser navigations, not substitute pages. Login and logout use full
+browser redirects, as the current frontend does.
 
 ## Build and test
 
@@ -19,7 +20,7 @@ directory:
 cargo test --locked
 cargo fmt --check
 cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings
-dx build --web --release --cargo-args=--locked
+./scripts/build.sh
 ```
 
 The independently locked build is emitted under
@@ -28,8 +29,12 @@ and JavaScript bridge filenames may include content hashes and may change on
 rebuild; they are build artifacts and are ignored, not source files. The CLI
 may download matching build tools to its own user cache. Incremental `dx`
 builds can retain older, unreferenced hashed assets (and old files formerly
-in `public/`) in this output directory. A future packaging step must stage a
-clean build output rather than treating this cache as a production-ready tree.
+in `public/`) in this output directory. Use `./scripts/build.sh`, rather than a
+bare `dx build`, for the served or staged output: after building, it restores
+the original provider PNG bytes that Dioxus otherwise re-encodes, verifies them,
+and fails if a stale provider PNG exists in the output. Set `DX` to select a
+specific CLI executable. A future packaging step must stage a clean build output
+rather than treating this cache as a production-ready tree.
 
 An optional isolated behavioral smoke test is available after the release build:
 
@@ -37,6 +42,10 @@ An optional isolated behavioral smoke test is available after the release build:
 # Install Playwright separately and provide a sandbox-capable Chromium if needed.
 CHROME_BIN=/path/to/chromium node tests/login-smoke.cjs
 CHROME_BIN=/path/to/chromium node tests/endpoint-smoke.cjs
+CHROME_BIN=/path/to/chromium node tests/providers-smoke.cjs
+
+# Optional snapshot drift check, with the repository's web dependencies installed:
+node tests/provider-metadata.cjs
 ```
 
 The smoke tests require Node and the `playwright` package. They start local
@@ -72,6 +81,19 @@ build if the reference changes.
 `web/public/i18n/literals/` for all non-English supported locales; English uses
 the original strings. The release build minifies the JSON without changing its
 values. Refresh the copies deliberately when the reference catalogs change.
+
+`src/browser/provider_data.json` is the list-specific projection of
+`web/src/shared/constants/providers.ts`, including category order, card fields,
+free-tier membership, and the canonical rate-limit labels. The provider PNGs in
+`public/providers/` are unchanged copies of the icons used by those categories
+and compatible cards. `tests/provider-metadata.cjs` checks the snapshot and
+icon bytes against the reference (and flags new hidden, non-LLM, or cookie
+categories that require code changes). Refresh both deliberately when the
+reference registry or icons change; the standalone build does not depend on
+TypeScript or the Astro application.
+
+The current reference cookie-provider registry is empty; that section would
+require implementation if it is populated.
 
 The vendored Material Symbols Outlined font originates from the
 `material-symbols` npm package v0.46.0 and is licensed under Apache-2.0; see

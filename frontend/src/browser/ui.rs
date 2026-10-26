@@ -14,6 +14,7 @@ pub fn Button(
     #[props(default)] full_width: bool,
     #[props(default)] disabled: bool,
     #[props(default)] loading: bool,
+    #[props(default)] small: bool,
     #[props(default)] extra_class: &'static str,
     onclick: EventHandler<MouseEvent>,
 ) -> Element {
@@ -24,7 +25,12 @@ pub fn Button(
         _ => "bg-brand-coral text-on-primary hover:bg-brand-coral-active disabled:bg-primary-disabled disabled:text-muted-soft",
     };
     let width = if full_width { "w-full" } else { "" };
-    let class = format!("inline-flex items-center justify-center gap-2 rounded-mini-md leading-none transition-colors duration-150 ease-out cursor-pointer tracking-tight active:scale-[0.99] disabled:cursor-not-allowed disabled:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-coral/30 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas {variant} h-10 px-4 text-[14px] font-medium {width} {extra_class}");
+    let size = if small {
+        "h-8 px-3 text-[12px] font-medium"
+    } else {
+        "h-10 px-4 text-[14px] font-medium"
+    };
+    let class = format!("inline-flex items-center justify-center gap-2 rounded-mini-md leading-none transition-colors duration-150 ease-out cursor-pointer tracking-tight active:scale-[0.99] disabled:cursor-not-allowed disabled:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-coral/30 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas {variant} {size} {width} {extra_class}");
     rsx! {
         button { class, disabled: disabled || loading, onclick,
             if loading {

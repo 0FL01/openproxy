@@ -2,12 +2,14 @@ use crate::auth::{self, LoginDecision, StatusDecision};
 use dioxus::prelude::*;
 use gloo_timers::{callback::Timeout, future::TimeoutFuture};
 use serde_json::{json, Value};
+use std::cell::RefCell;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{AbortController, AbortSignal, Request, RequestCredentials, RequestInit, Response};
 
 mod endpoint;
 mod i18n;
+mod providers;
 mod shell;
 mod ui;
 
@@ -25,7 +27,27 @@ const INPUT_CLASS: &str = "w-full h-10 py-2.5 px-3 text-[14px] text-ink bg-canva
 const BUTTON_CLASS: &str = "inline-flex items-center justify-center gap-2 rounded-mini-md leading-none transition-colors duration-150 ease-out cursor-pointer tracking-tight active:scale-[0.99] disabled:cursor-not-allowed disabled:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-coral/30 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas bg-brand-coral text-on-primary hover:bg-brand-coral-active disabled:bg-primary-disabled disabled:text-muted-soft h-10 px-4 text-[14px] font-medium w-full";
 const ERROR_CLASS: &str = "text-sm text-[color:var(--color-danger)] bg-[color:var(--color-danger)]/10 border border-[color:var(--color-danger)]/20 rounded-mini-md px-3 py-2";
 
+thread_local! {
+    // The router canonicalizes untyped query/fragment parts on startup. Capture
+    // the provider deep link first so it can be handled without losing data.
+    static PROVIDER_INITIAL_LOCATION: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
+}
+
 pub fn start() {
+    if let Some(window) = web_sys::window() {
+        let location = window.location();
+        if location
+            .pathname()
+            .is_ok_and(|path| path == "/dashboard/providers")
+        {
+            PROVIDER_INITIAL_LOCATION.with(|initial| {
+                *initial.borrow_mut() = Some((
+                    location.search().unwrap_or_default(),
+                    location.hash().unwrap_or_default(),
+                ));
+            });
+        }
+    }
     apply_theme(&current_theme());
     dioxus::launch(App);
 }
@@ -84,6 +106,8 @@ enum Route {
     Dashboard {},
     #[route("/dashboard/endpoint")]
     Endpoint {},
+    #[route("/dashboard/providers")]
+    Providers {},
     #[route("/login")]
     Login {},
 }
@@ -100,6 +124,36 @@ fn Dashboard() -> Element {
 
 #[component]
 fn Endpoint() -> Element {
+    rsx! { shell::Dashboard {} }
+}
+
+#[component]
+fn Providers() -> Element {
+    // Keep the deep link in the address bar even while session verification is
+    // pending or fails; the provider page consumes it only after auth succeeds.
+    use_effect(|| {
+        PROVIDER_INITIAL_LOCATION.with(|initial| {
+            let initial = initial.borrow();
+            let Some((search, hash)) = initial.as_ref() else {
+                return;
+            };
+            let Some(window) = web_sys::window() else {
+                return;
+            };
+            let location = window.location();
+            if location
+                .pathname()
+                .is_ok_and(|path| path == "/dashboard/providers")
+                && (location.search().unwrap_or_default() != *search
+                    || location.hash().unwrap_or_default() != *hash)
+            {
+                let next = format!("/dashboard/providers{search}{hash}");
+                if let Ok(history) = window.history() {
+                    let _ = history.replace_state_with_url(&js_sys::Object::new(), "", Some(&next));
+                }
+            }
+        });
+    });
     rsx! { shell::Dashboard {} }
 }
 
