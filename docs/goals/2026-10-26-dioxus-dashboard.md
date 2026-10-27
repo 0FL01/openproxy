@@ -72,8 +72,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 ## Current Checkpoint
 
 - Closes: the next R2/R3/R4 Translator slice.
-- Smallest next action: resolve the remaining reference-confirmed Translator editor pixel differences and continue porting the editor's available actions, including per-line wrapping for differing indentation.
-- Expected evidence: unmasked synthetic Astro/Dioxus comparisons and focused editor behavior checks.
+- Smallest next action: resolve the Translator's compositor and per-visual-line text-rendering differences without breaking wrapping, scrolling, caret or selection; continue the editor's remaining actions.
+- Expected evidence: unmasked synthetic Astro/Dioxus comparisons and focused editor behavior checks, including long and differently indented lines.
 - Stop or replan if: the route cannot be preserved within the frozen frontend and API boundaries.
 
 ## Current State
@@ -93,6 +93,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - Proxy Pools: sixteen self-repeating Astro desktop/mobile light/dark screenshots for empty, populated, selected and add-dialog states matched at AE=0 without masks. Synthetic browser checks covered CRUD, import, bulk and health actions, mocked relay deployment and session recheck; no real proxy or external relay was contacted.
 - Translator (partial): the seven-stage page and a Rust-controlled editor are present. A synthetic browser flow passed against both Astro and Dioxus for stage actions, streaming, basic Find/Replace, undo, indentation, JSON pairing and wrapped-line numbering, resize and caret placement. Enter on an indented JSON property preserves indentation; typing an opening brace surrounds selected text, retains its selection and is undoable. Focused synthetic checks matched Astro for line selection, deletion, comments, movement and Linux duplication, including the checked undo and selection behavior. CDP-emulated IME composition restores the original cursor or selection after undo/redo; consecutive compositions, a new composition after redo and cursor movement between compositions matched Astro in focused scenarios. Hanging indentation currently applies only when wrapped lines share the same indentation. Twelve empty/populated/wrapped Astro references self-repeated at AE=0, but candidate screenshots still differ: the latest wrapped comparison has 210/194 desktop and 127/118 mobile differing pixels in light/dark mode. No visual parity is claimed. The editor is not Monaco-complete, and genuine system IME and accessibility parity remain unverified. No live provider was contacted.
 - Translator line actions: Alt+Up/Down movement and Linux Ctrl+Alt+Shift+Up/Down duplication for a current or selected line, cursor/selection retention and undo matched Astro in focused synthetic browser checks. The duplication shortcut on other platforms was not browser-tested.
+- Translator visual diagnosis: temporary browser-only changes to the real scroll and text layers reduced, but did not eliminate, screenshot differences. Splitting long ASCII tokens every 50 characters further reduced the wrapped desktop comparison from 112/113 to 44/45 pixels; Monaco splits tokens separately on each visual line. These probes are not runtime changes: long-document clipping, mixed indentation, scrolling and selection were not verified with them.
 - Blocker: none external. Dioxus re-encodes PNG color metadata; `frontend/scripts/build.sh` preserves original provider icons for the served output. The skeleton and theme cannot appear before WASM startup as Astro's synchronous HTML/script did.
 - Next: continue the Translator editor and its visual comparison, then complete remaining Quota Tracker/provider-detail behavior and packaging. Cline's live query-preservation behavior remains unverified.
 
@@ -158,6 +159,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-10-27: R4 Alt+Up/Down line movement, the checked cursor/selection behavior and undo matched Astro in a focused synthetic browser check.
 - 2026-10-27: R4 Linux Copy Line Up/Down, the checked cursor/selection behavior and undo matched Astro in a focused synthetic browser check.
 - 2026-10-27: R4 cursor movement by keyboard or mouse separates consecutive CDP-emulated IME compositions for undo/redo, matching Astro in a focused synthetic check.
+- 2026-10-27: R2/R4 test-only compositor and token-splitting probes narrowed Translator screenshot differences without achieving AE=0. Per-visual-line rendering and scroll boundaries remain to be implemented and verified.
 
 ## Completion
 
