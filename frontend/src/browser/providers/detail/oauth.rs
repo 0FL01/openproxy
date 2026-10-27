@@ -1,6 +1,7 @@
 use super::{dashboard_request, encoded, js_trim, json, json_body, oauth_events, text, Value};
 use crate::auth_callback;
 use crate::browser::{
+    endpoint::copy_text,
     request,
     shell::SessionRecheck,
     ui::{Button, Modal, INPUT_CLASS},
@@ -342,6 +343,8 @@ pub(super) fn OAuthFlow(
     let mut callback = use_signal(String::new);
     let mut submitting = use_signal(|| false);
     let mut popup = use_signal(|| None::<web_sys::Window>);
+    let copied = use_signal(String::new);
+    let generation = use_signal(|| 0_u32);
     let claimed = use_hook(|| Rc::new(Cell::new(false)));
     let recheck = use_context::<SessionRecheck>();
     let device = matches!(
@@ -681,19 +684,45 @@ pub(super) fn OAuthFlow(
     } else {
         format!("Connect {name}")
     };
+    let (device_login_url, device_verification_uri) = {
+        let data = state();
+        let verification_uri = text(&data, "verification_uri").to_owned();
+        let login_url = data["verification_uri_complete"]
+            .as_str()
+            .filter(|url| !url.is_empty())
+            .unwrap_or(&verification_uri)
+            .to_owned();
+        (login_url, verification_uri)
+    };
     rsx! { Modal { title, on_close,
         div { class: "flex flex-col gap-4",
             if !error().is_empty() { div { role: "alert", class: "text-sm text-red-500", "{error}" } Button { label: "Retry".to_owned(), variant: "secondary", onclick: move |_| flow.restart() } }
             else if device {
                 if state().is_null() { p { class: "text-sm text-text-muted", "Starting authorization..." } }
-                else { p { class: "text-sm", "Open the verification page and enter this code:" } code { class: "text-lg font-mono font-bold select-all", "{text(&state(), \"user_code\")}" }
-                    if safe_url(text(&state(), "verification_uri")) { a { href: "{text(&state(), \"verification_uri\")}", target: "_blank", rel: "noopener noreferrer", class: "text-primary underline break-all", "{text(&state(), \"verification_uri\")}" } }
+                else { p { class: "text-sm", "Open the verification page and enter this code:" }
+                    div { class: "flex items-center gap-2",
+                        code { class: "text-lg font-mono font-bold select-all", "{text(&state(), \"user_code\")}" }
+                        button { r#type: "button", aria_label: "Copy user code", class: "inline-flex h-8 items-center justify-center rounded-mini-md px-3 text-ink hover:bg-surface-card", onclick: move |_| copy_text(text(&state(), "user_code").to_owned(), "user_code".into(), copied, generation),
+                            span { class: "material-symbols-outlined text-[18px]", if copied() == "user_code" { "check" } else { "content_copy" } }
+                        }
+                    }
+                    div { class: "flex items-center gap-2",
+                        if device_login_url == device_verification_uri && safe_url(&device_verification_uri) { a { href: "{device_verification_uri}", target: "_blank", rel: "noopener noreferrer", class: "min-w-0 text-primary underline break-all", "{device_verification_uri}" } }
+                        else { code { class: "min-w-0 break-all", "{device_login_url}" } }
+                        button { r#type: "button", aria_label: "Copy login URL", class: "inline-flex h-8 shrink-0 items-center justify-center rounded-mini-md px-3 text-ink hover:bg-surface-card disabled:text-muted", disabled: device_login_url.is_empty(), onclick: { let device_login_url = device_login_url.clone(); move |_| copy_text(device_login_url.clone(), "login_url".into(), copied, generation) },
+                            span { class: "material-symbols-outlined text-[18px]", if copied() == "login_url" { "check" } else { "content_copy" } }
+                        }
+                    }
+                    if device_login_url != device_verification_uri && safe_url(&device_verification_uri) { a { href: "{device_verification_uri}", target: "_blank", rel: "noopener noreferrer", class: "text-primary underline break-all", "{device_verification_uri}" } }
                     p { class: "text-sm text-text-muted", "Waiting for authorization..." }
                 }
             } else if state().is_null() { p { class: "text-sm text-text-muted", "Starting authorization..." } }
             else {
                 p { class: "text-sm", "Open this URL in your browser, then paste the callback URL below." }
-                input { r#type: "text", readonly: true, aria_label: "Authorization URL", value: "{text(&state(), \"authUrl\")}", class: INPUT_CLASS }
+                div { class: "flex gap-2",
+                    input { r#type: "text", readonly: true, aria_label: "Authorization URL", value: "{text(&state(), \"authUrl\")}", class: "{INPUT_CLASS} min-w-0" }
+                    Button { label: "Copy".to_owned(), variant: "secondary", icon: if copied() == "auth_url" { "check".to_owned() } else { "content_copy".to_owned() }, disabled: text(&state(), "authUrl").is_empty(), onclick: move |_| copy_text(text(&state(), "authUrl").to_owned(), "auth_url".into(), copied, generation) }
+                }
                 if popup().is_none() { Button { label: "Open Authorization".to_owned(), variant: "secondary", onclick: move |_| popup.set(open_auth_popup(text(&state(), "authUrl"))) } }
                 input { r#type: "text", aria_label: "Callback URL", placeholder: if provider == "xai" { "http://127.0.0.1:56121/callback?code=... or copied code" } else { "http://localhost/callback?code=..." }, value: "{callback}", class: INPUT_CLASS, oninput: move |e| callback.set(e.value()) }
                 Button { label: if submitting() { "Connecting...".to_owned() } else { "Connect".to_owned() }, disabled: submitting() || state().is_null() || js_trim(&callback()).is_empty(), onclick: { let provider = provider.clone(); let claimed = claimed.clone(); move |_| {

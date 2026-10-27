@@ -149,7 +149,8 @@ setting re-reads and merges the saved map before writing, but cannot prevent
 concurrent cross-tab full-map writes.
 Editing never pre-populates a stored API key; a blank replacement leaves it
 unchanged. Device-code OAuth and manual authorization-code exchange use the
-existing OAuth endpoints. The synchronized thinking selectors only append a
+existing OAuth endpoints. Their dialogs can copy the authorization URL, device
+login URL and user code. The synchronized thinking selectors only append a
 supported suffix to display/copy; they do not alter model mutation IDs. Failed
 bulk deletes remain visible and selected. Free-tier, notice and auth-mode
 metadata are checked snapshots of the reference provider registry. Required model reads that fail do
@@ -178,8 +179,8 @@ closes two seconds after a successful code, as in the reference. The standalone
 page renders only after WASM starts; it cannot reproduce Astro's pre-WASM first
 paint.
 
-Detail is **not reference-complete or pixel-perfect**: some OAuth modal details
-(including copy buttons) remain to migrate.
+Detail is **not reference-complete or pixel-perfect**: some OAuth modal layouts
+and states remain to migrate.
 Local OAuth proxy ownership is coordinated
 within this browser application only: the backend stop endpoint is
 provider-wide, so other tabs/processes and an unconfirmed stop after a

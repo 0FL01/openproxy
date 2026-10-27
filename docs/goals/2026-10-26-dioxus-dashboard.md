@@ -85,6 +85,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - Skills: the Dioxus page and clipboard feedback matched eight self-repeating Astro desktop/mobile light/dark screenshots at AE=0 without masks; the synthetic browser verified the copied URL, links and feedback reset.
 - Console Log: eight self-repeating Astro desktop/mobile light/dark screenshots matched at AE=0 without masks. The synthetic browser exercised native EventSource init/line, the 200-line bound and autoscroll, then verified a mocked DELETE followed by a synthetic clear event. No real logs were read.
 - xAI: twelve force-refresh and twenty diagnostic desktop/mobile light/dark screenshots matched self-repeating Astro references at AE=0 without masks. Focused synthetic checks covered canonical connection selection, concurrent catalog reloads, saved-model preservation and failure/session handling. Live xAI was not contacted.
+- OAuth copy controls: a focused synthetic browser check verified authorization URL, device login URL and user-code copying, including the device URL fallback and the existing safe-link boundary. OAuth modal layout parity was not checked in this slice.
 - Profile: 36 self-repeating Astro desktop/mobile light/dark card, modal and full-page screenshots matched at AE=0 without masks. Synthetic checks exercised settings and account actions. A fresh isolated backend verified database export/import rejects an incorrect reauthentication password and accepts the synthetic correct password; no real data was used.
 - DB Backups: 16 self-repeating Astro desktop/mobile light/dark screenshots matched at AE=0 without masks. Synthetic checks exercised snapshot, restore, delete, prune, export and multipart import. A fresh isolated backend verified snapshot creation and wrong/correct password reauthentication for export and import; no real data was used.
 - Application Logs: 16 self-repeating Astro desktop/mobile light/dark screenshots for populated and empty logs, request details and expanded stream trace matched at AE=0 without masks. The synthetic TPS browser regression passed filtering, pagination, exclusions, persistence, visibility, polling, failure and recovery checks; no real logs or providers were accessed.
@@ -147,6 +148,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-10-27: R4 selected JSON text surrounded by an opening brace, selection retention and undo matched Astro in a focused synthetic browser check.
 - 2026-10-27: R4 Ctrl+L line selection and repeated extension matched Astro in a focused synthetic browser check; other editor actions remain open.
 - 2026-10-27: R4 Ctrl+Shift+K deletion of current, final and selected lines and undo matched Astro in focused synthetic checks; cursor placement was checked for current and final lines.
+- 2026-10-27: R3 OAuth authorization/device copy controls passed a focused synthetic browser check; the remaining modal layout is not reference-complete.
 
 ## Completion
 

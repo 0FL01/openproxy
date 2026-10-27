@@ -5,7 +5,7 @@ const http = require("node:http");
 const path = require("node:path");
 const { chromium } = require("playwright");
 
-const publicDir = path.resolve(__dirname, "../target/dx/openproxy-dashboard/release/web/public");
+const publicDir = path.resolve(process.env.PROVIDER_DETAIL_PUBLIC_DIR || path.join(__dirname, "../target/dx/openproxy-dashboard/release/web/public"));
 const mime = { ".html": "text/html", ".js": "text/javascript", ".json": "application/json", ".wasm": "application/wasm", ".css": "text/css", ".woff2": "font/woff2", ".svg": "image/svg+xml", ".png": "image/png" };
 const state = {
   writes: [],
@@ -122,7 +122,7 @@ const server = http.createServer(async (req, res) => {
       state.connections.push(conn);
       return respond(200, { connection: conn });
     }
-    if (url.pathname === "/api/oauth/kilocode/device-code") return state.deviceFailure ? respond(500, { error: "Synthetic device failure" }) : respond(200, { device_code: "fixture-device-code", user_code: "FIXTURE-123", codeVerifier: "fixture-verifier", verification_uri: `http://127.0.0.1:${server.address().port}/fixture-verify`, interval: 0.02, expires_in: 3 });
+    if (url.pathname === "/api/oauth/kilocode/device-code") return state.deviceFailure ? respond(500, { error: "Synthetic device failure" }) : respond(200, { device_code: "fixture-device-code", user_code: "FIXTURE-123", codeVerifier: "fixture-verifier", verification_uri: `http://127.0.0.1:${server.address().port}/fixture-verify`, interval: 0.02, expires_in: 3, ...state.deviceCopyData });
     if (url.pathname === "/api/oauth/kilocode/poll" && req.method === "POST") {
       state.oauthPolls++;
       if (state.holdDevicePollOnce) {
@@ -984,6 +984,85 @@ async function runConnectionFixture(page, origin) {
   assert.equal(await badge(bound).count(), 0);
   assert.match(await proxyButton(legacy).getAttribute("class"), /\btext-primary\b/);
   assert.deepEqual(state.writes.filter(w => w.method === "PUT" && w.body && Object.hasOwn(w.body, "proxyPoolId")).slice(-3).map(w => w.body), Array(3).fill({ proxyPoolId: null }));
+}
+
+async function runOAuthCopyFixture(page, origin) {
+  state.expired = false;
+  state.connections = [];
+  state.writes = [];
+  // Suppress all popups; all API responses and clipboard values are synthetic.
+  await page.addInitScript(() => { window.fixtureOpenCalls = []; window.open = (...args) => { window.fixtureOpenCalls.push(args); return null; }; });
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin });
+  const icon = (button, text) => button.getByText(text, { exact: true });
+
+  await page.goto(`${origin}/dashboard/providers/claude`);
+  await page.getByRole("button", { name: /Add Connection/ }).click();
+  let dialog = page.getByRole("dialog", { name: "Connect Claude" });
+  await dialog.getByLabel("Authorization URL").waitFor();
+  const authUrl = `${origin}/fixture-authorize`;
+  assert.equal(await dialog.getByLabel("Authorization URL").inputValue(), authUrl);
+  let copy = dialog.getByRole("button", { name: /Copy$/ });
+  await icon(copy, "content_copy").waitFor();
+  await copy.click();
+  await icon(copy, "check").waitFor();
+  await page.waitForFunction(value => navigator.clipboard.readText().then(text => text === value), authUrl);
+  assert.equal(await dialog.getByLabel("Callback URL").inputValue(), "");
+  assert.equal(await dialog.getByRole("button", { name: "Connect", exact: true }).isDisabled(), true);
+  await icon(copy, "content_copy").waitFor({ timeout: 5000 });
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await dialog.waitFor({ state: "detached" });
+
+  const base = `${origin}/fixture-verify`;
+  const complete = `${base}?user_code=FIXTURE-123`;
+  state.deviceCopyData = { verification_uri_complete: complete, interval: 30, expires_in: 60 };
+  await page.goto(`${origin}/dashboard/providers/kilocode`);
+  async function openDevice() {
+    await page.getByRole("button", { name: /lock OAuth$/ }).click();
+    const modal = page.getByRole("dialog", { name: "Connect Kilo Code" });
+    await modal.getByRole("button", { name: "Copy user code" }).waitFor();
+    return modal;
+  }
+  async function closeDevice(modal) {
+    await modal.getByRole("button", { name: "Close" }).click();
+    await modal.waitFor({ state: "detached" });
+  }
+  dialog = await openDevice();
+  await dialog.getByText("FIXTURE-123", { exact: true }).waitFor();
+  const loginCopy = dialog.getByRole("button", { name: "Copy login URL" });
+  const codeCopy = dialog.getByRole("button", { name: "Copy user code" });
+  await dialog.getByText(complete, { exact: true }).waitFor();
+  const loginLink = dialog.getByRole("link", { name: base });
+  assert.equal(await loginLink.getAttribute("href"), base, "the existing verification link is unchanged");
+  assert.equal(await loginLink.getAttribute("rel"), "noopener noreferrer");
+  await loginCopy.click();
+  await icon(loginCopy, "check").waitFor();
+  await page.waitForFunction(value => navigator.clipboard.readText().then(text => text === value), complete);
+  await codeCopy.click();
+  await icon(codeCopy, "check").waitFor();
+  await icon(loginCopy, "content_copy").waitFor();
+  await page.waitForFunction(value => navigator.clipboard.readText().then(text => text === value), "FIXTURE-123");
+  await closeDevice(dialog);
+
+  // Without a complete URL, the verification URI is copied instead.
+  delete state.deviceCopyData.verification_uri_complete;
+  dialog = await openDevice();
+  assert.equal(await dialog.getByRole("link", { name: base }).getAttribute("href"), base);
+  await dialog.getByRole("button", { name: "Copy login URL" }).click();
+  await page.waitForFunction(value => navigator.clipboard.readText().then(text => text === value), base);
+  await closeDevice(dialog);
+
+  // Copying an unsafe URL must not make it navigable or open it automatically.
+  state.deviceCopyData.verification_uri = "";
+  state.deviceCopyData.verification_uri_complete = "javascript:fixture";
+  const priorOpens = await page.evaluate(() => window.fixtureOpenCalls.length);
+  dialog = await openDevice();
+  assert.equal(await dialog.getByRole("link").count(), 0);
+  assert.equal(await page.evaluate(() => window.fixtureOpenCalls.length), priorOpens);
+  await dialog.getByRole("button", { name: "Copy login URL" }).click();
+  await page.waitForFunction(value => navigator.clipboard.readText().then(text => text === value), "javascript:fixture");
+  await closeDevice(dialog);
+  await page.waitForTimeout(2100); // Copy feedback must not outlive a closed modal.
+  assert.deepEqual(state.writes, [], "copying does not submit or modify any OAuth data");
 }
 
 async function runAuthFixture(page, origin) {
@@ -2217,6 +2296,12 @@ async function main() {
     page.setDefaultTimeout(10000);
     const errors = []; page.on("pageerror", error => errors.push(String(error)));
     await page.context().route("**/*", route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
+    if (process.env.PROVIDER_OAUTH_COPY_ONLY === "1") {
+      await runOAuthCopyFixture(page, origin);
+      assert.deepEqual(errors, []);
+      console.log("synthetic OAuth clipboard smoke passed");
+      return;
+    }
     if (process.env.PROVIDER_QUOTA_PING_ONLY === "1") {
       await runQuotaPingFixture(page, origin);
       assert.deepEqual(errors, []);
@@ -2704,6 +2789,7 @@ async function main() {
     await page.waitForURL(`${origin}/login`);
     await runAutoPingFixture(page, origin);
     await runXaiForceFixture(page, origin);
+    await runOAuthCopyFixture(page, origin);
     assert.deepEqual(errors, []);
     console.log("synthetic provider detail smoke passed");
   } finally {
