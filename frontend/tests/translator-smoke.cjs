@@ -189,6 +189,10 @@ async function main() {
       }, reference);
       await dialog.getByLabel("Find", { exact: true }).press("Enter");
       await dialog.getByText("2 of 2", { exact: true }).waitFor();
+      await page.waitForFunction(reference => {
+        const line = document.querySelector(reference ? ".monaco-editor .view-overlays .rangeHighlight" : ".find-range-highlight");
+        return line && getComputedStyle(line).backgroundColor === "rgba(255, 255, 255, 0.04)";
+      }, reference);
       assert.deepEqual(await dialog.evaluate(element => [element.offsetWidth, element.offsetHeight]), [419, 33], "desktop Find panel matches the reference dimensions");
       assert.equal(await dialog.getByLabel("Find", { exact: true }).evaluate(element => element.offsetWidth), 167);
       const lineTop = ({ reference, expected }) => {
@@ -203,6 +207,18 @@ async function main() {
       assert.equal(await dialog.evaluate(element => element.offsetHeight), 62, "Replace expands the panel to the reference height");
       await dialog.getByLabel("Find", { exact: true }).press("Escape");
       await page.waitForFunction(lineTop, { reference, expected: 0 }, { timeout: 5000 });
+      await page.waitForFunction(reference => !document.querySelector(reference ? ".monaco-editor .view-overlays .rangeHighlight" : ".find-range-highlight"), reference);
+
+      if (reference) await page.evaluate(({ offset }) => { const e = window.monaco.editor.getEditors()[0], model = e.getModel(), start = model.getPositionAt(offset), end = model.getPositionAt(offset + 6); e.setSelection(new window.monaco.Selection(start.lineNumber, start.column, end.lineNumber, end.column)); e.focus(); }, { offset });
+      else { await editor().focus(); await editor().evaluate((input, offset) => { input.setSelectionRange(offset, offset + 6); input.dispatchEvent(new Event("select", { bubbles: true })); }, offset); }
+      await page.keyboard.press("Control+f");
+      await page.waitForFunction(reference => {
+        const root = reference ? ".monaco-editor .view-overlays" : "pre";
+        const matches = [...document.querySelectorAll(reference ? `${root} .findMatch, ${root} .currentFindMatch` : `${root} .find-match`)];
+        return matches.length === 2 && matches.every(element => getComputedStyle(element).backgroundColor === "rgba(234, 92, 0, 0.33)")
+          && !document.querySelector(reference ? `${root} .rangeHighlight` : `${root} .find-range-highlight`);
+      }, reference);
+      await dialog.getByLabel("Find", { exact: true }).press("Escape");
 
       const viewport = page.viewportSize();
       await page.setViewportSize({ width: 390, height: 844 });
@@ -211,6 +227,22 @@ async function main() {
       await page.waitForFunction(() => document.querySelector('[role="dialog"][aria-label="Find / Replace"]')?.getBoundingClientRect().width === 170);
       assert.equal(await dialog.getByLabel("Find", { exact: true }).evaluate(element => element.offsetWidth), 56, "mobile Find input retains space for navigation");
       assert.equal(await dialog.locator('[aria-label="Match Case (Alt+C)"]').isVisible(), false, "mobile collapsed mode hides inline options");
+      await dialog.getByLabel("Find", { exact: true }).press("Escape");
+      const wrapped = '{"message":"' + "x".repeat(60) + " needle " + "x".repeat(90) + '"}';
+      const wrappedOffset = wrapped.indexOf("needle");
+      if (reference) await page.evaluate(({ text, offset }) => { const e = window.monaco.editor.getEditors()[0]; e.setValue(text); e.setPosition(e.getModel().getPositionAt(offset)); e.focus(); }, { text: wrapped, offset: wrappedOffset });
+      else { await editor().fill(wrapped); await editor().evaluate((input, offset) => input.setSelectionRange(offset, offset), wrappedOffset); }
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.keyboard.press("Control+f");
+      await dialog.getByLabel("Find", { exact: true }).press("Enter");
+      await page.waitForFunction(reference => !!document.querySelector(reference ? ".monaco-editor .view-overlays .rangeHighlight" : ".find-range-highlight"), reference);
+      const wrappedCoverage = await page.evaluate(reference => {
+        const root = reference ? document.querySelector(".monaco-editor") : document.querySelector('textarea[aria-label="Translator editor"]').parentElement;
+        const lines = [...root.querySelectorAll(reference ? ".view-lines .view-line" : "pre > div")].map(element => element.getBoundingClientRect());
+        const ranges = [...root.querySelectorAll(reference ? ".view-overlays .rangeHighlight" : ".find-range-highlight")].map(element => element.getBoundingClientRect());
+        return [ranges[0].top === lines[0].top, ranges.at(-1).bottom === lines.at(-1).bottom];
+      }, reference);
+      assert.deepEqual(wrappedCoverage, [true, true], "the range highlight covers the wrapped logical line");
       await dialog.getByLabel("Find", { exact: true }).press("Escape");
       await page.setViewportSize(viewport);
 

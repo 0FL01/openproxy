@@ -1472,6 +1472,7 @@ fn Editor(
     let mut query = use_signal(String::new);
     let mut replacement = use_signal(String::new);
     let mut match_index = use_signal(|| 0_usize);
+    let mut current_find = use_signal(|| None::<(u32, u32)>);
     let mut match_case = use_signal(|| false);
     let mut whole_word = use_signal(|| false);
     let mut regex = use_signal(|| false);
@@ -1565,6 +1566,12 @@ fn Editor(
         if let Some(input) = textarea.peek().as_ref() {
             let start = input.selection_start().ok().flatten().unwrap_or_default();
             let end = input.selection_end().ok().flatten().unwrap_or(start);
+            if current_find
+                .peek()
+                .is_some_and(|selected| selected != (start, end))
+            {
+                current_find.set(None);
+            }
             if *composition_extendable.peek()
                 && composition_start.peek().is_none()
                 && !*adjusting_history.peek()
@@ -1671,11 +1678,13 @@ fn Editor(
                 match_index.set(index);
                 let (start, end) = ranges[index];
                 let _ = input.set_selection_range(start, end);
+                current_find.set(Some((start, end)));
             }
         }
     });
     let reset_match = use_callback(move |_| {
         match_index.set(0);
+        current_find.set(None);
         if let Some(input) = textarea.peek().as_ref()
             && let Some((start, end)) = find_ranges(
                 &input.value(),
@@ -1689,6 +1698,7 @@ fn Editor(
             .copied()
         {
             let _ = input.set_selection_range(start, end);
+            current_find.set(Some((start, end)));
         }
     });
     let toggle_option = use_callback(move |option: u8| {
@@ -1729,6 +1739,7 @@ fn Editor(
     let close_find = use_callback(move |_| {
         find_open.set(false);
         find_scope.set(None);
+        current_find.set(None);
         if let Some(input) = textarea.peek().as_ref() {
             let _ = input.focus();
         }
@@ -1833,6 +1844,9 @@ fn Editor(
         {
             match_index.set(index);
             let _ = input.set_selection_range(ranges[index].0, ranges[index].1);
+            current_find.set(Some(ranges[index]));
+        } else {
+            current_find.set(None);
         }
     });
     let matches = find_ranges(
@@ -1934,13 +1948,28 @@ fn Editor(
     } else {
         match_index() % matches.len()
     };
-    let selected_match = has_selection()
+    let selected_match = find_open()
         && textarea().as_ref().is_some_and(|input| {
             matches.get(current_match).is_some_and(|(start, end)| {
-                input.selection_start().ok().flatten() == Some(*start)
+                *current_find.read() == Some((*start, *end))
+                    && input.selection_start().ok().flatten() == Some(*start)
                     && input.selection_end().ok().flatten() == Some(*end)
             })
         });
+    let selected_lines = if selected_match {
+        let (start, end) = matches[current_match];
+        let text = js_sys::JsString::from(value.as_str());
+        let before = text.slice(0, start).as_string().unwrap_or_default();
+        let matched = text.slice(start, end).as_string().unwrap_or_default();
+        let first = before.bytes().filter(|byte| *byte == b'\n').count();
+        let mut last = first + matched.bytes().filter(|byte| *byte == b'\n').count();
+        if last > first && matched.ends_with('\n') {
+            last -= 1;
+        }
+        Some(first..=last)
+    } else {
+        None
+    };
     let highlighted =
         (find_open() && !matches.is_empty()).then(|| highlight_find_matches(&lines, &matches));
     let root_width = editor_width() + 76;
@@ -1968,7 +1997,9 @@ fn Editor(
                     pre { aria_hidden: "true", style: "position:absolute;top:{text_top}px;left:0;right:0;margin:0;white-space:pre-wrap;overflow-wrap:anywhere;pointer-events:none;font-family:'Droid Sans Mono',monospace;font-size:12px;line-height:16px;",
                         onmounted: move |event| { if let Some(element) = event.data().downcast::<web_sys::Element>() && let Ok(element) = element.clone().dyn_into::<web_sys::HtmlElement>() { rendered.set(Some(element)); } },
                         for (line, segments) in lines.iter().enumerate() {
-                            div { key: "{line}", style: "position:relative;width:{wrapping_width};min-height:16px;padding-left:{wrapping_indent}px;text-indent:-{wrapping_indent}px;",
+                            { let in_range = selected_lines.as_ref().is_some_and(|range| range.contains(&line)); let layer = if in_range { "z-index:0;" } else { "" }; rsx! {
+                            div { key: "{line}", style: "position:relative;width:{wrapping_width};min-height:16px;padding-left:{wrapping_indent}px;text-indent:-{wrapping_indent}px;{layer}",
+                                if in_range { div { class: "find-range-highlight", style: "position:absolute;z-index:-1;top:0;left:0;width:{current_line_width}px;height:100%;background:rgba(255,255,255,.04);" } }
                                 if let Some(line_guides) = guides.get(line) {
                                     for (index, (level, start)) in line_guides.iter().enumerate() {
                                         { let vertical = if *start { "bottom:0;height:2px" } else { "top:0;height:100%;z-index:1" }; rsx! { div { key: "{index}", style: "position:absolute;left:{*level as f64 * indent as f64 * 7.2246}px;{vertical};width:1px;background:#707070;" } } }
@@ -1985,6 +2016,7 @@ fn Editor(
                                     for (index, (text, color)) in segments.iter().enumerate() { span { key: "{index}", style: "color:{color}", "{text}" } }
                                 }
                             }
+                            } }
                         }
                     }
                     textarea { aria_label: "Translator editor", spellcheck: "false", value: "{value}",
@@ -2097,6 +2129,7 @@ fn Editor(
                                 update_cursor.call(());
                             } else if (event.modifiers().ctrl() || event.modifiers().meta()) && (key.eq_ignore_ascii_case("f") || key.eq_ignore_ascii_case("h")) {
                                 event.prevent_default();
+                                current_find.set(None);
                                 if let Some(input) = textarea.peek().as_ref() {
                                     let seed = find_seed(input);
                                     let cursor = input.selection_start().ok().flatten().unwrap_or_default();
@@ -2157,6 +2190,7 @@ fn Editor(
                             if *adjusting_history.peek() { return; }
                             let mut value = event.value();
                             let previous = last_input.peek().clone();
+                            if previous != value { current_find.set(None); }
                             let scope = *find_scope.peek();
                             if let Some(scope) = scope && previous != value {
                                 find_scope.set(Some(adjust_find_scope(&previous, &value, scope)));
