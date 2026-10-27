@@ -3,9 +3,9 @@ import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 
-test("Dioxus Profile database backup requires password reauthentication on an isolated backend", {
+test("Dioxus database backups require password reauthentication on an isolated backend", {
   skip: process.env.RUN_DIOXUS_BACKEND_TEST !== "1",
-  timeout: 60_000,
+  timeout: 90_000,
 }, async () => {
   assert.equal(process.env.DIOXUS_BACKEND_OUTPUT_SUPPRESSED, "1");
   const { chromium } = await import(process.env.DASHBOARD_PLAYWRIGHT_MODULE || "playwright");
@@ -22,6 +22,9 @@ test("Dioxus Profile database backup requires password reauthentication on an is
       let backup;
       let exports = 0;
       let imports = 0;
+      let snapshotCreates = 0;
+      let backupExports = 0;
+      let backupImports = 0;
       const blocked = [];
       await context.route("**/*", async (route) => {
         const request = route.request();
@@ -59,8 +62,24 @@ test("Dioxus Profile database backup requires password reauthentication on an is
             }
           }
         }
+        if (path === "/api/db-backups" && !url.search) {
+          if (method === "GET") return route.continue();
+          if (method === "PUT" && snapshotCreates++ === 0 && request.postData() === null) return route.continue();
+        }
+        if (path === "/api/db-backups/export" && method === "GET" && !url.search &&
+            [wrongPassword, password][backupExports] === request.headers()["x-op-password"]) {
+          backupExports++;
+          return route.continue();
+        }
+        if (path === "/api/db-backups/import" && method === "POST" && !url.search && backup && backupImports < 2 &&
+            [wrongPassword, password][backupImports] === request.headers()["x-op-password"] &&
+            /^multipart\/form-data; boundary=/.test(request.headers()["content-type"] || "") &&
+            (request.postData() || "").includes(JSON.stringify(backup))) {
+          backupImports++;
+          return route.continue();
+        }
         if (method === "GET" && !url.search && (
-          ["/login", "/dashboard/profile", "/favicon.svg", "/api/auth/status", "/api/build", "/api/settings", "/api/providers"].includes(path) ||
+          ["/login", "/dashboard/profile", "/dashboard/db-backups", "/favicon.svg", "/api/auth/status", "/api/build", "/api/settings", "/api/providers"].includes(path) ||
           path.startsWith("/assets/") || path.startsWith("/_astro/") || path.startsWith("/i18n/")
         )) return route.continue();
         blocked.push(`${method} ${path}`);
@@ -116,6 +135,31 @@ test("Dioxus Profile database backup requires password reauthentication on an is
       await page.getByText("Database imported from synthetic-backup.json", { exact: true }).waitFor();
       assert.equal(exports, 2);
       assert.equal(imports, 2);
+
+      await page.goto("https://app:4623/dashboard/db-backups");
+      await page.getByRole("button", { name: "Create snapshot", exact: true }).click();
+      await page.getByText("Snapshot created:", { exact: false }).waitFor();
+      const exportButton = page.getByRole("button", { name: "Export db.json", exact: true });
+      await exportButton.click();
+      await confirm(wrongPassword);
+      await page.getByText("Export failed: Invalid password", { exact: true }).waitFor();
+      await exportButton.click();
+      const backupDownload = page.waitForEvent("download");
+      await confirm(password);
+      assert.match((await backupDownload).suggestedFilename(), /^openproxy-db-.*\.json$/);
+      const chooseImport = async () => {
+        await page.locator('input[type="file"]').setInputFiles(file);
+        await page.getByRole("dialog", { name: "Import database?" }).getByRole("button", { name: "Import", exact: true }).click();
+      };
+      await chooseImport();
+      await confirm(wrongPassword);
+      await page.getByText("Import failed: Invalid password", { exact: true }).waitFor();
+      await chooseImport();
+      await confirm(password);
+      await page.getByText("Imported synthetic-backup.json", { exact: false }).waitFor();
+      assert.equal(snapshotCreates, 1);
+      assert.equal(backupExports, 2);
+      assert.equal(backupImports, 2);
       assert.deepEqual(blocked, []);
     } finally {
       await context.close();

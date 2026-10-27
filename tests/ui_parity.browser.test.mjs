@@ -119,6 +119,10 @@ const screens = [
   { section: "profile", name: "database-auth" },
   { section: "profile", name: "ready" },
   { section: "profile", name: "bottom" },
+  { section: "db-backups", name: "ready" },
+  { section: "db-backups", name: "empty" },
+  { section: "db-backups", name: "restore" },
+  { section: "db-backups", name: "auth" },
   { section: "callback", name: "code", query: callbackCodeQuery, colorScheme: "light" },
   { section: "callback", name: "error", query: callbackErrorQuery, colorScheme: "light" },
   { section: "callback", name: "no-auth-data", query: "", colorScheme: "light" },
@@ -233,14 +237,21 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   { method: "POST", path: "/api/auth/logout", body: {} },
                 ],
               };
-              const expectedWrites = screen.section === "profile" ? (profileWrites[screen.name] || []) : screen.section === "console-log" && screen.name === "streaming" ? [{ method: "DELETE", path: "/api/translator/console-logs", body: null }] : isOpenRouter ? [{ method: "POST", path: "/api/models/custom", body: { providerAlias: "openrouter", id: "sample/model:free", type: "llm" } }] : screen.section === "provider-kilocode" ? (kiloWrites[screen.action] || []) : screen.section === "provider-codex-autoping" ? codexWrites : screen.login
+              const backupWrites = screen.name === "ready" ? [
+                { method: "PUT", path: "/api/db-backups", body: null },
+                { method: "POST", path: "/api/db-backups/restore", body: { backupId: "fixture-1" } },
+                { method: "DELETE", path: "/api/db-backups/fixture-1", body: null },
+                { method: "DELETE", path: "/api/db-backups", body: {} },
+                { method: "POST", path: "/api/db-backups/import", body: { filename: "fixture.json", content: '{"fixture":true}', password: "fixture-current" } },
+              ] : [];
+              const expectedWrites = screen.section === "db-backups" ? backupWrites : screen.section === "profile" ? (profileWrites[screen.name] || []) : screen.section === "console-log" && screen.name === "streaming" ? [{ method: "DELETE", path: "/api/translator/console-logs", body: null }] : isOpenRouter ? [{ method: "POST", path: "/api/models/custom", body: { providerAlias: "openrouter", id: "sample/model:free", type: "llm" } }] : screen.section === "provider-kilocode" ? (kiloWrites[screen.action] || []) : screen.section === "provider-codex-autoping" ? codexWrites : screen.login
                 ? [{ method: "POST", path: "/api/auth/login", body: { password: "fixture-password" } }]
                 : screen.action === "created"
                   ? [{ method: "POST", path: "/api/keys", body: { name: "Fixture new" } }]
                   : [];
               try {
                 const page = await context.newPage();
-                if (screen.section === "profile") page.setDefaultTimeout(10000);
+                if (screen.section === "profile" || screen.section === "db-backups") page.setDefaultTimeout(10000);
                 if (screen.section === "skills") {
                   await page.addInitScript(() => {
                     Object.defineProperty(navigator.clipboard, "writeText", {
@@ -279,6 +290,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 let profileSettings = { requireLogin: true, hasPassword: true, outboundProxyEnabled: false, outboundProxyUrl: "", outboundNoProxy: "", observabilityEnabled: false };
                 let profilePasswords = 0;
                 let profileExports = [];
+                let backupExports = [];
+                let backups = screen.name === "empty" ? [] : [{ id: "fixture-1", filename: "fixture.json", createdAt: "2026-10-01T10:00:00Z", size: 2048, reason: "manual", providerCount: 2, apiKeyCount: 1 }];
                 let kiloDisabled = ["fixture-custom-disabled", "fixture-disabled"];
                 let kiloCustom = [
                   { providerAlias: "kc", id: "fixture-custom", name: "Fixture Custom", type: "llm" },
@@ -310,7 +323,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     (screen.section === "provider-kilocode" && !url.search && ["/dashboard/providers/kilocode", "/providers/kilocode.png"].includes(path)) ||
                     (screen.section === "skills" && !url.search && path === "/dashboard/skills") ||
                     (screen.section === "console-log" && !url.search && path === "/dashboard/console-log") ||
-                    (screen.section === "profile" && !url.search && path === "/dashboard/profile");
+                    (screen.section === "profile" && !url.search && path === "/dashboard/profile") ||
+                    (screen.section === "db-backups" && !url.search && path === "/dashboard/db-backups");
                   if (url.origin === appUrl && method === "GET" && assets) {
                     if (!isCodexDetail) return route.continue();
                     // Do not let even an allowed asset redirect around the
@@ -362,7 +376,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   const consoleRequest = screen.section === "console-log" && !url.search && ((method === "GET" && path === "/api/translator/console-logs/stream") || (method === "DELETE" && path === "/api/translator/console-logs" && screen.name === "streaming"));
                   const profileMutation = screen.section === "profile" && !url.search && ((method === "POST" && ["/api/auth/password", "/api/auth/logout", "/api/locale", "/api/settings/proxy-test", "/api/settings/database", "/api/shutdown"].includes(path)) || (method === "PATCH" && path === "/api/settings"));
                   const profileExport = screen.section === "profile" && screen.name === "database" && method === "GET" && !url.search && path === "/api/settings/database";
-                  const valid = url.origin === appUrl && (providerGet || providerNewGet || kiloGet || kiloMutation || compatibleGet || codexGet || codexMutation || routerGet || routerMutation || xaiGet || consoleRequest || profileMutation || profileExport || (!isCodexDetail && !["providers", "providers-new", "provider-kilocode", "provider-compatible", "provider-openrouter", "provider-xai", "callback"].includes(screen.section) && (
+                  const backupRequest = screen.section === "db-backups" && !url.search && ((method === "GET" && ["/api/db-backups", "/api/db-backups/export"].includes(path)) || (screen.name === "ready" && ((method === "PUT" && path === "/api/db-backups") || (method === "DELETE" && ["/api/db-backups", "/api/db-backups/fixture-1"].includes(path)) || (method === "POST" && ["/api/db-backups/restore", "/api/db-backups/import"].includes(path)))));
+                  const valid = url.origin === appUrl && (providerGet || providerNewGet || kiloGet || kiloMutation || compatibleGet || codexGet || codexMutation || routerGet || routerMutation || xaiGet || consoleRequest || profileMutation || profileExport || backupRequest || (!isCodexDetail && !["providers", "providers-new", "provider-kilocode", "provider-compatible", "provider-openrouter", "provider-xai", "callback"].includes(screen.section) && (
                     (method === "GET" && ["/api/auth/status", "/api/settings", "/api/keys", "/api/build", "/api/catalog"].includes(path)) ||
                     (method === "POST" && path === "/api/auth/login" && !!screen.login) ||
                     (method === "POST" && path === "/api/keys" && screen.action === "created")
@@ -373,13 +388,21 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   }
                   if (method !== "GET") {
                     let requestBody;
-                    try { requestBody = request.postDataJSON(); }
+                    try {
+                      if (screen.section === "db-backups" && path === "/api/db-backups/import") {
+                        const raw = request.postData() || "";
+                        assert.match(request.headers()["content-type"], /^multipart\/form-data; boundary=/);
+                        assert.match(raw, /name="file"; filename="fixture.json"/);
+                        assert.match(raw, /\{"fixture":true\}/);
+                        requestBody = { filename: "fixture.json", content: '{"fixture":true}', password: request.headers()["x-op-password"] };
+                      } else requestBody = request.postDataJSON();
+                    }
                     catch {
                       unexpected.push(`non-JSON mutation ${method} ${url.origin}${path}${url.search}`);
                       return route.abort("blockedbyclient");
                     }
                     const write = { method, path: ["provider-kilocode", "provider-codex-autoping"].includes(screen.section) ? `${path}${url.search}` : path, body: requestBody };
-                    if ((["provider-kilocode", "provider-codex-autoping", "console-log", "profile"].includes(screen.section) || isOpenRouter) && !isDeepStrictEqual(write, expectedWrites[writes.length])) {
+                    if ((["provider-kilocode", "provider-codex-autoping", "console-log", "profile", "db-backups"].includes(screen.section) || isOpenRouter) && !isDeepStrictEqual(write, expectedWrites[writes.length])) {
                       unexpected.push(`unexpected mutation ${method} ${url.origin}${path}${url.search}`);
                       return route.abort("blockedbyclient");
                     }
@@ -400,6 +423,20 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     const events = [{ type: "init", logs }, ...(screen.name === "streaming" ? [{ type: "line", line: "[fixture] [ERROR] latest line" }] : [])];
                     return route.fulfill({ status: 200, headers: { "content-type": "text/event-stream" }, body: `retry: 15000\n\n${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}` });
                   }
+                  if (screen.section === "db-backups" && path === "/api/db-backups/export") {
+                    const pass = request.headers()["x-op-password"];
+                    backupExports.push(pass);
+                    if (pass !== "fixture-current") return route.fulfill({ status: 401, json: { error: "Invalid password" } });
+                    return route.fulfill({ status: 200, headers: { "content-type": "application/json", "content-disposition": 'attachment; filename="fixture-export.json"' }, body: '{"fixture":true}' });
+                  }
+                  if (screen.section === "db-backups" && path === "/api/db-backups") {
+                    if (method === "GET") return route.fulfill({ json: { backups, maxFiles: 24, retentionDays: 7, autoDisabled: false } });
+                    if (method === "PUT") return route.fulfill({ json: { created: true, backup: { id: "fixture-new" } } });
+                    return route.fulfill({ json: { result: { deletedFiles: 0, keptFiles: 1 } } });
+                  }
+                  if (screen.section === "db-backups" && path === "/api/db-backups/fixture-1") { backups = []; return route.fulfill({ json: { deleted: true } }); }
+                  if (screen.section === "db-backups" && path === "/api/db-backups/restore") return route.fulfill({ json: { restored: true, providerCount: 2, apiKeyCount: 1 } });
+                  if (screen.section === "db-backups" && path === "/api/db-backups/import") return route.fulfill({ json: { imported: true, providerCount: 2, apiKeyCount: 1 } });
                   if (path === "/api/auth/status") {
                     body = { requireLogin: true, authenticated, hasPassword: screen.hasPassword ?? true };
                   } else if (path === "/api/auth/login") {
@@ -531,7 +568,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   if (path === "/api/oauth/codex/stop-proxy") interceptedCodexStop += 1;
                 });
 
-                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : screen.section === "providers-new" ? "/dashboard/providers/new" : screen.section === "provider-kilocode" ? "/dashboard/providers/kilocode" : screen.section === "provider-compatible" ? compatiblePath : isCodexDetail ? codexPath : isOpenRouter ? "/dashboard/providers/openrouter" : isXaiDetail ? "/dashboard/providers/xai" : screen.section === "skills" ? "/dashboard/skills" : screen.section === "console-log" ? "/dashboard/console-log" : screen.section === "profile" ? "/dashboard/profile" : screen.section === "callback" ? "/callback" : "/dashboard/endpoint";
+                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : screen.section === "providers-new" ? "/dashboard/providers/new" : screen.section === "provider-kilocode" ? "/dashboard/providers/kilocode" : screen.section === "provider-compatible" ? compatiblePath : isCodexDetail ? codexPath : isOpenRouter ? "/dashboard/providers/openrouter" : isXaiDetail ? "/dashboard/providers/xai" : screen.section === "skills" ? "/dashboard/skills" : screen.section === "console-log" ? "/dashboard/console-log" : screen.section === "profile" ? "/dashboard/profile" : screen.section === "db-backups" ? "/dashboard/db-backups" : screen.section === "callback" ? "/callback" : "/dashboard/endpoint";
                 const sourceRoute = screen.section === "provider-compatible" ? compatibleTemplate : path;
                 const response = await page.goto(`${appUrl}${path}${screen.query || ""}`, { waitUntil: "domcontentloaded" });
                 assert(response?.ok(), `failed to load ${path}`);
@@ -543,7 +580,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       assert(html.includes(marker), "record mode requires the standalone Astro callback markup");
                     }
                   } else {
-                    const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : screen.section === "providers-new" ? "ProvidersNewPageClient." : ["provider-kilocode", "provider-compatible"].includes(screen.section) || isCodexDetail || isOpenRouter || isXaiDetail ? "ProviderDetailPageClient." : screen.section === "skills" ? "SkillsPageClient." : screen.section === "console-log" ? "ConsoleLogClient." : screen.section === "profile" ? "ProfilePageClient." : "EndpointPageClient.";
+                    const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : screen.section === "providers-new" ? "ProvidersNewPageClient." : ["provider-kilocode", "provider-compatible"].includes(screen.section) || isCodexDetail || isOpenRouter || isXaiDetail ? "ProviderDetailPageClient." : screen.section === "skills" ? "SkillsPageClient." : screen.section === "console-log" ? "ConsoleLogClient." : screen.section === "profile" ? "ProfilePageClient." : screen.section === "db-backups" ? "DbBackupsPageClient." : "EndpointPageClient.";
                     assert(html.includes(`component-url="/_astro/${component}`), "record mode requires the Astro reference");
                     if (screen.section === "provider-compatible") assert(source.routes[sourceRoute], "dynamic Astro provider template hash must be pinned before recording");
                     if (isCodexDetail) assert(source.routes[sourceRoute], "Astro Codex route hash must be pinned before recording");
@@ -570,6 +607,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 else if (screen.section === "skills") await page.getByRole("heading", { name: "OpenProxy (Entry)", exact: true }).waitFor();
                 else if (screen.section === "console-log") await page.getByRole("button", { name: /Clear/ }).waitFor();
                 else if (screen.section === "profile") await page.getByRole("heading", { name: "Security", exact: true }).waitFor();
+                else if (screen.section === "db-backups") await page.getByRole("heading", { name: "Database Backups", exact: true }).waitFor();
                 else if (screen.section === "callback") await page.getByRole("heading", { name: screen.name === "error" ? "Authentication Failed" : screen.name === "no-auth-data" ? "No Auth Data Found" : "Authentication Complete", exact: true }).waitFor();
                 else await page.getByText("Fixture key", { exact: true }).waitFor();
                 const disableMotion = () => page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}" });
@@ -687,6 +725,71 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       await warning.waitFor();
                       await refresh().waitFor();
                     }
+                  }
+                  await page.mouse.move(1, 1);
+                  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+                } else if (screen.section === "db-backups") {
+                  await page.waitForLoadState("networkidle");
+                  if (viewport.name === "desktop") await page.getByText(fixtureCommit.slice(0, 8), { exact: true }).first().waitFor();
+                  if (screen.name === "empty") await page.getByText("No backups yet.", { exact: false }).waitFor();
+                  else {
+                    await page.getByText("fixture-1", { exact: true }).waitFor();
+                    await page.getByText("2.0 KB", { exact: true }).waitFor();
+                  }
+                  const backupRow = page.getByRole("row").filter({ hasText: "fixture-1" });
+                  const backupDialog = (name) => page.getByRole("heading", { name, exact: true }).locator("../../..");
+                  if (screen.name === "restore") {
+                    await backupRow.getByRole("button", { name: "Restore", exact: true }).click();
+                    await page.getByRole("heading", { name: "Restore snapshot?", exact: true }).waitFor();
+                  } else if (screen.name === "auth") {
+                    await page.getByRole("button", { name: "Export db.json", exact: true }).click();
+                    await page.getByRole("heading", { name: "Confirm Password", exact: true }).waitFor();
+                  } else if (screen.name === "ready") {
+                    verifyAfterCapture = async () => {
+                      await page.getByRole("button", { name: "Create snapshot", exact: true }).click();
+                      await page.getByText("Snapshot created: fixture-new", { exact: true }).waitFor();
+                      await backupRow.getByRole("button", { name: "Restore", exact: true }).click();
+                      let dialog = backupDialog("Restore snapshot?");
+                      await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+                      assert.equal(writes.length, 1, "cancel must not restore");
+                      await backupRow.getByRole("button", { name: "Restore", exact: true }).click();
+                      await dialog.getByRole("button", { name: "Restore", exact: true }).click();
+                      await page.getByText("Restored fixture-1 — 2 providers, 1 API keys.", { exact: true }).waitFor();
+                      await backupRow.getByRole("button", { name: "Delete", exact: true }).click();
+                      dialog = backupDialog("Delete backup?");
+                      await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+                      await page.getByText("Backup deleted.", { exact: true }).waitFor();
+                      await page.getByRole("button", { name: "Prune", exact: true }).click();
+                      dialog = backupDialog("Prune backups?");
+                      await dialog.getByRole("button", { name: "Prune", exact: true }).click();
+                      await page.getByText("Cleanup ran (deleted 0, kept 1).", { exact: true }).waitFor();
+                      const exportButton = page.getByRole("button", { name: "Export db.json", exact: true });
+                      await exportButton.click();
+                      await page.getByPlaceholder("Current password", { exact: true }).fill("fixture-wrong");
+                      await backupDialog("Confirm Password").getByRole("button", { name: "Confirm", exact: true }).click();
+                      await page.getByText("Export failed: Invalid password", { exact: true }).waitFor();
+                      await exportButton.click();
+                      await page.getByPlaceholder("Current password", { exact: true }).fill("fixture-current");
+                      const downloading = page.waitForEvent("download");
+                      await backupDialog("Confirm Password").getByRole("button", { name: "Confirm", exact: true }).click();
+                      const download = await downloading;
+                      assert.equal(download.suggestedFilename(), "fixture-export.json");
+                      const chunks = [];
+                      for await (const chunk of await download.createReadStream()) chunks.push(chunk);
+                      assert.deepEqual(JSON.parse(Buffer.concat(chunks).toString()), { fixture: true });
+                      assert.deepEqual(backupExports, ["fixture-wrong", "fixture-current"]);
+                      const input = page.locator('input[type="file"]');
+                      const file = { name: "fixture.json", mimeType: "application/json", buffer: Buffer.from('{"fixture":true}') };
+                      await input.setInputFiles(file);
+                      dialog = backupDialog("Import database?");
+                      await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+                      assert.equal(writes.length, 4, "cancel must not import");
+                      await input.setInputFiles(file);
+                      await dialog.getByRole("button", { name: "Import", exact: true }).click();
+                      await page.getByPlaceholder("Current password", { exact: true }).fill("fixture-current");
+                      await backupDialog("Confirm Password").getByRole("button", { name: "Confirm", exact: true }).click();
+                      await page.getByText("Imported fixture.json — 2 providers, 1 API keys.", { exact: true }).waitFor();
+                    };
                   }
                   await page.mouse.move(1, 1);
                   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));

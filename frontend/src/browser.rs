@@ -9,6 +9,7 @@ use web_sys::{AbortController, AbortSignal, Request, RequestCredentials, Request
 
 mod callback;
 mod console_log;
+mod db_backups;
 mod endpoint;
 mod i18n;
 mod profile;
@@ -125,6 +126,8 @@ enum Route {
     ConsoleLog {},
     #[route("/dashboard/profile")]
     Profile {},
+    #[route("/dashboard/db-backups")]
+    DbBackups {},
     #[route("/login")]
     Login {},
     #[route("/callback")]
@@ -183,6 +186,11 @@ fn ConsoleLog() -> Element {
 
 #[component]
 fn Profile() -> Element {
+    rsx! { shell::Dashboard {} }
+}
+
+#[component]
+fn DbBackups() -> Element {
     rsx! { shell::Dashboard {} }
 }
 
