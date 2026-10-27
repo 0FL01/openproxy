@@ -149,9 +149,9 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       configurable: true,
                       get() { throw new DOMException("Fixture storage unavailable", "SecurityError"); },
                     });
-                    if (copy) Object.defineProperty(navigator, "clipboard", {
+                    if (copy) Object.defineProperty(navigator.clipboard, "writeText", {
                       configurable: true,
-                      value: { writeText: async (value) => { window.__fixtureCopied = value; } },
+                      value: async (value) => { window.__fixtureCopied = value; },
                     });
                   }, screen.action === "copied");
                 }

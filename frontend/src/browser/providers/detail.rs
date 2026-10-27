@@ -1,6 +1,7 @@
 //! Incremental provider detail: real connections and Available Models.
 mod edit;
 mod oauth;
+mod oauth_events;
 
 use super::key_modal::KeyModal;
 use super::{dashboard_request, json, json_body, text, Toast, Value};
@@ -617,7 +618,13 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
             });
             if success {
                 refresh_after_connection.call(());
-                if *oauth_open.peek() == Some(work.attempt) {
+                if let Some(popup) = work.popup {
+                    popup.after_success();
+                }
+                if *oauth_open.peek() == Some(work.attempt)
+                    && !(matches!(work.completion, oauth::Completion::ProxyStatus)
+                        && work.claimed.as_ref().is_some_and(|claimed| claimed.get()))
+                {
                     oauth_open.set(None);
                 }
             }

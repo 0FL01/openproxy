@@ -1,6 +1,7 @@
 # Dioxus dashboard migration slice
 
 This is a separate, browser-only Rust/WASM application. It implements `/login`,
+the standalone `/callback` OAuth relay,
 the shared dashboard shell and Endpoint page at `/`, `/dashboard`, and
 `/dashboard/endpoint`, the list and chooser at `/dashboard/providers` and
 `/dashboard/providers/new`, and a partial `/dashboard/providers/:id` detail
@@ -46,6 +47,8 @@ CHROME_BIN=/path/to/chromium node tests/endpoint-smoke.cjs
 CHROME_BIN=/path/to/chromium node tests/providers-smoke.cjs
 CHROME_BIN=/path/to/chromium node tests/providers-new-smoke.cjs
 CHROME_BIN=/path/to/chromium node tests/provider-detail-smoke.cjs
+PROVIDER_CALLBACK_ONLY=1 CHROME_BIN=/path/to/chromium node tests/provider-detail-smoke.cjs
+PROVIDER_POPUP_ONLY=1 CHROME_BIN=/path/to/chromium node tests/provider-detail-smoke.cjs
 
 # Optional snapshot drift check, with the repository's web dependencies installed:
 node tests/provider-metadata.cjs
@@ -120,13 +123,31 @@ not become an empty saved configuration or expose bulk mutation controls; the
 user can retry. Optional live discovery is merged when available and cannot
 block those saved rows.
 
-Detail is **not reference-complete or pixel-perfect**: popup callback routes,
-postMessage/BroadcastChannel/storage OAuth callback handling, some OAuth modal
-details (including copy buttons), auto-ping, compatible-node edit/delete and
+The callback relays through same-origin BroadcastChannel and storage, plus
+`postMessage` to an opener at the callback's exact origin. Automatic OAuth
+completion requires the active nonempty state and, when supplied, the matching
+provider; message origins must exactly match the app or its active redirect
+origin. For Cline's state-less callback, the redirect URI instead carries a
+cryptographically random, per-attempt nonce; the backend's original state is
+still used for the exchange. Whether the live Cline provider preserves that
+redirect URI query has not been verified.
+
+For supported same-origin return paths, the dashboard retains a popup handle
+but clears its opener **before** navigating to the authorization page. It
+polls the handle after the popup returns to the exact app origin and callback
+path, even if both channel and storage are unavailable. Following successful
+exchange, it closes only the matching consumed popup; invalid callbacks and
+failed exchanges remain available for manual copy. A blocked or severed popup
+handle, or a callback on a different origin (for example `localhost` versus
+`127.0.0.1`), requires manual URL copy/paste. A callback with an actual opener
+closes two seconds after a successful code, as in the reference. The standalone
+page renders only after WASM starts; it cannot reproduce Astro's pre-WASM first
+paint.
+
+Detail is **not reference-complete or pixel-perfect**: some OAuth modal details
+(including copy buttons), auto-ping, compatible-node edit/delete and
 model import, advertised context, suggested-model chips, and xAI-specific
-force-refresh and diagnostic states remain to migrate. Manual callback entry
-and the supported local-proxy polling paths are available; popup callback
-completion must not be assumed. Local OAuth proxy ownership is coordinated
+force-refresh and diagnostic states remain to migrate. Local OAuth proxy ownership is coordinated
 within this browser application only: the backend stop endpoint is
 provider-wide, so other tabs/processes and an unconfirmed stop after a
 transport failure cannot be isolated by this client alone. A pending stop

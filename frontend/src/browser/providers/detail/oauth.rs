@@ -1,4 +1,5 @@
-use super::{dashboard_request, encoded, js_trim, json, json_body, text, Value};
+use super::{dashboard_request, encoded, js_trim, json, json_body, oauth_events, text, Value};
+use crate::auth_callback;
 use crate::browser::{
     request,
     shell::SessionRecheck,
@@ -166,6 +167,8 @@ pub(super) struct OwnedRequest {
     pub path: String,
     pub body: Option<Value>,
     pub completion: Completion,
+    pub claimed: Option<Rc<Cell<bool>>>,
+    pub popup: Option<oauth_events::PopupClose>,
     pub reply: futures_channel::oneshot::Sender<Result<Value, String>>,
 }
 
@@ -176,6 +179,7 @@ async fn owned_request(
     path: String,
     body: Option<Value>,
     completion: Completion,
+    effects: (Option<Rc<Cell<bool>>>, Option<oauth_events::PopupClose>),
 ) -> Result<Value, String> {
     let (reply, response) = futures_channel::oneshot::channel();
     callback.call(OwnedRequest {
@@ -184,6 +188,8 @@ async fn owned_request(
         path,
         body,
         completion,
+        claimed: effects.0,
+        popup: effects.1,
         reply,
     });
     response
@@ -211,6 +217,38 @@ fn open_url(url: &str) {
     {
         let _ = window.open_with_url_and_target_and_features(url, "_blank", "noopener,noreferrer");
     }
+}
+
+fn open_auth_popup(url: &str) -> Option<web_sys::Window> {
+    if !safe_url(url) {
+        return None;
+    }
+    let window = web_sys::window()?;
+    let popup = window
+        .open_with_url_and_target("about:blank", "_blank")
+        .ok()??;
+    // Clear the opener before the external authorization page can run. If
+    // that cannot be confirmed, do not navigate or expose the parent window.
+    if popup.set_opener(&wasm_bindgen::JsValue::NULL).is_err()
+        || !popup
+            .opener()
+            .is_ok_and(|value| value.is_null() || value.is_undefined())
+        || popup.location().set_href(url).is_err()
+    {
+        let _ = popup.close();
+        return None;
+    }
+    Some(popup)
+}
+
+fn attempt_nonce() -> Option<String> {
+    let mut bytes = [0_u8; 32];
+    web_sys::window()?
+        .crypto()
+        .ok()?
+        .get_random_values_with_u8_array(&mut bytes)
+        .ok()?;
+    Some(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 async fn call(method: &str, path: &str, body: Option<&Value>) -> Result<Value, String> {
@@ -303,6 +341,8 @@ pub(super) fn OAuthFlow(
     let mut error = use_signal(String::new);
     let mut callback = use_signal(String::new);
     let mut submitting = use_signal(|| false);
+    let mut popup = use_signal(|| None::<web_sys::Window>);
+    let claimed = use_hook(|| Rc::new(Cell::new(false)));
     let recheck = use_context::<SessionRecheck>();
     let device = matches!(
         provider.as_str(),
@@ -310,13 +350,17 @@ pub(super) fn OAuthFlow(
     );
     let mut flow = {
         let provider = provider.clone();
+        let claimed = claimed.clone();
         use_future(move || {
             let provider = provider.clone();
             let recheck = recheck.clone();
             let proxy_owner = proxy_owner.0.clone();
+            let claimed = claimed.clone();
             async move {
+                claimed.set(false);
                 error.set(String::new());
                 state.set(Value::Null);
+                popup.set(None);
                 if device {
                     let data = match call(
                         "GET",
@@ -359,7 +403,7 @@ pub(super) fn OAuthFlow(
                             .await;
                         let path = format!("/api/oauth/{}/poll", encoded(&provider));
                         // Poll returns meaningful OAuth error JSON even when HTTP is non-2xx.
-                        let data = match owned_request(on_request, attempt, "POST", path, Some(json!({"deviceCode":code,"codeVerifier":verifier,"extraData":Value::Null})), Completion::DevicePoll).await { Ok(data) => data, Err(e) => { error.set(e); return; } };
+                        let data = match owned_request(on_request, attempt, "POST", path, Some(json!({"deviceCode":code,"codeVerifier":verifier,"extraData":Value::Null})), Completion::DevicePoll, (None, None)).await { Ok(data) => data, Err(e) => { error.set(e); return; } };
                         if data["success"] == true {
                             return;
                         }
@@ -396,10 +440,20 @@ pub(super) fn OAuthFlow(
                             "80".into()
                         }
                     });
-                let redirect = match provider.as_str() {
+                let mut redirect = match provider.as_str() {
                     "codex" => "http://localhost:1455/auth/callback".to_owned(),
                     "xai" => "http://127.0.0.1:56121/callback".to_owned(),
                     _ => format!("http://localhost:{port}/callback"),
+                };
+                let nonce = if provider == "cline" {
+                    let Some(nonce) = attempt_nonce() else {
+                        error.set("Unable to securely start authorization".into());
+                        return;
+                    };
+                    redirect.push_str(&format!("?openproxy_oauth_nonce={nonce}"));
+                    Some(nonce)
+                } else {
+                    None
                 };
                 let path = format!(
                     "/api/oauth/{}/authorize?redirect_uri={}",
@@ -414,6 +468,7 @@ pub(super) fn OAuthFlow(
                     }
                 };
                 data["redirectUri"] = json!(redirect);
+                data["attemptNonce"] = json!(nonce);
                 if text(&data, "authUrl").is_empty() {
                     error.set("No authorization URL returned from OAuth provider".into());
                     return;
@@ -461,7 +516,7 @@ pub(super) fn OAuthFlow(
                         Err(ProxyStartError::Request(_)) => {}
                     }
                 }
-                open_url(text(&data, "authUrl"));
+                popup.set(open_auth_popup(text(&data, "authUrl")));
                 let server_side = data["serverSide"] == true;
                 let saved_state = text(&data, "state").to_owned();
                 state.set(data);
@@ -479,6 +534,7 @@ pub(super) fn OAuthFlow(
                             ),
                             None,
                             Completion::ProxyStatus,
+                            (Some(claimed.clone()), None),
                         )
                         .await
                         {
@@ -504,6 +560,122 @@ pub(super) fn OAuthFlow(
             }
         })
     };
+    let on_callback = {
+        let provider = provider.clone();
+        let claimed = claimed.clone();
+        use_callback(move |delivery: oauth_events::Delivery| {
+            if device || claimed.get() || *submitting.peek() {
+                return;
+            }
+            let auth = state.peek().clone();
+            let expected_state = text(&auth, "state");
+            if !auth_callback::valid(
+                &delivery.data,
+                &provider,
+                expected_state,
+                auth["attemptNonce"].as_str(),
+                delivery.storage_value.is_some(),
+                js_sys::Date::now(),
+            ) || delivery.origin.as_ref().is_some_and(|origin| {
+                !oauth_events::valid_origin(origin, text(&auth, "redirectUri"))
+            }) {
+                return;
+            }
+            claimed.set(true);
+            if let Some(raw) = &delivery.storage_value {
+                oauth_events::remove_stored(raw);
+            }
+            if let Some(failure) = delivery.data["error"].as_str().filter(|v| !v.is_empty()) {
+                error.set(
+                    delivery.data["errorDescription"]
+                        .as_str()
+                        .filter(|v| !v.is_empty())
+                        .unwrap_or(failure)
+                        .to_owned(),
+                );
+                return;
+            }
+            let code = delivery.data["token"]
+                .as_str()
+                .filter(|v| !v.is_empty())
+                .or_else(|| delivery.data["code"].as_str().filter(|v| !v.is_empty()))
+                .unwrap_or_default()
+                .to_owned();
+            let close_popup = if delivery.data["token"]
+                .as_str()
+                .is_some_and(|s| !s.is_empty())
+            {
+                None
+            } else {
+                popup.peek().clone().and_then(|popup| {
+                    let origin = web_sys::window()?.location().origin().ok()?;
+                    oauth_events::PopupClose::capture(popup, origin, &delivery.data)
+                })
+            };
+            let body = json!({"code":code,"redirectUri":auth["redirectUri"],"codeVerifier":auth["codeVerifier"],"state":expected_state});
+            let path = format!("/api/oauth/{}/exchange", encoded(&provider));
+            submitting.set(true);
+            spawn(async move {
+                if let Err(failure) = owned_request(
+                    on_request,
+                    attempt,
+                    "POST",
+                    path,
+                    Some(body),
+                    Completion::Exchange,
+                    (None, close_popup),
+                )
+                .await
+                {
+                    error.set(failure);
+                }
+                submitting.set(false);
+            });
+        })
+    };
+    let _listeners = use_hook(|| oauth_events::Listeners::new(on_callback).map(Rc::new));
+    let poll_generation = use_hook(|| Rc::new(Cell::new(0_u64)));
+    use_effect({
+        let claimed = claimed.clone();
+        let poll_generation = poll_generation.clone();
+        move || {
+            let active_popup = popup();
+            let auth = state();
+            let generation = poll_generation.get().wrapping_add(1);
+            poll_generation.set(generation);
+            let Some(active_popup) = active_popup.filter(|_| !auth.is_null()) else {
+                return;
+            };
+            let Some(origin) = web_sys::window().and_then(|w| w.location().origin().ok()) else {
+                return;
+            };
+            let claimed = claimed.clone();
+            let poll_generation = poll_generation.clone();
+            spawn(async move {
+                while poll_generation.get() == generation && !claimed.get() {
+                    if active_popup.closed().unwrap_or(true) {
+                        popup.set(None);
+                        return;
+                    }
+                    if let Some(data) = oauth_events::popup_data(&active_popup, &origin) {
+                        on_callback.call(oauth_events::Delivery {
+                            data,
+                            origin: Some(origin.clone()),
+                            storage_value: None,
+                        });
+                    }
+                    if !claimed.get() {
+                        TimeoutFuture::new(200).await;
+                    }
+                }
+            });
+        }
+    });
+    use_effect(move || {
+        if !device && !state().is_null() {
+            oauth_events::read_stored(on_callback);
+        }
+    });
     let title = if provider == "xai" {
         "Connect Grok Build OAuth".to_owned()
     } else {
@@ -522,9 +694,10 @@ pub(super) fn OAuthFlow(
             else {
                 p { class: "text-sm", "Open this URL in your browser, then paste the callback URL below." }
                 input { r#type: "text", readonly: true, aria_label: "Authorization URL", value: "{text(&state(), \"authUrl\")}", class: INPUT_CLASS }
+                if popup().is_none() { Button { label: "Open Authorization".to_owned(), variant: "secondary", onclick: move |_| popup.set(open_auth_popup(text(&state(), "authUrl"))) } }
                 input { r#type: "text", aria_label: "Callback URL", placeholder: if provider == "xai" { "http://127.0.0.1:56121/callback?code=... or copied code" } else { "http://localhost/callback?code=..." }, value: "{callback}", class: INPUT_CLASS, oninput: move |e| callback.set(e.value()) }
-                Button { label: if submitting() { "Connecting...".to_owned() } else { "Connect".to_owned() }, disabled: submitting() || state().is_null() || js_trim(&callback()).is_empty(), onclick: { let provider = provider.clone(); move |_| {
-                    if submitting() { return; }
+                Button { label: if submitting() { "Connecting...".to_owned() } else { "Connect".to_owned() }, disabled: submitting() || state().is_null() || js_trim(&callback()).is_empty(), onclick: { let provider = provider.clone(); let claimed = claimed.clone(); move |_| {
+                    if submitting() || claimed.get() { return; }
                     let input = js_trim(&callback()); let auth = state(); let provider = provider.clone();
                     let raw = input.starts_with("eyJ") && input.contains('.') || provider == "claude" && !input.contains("://");
                     let xai_raw = provider == "xai" && !input.contains("://") && !input.contains('?') && !input.contains("code=");
@@ -534,10 +707,11 @@ pub(super) fn OAuthFlow(
                         else { params.get("token").or_else(|| params.get("code")).map(|code| (code, json!(params.get("state").unwrap_or_default()))) }
                     } else { None };
                     let Some((code, callback_state)) = parsed else { if error().is_empty() { error.set("No authorization code found in URL".into()); } return; };
+                    claimed.set(true);
                     submitting.set(true);
                     spawn(async move {
                         let (path, body) = if xai_raw { ("/api/oauth/xai/manual-code".to_owned(), json!({"code":code,"state":auth["state"]})) } else { (format!("/api/oauth/{}/exchange", encoded(&provider)), json!({"code":code,"redirectUri":auth["redirectUri"],"codeVerifier":auth["codeVerifier"],"state":callback_state})) };
-                        if let Err(e) = owned_request(on_request, attempt, "POST", path, Some(body), Completion::Exchange).await { error.set(e); }
+                        if let Err(e) = owned_request(on_request, attempt, "POST", path, Some(body), Completion::Exchange, (None, None)).await { error.set(e); }
                         submitting.set(false);
                     });
                 } } }

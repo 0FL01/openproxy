@@ -30,7 +30,10 @@ const server = http.createServer(async (req, res) => {
     let raw = ""; for await (const chunk of req) raw += chunk;
     const body = raw ? JSON.parse(raw) : null;
     if (req.method !== "GET") state.writes.push({ method: req.method, path: `${url.pathname}${url.search}`, body, at: Date.now() });
-    if (url.pathname === "/api/auth/status") return respond(200, state.expired ? { requireLogin: true, authenticated: false } : { requireLogin: true, authenticated: true });
+    if (url.pathname === "/api/auth/status") {
+      state.authStatusRequests = (state.authStatusRequests || 0) + 1;
+      return respond(200, state.expired ? { requireLogin: true, authenticated: false } : { requireLogin: true, authenticated: true });
+    }
     if (url.pathname === "/api/settings" || url.pathname === "/api/build") return respond(200, {});
     if (url.pathname === "/api/catalog") {
       state.catalogRequests = (state.catalogRequests || 0) + 1;
@@ -78,7 +81,11 @@ const server = http.createServer(async (req, res) => {
       }
       return respond(200, { error: "authorization_pending" });
     }
-    if (/^\/api\/oauth\/(claude|xai|codex)\/authorize$/.test(url.pathname)) return respond(200, { authUrl: `http://127.0.0.1:${server.address().port}/fixture-authorize`, codeVerifier: "fixture-verifier", state: "fixture-state" });
+    if (/^\/api\/oauth\/(claude|cline|xai|codex)\/authorize$/.test(url.pathname)) {
+      const oauthState = state.callbackOnly ? `fixture-state-${state.callbackAuthCounter = (state.callbackAuthCounter || 0) + 1}` : "fixture-state";
+      if (state.popupOnly) state.popupAuthorizations.push({ provider: url.pathname.split("/")[3], redirectUri: url.searchParams.get("redirect_uri"), state: oauthState });
+      return respond(200, { authUrl: state.popupOnly ? `${state.popupProviderOrigin}/authorize` : `http://127.0.0.1:${server.address().port}/fixture-authorize`, codeVerifier: "fixture-verifier", state: oauthState });
+    }
     if (/^\/api\/oauth\/(xai|codex)\/start-proxy$/.test(url.pathname)) {
       state.proxyStarts = (state.proxyStarts || 0) + 1;
       if (state.rejectProxyStart) return respond(503, { error: "Synthetic proxy failure" });
@@ -111,9 +118,21 @@ const server = http.createServer(async (req, res) => {
       return respond(200, { status: "pending" });
     }
     if (url.pathname === "/api/oauth/claude/exchange" && req.method === "POST") {
+      if (state.rejectClaudeExchange) { state.rejectClaudeExchange = false; return respond(400, { error: "Synthetic exchange failure" }); }
       const index = state.claudeExchangeCount = (state.claudeExchangeCount || 0) + 1;
       if (state.holdExchangeOnce) { state.holdExchangeOnce = false; await new Promise(resolve => { state.releaseExchange = resolve; }); }
       state.connections.push({ id: `claude-added-${index}`, provider: "claude", name: state.authOnly ? `Claude fixture ${index}` : "Claude fixture", authType: "oauth", isActive: true });
+      return respond(200, { success: true });
+    }
+    if (url.pathname === "/api/oauth/cline/exchange" && req.method === "POST") {
+      const index = state.clineExchangeCount = (state.clineExchangeCount || 0) + 1;
+      if (state.holdClineExchange) { state.holdClineExchange = false; await new Promise(resolve => { state.releaseClineExchange = resolve; }); }
+      state.connections.push({ id: `cline-added-${index}`, provider: "cline", name: `Cline fixture ${index}`, authType: "oauth", isActive: true });
+      return respond(200, { success: true });
+    }
+    if (url.pathname === "/api/oauth/xai/exchange" && req.method === "POST") {
+      if (state.holdXaiCallback) await new Promise(resolve => { state.releaseXaiCallback = resolve; });
+      state.connections.push({ id: "callback-xai", provider: "xai", name: "Callback xAI", authType: "oauth", isActive: true });
       return respond(200, { success: true });
     }
     if (url.pathname === "/api/oauth/xai/manual-code" && req.method === "POST") {
@@ -199,7 +218,8 @@ const server = http.createServer(async (req, res) => {
     }
     return respond(404, {});
   }
-  const relative = url.pathname === "/login" || url.pathname.startsWith("/dashboard") || url.pathname === "/" ? "index.html" : url.pathname.slice(1);
+  if (url.pathname === "/fixture-observer") { res.writeHead(200, { "content-type": "text/html" }); return res.end("<!doctype html><title>Synthetic observer</title>"); }
+  const relative = url.pathname === "/login" || url.pathname === "/callback" || url.pathname.startsWith("/dashboard") || url.pathname === "/" ? "index.html" : url.pathname.slice(1);
   const file = path.resolve(publicDir, relative);
   if (!file.startsWith(publicDir + path.sep)) return res.writeHead(403).end();
   try { const content = await fs.readFile(file); res.writeHead(200, { "content-type": mime[path.extname(file)] || "application/octet-stream" }); res.end(content); }
@@ -566,17 +586,493 @@ async function runAuthFixture(page, origin) {
   }
 }
 
+async function runCallbackFixture(page, origin) {
+  state.callbackOnly = true;
+  state.authOnly = true;
+  state.connections = [];
+  const context = page.context();
+  const exchanges = () => state.writes.filter(w => w.path === "/api/oauth/claude/exchange");
+  const callbackUrl = `${origin}/callback?code=fixture-relay&state=fixture-standalone#fragment`;
+  await page.goto(`${origin}/fixture-observer`);
+  await page.evaluate(() => {
+    localStorage.removeItem("oauth_callback");
+    window.received = [];
+    window.callbackChannel = new BroadcastChannel("oauth_callback");
+    callbackChannel.onmessage = event => received.push(["channel", event.data]);
+    window.addEventListener("storage", event => { if (event.key === "oauth_callback" && event.newValue) received.push(["storage", JSON.parse(event.newValue)]); });
+    window.addEventListener("message", event => { if (event.data?.type === "oauth_callback") received.push(["message", event.data.data, event.origin]); });
+  });
+  const popupEvent = page.waitForEvent("popup");
+  const started = Date.now();
+  await page.evaluate(url => window.open(url, "synthetic-callback"), callbackUrl);
+  const popup = await popupEvent;
+  const closed = popup.waitForEvent("close", { timeout: 7000 });
+  await popup.getByRole("heading", { name: "Authentication Complete" }).waitFor();
+  assert.equal(await popup.title(), "OpenProxy — OAuth Callback");
+  assert.equal(await popup.locator("body").evaluate(el => getComputedStyle(el).backgroundColor), "rgb(13, 13, 13)");
+  assert.equal(await popup.locator("body").evaluate(el => getComputedStyle(el).fontFeatureSettings), "normal");
+  assert.equal(await popup.locator("h1").evaluate(el => getComputedStyle(el).letterSpacing), "normal");
+  assert.equal(new URL(popup.url()).search, "?code=fixture-relay&state=fixture-standalone");
+  assert.equal(new URL(popup.url()).hash, "#fragment");
+  await page.waitForFunction(() => received.length === 3);
+  const received = await page.evaluate(() => received);
+  assert.deepEqual(received.map(([kind]) => kind).sort(), ["channel", "message", "storage"]);
+  for (const [, payload] of received) {
+    assert.equal(payload.code, "fixture-relay");
+    assert.equal(payload.state, "fixture-standalone");
+    assert.equal(typeof payload.timestamp, "number");
+  }
+  assert.equal(received.find(([kind]) => kind === "message")[2], origin);
+  await page.waitForFunction(() => localStorage.getItem("oauth_callback") === null);
+  await closed;
+  assert.ok(Date.now() - started >= 1700, "opened success callback closes after approximately two seconds");
+
+  const failed = await context.newPage();
+  await failed.goto(`${origin}/callback?error=access_denied&error_description=%3Cimg%20src%3Dx%3E&code=ignored`);
+  await failed.getByRole("heading", { name: "Authentication Failed" }).waitFor();
+  assert.equal(await failed.locator("#message").textContent(), "<img src=x>");
+  assert.equal(await failed.locator("#card img").count(), 0, "error descriptions are rendered as text");
+  await failed.waitForTimeout(2100);
+  assert.equal(failed.isClosed(), false);
+  await failed.goto(`${origin}/callback`);
+  await failed.getByRole("heading", { name: "No Auth Data Found" }).waitFor();
+  await failed.locator("#message strong").getByText("Callback URL").waitFor();
+  await failed.close();
+
+  // With every relay transport unavailable the original URL remains copyable,
+  // including when the async clipboard API rejects and execCommand is needed.
+  const fallbackContext = await context.browser().newContext();
+  await fallbackContext.route("**/*", route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
+  await fallbackContext.addInitScript(() => {
+    Object.defineProperty(window, "BroadcastChannel", { value: undefined });
+    Object.defineProperty(window, "localStorage", { get() { throw new DOMException("blocked", "SecurityError"); } });
+    if (navigator.clipboard) Object.defineProperty(navigator.clipboard, "writeText", { value: () => Promise.reject(new Error("blocked")) });
+    document.execCommand = command => { if (command === "copy") window.fallbackCopied = document.activeElement.value; return true; };
+  });
+  const fallback = await fallbackContext.newPage();
+  await fallback.goto(callbackUrl);
+  await fallback.getByRole("heading", { name: "Authentication Complete" }).waitFor();
+  assert.equal(await fallback.locator(".fallback-url").textContent(), `Full URL: ${callbackUrl}`);
+  assert.equal(await fallback.getByRole("button", { name: "Copy URL" }).evaluate(el => getComputedStyle(el).lineHeight), "normal");
+  await fallback.getByRole("button", { name: "Copy URL" }).click();
+  await fallback.getByRole("button", { name: "Copied!" }).waitFor();
+  await fallback.waitForFunction(url => window.fallbackCopied === url, callbackUrl);
+  await fallback.getByRole("button", { name: "Copy URL" }).waitFor({ timeout: 5000 });
+  await fallback.evaluate(() => {
+    window.fallbackCopied = null;
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async value => { window.__fixtureCopied = value; } } });
+  });
+  assert.equal(await fallback.evaluate(() => navigator.clipboard instanceof Clipboard), false);
+  await fallback.getByRole("button", { name: "Copy URL" }).click();
+  await fallback.waitForFunction(url => window.fallbackCopied === url, callbackUrl);
+  assert.equal(await fallback.evaluate(() => window.__fixtureCopied), undefined, "a plain clipboard shim takes the execCommand fallback");
+
+  // Real Chromium Clipboard objects retain their native brand, unlike a plain
+  // object substituted for navigator.clipboard in a test harness.
+  const nativeContext = await context.browser().newContext();
+  await nativeContext.grantPermissions(["clipboard-read", "clipboard-write"], { origin });
+  await nativeContext.route("**/*", route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
+  await nativeContext.addInitScript(() => {
+    Object.defineProperty(window, "BroadcastChannel", { value: undefined });
+    Object.defineProperty(window, "localStorage", { get() { throw new DOMException("blocked", "SecurityError"); } });
+  });
+  const native = await nativeContext.newPage();
+  await native.goto(callbackUrl);
+  await native.getByRole("button", { name: "Copy URL" }).waitFor();
+  assert.equal(await native.evaluate(() => navigator.clipboard instanceof Clipboard), true);
+  await native.getByRole("button", { name: "Copy URL" }).click();
+  assert.equal(await native.evaluate(() => navigator.clipboard.readText()), callbackUrl);
+  await native.getByRole("button", { name: "Copy URL" }).waitFor({ timeout: 5000 });
+  await native.evaluate(() => navigator.clipboard.writeText("fixture-previous-value"));
+  await native.evaluate(() => Object.defineProperty(navigator.clipboard, "writeText", { configurable: true, value: async value => { window.fixtureCopied = value; } }));
+  await native.getByRole("button", { name: "Copy URL" }).click();
+  await native.waitForFunction(url => window.fixtureCopied === url, callbackUrl);
+  await native.getByRole("button", { name: "Copy URL" }).waitFor({ timeout: 5000 });
+  await native.evaluate(() => {
+    window.nativeClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async value => { window.__fixtureCopied = value; } } });
+  });
+  await native.getByRole("button", { name: "Copy URL" }).click();
+  assert.equal(await native.evaluate(() => window.__fixtureCopied), undefined);
+  assert.equal(await native.evaluate(() => window.nativeClipboard.readText()), callbackUrl, "the actual execCommand fallback copies for a plain-object shim");
+  await nativeContext.close();
+  assert.equal(state.authStatusRequests || 0, 0, "the standalone callback does not load or require a dashboard session");
+
+  const attacker = http.createServer((_, res) => { res.writeHead(200, { "content-type": "text/html" }); res.end("<!doctype html><title>Fixture origin</title>"); });
+  await new Promise(resolve => attacker.listen(0, "127.0.0.1", resolve));
+  const attackerOrigin = `http://127.0.0.1:${attacker.address().port}`;
+  await context.route(`${attackerOrigin}/**`, route => route.continue());
+  await fallbackContext.route(`${attackerOrigin}/**`, route => route.continue());
+  try {
+    const foreignOpener = await fallbackContext.newPage();
+    await foreignOpener.goto(`${attackerOrigin}/`);
+    const fallbackPopupEvent = foreignOpener.waitForEvent("popup");
+    await foreignOpener.evaluate(url => window.open(url, "foreign-opener-fallback"), callbackUrl);
+    const fallbackPopup = await fallbackPopupEvent;
+    await fallbackPopup.getByRole("heading", { name: "Authentication Complete" }).waitFor();
+    assert.equal(await fallbackPopup.locator(".fallback-url").textContent(), `Full URL: ${callbackUrl}`, "a mismatched opener is not counted as delivery");
+    await fallbackPopup.getByRole("button", { name: "Copy URL" }).waitFor();
+    await fallbackPopup.close();
+    await foreignOpener.close();
+    await page.goto(`${origin}/dashboard/providers/claude`);
+    const open = async () => {
+      await page.getByRole("button", { name: /^add Add(?: Connection)?$/ }).click();
+      const modal = page.getByRole("dialog", { name: /Connect Claude/ });
+      await modal.getByLabel("Callback URL").waitFor();
+      return modal;
+    };
+    let modal = await open();
+    let expected = `fixture-state-${state.callbackAuthCounter}`;
+    const before = exchanges().length;
+    const send = payload => page.evaluate(data => window.postMessage({ type: "oauth_callback", data }, window.location.origin), payload);
+    await send({ code: "wrong-state", state: "wrong" });
+    await send({ code: "wrong-provider", state: expected, provider: "codex" });
+    await send({ code: "missing-state" });
+    await page.evaluate(state => window.dispatchEvent(new MessageEvent("message", { origin: "https://localhost.attacker.invalid", data: { type: "oauth_callback", data: { code: "spoofed-localhost", state } } })), expected);
+    const badEvent = page.waitForEvent("popup", { predicate: async popup => { await popup.waitForLoadState(); return popup.url().startsWith(attackerOrigin); } });
+    await page.evaluate(url => window.open(url, "fixture-attacker"), `${attackerOrigin}/`);
+    const bad = await badEvent;
+    await bad.waitForLoadState();
+    await bad.evaluate(({ target, state }) => window.opener.postMessage({ type: "oauth_callback", data: { code: "untrusted-origin", state } }, target), { target: origin, state: expected });
+    await page.waitForTimeout(250);
+    assert.equal(exchanges().length, before, "invalid state, provider and origin cannot start an exchange");
+    await bad.evaluate(() => { window.receivedSecrets = []; window.addEventListener("message", event => window.receivedSecrets.push(event.data)); });
+    const unsafeOpenerPopup = bad.waitForEvent("popup");
+    await bad.evaluate(url => window.open(url, "fixture-secret-test"), `${origin}/callback?code=synthetic-private-code&state=unrelated`);
+    const unsafeCallback = await unsafeOpenerPopup;
+    await unsafeCallback.getByRole("heading", { name: "Authentication Complete" }).waitFor();
+    await bad.waitForTimeout(250);
+    assert.deepEqual(await bad.evaluate(() => receivedSecrets), [], "callback never sends credentials to an unrelated opener origin");
+    await unsafeCallback.close();
+    await bad.close();
+
+    state.holdExchangeOnce = true; state.releaseExchange = null;
+    const relayPage = await context.newPage();
+    await relayPage.goto(`${origin}/callback?code=first-fixture-code&state=${expected}`);
+    await waitForFixture(() => typeof state.releaseExchange === "function");
+    await send({ code: "duplicate", state: expected });
+    await page.waitForTimeout(100);
+    assert.equal(exchanges().length, before + 1, "channel, storage and message duplicates are coalesced");
+    assert.equal(exchanges().at(-1).body.code, "first-fixture-code");
+    await modal.getByRole("button", { name: "Close" }).click();
+    await modal.waitFor({ state: "detached" });
+    modal = await open();
+    const newerState = `fixture-state-${state.callbackAuthCounter}`;
+    assert.notEqual(newerState, expected);
+    state.releaseExchange();
+    await page.getByText("Claude fixture 1", { exact: true }).waitFor();
+    await modal.getByLabel("Callback URL").waitFor();
+    await send({ code: "old-attempt", state: expected });
+    await page.waitForTimeout(150);
+    assert.equal(exchanges().length, before + 1, "old callbacks cannot close or exchange in a newer attempt");
+    await send({ code: "second-fixture-code", state: newerState, provider: "claude" });
+    await modal.waitFor({ state: "detached" });
+    await page.getByText("Claude fixture 2", { exact: true }).waitFor();
+    assert.equal(exchanges().length, before + 2);
+    await send({ code: "after-close", state: newerState });
+    await relayPage.evaluate(state => {
+      const channel = new BroadcastChannel("oauth_callback");
+      channel.postMessage({ code: "after-close-channel", state });
+      channel.close();
+      localStorage.setItem("oauth_callback", JSON.stringify({ code: "after-close-storage", state, timestamp: Date.now() }));
+    }, newerState);
+    await page.waitForTimeout(150);
+    assert.equal(exchanges().length, before + 2, "closed modal listeners are removed");
+    assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("oauth_callback")).code), "after-close-storage");
+    await page.evaluate(() => localStorage.removeItem("oauth_callback"));
+    await relayPage.close();
+
+    // Existing stale data is discarded, while a fresh matching storage value
+    // is consumed after authorization data becomes available.
+    const staleState = `fixture-state-${state.callbackAuthCounter + 1}`;
+    await page.evaluate(state => localStorage.setItem("oauth_callback", JSON.stringify({ code: "stale", state, timestamp: Date.now() - 31_000 })), staleState);
+    modal = await open();
+    await page.waitForFunction(() => localStorage.getItem("oauth_callback") === null);
+    assert.equal(exchanges().length, before + 2);
+    await modal.getByRole("button", { name: "Close" }).click();
+    const freshState = `fixture-state-${state.callbackAuthCounter + 1}`;
+    await page.evaluate(state => localStorage.setItem("oauth_callback", JSON.stringify({ code: "fresh-storage", state, timestamp: Date.now() })), freshState);
+    await page.getByRole("button", { name: /^add Add(?: Connection)?$/ }).click();
+    modal = page.getByRole("dialog", { name: /Connect Claude/ });
+    await waitForFixture(() => exchanges().length === before + 3);
+    await modal.waitFor({ state: "detached" });
+    await page.getByText("Claude fixture 3", { exact: true }).waitFor();
+    assert.equal(exchanges().at(-1).body.code, "fresh-storage");
+    assert.equal(await page.evaluate(() => localStorage.getItem("oauth_callback")), null);
+
+    modal = await open();
+    expected = `fixture-state-${state.callbackAuthCounter}`;
+    const errorPage = await context.newPage();
+    await errorPage.goto(`${origin}/callback?error=access_denied&error_description=Synthetic%20authorization%20denied&state=${expected}`);
+    await modal.getByRole("alert").getByText("Synthetic authorization denied").waitFor();
+    assert.equal(exchanges().length, before + 3);
+    await modal.getByRole("button", { name: "Close" }).click();
+    await errorPage.close();
+
+    // Exercise the actual storage-event path without a BroadcastChannel.
+    modal = await open();
+    expected = `fixture-state-${state.callbackAuthCounter}`;
+    const writer = await context.newPage();
+    await writer.goto(`${origin}/fixture-observer`);
+    await writer.evaluate(state => localStorage.setItem("oauth_callback", JSON.stringify({ code: "storage-event", state, timestamp: Date.now() })), expected);
+    await modal.waitFor({ state: "detached" });
+    await page.getByText("Claude fixture 4", { exact: true }).waitFor();
+    assert.equal(exchanges().at(-1).body.code, "storage-event");
+    assert.equal(await page.evaluate(() => localStorage.getItem("oauth_callback")), null);
+    await writer.close();
+
+    // Exercise a channel-only message with a token, as supported by the
+    // existing consumer, and verify it becomes the exchange code.
+    modal = await open();
+    expected = `fixture-state-${state.callbackAuthCounter}`;
+    const channelSender = await context.newPage();
+    await channelSender.goto(`${origin}/fixture-observer`);
+    await channelSender.evaluate(state => { const channel = new BroadcastChannel("oauth_callback"); channel.postMessage({ token: "channel-token", state }); channel.close(); }, expected);
+    await modal.waitFor({ state: "detached" });
+    await page.getByText("Claude fixture 5", { exact: true }).waitFor();
+    assert.equal(exchanges().at(-1).body.code, "channel-token");
+    await channelSender.close();
+
+    // A real popup from the exact active redirect origin is also accepted;
+    // an arbitrary other origin was rejected above.
+    modal = await open();
+    expected = `fixture-state-${state.callbackAuthCounter}`;
+    const redirectOrigin = `http://localhost:${server.address().port}`;
+    await context.route(`${redirectOrigin}/**`, route => route.continue());
+    const redirectPopupEvent = page.waitForEvent("popup", { predicate: async popup => { await popup.waitForLoadState(); return popup.url().startsWith(redirectOrigin); } });
+    await page.evaluate(url => window.open(url, "fixture-redirect"), `${redirectOrigin}/fixture-observer`);
+    const redirectPopup = await redirectPopupEvent;
+    await redirectPopup.evaluate(({ target, state }) => window.opener.postMessage({ type: "oauth_callback", data: { code: "redirect-origin", state } }, target), { target: origin, state: expected });
+    await modal.waitFor({ state: "detached" });
+    await page.getByText("Claude fixture 6", { exact: true }).waitFor();
+    assert.equal(exchanges().at(-1).body.code, "redirect-origin");
+    await redirectPopup.close();
+    await context.unroute(`${redirectOrigin}/**`);
+
+    // A server-side status response may settle while a validated callback
+    // exchange is pending; it must not close that active dialog first.
+    state.proxyServerSide = true;
+    state.holdStatusOnce = true;
+    state.holdXaiCallback = true;
+    await page.goto(`${origin}/dashboard/providers/xai`);
+    await page.getByRole("button", { name: /Grok Build OAuth/ }).click();
+    const xaiModal = page.getByRole("dialog", { name: /Connect Grok/ });
+    await xaiModal.getByLabel("Callback URL").waitFor();
+    await waitForFixture(() => typeof state.releaseStatus === "function");
+    const xaiState = `fixture-state-${state.callbackAuthCounter}`;
+    await send({ code: "xai-callback", state: xaiState, provider: "xai" });
+    await waitForFixture(() => typeof state.releaseXaiCallback === "function");
+    state.releaseStatus();
+    await page.getByText("Status account", { exact: true }).waitFor();
+    await xaiModal.getByLabel("Callback URL").waitFor();
+    await xaiModal.getByRole("button", { name: "Connecting..." }).waitFor();
+    state.releaseXaiCallback();
+    await xaiModal.waitFor({ state: "detached" });
+    await page.getByText("Callback xAI", { exact: true }).waitFor();
+  } finally {
+    await fallbackContext.close();
+    await context.unroute(`${attackerOrigin}/**`);
+    attacker.closeAllConnections();
+    await new Promise(resolve => attacker.close(resolve));
+  }
+}
+
+async function runPopupProbe(page, origin) {
+  const provider = http.createServer((_, res) => { res.writeHead(200, { "content-type": "text/html" }); res.end("<!doctype html><title>Synthetic authorization</title>"); });
+  await new Promise(resolve => provider.listen(0, "127.0.0.1", resolve));
+  const providerOrigin = `http://127.0.0.1:${provider.address().port}`;
+  const context = page.context();
+  await context.route(`${providerOrigin}/**`, route => route.continue());
+  try {
+    await page.goto(`${origin}/fixture-observer`);
+    const popupEvent = page.waitForEvent("popup");
+    await page.evaluate(url => {
+      const popup = window.open("about:blank", "fixture-probe");
+      if (!popup) throw new Error("Popup blocked");
+      window.probe = popup;
+      popup.opener = null;
+      popup.location.href = url;
+    }, `${providerOrigin}/authorize`);
+    const popup = await popupEvent;
+    await popup.waitForURL(`${providerOrigin}/authorize`);
+    assert.equal(await popup.evaluate(() => window.opener), null, "external authorization page receives no opener");
+    assert.equal(await page.evaluate(() => { try { void window.probe.location.href; return "readable"; } catch (e) { return e.name; } }), "SecurityError");
+    const callback = `${origin}/callback?code=probe-code&state=probe-state`;
+    await popup.evaluate(url => window.location.assign(url), callback);
+    await page.waitForFunction(() => { try { return window.probe.location.pathname === "/callback" && window.probe.location.search.includes("probe-code"); } catch { return false; } });
+    assert.equal(await popup.evaluate(() => window.opener), null, "returned page still has no opener");
+    const closed = popup.waitForEvent("close");
+    await page.evaluate(() => window.probe.close());
+    await closed;
+  } finally {
+    await context.unroute(`${providerOrigin}/**`);
+    provider.closeAllConnections();
+    await new Promise(resolve => provider.close(resolve));
+  }
+}
+
+async function runPopupFixture(page, origin) {
+  const provider = http.createServer((_, res) => { res.writeHead(200, { "content-type": "text/html" }); res.end("<!doctype html><title>Synthetic authorization</title>"); });
+  await new Promise(resolve => provider.listen(0, "127.0.0.1", resolve));
+  const providerOrigin = `http://127.0.0.1:${provider.address().port}`;
+  const context = page.context();
+  state.popupOnly = true;
+  state.callbackOnly = true;
+  state.authOnly = true;
+  state.popupAuthorizations = [];
+  state.popupProviderOrigin = providerOrigin;
+  state.connections = [];
+  await context.addInitScript(() => {
+    Object.defineProperty(window, "BroadcastChannel", { configurable: true, value: undefined });
+    Object.defineProperty(window, "localStorage", { configurable: true, get() { throw new DOMException("Fixture storage unavailable", "SecurityError"); } });
+  });
+  await context.route(`${providerOrigin}/**`, route => route.continue());
+  const exchanges = providerId => state.writes.filter(w => w.path === `/api/oauth/${providerId}/exchange`);
+  const open = async providerName => {
+    const event = page.waitForEvent("popup");
+    await page.getByRole("button", { name: /^add Add(?: Connection)?$/ }).click();
+    const popup = await event;
+    await popup.waitForURL(`${providerOrigin}/authorize`);
+    assert.equal(await popup.evaluate(() => window.opener), null, "external provider cannot access dashboard opener");
+    const modal = page.getByRole("dialog", { name: `Connect ${providerName}` });
+    await modal.getByLabel("Callback URL").waitFor();
+    return { popup, modal, auth: state.popupAuthorizations.at(-1) };
+  };
+  const pause = () => page.waitForTimeout(500);
+  const navigate = async (popup, url) => { await popup.evaluate(next => window.location.assign(next), url); await popup.waitForURL(url); };
+  try {
+    await page.goto(`${origin}/dashboard/providers/cline`);
+    let { popup, modal, auth } = await open("Cline");
+    const redirect = new URL(auth.redirectUri);
+    assert.equal(redirect.origin, origin);
+    assert.equal(redirect.pathname, "/callback");
+    const nonce = redirect.searchParams.get("openproxy_oauth_nonce");
+    assert.match(nonce, /^[0-9a-f]{64}$/, "Cline redirect binds a cryptographic nonce");
+    const initial = exchanges("cline").length;
+    for (const query of [
+      "code=missing-nonce",
+      "code=wrong-nonce&openproxy_oauth_nonce=wrong",
+      `code=conflicting-state&openproxy_oauth_nonce=${nonce}&state=wrong`,
+      `code=wrong-provider&openproxy_oauth_nonce=${nonce}&provider=claude`,
+    ]) {
+      await navigate(popup, `${origin}/callback?${query}`);
+      await pause();
+      assert.equal(exchanges("cline").length, initial, "invalid Cline callback is rejected");
+      assert.equal(popup.isClosed(), false, "invalid callback stays available for manual copying");
+    }
+    await navigate(popup, `${origin}/fixture-observer?code=wrong-path&openproxy_oauth_nonce=${nonce}`);
+    await pause();
+    assert.equal(exchanges("cline").length, initial, "same-origin non-callback paths are ignored");
+    state.holdClineExchange = true;
+    await navigate(popup, `${origin}/callback?code=cline-code&openproxy_oauth_nonce=${nonce}`);
+    await waitForFixture(() => typeof state.releaseClineExchange === "function");
+    assert.deepEqual(exchanges("cline").at(-1).body, { code: "cline-code", redirectUri: auth.redirectUri, codeVerifier: "fixture-verifier", state: auth.state });
+    await popup.waitForTimeout(2100);
+    assert.equal(popup.isClosed(), false, "a callback is not closed before its exchange succeeds");
+    const oldPopup = popup;
+    await modal.getByRole("button", { name: "Close" }).click();
+    await modal.waitFor({ state: "detached" });
+    ({ popup, modal, auth } = await open("Cline"));
+    const nextNonce = new URL(auth.redirectUri).searchParams.get("openproxy_oauth_nonce");
+    assert.match(nextNonce, /^[0-9a-f]{64}$/);
+    assert.notEqual(nextNonce, nonce, "each Cline attempt uses a fresh binding");
+    const oldClosed = oldPopup.waitForEvent("close", { timeout: 6000 });
+    state.releaseClineExchange();
+    await page.getByText("Cline fixture 1", { exact: true }).waitFor();
+    await modal.getByLabel("Callback URL").waitFor();
+    await oldClosed;
+    assert.equal(popup.isClosed(), false, "old completion never closes the newer popup");
+    await navigate(popup, `${origin}/callback?code=old-attempt&openproxy_oauth_nonce=${nonce}`);
+    await pause();
+    assert.equal(exchanges("cline").length, initial + 1, "stale nonce cannot authenticate a newer attempt");
+    await modal.getByRole("button", { name: "Close" }).click();
+    await modal.waitFor({ state: "detached" });
+    await pause();
+    assert.equal(popup.isClosed(), false, "dismissal preserves an unconsumed popup for manual fallback");
+    await popup.close();
+
+    await page.goto(`${origin}/dashboard/providers/claude`);
+    await page.evaluate(() => {
+      const original = window.open;
+      let block = true;
+      window.open = function (...args) { if (block) { block = false; return null; } return original.apply(this, args); };
+    });
+    await page.getByRole("button", { name: /^add Add(?: Connection)?$/ }).click();
+    modal = page.getByRole("dialog", { name: "Connect Claude" });
+    await modal.getByLabel("Callback URL").waitFor();
+    const openButton = modal.getByRole("button", { name: "Open Authorization" });
+    await openButton.waitFor();
+    const blockedEvent = page.waitForEvent("popup");
+    await openButton.click();
+    popup = await blockedEvent;
+    await popup.waitForURL(`${providerOrigin}/authorize`);
+    assert.equal(await popup.evaluate(() => window.opener), null);
+    auth = state.popupAuthorizations.at(-1);
+    const before = exchanges("claude").length;
+    await navigate(popup, `${origin}/callback?code=wrong-state&state=wrong`);
+    await pause();
+    assert.equal(exchanges("claude").length, before, "non-Cline providers still require exact state");
+    assert.equal(popup.isClosed(), false);
+    state.rejectClaudeExchange = true;
+    await navigate(popup, `${origin}/callback?code=failing-code&state=${encodeURIComponent(auth.state)}`);
+    await modal.getByText("Synthetic exchange failure").waitFor();
+    assert.equal(popup.isClosed(), false, "failed exchange leaves callback URL available");
+    assert.match(popup.url(), /failing-code/);
+    const retryPopupEvent = page.waitForEvent("popup");
+    await modal.getByRole("button", { name: "Retry" }).click();
+    const oldFailedPopup = popup;
+    popup = await retryPopupEvent;
+    await popup.waitForURL(`${providerOrigin}/authorize`);
+    assert.equal(await popup.evaluate(() => window.opener), null);
+    auth = state.popupAuthorizations.at(-1);
+    const started = Date.now();
+    const closed = popup.waitForEvent("close", { timeout: 7000 });
+    await navigate(popup, `${origin}/callback?code=successful-code&state=${encodeURIComponent(auth.state)}`);
+    await modal.waitFor({ state: "detached" });
+    await popup.waitForTimeout(700);
+    assert.equal(popup.isClosed(), false, "successful popup waits before auto-close");
+    await closed;
+    assert.ok(Date.now() - started >= 1700, "successful callback closes around two seconds after consumption");
+    assert.equal(oldFailedPopup.isClosed(), false, "a later attempt never closes an earlier failed popup");
+    await oldFailedPopup.close();
+  } finally {
+    if (state.releaseClineExchange) state.releaseClineExchange();
+    await context.unroute(`${providerOrigin}/**`);
+    provider.closeAllConnections();
+    await new Promise(resolve => provider.close(resolve));
+  }
+}
+
 async function main() {
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-  const origin = `http://127.0.0.1:${server.address().port}`;
+  const origin = `http://${process.env.PROVIDER_POPUP_ONLY === "1" ? "localhost" : "127.0.0.1"}:${server.address().port}`;
   state.addCounter = 0;
   state.oauthPolls = 0;
   const browser = await chromium.launch({ executablePath: process.env.CHROME_BIN || undefined, chromiumSandbox: true, headless: true });
   try {
-    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const page = await context.newPage();
     page.setDefaultTimeout(10000);
     const errors = []; page.on("pageerror", error => errors.push(String(error)));
     await page.context().route("**/*", route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
+    if (process.env.PROVIDER_POPUP_ONLY === "1") {
+      await runPopupFixture(page, origin);
+      assert.deepEqual(errors, []);
+      console.log("synthetic same-origin OAuth popup smoke passed");
+      return;
+    }
+    if (process.env.PROVIDER_POPUP_PROBE === "1") {
+      await runPopupProbe(page, origin);
+      assert.deepEqual(errors, []);
+      console.log("synthetic retained-popup probe passed");
+      return;
+    }
+    if (process.env.PROVIDER_CALLBACK_ONLY === "1") {
+      await runCallbackFixture(page, origin);
+      assert.deepEqual(errors, []);
+      console.log("synthetic OAuth callback smoke passed");
+      return;
+    }
     if (process.env.PROVIDER_AUTH_ONLY === "1") {
       await runAuthFixture(page, origin);
       assert.deepEqual(errors, []);

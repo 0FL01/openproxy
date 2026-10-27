@@ -7,6 +7,7 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{AbortController, AbortSignal, Request, RequestCredentials, RequestInit, Response};
 
+mod callback;
 mod endpoint;
 mod i18n;
 mod providers;
@@ -31,11 +32,15 @@ thread_local! {
     // The router canonicalizes untyped query/fragment parts on startup. Capture
     // the provider deep link first so it can be handled without losing data.
     static PROVIDER_INITIAL_LOCATION: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
+    static CALLBACK_INITIAL_URL: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 pub fn start() {
     if let Some(window) = web_sys::window() {
         let location = window.location();
+        if location.pathname().ok().as_deref() == Some("/callback") {
+            CALLBACK_INITIAL_URL.with(|initial| *initial.borrow_mut() = location.href().ok());
+        }
         if location.pathname().is_ok_and(|path| {
             path == "/dashboard/providers" || path.starts_with("/dashboard/providers/")
         }) {
@@ -113,6 +118,8 @@ enum Route {
     ProviderDetail { id: String },
     #[route("/login")]
     Login {},
+    #[route("/callback")]
+    Callback {},
 }
 
 #[component]
@@ -153,6 +160,11 @@ fn ProviderDetail(id: String) -> Element {
         }
     });
     rsx! { shell::Dashboard {} }
+}
+
+#[component]
+fn Callback() -> Element {
+    rsx! { callback::CallbackPage {} }
 }
 
 fn restore_provider_location(path: &str) {

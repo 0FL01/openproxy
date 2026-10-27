@@ -2,6 +2,9 @@
 mod auth;
 
 #[cfg(any(target_arch = "wasm32", test))]
+mod auth_callback;
+
+#[cfg(any(target_arch = "wasm32", test))]
 mod available_models;
 
 #[cfg(any(target_arch = "wasm32", test))]
