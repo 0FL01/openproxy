@@ -8,6 +8,7 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::{AbortController, AbortSignal, Request, RequestCredentials, RequestInit, Response};
 
 mod callback;
+mod console_log;
 mod endpoint;
 mod i18n;
 mod providers;
@@ -119,6 +120,8 @@ enum Route {
     ProviderDetail { id: String },
     #[route("/dashboard/skills")]
     Skills {},
+    #[route("/dashboard/console-log")]
+    ConsoleLog {},
     #[route("/login")]
     Login {},
     #[route("/callback")]
@@ -167,6 +170,11 @@ fn ProviderDetail(id: String) -> Element {
 
 #[component]
 fn Skills() -> Element {
+    rsx! { shell::Dashboard {} }
+}
+
+#[component]
+fn ConsoleLog() -> Element {
     rsx! { shell::Dashboard {} }
 }
 

@@ -4,11 +4,11 @@ This is a separate, browser-only Rust/WASM application. It implements `/login`,
 the standalone `/callback` OAuth relay,
 the shared dashboard shell and Endpoint page at `/`, `/dashboard`, and
 `/dashboard/endpoint`, the list and chooser at `/dashboard/providers` and
-`/dashboard/providers/new`, the Skills page at `/dashboard/skills`, and a
-partial `/dashboard/providers/:id` detail page against the existing same-origin
-APIs. It does not replace the Astro frontend or alter how OpenProxy is packaged
-or served. Other dashboard pages
-are not implemented; their links remain ordinary browser navigations, not
+`/dashboard/providers/new`, Skills at `/dashboard/skills`, Console Log at
+`/dashboard/console-log`, and a partial `/dashboard/providers/:id` detail page
+against the existing same-origin APIs. It does not replace the Astro frontend
+or alter how OpenProxy is packaged or served. Other dashboard pages are not
+implemented; their links remain ordinary browser navigations, not
 substitute pages. Login and logout use full browser redirects, as the current
 frontend does.
 

@@ -83,6 +83,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - Context controls: the focused synthetic browser check passed for OpenCode Go, GLM and Claude, including settings preservation, reload and catalog refresh; OpenCode Zen remains hidden as in the no-auth reference. A separate isolated backend check verified Codex and GLM settings across page reload. No new screenshot comparison or backend process-restart durability check was run.
 - OpenRouter suggestions: the Astro reference self-repeated and Dioxus matched four synthetic desktop/mobile light/dark screenshots at AE=0 without masks. Both passed catalog/alias filtering, model-add request and page-reload checks on synthetic data; live OpenRouter and backend-restart persistence were not tested.
 - Skills: the Dioxus page and clipboard feedback matched eight self-repeating Astro desktop/mobile light/dark screenshots at AE=0 without masks; the synthetic browser verified the copied URL, links and feedback reset.
+- Console Log: eight self-repeating Astro desktop/mobile light/dark screenshots matched at AE=0 without masks. The synthetic browser exercised native EventSource init/line, the 200-line bound and autoscroll, then verified a mocked DELETE followed by a synthetic clear event. No real logs were read.
 - Blocker: none external. Dioxus re-encodes PNG color metadata; `frontend/scripts/build.sh` preserves original provider icons for the served output. The skeleton and theme cannot appear before WASM startup as Astro's synchronous HTML/script did.
 - Next: migrate xAI force-refresh and remaining provider-specific behavior, then other routes and the Translator editor. Cline's live query-preservation behavior remains unverified.
 
@@ -118,6 +119,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-10-27: R3 advertised-context controls were extended to the other applicable providers. The focused synthetic browser check and an isolated backend settings save/reload check passed; screenshots and backend-restart durability were not checked in this slice.
 - 2026-10-27: R2/R3 OpenRouter suggested-model chips and their add behavior matched four self-repeating synthetic Astro references at AE=0; no live provider was contacted.
 - 2026-10-27: R2/R3 Skills page matched eight self-repeating synthetic Astro references at AE=0; clipboard and link behavior were checked in the isolated browser.
+- 2026-10-27: R2/R3 Console Log matched eight self-repeating synthetic Astro references at AE=0; stream and clear-event behavior were checked without reading real logs.
 
 ## Completion
 

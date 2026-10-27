@@ -100,6 +100,8 @@ const screens = [
   { section: "provider-openrouter", name: "suggested" },
   { section: "skills", name: "ready" },
   { section: "skills", name: "copied", action: "copied" },
+  { section: "console-log", name: "empty" },
+  { section: "console-log", name: "streaming" },
   { section: "callback", name: "code", query: callbackCodeQuery, colorScheme: "light" },
   { section: "callback", name: "error", query: callbackErrorQuery, colorScheme: "light" },
   { section: "callback", name: "no-auth-data", query: "", colorScheme: "light" },
@@ -189,7 +191,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
               const codexWrites = screen.name === "on" ? [true, false].map((on) => ({
                 method: "PATCH", path: "/api/settings", body: { codexAutoPing: codexConfig(on) },
               })) : [];
-              const expectedWrites = isOpenRouter ? [{ method: "POST", path: "/api/models/custom", body: { providerAlias: "openrouter", id: "sample/model:free", type: "llm" } }] : screen.section === "provider-kilocode" ? (kiloWrites[screen.action] || []) : screen.section === "provider-codex-autoping" ? codexWrites : screen.login
+              const expectedWrites = screen.section === "console-log" && screen.name === "streaming" ? [{ method: "DELETE", path: "/api/translator/console-logs", body: null }] : isOpenRouter ? [{ method: "POST", path: "/api/models/custom", body: { providerAlias: "openrouter", id: "sample/model:free", type: "llm" } }] : screen.section === "provider-kilocode" ? (kiloWrites[screen.action] || []) : screen.section === "provider-codex-autoping" ? codexWrites : screen.login
                 ? [{ method: "POST", path: "/api/auth/login", body: { password: "fixture-password" } }]
                 : screen.action === "created"
                   ? [{ method: "POST", path: "/api/keys", body: { name: "Fixture new" } }]
@@ -202,6 +204,14 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       configurable: true,
                       value: async (value) => { window.__fixtureCopied = value; },
                     });
+                  });
+                }
+                if (screen.section === "console-log") {
+                  await page.addInitScript(() => {
+                    const NativeEventSource = window.EventSource;
+                    window.EventSource = class extends NativeEventSource {
+                      constructor(...args) { super(...args); window.__consoleSource = this; }
+                    };
                   });
                 }
                 if (screen.storedTheme) {
@@ -252,7 +262,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     (screen.section === "providers" && (path === "/dashboard/providers" || /^\/providers\/[a-z0-9_-]+\.png$/.test(path))) ||
                     (screen.section === "providers-new" && !url.search && ["/dashboard/providers/new", "/providers/codex.png", "/providers/opencode-zen.png", "/providers/openai.png"].includes(path)) ||
                     (screen.section === "provider-kilocode" && !url.search && ["/dashboard/providers/kilocode", "/providers/kilocode.png"].includes(path)) ||
-                    (screen.section === "skills" && !url.search && path === "/dashboard/skills");
+                    (screen.section === "skills" && !url.search && path === "/dashboard/skills") ||
+                    (screen.section === "console-log" && !url.search && path === "/dashboard/console-log");
                   if (url.origin === appUrl && method === "GET" && assets) {
                     if (!isCodexDetail) return route.continue();
                     // Do not let even an allowed asset redirect around the
@@ -296,7 +307,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   const codexMutation = screen.section === "provider-codex-autoping" && method !== "GET" &&
                     expectedWrites.some((write) => write.method === method && write.path === `${path}${url.search}`);
                   const routerMutation = isOpenRouter && method === "POST" && !url.search && path === "/api/models/custom";
-                  const valid = url.origin === appUrl && (providerGet || providerNewGet || kiloGet || kiloMutation || compatibleGet || codexGet || codexMutation || routerGet || routerMutation || (!isCodexDetail && !["providers", "providers-new", "provider-kilocode", "provider-compatible", "provider-openrouter", "callback"].includes(screen.section) && (
+                  const consoleRequest = screen.section === "console-log" && !url.search && ((method === "GET" && path === "/api/translator/console-logs/stream") || (method === "DELETE" && path === "/api/translator/console-logs" && screen.name === "streaming"));
+                  const valid = url.origin === appUrl && (providerGet || providerNewGet || kiloGet || kiloMutation || compatibleGet || codexGet || codexMutation || routerGet || routerMutation || consoleRequest || (!isCodexDetail && !["providers", "providers-new", "provider-kilocode", "provider-compatible", "provider-openrouter", "callback"].includes(screen.section) && (
                     (method === "GET" && ["/api/auth/status", "/api/settings", "/api/keys", "/api/build", "/api/catalog"].includes(path)) ||
                     (method === "POST" && path === "/api/auth/login" && !!screen.login) ||
                     (method === "POST" && path === "/api/keys" && screen.action === "created")
@@ -313,7 +325,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       return route.abort("blockedbyclient");
                     }
                     const write = { method, path: ["provider-kilocode", "provider-codex-autoping"].includes(screen.section) ? `${path}${url.search}` : path, body: requestBody };
-                    if ((["provider-kilocode", "provider-codex-autoping"].includes(screen.section) || isOpenRouter) && !isDeepStrictEqual(write, expectedWrites[writes.length])) {
+                    if ((["provider-kilocode", "provider-codex-autoping", "console-log"].includes(screen.section) || isOpenRouter) && !isDeepStrictEqual(write, expectedWrites[writes.length])) {
                       unexpected.push(`unexpected mutation ${method} ${url.origin}${path}${url.search}`);
                       return route.abort("blockedbyclient");
                     }
@@ -322,6 +334,11 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   let status = 200;
                   let body = {};
                   const headers = {};
+                  if (path === "/api/translator/console-logs/stream") {
+                    const logs = screen.name === "streaming" ? Array.from({ length: 201 }, (_, index) => `[fixture] [INFO] line ${index}`) : [];
+                    const events = [{ type: "init", logs }, ...(screen.name === "streaming" ? [{ type: "line", line: "[fixture] [ERROR] latest line" }] : [])];
+                    return route.fulfill({ status: 200, headers: { "content-type": "text/event-stream" }, body: `retry: 15000\n\n${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}` });
+                  }
                   if (path === "/api/auth/status") {
                     body = { requireLogin: true, authenticated, hasPassword: screen.hasPassword ?? true };
                   } else if (path === "/api/auth/login") {
@@ -429,7 +446,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   if (path === "/api/oauth/codex/stop-proxy") interceptedCodexStop += 1;
                 });
 
-                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : screen.section === "providers-new" ? "/dashboard/providers/new" : screen.section === "provider-kilocode" ? "/dashboard/providers/kilocode" : screen.section === "provider-compatible" ? compatiblePath : isCodexDetail ? codexPath : isOpenRouter ? "/dashboard/providers/openrouter" : screen.section === "skills" ? "/dashboard/skills" : screen.section === "callback" ? "/callback" : "/dashboard/endpoint";
+                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : screen.section === "providers-new" ? "/dashboard/providers/new" : screen.section === "provider-kilocode" ? "/dashboard/providers/kilocode" : screen.section === "provider-compatible" ? compatiblePath : isCodexDetail ? codexPath : isOpenRouter ? "/dashboard/providers/openrouter" : screen.section === "skills" ? "/dashboard/skills" : screen.section === "console-log" ? "/dashboard/console-log" : screen.section === "callback" ? "/callback" : "/dashboard/endpoint";
                 const sourceRoute = screen.section === "provider-compatible" ? compatibleTemplate : path;
                 const response = await page.goto(`${appUrl}${path}${screen.query || ""}`, { waitUntil: "domcontentloaded" });
                 assert(response?.ok(), `failed to load ${path}`);
@@ -441,7 +458,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       assert(html.includes(marker), "record mode requires the standalone Astro callback markup");
                     }
                   } else {
-                    const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : screen.section === "providers-new" ? "ProvidersNewPageClient." : ["provider-kilocode", "provider-compatible"].includes(screen.section) || isCodexDetail || isOpenRouter ? "ProviderDetailPageClient." : screen.section === "skills" ? "SkillsPageClient." : "EndpointPageClient.";
+                    const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : screen.section === "providers-new" ? "ProvidersNewPageClient." : ["provider-kilocode", "provider-compatible"].includes(screen.section) || isCodexDetail || isOpenRouter ? "ProviderDetailPageClient." : screen.section === "skills" ? "SkillsPageClient." : screen.section === "console-log" ? "ConsoleLogClient." : "EndpointPageClient.";
                     assert(html.includes(`component-url="/_astro/${component}`), "record mode requires the Astro reference");
                     if (screen.section === "provider-compatible") assert(source.routes[sourceRoute], "dynamic Astro provider template hash must be pinned before recording");
                     if (isCodexDetail) assert(source.routes[sourceRoute], "Astro Codex route hash must be pinned before recording");
@@ -464,6 +481,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 else if (isCodexDetail) await page.getByRole("checkbox", { name: "Select connection Fixture Codex" }).waitFor();
                 else if (isOpenRouter) await page.getByText("Suggested free models (≥200k context):", { exact: true }).waitFor();
                 else if (screen.section === "skills") await page.getByRole("heading", { name: "OpenProxy (Entry)", exact: true }).waitFor();
+                else if (screen.section === "console-log") await page.getByRole("button", { name: /Clear/ }).waitFor();
                 else if (screen.section === "callback") await page.getByRole("heading", { name: screen.name === "error" ? "Authentication Failed" : screen.name === "no-auth-data" ? "No Auth Data Found" : "Authentication Complete", exact: true }).waitFor();
                 else await page.getByText("Fixture key", { exact: true }).waitFor();
                 const disableMotion = () => page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}" });
@@ -538,6 +556,32 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   } else {
                     assert(await page.evaluate(() => typeof window.BroadcastChannel === "function" && typeof window.localStorage.setItem === "function"), "normal callback relays must be available");
                     assert.equal(await page.getByRole("button", { name: "Copy URL", exact: true }).count(), 0);
+                  }
+                  await page.mouse.move(1, 1);
+                  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+                } else if (screen.section === "console-log") {
+                  const output = page.locator("#console-log-output, div.bg-black.rounded-b-lg");
+                  await output.waitFor();
+                  if (screen.name === "empty") {
+                    await output.getByText("No console logs yet.", { exact: true }).waitFor();
+                  } else {
+                    await output.getByText("[fixture] [ERROR] latest line", { exact: true }).waitFor();
+                    assert.equal(await output.locator("div.space-y-0\\.5 > div").count(), 200, "the stream retains only the latest 200 lines");
+                    assert.equal(await output.getByText("[fixture] [INFO] line 1", { exact: true }).count(), 0);
+                    assert.equal(await output.getByText("[fixture] [INFO] line 2", { exact: true }).count(), 1);
+                    assert.equal(await output.getByText("[fixture] [ERROR] latest line", { exact: true }).getAttribute("class"), "text-red-400");
+                    await page.waitForFunction(() => {
+                      const output = document.querySelector("div.bg-black.rounded-b-lg");
+                      return output && output.scrollTop + output.clientHeight >= output.scrollHeight;
+                    });
+                    verifyAfterCapture = async () => {
+                      const response = page.waitForResponse((r) => r.request().method() === "DELETE" && r.url() === `${appUrl}/api/translator/console-logs`);
+                      await page.getByRole("button", { name: /Clear/ }).click();
+                      assert((await response).ok());
+                      assert.equal(await output.getByText("[fixture] [ERROR] latest line", { exact: true }).count(), 1, "the DELETE alone does not clear the view");
+                      await page.evaluate(() => window.__consoleSource.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "clear" }) })));
+                      await output.getByText("No console logs yet.", { exact: true }).waitFor();
+                    };
                   }
                   await page.mouse.move(1, 1);
                   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));

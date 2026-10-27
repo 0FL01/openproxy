@@ -1,5 +1,7 @@
 use super::{
-    apply_theme, current_theme,
+    apply_theme,
+    console_log::ConsoleLogPage,
+    current_theme,
     endpoint::EndpointPage,
     i18n::I18n,
     json_body, navigate,
@@ -308,7 +310,7 @@ fn DashboardContent() -> Element {
                 Header { on_menu: move |_| sidebar_open.set(true), search, is_providers, is_providers_new: is_providers_new || is_provider_detail, provider_id: provider_id.clone() }
                 div { class: "flex-1 overflow-y-auto custom-scrollbar p-6 lg:p-10",
                     div { class: "max-w-7xl mx-auto",
-                        if is_providers { ProvidersPage { search } } else if is_providers_new { NewProviderPage {} } else if let Some(id) = provider_id { ProviderDetailPage { id } } else if pathname == "/dashboard/skills" { SkillsPage {} } else { EndpointPage {} }
+                        if is_providers { ProvidersPage { search } } else if is_providers_new { NewProviderPage {} } else if let Some(id) = provider_id { ProviderDetailPage { id } } else if pathname == "/dashboard/skills" { SkillsPage {} } else if pathname == "/dashboard/console-log" { ConsoleLogPage {} } else { EndpointPage {} }
                     }
                 }
             }
@@ -620,10 +622,13 @@ fn Header(
         .unwrap_or_default();
     let show_title = pathname == "/dashboard"
         || pathname.contains("/endpoint")
+        || pathname == "/dashboard/console-log"
         || is_providers
         || is_providers_new;
     let (title, description, page_icon) = if is_providers || is_providers_new {
         ("Providers", "Manage your AI provider connections", "dns")
+    } else if pathname == "/dashboard/console-log" {
+        ("Console Log", "Live server console output", "monitor")
     } else {
         ("Endpoint", "API endpoint configuration", "api")
     };
