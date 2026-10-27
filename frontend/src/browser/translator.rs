@@ -1326,90 +1326,51 @@ fn toggle_json_line_comments(input: &web_sys::HtmlTextAreaElement) {
     }
 }
 
-fn indent_selection(input: &web_sys::HtmlTextAreaElement, backwards: bool) {
+fn indent_selection(input: &web_sys::HtmlTextAreaElement, backwards: bool) -> Option<NativeUndo> {
     const TAB_SIZE: u32 = 4;
-    let text = js_sys::JsString::from(input.value());
+    let before_value = input.value();
+    let text = js_sys::JsString::from(before_value.as_str());
     let start = input.selection_start().ok().flatten().unwrap_or_default();
     let end = input.selection_end().ok().flatten().unwrap_or(start);
+    let direction = input
+        .selection_direction()
+        .ok()
+        .flatten()
+        .unwrap_or_default();
     let before = text.slice(0, start).as_string().unwrap_or_default();
     let line_prefix = before.rsplit('\n').next().unwrap_or("");
-    if start == end && !backwards {
-        let column = line_prefix.chars().fold(0_u32, |column, ch| {
-            if ch == '\t' {
-                column + TAB_SIZE - column % TAB_SIZE
-            } else {
-                column + ch.len_utf16() as u32
-            }
-        });
-        let spaces = " ".repeat((TAB_SIZE - column % TAB_SIZE) as usize);
-        let _ = insert_text(input, start, end, &spaces);
-        return;
-    }
-
-    let line_start = start - line_prefix.encode_utf16().count() as u32;
-    let last = if end > start && text.slice(end - 1, end).as_string().as_deref() == Some("\n") {
-        end - 1
-    } else {
-        end
-    };
+    let selected = text.slice(start, end).as_string().unwrap_or_default();
     let after = text
-        .slice(last, text.length())
+        .slice(end, text.length())
         .as_string()
         .unwrap_or_default();
-    let line_end = last
-        + after
-            .split('\n')
-            .next()
-            .unwrap_or("")
-            .encode_utf16()
-            .count() as u32;
-    let lines = text
-        .slice(line_start, line_end)
-        .as_string()
-        .unwrap_or_default();
-    let mut first_removed = 0_u32;
-    let mut removed = 0_u32;
-    let mut count = 0_u32;
-    let updated = lines
-        .split('\n')
-        .map(|line| {
-            count += 1;
-            if backwards {
-                let remove = if line.starts_with('\t') {
-                    1
-                } else {
-                    line.bytes()
-                        .take_while(|byte| *byte == b' ')
-                        .count()
-                        .min(TAB_SIZE as usize)
-                };
-                if count == 1 {
-                    first_removed = remove as u32;
-                }
-                removed += remove as u32;
-                line[remove..].to_owned()
-            } else {
-                format!("    {line}")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    if backwards && removed == 0 {
-        return;
+    if backwards
+        || start != end
+            && (selected.contains('\n')
+                || line_prefix.is_empty() && (after.is_empty() || after.starts_with('\n')))
+    {
+        return indent_lines(input, backwards);
     }
-    if insert_text(input, line_start, line_end, &updated) {
-        let new_start = if backwards {
-            start.saturating_sub(first_removed.min(start - line_start))
+    let column = line_prefix.chars().fold(0_u32, |column, ch| {
+        if ch == '\t' {
+            column + TAB_SIZE - column % TAB_SIZE
         } else {
-            start + TAB_SIZE
-        };
-        let new_end = if backwards {
-            end.saturating_sub(removed)
-        } else {
-            end + TAB_SIZE * count
-        };
-        let _ = input.set_selection_range(new_start, new_end.max(new_start));
+            column + ch.len_utf16() as u32
+        }
+    });
+    let spaces = TAB_SIZE - column % TAB_SIZE;
+    if !insert_text(input, start, end, &" ".repeat(spaces as usize)) {
+        return None;
     }
+    Some(NativeUndo {
+        before: before_value,
+        after: input.value(),
+        start,
+        end,
+        direction,
+        after_selection: Some((start + spaces, start + spaces, "none".into())),
+        edits: Vec::new(),
+    })
 }
 
 fn indent_lines(input: &web_sys::HtmlTextAreaElement, backwards: bool) -> Option<NativeUndo> {
@@ -2954,7 +2915,10 @@ fn Editor(
                                 tab_focus_announcement.set(if enabled { "Pressing Tab will now move focus to the next focusable element" } else { "Pressing Tab will now insert the tab character" }.to_owned());
                             } else if event.key() == Key::Tab && !event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().alt() && !*tab_moves_focus.peek() {
                                 event.prevent_default();
-                                if let Some(input) = textarea.peek().as_ref() { indent_selection(input, event.modifiers().shift()); }
+                                if let Some(input) = textarea.peek().as_ref() && let Some(undo) = indent_selection(input, event.modifiers().shift()) {
+                                    command_selections.write().record(undo);
+                                    composition_extendable.set(false);
+                                }
                                 update_cursor.call(());
                             } else if event.modifiers().alt() && !event.modifiers().ctrl() && !event.modifiers().shift() && key.eq_ignore_ascii_case("p")
                                 && event.modifiers().meta() == web_sys::window().and_then(|window| window.navigator().user_agent().ok()).is_some_and(|agent| agent.contains("Macintosh")) {

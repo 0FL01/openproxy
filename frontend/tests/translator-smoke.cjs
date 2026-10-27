@@ -107,6 +107,12 @@ async function main() {
       await page.keyboard.press("Control+z");
       assert.equal(await value(), text);
       assert.equal(await cursor(), offset);
+      await page.keyboard.press("Shift+Tab");
+      assert.equal(await value(), text.replace('      "text"', '    "text"'), "Shift+Tab uses the same previous four-column stop");
+      assert.equal(await cursor(), offset - 2);
+      await page.keyboard.press("Control+z");
+      assert.equal(await value(), text);
+      assert.equal(await cursor(), offset);
       const range = [text.indexOf("\n") + 3, text.lastIndexOf("}")];
       if (reference) await page.evaluate(range => { const e = window.monaco.editor.getEditors()[0]; const model = e.getModel(); const a = model.getPositionAt(range[0]); const b = model.getPositionAt(range[1]); e.setSelection(new window.monaco.Selection(b.lineNumber, b.column, a.lineNumber, a.column)); }, range);
       else await editor().evaluate((input, range) => input.setSelectionRange(...range, "backward"), range);
@@ -117,18 +123,34 @@ async function main() {
       await page.keyboard.press("Control+z");
       assert.equal(await value(), text);
       assert.deepEqual(await selected(), [...range, "backward"]);
+      await page.keyboard.press("Tab");
+      assert.equal(await value(), text.replaceAll('      "', '        "'), "multiline Tab advances to four-column stops rather than adding four spaces");
+      assert.deepEqual(await selected(), [range[0], range[1] + 4, "backward"]);
+      await page.keyboard.press("Control+z");
+      assert.equal(await value(), text);
+      assert.deepEqual(await selected(), [...range, "backward"]);
+      const partial = [text.indexOf("other"), text.indexOf("other") + 5];
+      if (reference) await page.evaluate(range => { const e = window.monaco.editor.getEditors()[0]; const m = e.getModel(); const a = m.getPositionAt(range[0]); const b = m.getPositionAt(range[1]); e.setSelection(new window.monaco.Selection(a.lineNumber, a.column, b.lineNumber, b.column)); }, partial);
+      else await editor().evaluate((input, range) => input.setSelectionRange(...range), partial);
+      await page.keyboard.press("Tab");
+      assert.equal(await value(), text.replace("other", " "), "Tab replaces a partial single-line selection at its starting column");
+      assert.equal(await cursor(), partial[0] + 1);
+      await page.keyboard.press("Control+z");
+      assert.equal(await value(), text);
+      assert.deepEqual((await selected()).slice(0, 2), partial);
       if (reference) await settleReferenceJson();
-      await page.getByRole("button", { name: /Client Request/ }).click();
       await page.getByRole("button", { name: /Provider Response/ }).click();
-      if (reference) { await page.locator(".monaco-editor .view-lines").waitFor(); await page.evaluate(() => { const e = window.monaco.editor.getEditors()[0]; e.setValue("alpha\nbeta"); e.setPosition({ lineNumber: 2, column: 2 }); e.focus(); }); }
-      else { await editor().fill("alpha\nbeta"); await editor().evaluate(input => { input.setSelectionRange(7, 7); input.focus(); }); }
+      if (reference) { await page.locator(".monaco-editor .view-lines").nth(1).waitFor(); await page.evaluate(() => { const e = window.monaco.editor.getEditors()[1]; e.setValue("alpha\nbeta"); e.setPosition({ lineNumber: 2, column: 2 }); e.focus(); }); }
+      else { await editor().nth(1).fill("alpha\nbeta"); await editor().nth(1).evaluate(input => { input.setSelectionRange(7, 7); input.focus(); }); }
+      const plainValue = () => reference ? page.evaluate(() => window.monaco.editor.getEditors()[1].getValue()) : editor().nth(1).inputValue();
+      const plainCursor = () => reference ? page.evaluate(() => { const e = window.monaco.editor.getEditors()[1]; return e.getModel().getOffsetAt(e.getPosition()); }) : editor().nth(1).evaluate(input => input.selectionStart);
       await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       await page.keyboard.press("Control+]");
-      assert.equal(await value(), "alpha\n    beta");
-      assert.equal(await cursor(), 11);
+      assert.equal(await plainValue(), "alpha\n    beta");
+      assert.equal(await plainCursor(), 11);
       await page.keyboard.press("Control+z");
-      assert.equal(await value(), "alpha\nbeta");
-      assert.equal(await cursor(), 7);
+      assert.equal(await plainValue(), "alpha\nbeta");
+      assert.equal(await plainCursor(), 7);
       assert.deepEqual(errors, []);
       console.log("synthetic translator line-indentation smoke passed");
       return;
