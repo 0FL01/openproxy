@@ -1585,12 +1585,26 @@ fn Editor(
                 *find_scope.peek(),
             );
             if !ranges.is_empty() {
-                let current = *match_index.peek();
-                let index = if next {
-                    (current + 1) % ranges.len()
+                let start = input.selection_start().ok().flatten().unwrap_or_default();
+                let end = input.selection_end().ok().flatten().unwrap_or(start);
+                let mut index = if next {
+                    ranges
+                        .iter()
+                        .position(|(start, _)| *start >= end)
+                        .unwrap_or(0)
                 } else {
-                    (current + ranges.len() - 1) % ranges.len()
+                    ranges
+                        .iter()
+                        .rposition(|(_, end)| *end <= start)
+                        .unwrap_or(ranges.len() - 1)
                 };
+                if start == end && ranges[index] == (start, end) {
+                    index = if next {
+                        (index + 1) % ranges.len()
+                    } else {
+                        (index + ranges.len() - 1) % ranges.len()
+                    };
+                }
                 match_index.set(index);
                 let (start, end) = ranges[index];
                 let _ = input.set_selection_range(start, end);
@@ -1842,6 +1856,13 @@ fn Editor(
     } else {
         match_index() % matches.len()
     };
+    let selected_match = has_selection()
+        && textarea().as_ref().is_some_and(|input| {
+            matches.get(current_match).is_some_and(|(start, end)| {
+                input.selection_start().ok().flatten() == Some(*start)
+                    && input.selection_end().ok().flatten() == Some(*end)
+            })
+        });
     let highlighted =
         (find_open() && !matches.is_empty()).then(|| highlight_find_matches(&lines, &matches));
     let root_width = editor_width() + 76;
@@ -1878,7 +1899,7 @@ fn Editor(
                                 if line == active_line() && !has_selection() { div { style: "position:absolute;top:{active_visual_top}px;left:0;width:{current_line_width}px;height:16px;border:2px solid #282828;" } }
                                 if let Some(highlighted) = &highlighted {
                                     for (index, (text, color, matched)) in highlighted[line].iter().enumerate() {
-                                        { let background = match matched { Some(index) if *index == current_match => ";background:#515c6a", Some(_) => ";background:rgba(234,92,0,.33)", None => "" }; rsx! {
+                                        { let background = match matched { Some(index) if selected_match && *index == current_match => ";background:#515c6a", Some(_) => ";background:rgba(234,92,0,.33)", None => "" }; rsx! {
                                             span { key: "{index}", class: if matched.is_some() { "find-match" } else { "" }, style: "color:{color}{background}", "{text}" }
                                         } }
                                     }

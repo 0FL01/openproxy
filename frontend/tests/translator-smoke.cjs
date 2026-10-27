@@ -96,6 +96,18 @@ async function main() {
       const dialog = page.getByRole("dialog", { name: "Find / Replace" });
       await dialog.getByLabel("Find", { exact: true }).waitFor();
       assert.deepEqual(await dialog.getByLabel("Find", { exact: true }).evaluate(input => [input.selectionStart, input.selectionEnd]), [0, 6], "the seeded search is selected on opening");
+      await page.waitForFunction(reference => {
+        const matches = [...document.querySelectorAll(reference ? ".monaco-editor .view-overlays .findMatch, .monaco-editor .view-overlays .currentFindMatch" : ".find-match")];
+        return matches.length === 2 && matches.every(element => getComputedStyle(element).backgroundColor === "rgba(234, 92, 0, 0.33)");
+      }, reference);
+      await dialog.getByLabel("Find", { exact: true }).press("Enter");
+      await dialog.getByText("1 of 2", { exact: true }).waitFor();
+      await page.waitForFunction(reference => {
+        const matches = [...document.querySelectorAll(reference ? ".monaco-editor .view-overlays .findMatch, .monaco-editor .view-overlays .currentFindMatch" : ".find-match")];
+        return matches.some(element => getComputedStyle(element).backgroundColor === "rgb(81, 92, 106)");
+      }, reference);
+      await dialog.getByLabel("Find", { exact: true }).press("Enter");
+      await dialog.getByText("2 of 2", { exact: true }).waitFor();
       assert.deepEqual(await dialog.evaluate(element => [element.offsetWidth, element.offsetHeight]), [419, 33], "desktop Find panel matches the reference dimensions");
       assert.equal(await dialog.getByLabel("Find", { exact: true }).evaluate(element => element.offsetWidth), 167);
       const lineTop = ({ reference, expected }) => {
