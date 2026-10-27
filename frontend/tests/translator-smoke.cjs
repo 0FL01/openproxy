@@ -504,6 +504,61 @@ async function main() {
       await expectBrackets(1, "[]");
       await move(1, plain.indexOf("y"));
       await expectBrackets(1, "()");
+
+      const cursor = (index = 0) => reference
+        ? page.evaluate(index => { const e = window.monaco.editor.getEditors()[index]; return e.getModel().getOffsetAt(e.getPosition()); }, index)
+        : editor().nth(index).evaluate(input => input.selectionStart);
+      const actionText = '{"s":"😺 {ignored}","arr":[1,{"n":2}],"tail":3}';
+      const innerOpen = actionText.indexOf('{"n"'), innerClose = actionText.indexOf('}', innerOpen);
+      await setText(0, actionText, actionText.indexOf("2"));
+      if (reference) await settleReferenceJson();
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.keyboard.press("Control+Shift+Backslash");
+      assert.equal(await cursor(), innerClose, "Go to Bracket chooses the innermost enclosing pair");
+      await page.keyboard.press("Control+Shift+Backslash");
+      assert.equal(await cursor(), innerOpen, "Go to Bracket returns from the closing bracket");
+      await page.keyboard.press("Control+Shift+Backslash");
+      await page.keyboard.press("Control+Alt+Backspace");
+      assert.equal(reference ? await value() : await editor().nth(0).inputValue(), actionText.slice(0, innerOpen) + actionText.slice(innerOpen + 1, innerClose) + actionText.slice(innerClose + 1));
+      assert.equal(await cursor(), innerClose - 1);
+      await page.keyboard.press("Control+z");
+      assert.equal(reference ? await value() : await editor().nth(0).inputValue(), actionText);
+      assert.equal(await cursor(), innerClose, "Remove Brackets restores the original cursor on Undo");
+      await move(0, actionText.indexOf("ignored"));
+      await page.keyboard.press("Control+Shift+Backslash");
+      assert.equal(await cursor(), actionText.length - 1, "braces inside a JSON string are not structural");
+
+      const commentText = '{\n  // [ignored]\n  "a": [1]\n}';
+      await setText(0, commentText, commentText.indexOf("ignored"));
+      if (reference) await settleReferenceJson();
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.keyboard.press("Control+Shift+Backslash");
+      assert.equal(await cursor(), commentText.length - 1, "brackets inside JSON comments are ignored");
+      const longText = "{\n" + Array.from({ length: 60 }, (_, index) => `  "row${index}": ${index}`).join(",\n") + "\n}";
+      await setText(0, longText, 0);
+      if (reference) await settleReferenceJson();
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.keyboard.press("Control+Shift+Backslash");
+      assert.equal(await cursor(), longText.length - 1);
+      await page.waitForFunction(reference => {
+        if (reference) {
+          const editor = window.monaco.editor.getEditors()[0], position = editor.getScrolledVisiblePosition(editor.getPosition());
+          return position && position.top >= 0 && position.top + position.height <= editor.getLayoutInfo().height;
+        }
+        const input = document.querySelector('[aria-label="Translator editor"]');
+        const line = input?.parentElement.querySelector("pre")?.lastElementChild;
+        return line && line.getBoundingClientRect().top >= input.getBoundingClientRect().top && line.getBoundingClientRect().bottom <= input.getBoundingClientRect().bottom;
+      }, reference);
+      await setText(1, "lead (x) tail", 0);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.keyboard.press("Control+Shift+Backslash");
+      assert.equal(await cursor(1), 5, "without an enclosing pair, navigate to the next bracket");
+      await page.keyboard.press("Control+Shift+Backslash");
+      assert.equal(await cursor(1), 7, "plaintext supports parentheses");
+      await page.keyboard.press("Control+Alt+Backspace");
+      assert.equal(reference ? await page.evaluate(() => window.monaco.editor.getEditors()[1].getValue()) : await editor().nth(1).inputValue(), "lead x tail");
+      await page.keyboard.press("Control+z");
+      assert.equal(await cursor(1), 7);
       assert.deepEqual(errors, []);
       console.log("synthetic translator brackets smoke passed");
       return;

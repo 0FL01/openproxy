@@ -4,43 +4,7 @@
 //! Monaco 0.55.1. Copyright (c) Microsoft Corporation. Permission and warranty
 //! notice: frontend/public/assets/translator-codicon-LICENSE.txt.
 
-use super::{character_top, insert_text, json_tokens, CompositionEdit, NativeUndo};
-use wasm_bindgen::JsCast;
-
-fn cursor_top(
-    input: &web_sys::HtmlTextAreaElement,
-    rendered: &web_sys::HtmlElement,
-) -> Option<f64> {
-    let start = input.selection_start().ok().flatten()?;
-    let end = input.selection_end().ok().flatten()?;
-    let position = if input.selection_direction().ok().flatten().as_deref() == Some("backward") {
-        start
-    } else {
-        end
-    };
-    let text = input.value();
-    let before = js_sys::JsString::from(text.as_str())
-        .slice(0, position)
-        .as_string()?;
-    let line_number = before.bytes().filter(|ch| *ch == b'\n').count();
-    let line_text = text.split('\n').nth(line_number)?;
-    let line = rendered
-        .child_nodes()
-        .item(line_number as u32)?
-        .dyn_into::<web_sys::HtmlElement>()
-        .ok()?;
-    if line.text_content().as_deref() != Some(line_text) {
-        return None;
-    }
-    let length = line_text.encode_utf16().count();
-    let top = if length == 0 {
-        line.get_bounding_client_rect().top()
-    } else {
-        let column = before.rsplit('\n').next()?.encode_utf16().count();
-        character_top(&line, column.min(length - 1))?
-    };
-    Some(top - input.get_bounding_client_rect().top())
-}
+use super::{cursor_top, insert_text, json_tokens, CompositionEdit, NativeUndo};
 
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {

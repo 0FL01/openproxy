@@ -829,6 +829,41 @@ fn ascii_token_parts<'a>(text: &'a str, offset: usize, ends: &[usize]) -> Vec<&'
     parts
 }
 
+fn cursor_top(
+    input: &web_sys::HtmlTextAreaElement,
+    rendered: &web_sys::HtmlElement,
+) -> Option<f64> {
+    let start = input.selection_start().ok().flatten()?;
+    let end = input.selection_end().ok().flatten()?;
+    let position = if input.selection_direction().ok().flatten().as_deref() == Some("backward") {
+        start
+    } else {
+        end
+    };
+    let text = input.value();
+    let before = js_sys::JsString::from(text.as_str())
+        .slice(0, position)
+        .as_string()?;
+    let line_number = before.bytes().filter(|ch| *ch == b'\n').count();
+    let line_text = text.split('\n').nth(line_number)?;
+    let line = rendered
+        .child_nodes()
+        .item(line_number as u32)?
+        .dyn_into::<web_sys::HtmlElement>()
+        .ok()?;
+    if line.text_content().as_deref() != Some(line_text) {
+        return None;
+    }
+    let length = line_text.encode_utf16().count();
+    let top = if length == 0 {
+        line.get_bounding_client_rect().top()
+    } else {
+        let column = before.rsplit('\n').next()?.encode_utf16().count();
+        character_top(&line, column.min(length - 1))?
+    };
+    Some(top - input.get_bounding_client_rect().top())
+}
+
 fn smart_home(
     input: &web_sys::HtmlTextAreaElement,
     rendered: Option<&web_sys::HtmlElement>,
@@ -1676,6 +1711,92 @@ fn matching_brackets(tokens: &[(&str, &str)], cursor: u32, json: bool) -> Vec<(u
 }
 
 type HighlightedToken<'a> = (&'a str, &'static str, Option<usize>, bool);
+
+fn jump_to_bracket(
+    input: &web_sys::HtmlTextAreaElement,
+    json: bool,
+    rendered: Option<&web_sys::HtmlElement>,
+) {
+    let text = input.value();
+    let tokens = if json {
+        json_tokens(&text)
+    } else {
+        vec![(text.as_str(), "#d4d4d4")]
+    };
+    // Monaco navigates from the selection's start, not its active end.
+    let position = input.selection_start().ok().flatten().unwrap_or_default();
+    let pair = matching_brackets(&tokens, position, json);
+    let target = if let &[(open, _), (close, closing_end)] = pair.as_slice() {
+        if close <= position && position <= closing_end {
+            open
+        } else {
+            close
+        }
+    } else {
+        let mut offset = 0;
+        let mut next = None;
+        'search: for (token, color) in &tokens {
+            let structural = !json || matches!(*color, "#ffd700" | "#da70d6" | "#179fff");
+            for ch in token.chars() {
+                if structural
+                    && offset >= position
+                    && matches!(ch, '{' | '}' | '[' | ']' | '(' | ')')
+                {
+                    next = Some(offset);
+                    break 'search;
+                }
+                offset += ch.len_utf16() as u32;
+            }
+        }
+        next.unwrap_or(position)
+    };
+    let _ = input.set_selection_range(target, target);
+    if let Some(top) = rendered.and_then(|rendered| cursor_top(input, rendered)) {
+        let bottom = top + 16.0 - input.client_height() as f64;
+        let delta = if top < 0.0 { top } else { bottom.max(0.0) };
+        input.set_scroll_top(input.scroll_top() + delta.ceil() as i32);
+    }
+}
+
+fn remove_brackets(input: &web_sys::HtmlTextAreaElement, json: bool) -> Option<NativeUndo> {
+    let before = input.value();
+    let start = input.selection_start().ok().flatten()?;
+    let end = input.selection_end().ok().flatten()?;
+    let direction = input
+        .selection_direction()
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "none".into());
+    let position = if direction == "backward" { start } else { end };
+    let tokens = if json {
+        json_tokens(&before)
+    } else {
+        vec![(before.as_str(), "#d4d4d4")]
+    };
+    let pair = matching_brackets(&tokens, position, json);
+    let &[(open, _), (close, closing_end)] = pair.as_slice() else {
+        return None;
+    };
+    let inside = js_sys::JsString::from(before.as_str())
+        .slice(open + 1, close)
+        .as_string()?;
+    if !insert_text(input, open, closing_end, &inside) {
+        return None;
+    }
+    let map = |offset| offset - u32::from(offset > open) - u32::from(offset > close);
+    let after_selection = (map(start), map(end), direction.clone());
+    let _ =
+        input.set_selection_range_with_direction(after_selection.0, after_selection.1, &direction);
+    Some(NativeUndo {
+        before,
+        after: input.value(),
+        start,
+        end,
+        direction,
+        after_selection: Some(after_selection),
+        edits: Vec::new(),
+    })
+}
 
 fn highlight_find_matches<'a>(
     lines: &[Vec<(&'a str, &'static str)>],
@@ -2751,6 +2872,23 @@ fn Editor(
                             if control && !modifiers.shift() && !modifiers.alt() && matches!(key.as_str(), "[" | "]") {
                                 event.prevent_default();
                                 if let Some(input) = textarea.peek().as_ref() && let Some(undo) = indent_lines(input, key == "[") {
+                                    command_selections.write().record(undo);
+                                    composition_extendable.set(false);
+                                    update_cursor.call(());
+                                }
+                                return;
+                            }
+                            if control && modifiers.shift() && !modifiers.alt() && matches!(key.as_str(), "\\" | "|") {
+                                event.prevent_default();
+                                if let Some(input) = textarea.peek().as_ref() {
+                                    jump_to_bracket(input, json, rendered.peek().as_ref());
+                                    update_cursor.call(());
+                                }
+                                return;
+                            }
+                            if control && modifiers.alt() && !modifiers.shift() && event.key() == Key::Backspace {
+                                event.prevent_default();
+                                if let Some(input) = textarea.peek().as_ref() && let Some(undo) = remove_brackets(input, json) {
                                     command_selections.write().record(undo);
                                     composition_extendable.set(false);
                                     update_cursor.call(());
