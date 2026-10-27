@@ -227,6 +227,10 @@ fn quota_entries(provider: &str, data: &Value, catalog: &Value) -> Vec<Value> {
             ) {
                 quota.remove("remainingPercentage");
             }
+            if provider == "deepseek" {
+                // The backend marks positive balances as unlimited; Astro shows the amount instead.
+                quota.remove("unlimited");
+            }
             if provider == "a6api" {
                 quota.insert("recurring".into(), json!(false));
             }
