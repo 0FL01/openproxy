@@ -86,6 +86,58 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
+    if (process.env.TRANSLATOR_CURSOR_UNDO_ONLY === "1") {
+      await page.getByRole("button", { name: /Provider Response/ }).click();
+      if (reference) await page.locator(".monaco-editor .view-lines").nth(1).waitFor();
+      const initial = "a😺bc\nsecond";
+      if (reference) await page.evaluate(text => {
+        const e = window.monaco.editor.getEditors()[1];
+        e.setValue(text); e.setPosition({ lineNumber: 1, column: 6 }); e.focus();
+      }, initial);
+      else { await editor().nth(1).fill(initial); await editor().nth(1).evaluate(input => input.setSelectionRange(5, 5)); }
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      const selected = () => reference ? page.evaluate(() => {
+        const e = window.monaco.editor.getEditors()[1], s = e.getSelection(), m = e.getModel();
+        return [m.getOffsetAt(s.getStartPosition()), m.getOffsetAt(s.getEndPosition()), s.getDirection() === 1];
+      }) : editor().nth(1).evaluate(input => [input.selectionStart, input.selectionEnd, input.selectionDirection === "backward"]);
+      const content = () => reference ? page.evaluate(() => window.monaco.editor.getEditors()[1].getValue()) : editor().nth(1).inputValue();
+      await page.keyboard.press("ArrowLeft");
+      await page.keyboard.press("Shift+ArrowLeft");
+      assert.deepEqual(await selected(), [3, 4, true]);
+      await page.keyboard.press("Control+u");
+      assert.deepEqual(await selected(), [4, 4, false], "Cursor Undo restores the preceding caret without editing text");
+      await page.keyboard.press("Control+u");
+      assert.deepEqual(await selected(), [5, 5, false]);
+      assert.equal(await content(), initial);
+      await page.keyboard.type("x");
+      const afterTyping = await selected();
+      await page.keyboard.press("Control+u");
+      assert.deepEqual(await selected(), afterTyping, "editing clears cursor history");
+      assert.equal(await content(), "a😺bcx\nsecond");
+      await page.keyboard.press("Control+z");
+      const afterUndo = await selected();
+      await page.keyboard.press("Control+u");
+      assert.deepEqual(await selected(), afterUndo, "text Undo also clears cursor history");
+      assert.equal(await content(), initial, "Cursor Undo does not consume native text Undo");
+      const long = Array.from({ length: 80 }, (_, index) => `row-${String(index).padStart(3, "0")}`).join("\n");
+      if (reference) await page.evaluate(text => {
+        const e = window.monaco.editor.getEditors()[1];
+        e.setValue(text); e.setPosition({ lineNumber: 50, column: 3 }); e.setScrollTop(640); e.focus();
+      }, long);
+      else { await editor().nth(1).fill(long); await editor().nth(1).evaluate(input => { input.setSelectionRange(394, 394); input.scrollTop = 640; }); }
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      const scroll = () => reference ? page.evaluate(() => window.monaco.editor.getEditors()[1].getScrollTop()) : editor().nth(1).evaluate(input => input.scrollTop);
+      const beforeScroll = await scroll();
+      await page.keyboard.press("Control+Home");
+      assert.deepEqual(await selected(), [0, 0, false]);
+      await page.keyboard.press("Control+u");
+      assert.deepEqual(await selected(), [394, 394, false]);
+      assert.equal(await scroll(), beforeScroll, "Cursor Undo restores the prior viewport as well as the caret");
+      assert.equal(await content(), long);
+      assert.deepEqual(errors, []);
+      console.log("synthetic translator cursor-undo smoke passed");
+      return;
+    }
     if (process.env.TRANSLATOR_CLIPBOARD_ONLY === "1") {
       const text = '{\n  "text": "😺 <b>&amp;</b>",\n  "tail": 3\n}';
       const offset = text.indexOf("😺") + 2;

@@ -1,5 +1,6 @@
 //! Translator stages and their same-origin dashboard API actions.
 mod clipboard;
+mod cursor_undo;
 mod format;
 
 use super::{endpoint::copy_text, json_body, shell::dashboard_request, ui::Button};
@@ -2079,6 +2080,7 @@ fn Editor(
     let mut composition_start = use_signal(|| None::<NativeUndo>);
     let mut composition_undo = use_signal(|| None::<NativeUndo>);
     let mut command_selections = use_signal(NativeSelectionHistory::default);
+    let mut cursor_history = use_signal(cursor_undo::CursorUndo::default);
     let mut auto_indent = use_signal(|| None::<AutoIndent>);
     let mut composition_extendable = use_signal(|| false);
     let mut composition_cursor = use_signal(|| None::<(u32, u32)>);
@@ -2302,6 +2304,7 @@ fn Editor(
     }));
     let update_cursor = use_callback(move |_| {
         if let Some(input) = textarea.peek().as_ref() {
+            cursor_history.write().observe(input);
             let start = input.selection_start().ok().flatten().unwrap_or_default();
             let end = input.selection_end().ok().flatten().unwrap_or(start);
             if current_find
@@ -2385,6 +2388,11 @@ fn Editor(
             update_cursor.call(());
         }
     });
+    use_effect(use_reactive((&value,), move |_| {
+        if let Some(input) = textarea() {
+            cursor_history.write().reset(&input);
+        }
+    }));
     use_effect(use_reactive((&value,), move |_| {
         let _ = editor_width();
         let Some(element) = rendered() else { return };
@@ -2828,6 +2836,15 @@ fn Editor(
                         onkeydown: move |event| {
                             if event.is_composing() { return; }
                             let key = event.key().to_string();
+                            if let Some(input) = textarea.peek().as_ref() {
+                                cursor_history.write().observe(input);
+                            }
+                            if (event.modifiers().ctrl() || event.modifiers().meta()) && !event.modifiers().alt() && !event.modifiers().shift() && key.eq_ignore_ascii_case("u") {
+                                event.prevent_default();
+                                if let Some(input) = textarea.peek().as_ref() { cursor_history.write().undo(input); }
+                                update_cursor.call(());
+                                return;
+                            }
                             let modifiers = event.modifiers();
                             let control = modifiers.ctrl() || modifiers.meta();
                             let selection_format = *format_chord.peek() && control && !modifiers.shift() && !modifiers.alt() && key.eq_ignore_ascii_case("f");
@@ -3045,7 +3062,10 @@ fn Editor(
                             auto_indent.set(None);
                             let mut value = event.value();
                             let previous = last_input.peek().clone();
-                            if previous != value { current_find.set(None); }
+                            if previous != value {
+                                current_find.set(None);
+                                if let Some(input) = textarea.peek().as_ref() { cursor_history.write().reset(input); }
+                            }
                             let scope = *find_scope.peek();
                             if let Some(scope) = scope && previous != value {
                                 find_scope.set(Some(adjust_find_scope(&previous, &value, scope)));
@@ -3119,7 +3139,7 @@ fn Editor(
                         onselect: move |_| update_cursor.call(()),
                         onmouseup: move |_| update_cursor.call(()),
                         onkeyup: move |_| update_cursor.call(()),
-                        onscroll: move |_| { if let Some(input) = textarea.peek().as_ref() { scroll_top.set(input.scroll_top()); } }
+                        onscroll: move |_| { if let Some(input) = textarea.peek().as_ref() { cursor_history.write().observe(input); scroll_top.set(input.scroll_top()); } }
                     }
                 }
                 canvas { aria_hidden: "true", style: "position:absolute;transform:translate3d(0,0,0);contain:strict;top:0;right:0;width:14px;height:400px;pointer-events:none;", onmounted: move |event| { if let Some(element) = event.data().downcast::<web_sys::Element>() && let Ok(canvas) = element.clone().dyn_into::<web_sys::HtmlCanvasElement>() { ruler.set(Some(canvas)); } } }
