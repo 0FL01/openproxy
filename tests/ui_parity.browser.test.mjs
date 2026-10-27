@@ -101,6 +101,11 @@ const screens = [
   { section: "provider-xai", name: "ready" },
   { section: "provider-xai", name: "pending" },
   { section: "provider-xai", name: "failure" },
+  { section: "provider-xai", name: "stale" },
+  { section: "provider-xai", name: "unavailable" },
+  { section: "provider-xai", name: "empty" },
+  { section: "provider-xai", name: "no-connection" },
+  { section: "provider-xai", name: "connection-error" },
   { section: "skills", name: "ready" },
   { section: "skills", name: "copied", action: "copied" },
   { section: "console-log", name: "empty" },
@@ -350,6 +355,9 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     if (screen.name === "pending") await new Promise((resolve) => { releaseXaiForce = resolve; observeXaiForce(); });
                     return route.fulfill({ status: 503, json: { error: "Synthetic discovery failure" } });
                   }
+                  if (isXaiDetail && path === "/api/providers" && screen.name === "connection-error") {
+                    return route.fulfill({ status: 503, json: { error: "Synthetic connection failure" } });
+                  }
                   if (path === "/api/translator/console-logs/stream") {
                     const logs = screen.name === "streaming" ? Array.from({ length: 201 }, (_, index) => `[fixture] [INFO] line ${index}`) : [];
                     const events = [{ type: "init", logs }, ...(screen.name === "streaming" ? [{ type: "line", line: "[fixture] [ERROR] latest line" }] : [])];
@@ -382,14 +390,14 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                         { id: "fixture-vision", name: "Fixture Vision", kind: "llm", contextWindow: 256000 },
                         { id: "fixture-disabled", name: "Fixture Disabled", kind: "llm" },
                       ] }] }
-                      : isXaiDetail ? { providerIdToAlias: { xai: "xai" }, providerModels: [{ alias: "xai", models: [{ id: "fixture-model", name: "Fixture Model", kind: "llm" }] }], xaiCatalog: { status: "ready" } }
+                      : isXaiDetail ? { providerIdToAlias: { xai: "xai" }, providerModels: [{ alias: "xai", models: ["empty", "unavailable", "no-connection"].includes(screen.name) ? [{ id: "fixture-image", name: "Fixture Image", kind: "image" }] : [{ id: "fixture-model", name: "Fixture Model", kind: "llm" }] }], ...(screen.name === "no-connection" ? {} : { xaiCatalog: screen.name === "stale" ? { status: "stale", warning: "Synthetic stale catalog warning" } : screen.name === "unavailable" ? { status: "unavailable", warning: "Synthetic unavailable catalog warning" } : { status: "ready" } }) }
                       : isOpenRouter ? { providerIdToAlias: { openrouter: "openrouter" }, providerModels: [{ alias: "openrouter", models: [{ id: "sample/catalog", name: "Catalog model", kind: "llm" }] }], xaiCatalog: { status: "ready" } }
                       : isCodexDetail ? { providerIdToAlias: { codex: "cx" }, providerModels: [{ alias: "cx", models: [
                         { id: "fixture-model", name: "Fixture Model", kind: "llm" },
                       ] }], xaiCatalog: { status: "ready" } }
                       : { providerIdToAlias: {}, providerModels: [], xaiCatalog: { status: "ready" } };
                   } else if (path === "/api/providers") {
-                    body = isXaiDetail ? { connections: [{ id: "fixture-xai", provider: "xai", name: "Fixture xAI", authType: "apikey", testStatus: "active", isActive: true, priority: 1 }] } : screen.section === "provider-compatible" || isOpenRouter ? { connections: [] } : screen.section === "provider-kilocode" ? { connections: [
+                    body = isXaiDetail ? { connections: screen.name === "no-connection" ? [] : [{ id: "fixture-xai", provider: "xai", name: "Fixture xAI", authType: "apikey", testStatus: "active", isActive: true, priority: 1 }] } : screen.section === "provider-compatible" || isOpenRouter ? { connections: [] } : screen.section === "provider-kilocode" ? { connections: [
                       { id: "fixture-kilo-connection", provider: "kilocode", name: "Fixture connection", authType: "oauth", testStatus: "active", isActive: true, priority: 1 },
                     ] } : isCodexDetail ? { connections: [
                       { id: codexConnection, provider: "codex", name: "Fixture Codex", authType: "oauth", testStatus: "success", isActive: true, priority: 1 },
@@ -435,6 +443,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     if (method === "POST") kiloCustom = [...kiloCustom, request.postDataJSON()];
                     if (isOpenRouter && method === "POST") routerCustom = [...routerCustom, request.postDataJSON()];
                     body = isOpenRouter ? (method === "GET" ? { models: routerCustom } : { success: true, added: true }) : screen.section === "provider-compatible" ? { models: [{ providerAlias: compatibleId, id: "fixture-model", type: "llm" }] }
+                      : isXaiDetail && screen.name === "empty" ? { models: [{ providerAlias: "xai", id: "saved-custom", type: "llm" }] }
                       : isCodexDetail || isXaiDetail ? { models: [] }
                       : method === "GET" ? { models: kiloCustom } : { success: true, added: true };
                   } else if (path === "/api/models/alias") {
@@ -497,6 +506,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 else if (screen.section === "provider-compatible") await page.getByRole("heading", { name: "OpenAI Compatible Details", exact: true }).waitFor();
                 else if (isCodexDetail) await page.getByRole("checkbox", { name: "Select connection Fixture Codex" }).waitFor();
                 else if (isOpenRouter) await page.getByText("Suggested free models (≥200k context):", { exact: true }).waitFor();
+                else if (isXaiDetail && ["no-connection", "connection-error"].includes(screen.name)) await page.getByRole("heading", { name: "Available Models", exact: true }).waitFor();
                 else if (isXaiDetail) await page.getByRole("checkbox", { name: "Select connection Fixture xAI" }).waitFor();
                 else if (screen.section === "skills") await page.getByRole("heading", { name: "OpenProxy (Entry)", exact: true }).waitFor();
                 else if (screen.section === "console-log") await page.getByRole("button", { name: /Clear/ }).waitFor();
@@ -582,10 +592,24 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   const busy = () => page.getByRole("button", { name: "Refreshing models...", exact: true });
                   const warning = page.getByRole("alert").filter({ hasText: "xAI model refresh failed (503). Showing the last available catalog." });
                   await refresh().waitFor();
-                  await page.locator("code").filter({ hasText: "xai/fixture-model" }).waitFor();
+                  if (!["empty", "unavailable", "no-connection"].includes(screen.name)) await page.locator("code").filter({ hasText: "xai/fixture-model" }).waitFor();
                   assert.equal(await page.getByRole("link", { name: /Get API Key/ }).getAttribute("href"), "https://console.x.ai");
                   await page.getByRole("heading", { name: "Available Models", exact: true }).scrollIntoViewIfNeeded();
-                  if (screen.name !== "ready") {
+                  const diagnostic = {
+                    stale: "Synthetic stale catalog warning",
+                    unavailable: "Synthetic unavailable catalog warning",
+                    "no-connection": "No active xAI connection. Add or enable a connection to discover models.",
+                    "connection-error": "Failed to load connections: 503",
+                  }[screen.name];
+                  if (diagnostic) await page.getByRole("alert").filter({ hasText: diagnostic }).waitFor();
+                  const empty = page.getByRole("status").filter({ hasText: "This xAI connection returned no chat/vision models. Saved custom models remain available." });
+                  if (screen.name === "empty") {
+                    await empty.waitFor();
+                    await page.locator("code").filter({ hasText: "xai/saved-custom" }).waitFor();
+                  } else if (screen.name === "unavailable") {
+                    assert.equal(await empty.count(), 0, "unavailable discovery is not reported as an empty catalog");
+                  }
+                  if (["pending", "failure"].includes(screen.name)) {
                     await refresh().click();
                     if (screen.name === "pending") {
                       await busy().waitFor();

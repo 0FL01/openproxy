@@ -530,6 +530,7 @@ async function runXaiForceFixture(page, origin) {
   const noActiveCatalogs = state.catalogRequests;
   await refresh().click();
   await alert("No active xAI connection. Add or enable a connection to discover models.").waitFor();
+  await refresh().waitFor();
   assert.equal(state.importGets.length, beforeNoActive, "no fallback source is forced");
   assert.ok(state.catalogRequests > noActiveCatalogs);
   await code("concurrent-custom").waitFor();

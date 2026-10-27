@@ -29,6 +29,7 @@ struct Models {
     catalog_ready: bool,
     catalog: Vec<Value>,
     thinking_catalog: Vec<Value>,
+    xai_catalog: Value,
     live: Vec<Value>,
     custom: Vec<Value>,
     aliases: Value,
@@ -362,6 +363,9 @@ async fn fetch_catalog(id: &str, mut load: ModelLoad, version: u64) {
         .and_then(|rows| rows.iter().find(|r| text(r, "alias") == storage_alias(id)))
         .map(|r| array(r, "models"))
         .unwrap_or_default();
+    if id == "xai" {
+        models.xai_catalog = catalog["xaiCatalog"].clone();
+    }
     models.catalog_ready = true;
     models.ready = models.saved_ready;
     if models.ready {
@@ -683,29 +687,46 @@ async fn load_connections(
     id: &str,
     mut connections: Signal<Vec<Value>>,
     mut loading: Signal<bool>,
-    mut error: Signal<bool>,
+    mut error: Signal<String>,
     mut generation: Signal<u64>,
 ) -> Option<Vec<Value>> {
     let current = (*generation.peek()).wrapping_add(1);
     generation.set(current);
-    let result = get("/api/providers")
-        .await
-        .and_then(|v| v["connections"].as_array().cloned());
+    let result = if id == "xai" {
+        match dashboard_get_no_store("/api/providers").await {
+            Ok(response) if !response.ok() => {
+                Err(format!("Failed to load connections: {}", response.status()))
+            }
+            Ok(response) => match xai_catalog_body(&response).await {
+                Ok(data) => data["connections"]
+                    .as_array()
+                    .cloned()
+                    .ok_or_else(|| "Invalid connections response".to_owned()),
+                Err(error) => Err(error),
+            },
+            Err(error) => Err(auto_ping_request_error(error, "Failed to load connections")),
+        }
+    } else {
+        get("/api/providers")
+            .await
+            .and_then(|v| v["connections"].as_array().cloned())
+            .ok_or_else(|| "Failed to load connections".to_owned())
+    };
     if *generation.peek() != current {
         return None;
     }
     let result = match result {
-        Some(items) => {
+        Ok(items) => {
             let items: Vec<_> = items
                 .into_iter()
                 .filter(|v| text(v, "provider") == id)
                 .collect();
             connections.set(items.clone());
-            error.set(false);
+            error.set(String::new());
             Some(items)
         }
-        None => {
-            error.set(true);
+        Err(message) => {
+            error.set(message);
             None
         }
     };
@@ -718,7 +739,7 @@ fn force_xai_catalog(
     connections: Signal<Vec<Value>>,
     mut pools: Signal<Vec<Value>>,
     loading: Signal<bool>,
-    error: Signal<bool>,
+    error: Signal<String>,
     generation: Signal<u64>,
 ) {
     if load.xai_refresh.peek().pending {
@@ -970,7 +991,7 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
     let mut node_delete_generation = use_signal(|| 0_u64);
     let mut node_deleting = use_signal(|| false);
     let loading = use_signal(|| true);
-    let connection_error = use_signal(|| false);
+    let connection_error = use_signal(String::new);
     let connection_generation = use_signal(|| 0_u64);
     let mut auto_ping = use_signal(AutoPing::default);
     let mut codex_import_open = use_signal(|| false);
@@ -2009,10 +2030,24 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
     let all_selected = connection_count > 0 && selected_ids.len() == connection_count;
     let tests = connection_tests();
     let xai_refresh = (load.xai_refresh)();
-    let xai_warning = if xai_refresh.warning.is_empty() {
-        &xai_refresh.catalog_error
+    let connections_error = connection_error();
+    let xai_status = text(&data.xai_catalog, "status");
+    let xai_warning = if !xai_refresh.warning.is_empty() {
+        xai_refresh.warning.as_str()
+    } else if !connections_error.is_empty() {
+        connections_error.as_str()
+    } else if !xai_refresh.catalog_error.is_empty() {
+        xai_refresh.catalog_error.as_str()
+    } else if !text(&data.xai_catalog, "warning").is_empty() {
+        text(&data.xai_catalog, "warning")
+    } else if xai_status == "stale" {
+        "xAI discovery is temporarily unavailable. Showing the last available catalog."
+    } else if xai_status == "unavailable" {
+        "xAI model discovery is unavailable. Try Refresh models."
+    } else if !loading() && !connections().iter().any(|item| item["isActive"] != false) {
+        "No active xAI connection. Add or enable a connection to discover models."
     } else {
-        &xai_refresh.warning
+        ""
     };
     let id_for_retry = id.clone();
     let alias_for_retry = alias.clone();
@@ -2028,7 +2063,7 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
                         div { class: "flex items-center gap-3 flex-wrap", h1 { class: "truncate text-2xl font-semibold tracking-tight sm:text-3xl", "{name}" }
                             if let Some(site) = site { a { href: "{site}", target: "_blank", rel: "noopener noreferrer", class: "text-xs text-primary hover:underline inline-flex items-center gap-1", span { class: "material-symbols-outlined text-sm", "open_in_new" } "{site_label}" } }
                         }
-                        p { class: "text-text-muted", "{connection_count}" " connection" if connection_count != 1 { "s" } }
+                        p { class: "text-text-muted", if id == "xai" && !connections_error.is_empty() && connection_count == 0 { "Connections unavailable" } else { "{connection_count}" " connection" if connection_count != 1 { "s" } } }
                     }
                 }
             }
@@ -2062,7 +2097,7 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
                             if matches!(id.as_str(), "opencode-go" | "glm" | "codex" | "claude") { context_limit::ProviderContextLimit { key: "{id}", provider_id: id.clone(), on_saved: { let id = id.clone(); move |_| refresh_catalog(id.clone(), load) } } }
                         }
                     }
-                    if connection_error() { p { class: "text-sm text-text-muted", "Connections could not be loaded." } Button { label: "Retry".to_owned(), small: true, variant: "secondary", onclick: { let id = id.clone(); move |_| { let id = id.clone(); spawn(async move { load_connections(&id, connections, loading, connection_error, connection_generation).await; }); } } } }
+                    if !connections_error.is_empty() && (id != "xai" || connection_count == 0) { div { class: if id == "xai" { "flex items-center justify-between gap-3" } else { "" }, p { class: "text-sm text-text-muted", "Connections could not be loaded." } Button { label: "Retry".to_owned(), small: true, variant: "secondary", onclick: { let id = id.clone(); move |_| { let id = id.clone(); spawn(async move { load_connections(&id, connections, loading, connection_error, connection_generation).await; }); } } } } }
                     else if connection_count == 0 { div { class: "flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between", div { class: "flex items-center gap-3", div { class: "inline-flex items-center justify-center w-9 h-9 rounded-full bg-primary/10 text-primary shrink-0", span { class: "material-symbols-outlined text-[18px]", if has_oauth { "lock" } else { "key" } } } div { class: "min-w-0", p { class: "text-sm text-text-muted", "No connections yet" } if has_oauth && has_api { p { class: "text-xs text-text-muted", "Choose " if id == "xai" { "Grok Build OAuth" } else { "OAuth" } " or " if id == "xai" { "xAI API Key" } else { "API Key" } "." } } } }
                         AddButtons { provider_id: id.clone(), has_oauth, has_api, compatible, connected: false, add_key, open_oauth, open_codex_import: move |_| codex_import_open.set(true) }
                     } }
@@ -2096,6 +2131,7 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
                 }
                 if id == "xai" && xai_refresh.pending { p { role: "status", class: "mb-3 text-xs text-text-muted", "Loading xAI model catalog..." } }
                 if id == "xai" && !xai_warning.is_empty() { p { role: "alert", class: "mb-3 break-words text-xs text-amber-600 dark:text-amber-400", "{xai_warning}" } }
+                if id == "xai" && !xai_refresh.pending && data.xai_catalog.is_object() && xai_status != "unavailable" && !data.thinking_catalog.iter().any(|model| text(model, "kind") == "llm") { p { role: "status", class: "mb-3 text-xs text-text-muted", "This xAI connection returned no chat/vision models. Saved custom models remain available." } }
                 if !models_test_error().is_empty() { p { class: "text-xs text-red-500 mb-3 break-words", "{models_test_error}" } }
                 if data.error { div { role: "alert", class: "text-sm text-text-muted", "Unable to load available models. Saved configuration was not changed." Button { label: "Retry".to_owned(), small: true, variant: "secondary", onclick: move |_| { models.write().error = false; let id = id_for_retry.clone(); let alias = alias_for_retry.clone(); spawn(async move { load_models(id, alias, load).await; }); } } } }
                 else if !data.ready { p { class: "text-sm text-text-muted", "Loading models..." } }

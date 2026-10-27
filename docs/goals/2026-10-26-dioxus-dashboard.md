@@ -71,10 +71,10 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: the next R2/R3 slice for remaining provider-detail controls.
-- Smallest next action: port the remaining xAI provider-detail catalog diagnostic states.
+- Closes: the next R2/R3 route slice.
+- Smallest next action: migrate the Profile page using its existing authentication and settings APIs.
 - Expected evidence: focused synthetic UI behavior and a comparison with the reference.
-- Stop or replan if: the provider control cannot be preserved within the frozen frontend and API boundaries.
+- Stop or replan if: the route cannot be preserved within the frozen frontend and API boundaries.
 
 ## Current State
 
@@ -84,9 +84,9 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - OpenRouter suggestions: the Astro reference self-repeated and Dioxus matched four synthetic desktop/mobile light/dark screenshots at AE=0 without masks. Both passed catalog/alias filtering, model-add request and page-reload checks on synthetic data; live OpenRouter and backend-restart persistence were not tested.
 - Skills: the Dioxus page and clipboard feedback matched eight self-repeating Astro desktop/mobile light/dark screenshots at AE=0 without masks; the synthetic browser verified the copied URL, links and feedback reset.
 - Console Log: eight self-repeating Astro desktop/mobile light/dark screenshots matched at AE=0 without masks. The synthetic browser exercised native EventSource init/line, the 200-line bound and autoscroll, then verified a mocked DELETE followed by a synthetic clear event. No real logs were read.
-- xAI force refresh: twelve self-repeating Astro desktop/mobile light/dark screenshots for ready, pending and HTTP-failure states matched at AE=0 without masks. Focused synthetic checks covered canonical connection selection, concurrent catalog reloads, saved-model preservation and failure/session handling. Live xAI was not contacted; catalog diagnostic states remain.
+- xAI: twelve force-refresh and twenty diagnostic desktop/mobile light/dark screenshots matched self-repeating Astro references at AE=0 without masks. Focused synthetic checks covered canonical connection selection, concurrent catalog reloads, saved-model preservation and failure/session handling. Live xAI was not contacted.
 - Blocker: none external. Dioxus re-encodes PNG color metadata; `frontend/scripts/build.sh` preserves original provider icons for the served output. The skeleton and theme cannot appear before WASM startup as Astro's synchronous HTML/script did.
-- Next: migrate xAI catalog diagnostics and remaining provider-specific behavior, then other routes and the Translator editor. Cline's live query-preservation behavior remains unverified.
+- Next: migrate Profile and the other missing routes, remaining provider-specific behavior, and the Translator editor. Cline's live query-preservation behavior remains unverified.
 
 ## Material Decisions
 
@@ -122,6 +122,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-10-27: R2/R3 Skills page matched eight self-repeating synthetic Astro references at AE=0; clipboard and link behavior were checked in the isolated browser.
 - 2026-10-27: R2/R3 Console Log matched eight self-repeating synthetic Astro references at AE=0; stream and clear-event behavior were checked without reading real logs.
 - 2026-10-27: R2/R3 xAI force-refresh ready, pending and failure states matched twelve self-repeating synthetic Astro references at AE=0. Focused synthetic behavior checks passed; no live provider was contacted.
+- 2026-10-27: R2/R3 xAI stale, unavailable, empty, no-connection and connection-error diagnostics matched twenty self-repeating synthetic Astro references at AE=0. Shared connection and force-refresh browser smokes passed.
 
 ## Completion
 
