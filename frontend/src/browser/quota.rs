@@ -1,4 +1,5 @@
 //! Provider quota overview. Further account controls are migrated separately.
+mod codex;
 use super::{
     json_body,
     providers::{
@@ -287,6 +288,7 @@ fn QuotaCard(
     delete: EventHandler<String>,
     toggle: EventHandler<(String, bool)>,
     ping: AutoPing,
+    codex: Signal<codex::State>,
     toggle_ping: EventHandler<(String, String, bool)>,
 ) -> Element {
     let provider = text(&connection, "provider").to_owned();
@@ -333,6 +335,7 @@ fn QuotaCard(
                         button { r#type: "button", disabled: ping_saving, aria_pressed: "{ping_on}", aria_label: format!("{} auto-ping for {}", if ping_on { "Disable" } else { "Enable" }, if name.is_empty() { &id } else { &name }), title: "Toggle auto-ping warmup", class: if ping_on { "flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-black/5 dark:hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50 text-primary" } else { "flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-black/5 dark:hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50 text-text-muted" }, onclick: { let provider = provider.clone(); let id = id.clone(); move |_| toggle_ping.call((provider.clone(), id.clone(), !ping_on)) }, span { class: "material-symbols-outlined text-[18px]", "bolt" } }
                         div { class: "pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 z-50 w-max max-w-56 rounded px-2 py-1 text-[11px] leading-snug bg-gray-900 text-white opacity-0 group-hover:opacity-100 transition-opacity duration-150 whitespace-normal", "{ping_tooltip}" }
                     } }
+                    if provider == "codex" { codex::Buttons { connection: connection.clone(), data: data.clone(), loading: quota.loading, busy, state: codex } }
                     button { r#type: "button", disabled: quota.loading || busy, title: "Refresh quota", class: "p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 transition-colors disabled:opacity-50", onclick: { let id = id.clone(); move |_| refresh.call(id.clone()) }, span { class: "material-symbols-outlined text-[18px] text-text-muted {spin}", "refresh" } }
                     button { r#type: "button", disabled: busy, title: "Edit connection", class: "p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 text-text-muted hover:text-primary transition-colors disabled:opacity-50", onclick: { let connection = connection.clone(); move |_| edit.call(connection.clone()) }, span { class: "material-symbols-outlined text-[18px]", "edit" } }
                     button { r#type: "button", disabled: busy, title: "Delete connection", class: "p-1.5 rounded-lg hover:bg-red-500/10 text-red-500 transition-colors disabled:opacity-50", onclick: { let id = id.clone(); move |_| delete.call(id.clone()) }, span { class: "material-symbols-outlined text-[18px]", "delete" } }
@@ -367,6 +370,7 @@ pub(super) fn QuotaPage() -> Element {
     let mut editing_id = use_signal(String::new);
     let mut pools = use_signal(Vec::<Value>::new);
     let mut ping = use_signal(AutoPing::default);
+    let codex = use_signal(codex::State::default);
     let toasts = use_context::<Signal<Vec<Toast>>>();
     use_future(move || async move {
         let result = async {
@@ -561,7 +565,8 @@ pub(super) fn QuotaPage() -> Element {
             button { onclick: move |_| auto_refresh.set(!auto_refresh()), title: if auto_refresh() { "Disable auto-refresh" } else { "Enable auto-refresh" }, class: "flex h-8 shrink-0 items-center gap-1 rounded-lg border border-black/10 px-2 text-xs transition-colors hover:bg-black/5 dark:border-white/10 dark:hover:bg-white/5", span { class: "material-symbols-outlined text-[14px] {auto_color}", if auto_refresh() { "toggle_on" } else { "toggle_off" } } span { class: "hidden text-text-primary sm:inline", "Auto-refresh" } if auto_refresh() { span { class: "text-[10px] text-text-muted tabular-nums", "({countdown}s)" } } }
             button { r#type: "button", title: "Refresh all", disabled: refreshing(), class: "flex h-8 shrink-0 items-center gap-1 rounded-lg border border-black/10 px-2 text-xs text-text-primary transition-colors hover:bg-black/5 dark:border-white/10 dark:hover:bg-white/5 disabled:opacity-50", onclick: move |_| { countdown.set(60); spawn(async move { refresh_all(rows, quotas, loading, refreshing).await; }); }, span { class: "material-symbols-outlined text-[14px] {spin}", "refresh" } }
         } }
-        div { class: "grid grid-cols-1 md:grid-cols-2 gap-3", for row in current { { let id = text(&row, "id").to_owned(); let quota = quota_values.get(&id).cloned().unwrap_or_default(); let busy = pending().as_deref() == Some(id.as_str()); rsx! { QuotaCard { key: "{id}", connection: row, quota, busy, ping: ping(), toggle_ping, refresh: move |id| { spawn(async move { fetch_quota(id, quotas).await; }); }, edit: move |row: Value| { editing_id.set(text(&row, "id").to_owned()); editing.set(Some(row)); }, delete: move |id| delete_id.set(Some(id)), toggle } } } } }
+        div { class: "grid grid-cols-1 md:grid-cols-2 gap-3", for row in current { { let id = text(&row, "id").to_owned(); let quota = quota_values.get(&id).cloned().unwrap_or_default(); let busy = pending().as_deref() == Some(id.as_str()) || codex().resetting(&id); rsx! { QuotaCard { key: "{id}", connection: row, quota, busy, ping: ping(), codex, toggle_ping, refresh: move |id| { spawn(async move { fetch_quota(id, quotas).await; }); }, edit: move |row: Value| { editing_id.set(text(&row, "id").to_owned()); editing.set(Some(row)); }, delete: move |id| delete_id.set(Some(id)), toggle } } } } }
+        codex::Dialogs { state: codex, quotas }
         if let Some(row) = editing() { EditConnection { provider_id: text(&row, "provider").to_owned(), selected: editing, pools, on_saved: move |_| { let id = editing_id(); spawn(async move { rows.set(connections().await); fetch_quota(id, quotas).await; }); } } }
         if let Some(id) = delete_id() { Modal { title: "Delete connection".to_owned(), small: true, on_close: move |_| { if pending().is_none() { delete_id.set(None); } }, footer: rsx! { Button { label: "Cancel".to_owned(), variant: "ghost", disabled: pending().is_some(), onclick: move |_| delete_id.set(None) } Button { label: "Delete".to_owned(), variant: "danger", loading: pending().is_some(), onclick: { let id = id.clone(); move |_| { if pending().is_some() { return; } pending.set(Some(id.clone())); let id = id.clone(); spawn(async move { let path = format!("/api/providers/{}", encoded(&id)); if dashboard_request("DELETE", &path, None).await.is_ok_and(|r| r.ok()) { quotas.write().remove(&id); rows.set(connections().await); } pending.set(None); delete_id.set(None); }); } } } }, p { class: "text-text-muted", "Are you sure you want to delete this connection? This action cannot be undone." } } }
         } }

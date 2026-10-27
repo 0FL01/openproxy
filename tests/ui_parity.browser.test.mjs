@@ -130,6 +130,9 @@ const screens = [
   { section: "quota", name: "empty" },
   { section: "quota", name: "ready" },
   { section: "quota", name: "glm-ping" },
+  { section: "quota", name: "codex-ready" },
+  { section: "quota", name: "codex-confirm" },
+  { section: "quota", name: "codex-expiry" },
   { section: "proxy-pools", name: "empty" },
   { section: "proxy-pools", name: "ready" },
   { section: "proxy-pools", name: "selected" },
@@ -255,7 +258,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 { method: "DELETE", path: "/api/db-backups", body: {} },
                 { method: "POST", path: "/api/db-backups/import", body: { filename: "fixture.json", content: '{"fixture":true}', password: "fixture-current" } },
               ] : [];
-              const expectedWrites = screen.section === "quota" && screen.name === "glm-ping" ? [true, false, true].map((enabled) => ({ method: "PATCH", path: "/api/settings", body: { glmAutoPing: { enabled: true, connections: { "other-glm": true, "fixture-glm": enabled } } } })) : screen.section === "quota" && screen.name === "ready" ? [false, true].map((isActive) => ({ method: "PUT", path: "/api/providers/fixture-github", body: { isActive } })) : screen.section === "db-backups" ? backupWrites : screen.section === "profile" ? (profileWrites[screen.name] || []) : screen.section === "console-log" && screen.name === "streaming" ? [{ method: "DELETE", path: "/api/translator/console-logs", body: null }] : isOpenRouter ? [{ method: "POST", path: "/api/models/custom", body: { providerAlias: "openrouter", id: "sample/model:free", type: "llm" } }] : screen.section === "provider-kilocode" ? (kiloWrites[screen.action] || []) : screen.section === "provider-codex-autoping" ? codexWrites : screen.login
+              const expectedWrites = screen.section === "quota" && screen.name === "codex-ready" ? Array.from({ length: 2 }, () => ({ method: "POST", path: "/api/usage/fixture-codex/codex-reset-credits", body: null })) : screen.section === "quota" && screen.name === "glm-ping" ? [true, false, true].map((enabled) => ({ method: "PATCH", path: "/api/settings", body: { glmAutoPing: { enabled: true, connections: { "other-glm": true, "fixture-glm": enabled } } } })) : screen.section === "quota" && screen.name === "ready" ? [false, true].map((isActive) => ({ method: "PUT", path: "/api/providers/fixture-github", body: { isActive } })) : screen.section === "db-backups" ? backupWrites : screen.section === "profile" ? (profileWrites[screen.name] || []) : screen.section === "console-log" && screen.name === "streaming" ? [{ method: "DELETE", path: "/api/translator/console-logs", body: null }] : isOpenRouter ? [{ method: "POST", path: "/api/models/custom", body: { providerAlias: "openrouter", id: "sample/model:free", type: "llm" } }] : screen.section === "provider-kilocode" ? (kiloWrites[screen.action] || []) : screen.section === "provider-codex-autoping" ? codexWrites : screen.login
                 ? [{ method: "POST", path: "/api/auth/login", body: { password: "fixture-password" } }]
                 : screen.action === "created"
                   ? [{ method: "POST", path: "/api/keys", body: { name: "Fixture new" } }]
@@ -311,7 +314,13 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 ];
                 let kiloFreeOnly = false;
                 let routerCustom = [];
-                let quotaConnections = screen.name === "ready" ? [{ id: "fixture-github", provider: "github", name: "Fixture account", authType: "oauth", isActive: true }] : screen.name === "glm-ping" ? [{ id: "fixture-glm", provider: "glm", name: "Fixture account", authType: "apikey", isActive: true }] : [];
+                let quotaConnections = screen.name === "ready" ? [{ id: "fixture-github", provider: "github", name: "Fixture account", authType: "oauth", isActive: true }] : screen.name === "glm-ping" ? [{ id: "fixture-glm", provider: "glm", name: "Fixture account", authType: "apikey", isActive: true }] : screen.section === "quota" && screen.name.startsWith("codex-") ? [{ id: "fixture-codex", provider: "codex", name: "Fixture account", authType: "oauth", isActive: true }] : [];
+                let codexCredits = 1;
+                let creditGetError = false;
+                let creditPostError = false;
+                let releaseCodexReset;
+                let markCodexResetStarted;
+                const codexResetStarted = new Promise(resolve => { markCodexResetStarted = resolve; });
                 let glmConfig = { enabled: true, connections: { "other-glm": true } };
                 let quotaReads = 0;
                 const proxyPools = screen.name === "empty" ? [] : [
@@ -345,7 +354,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     (screen.section === "profile" && !url.search && path === "/dashboard/profile") ||
                     (screen.section === "db-backups" && !url.search && path === "/dashboard/db-backups") ||
                     (screen.section === "logs" && !url.search && path === "/dashboard/logs") ||
-                    (screen.section === "quota" && !url.search && ["/dashboard/quota", "/providers/github.png", "/providers/glm.png"].includes(path)) ||
+                    (screen.section === "quota" && !url.search && ["/dashboard/quota", "/providers/github.png", "/providers/glm.png", "/providers/codex.png"].includes(path)) ||
                     (screen.section === "proxy-pools" && !url.search && path === "/dashboard/proxy-pools");
                   if (url.origin === appUrl && method === "GET" && assets) {
                     if (!isCodexDetail) return route.continue();
@@ -400,7 +409,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   const profileExport = screen.section === "profile" && screen.name === "database" && method === "GET" && !url.search && path === "/api/settings/database";
                   const backupRequest = screen.section === "db-backups" && !url.search && ((method === "GET" && ["/api/db-backups", "/api/db-backups/export"].includes(path)) || (screen.name === "ready" && ((method === "PUT" && path === "/api/db-backups") || (method === "DELETE" && ["/api/db-backups", "/api/db-backups/fixture-1"].includes(path)) || (method === "POST" && ["/api/db-backups/restore", "/api/db-backups/import"].includes(path)))));
                   const logRequest = screen.section === "logs" && method === "GET" && ["/api/request-logs", "/api/request-logs/tps-stats"].includes(path) && [...url.searchParams.keys()].every((key) => ["page", "pageSize", "apiKeyId", "status", "provider", "model", "hiddenProviders"].includes(key));
-                  const quotaRequest = screen.section === "quota" && ((method === "GET" && ((!url.search && ["/api/providers", "/api/usage/fixture-github", "/api/usage/fixture-glm"].includes(path)) || (path === "/api/proxy-pools" && url.search === "?isActive=true"))) || (method === "PUT" && !url.search && path === "/api/providers/fixture-github") || (screen.name === "glm-ping" && method === "PATCH" && !url.search && path === "/api/settings"));
+                  const quotaRequest = screen.section === "quota" && ((method === "GET" && ((!url.search && ["/api/providers", "/api/usage/fixture-github", "/api/usage/fixture-glm", "/api/usage/fixture-codex", "/api/usage/fixture-codex/codex-reset-credits"].includes(path)) || (path === "/api/proxy-pools" && url.search === "?isActive=true"))) || (method === "POST" && !url.search && path === "/api/usage/fixture-codex/codex-reset-credits" && screen.name === "codex-ready") || (method === "PUT" && !url.search && path === "/api/providers/fixture-github") || (screen.name === "glm-ping" && method === "PATCH" && !url.search && path === "/api/settings"));
                   const proxyPoolsRequest = screen.section === "proxy-pools" && method === "GET" && path === "/api/proxy-pools" && url.search === "?includeUsage=true";
                   const valid = url.origin === appUrl && (providerGet || providerNewGet || kiloGet || kiloMutation || compatibleGet || codexGet || codexMutation || routerGet || routerMutation || xaiGet || consoleRequest || profileMutation || profileExport || backupRequest || logRequest || quotaRequest || proxyPoolsRequest || (!isCodexDetail && !["providers", "providers-new", "provider-kilocode", "provider-compatible", "provider-openrouter", "provider-xai", "callback"].includes(screen.section) && (
                     (method === "GET" && ["/api/auth/status", "/api/settings", "/api/keys", "/api/build", "/api/catalog"].includes(path)) ||
@@ -442,6 +451,12 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   }
                   if (screen.section === "quota" && path === "/api/usage/fixture-github") { quotaReads += 1; return route.fulfill({ json: { plan: "pro", quotas: { "Premium Requests": { used: 25, total: 100, resetAt: null } } } }); }
                   if (screen.section === "quota" && path === "/api/usage/fixture-glm") return route.fulfill({ json: { plan: "pro", quotas: { "Premium Requests": { used: 25, total: 100, resetAt: null } } } });
+                  if (screen.section === "quota" && path === "/api/usage/fixture-codex") return route.fulfill({ json: { plan: "pro", resetCredits: { availableCount: codexCredits }, quotas: { "Premium Requests": { used: 25, total: 100, resetAt: null } } } });
+                  if (screen.section === "quota" && path === "/api/usage/fixture-codex/codex-reset-credits") {
+                    if (method === "POST") { if (creditPostError) return route.fulfill({ status: 429, json: { error: "Synthetic reset error" } }); markCodexResetStarted(); await new Promise(resolve => { releaseCodexReset = resolve; }); codexCredits = 0; return route.fulfill({ json: { reset: true } }); }
+                    if (creditGetError) return route.fulfill({ status: 503, json: { error: "Synthetic credit error" } });
+                    return route.fulfill({ json: { availableCount: codexCredits, credits: [{ status: "available", grantedAt: null, expiresAt: null }, { status: "used", grantedAt: null, expiresAt: null }] } });
+                  }
                   if (screen.section === "quota" && path === "/api/providers/fixture-github") { quotaConnections[0].isActive = request.postDataJSON().isActive; return route.fulfill({ json: { success: true } }); }
                   if (isXaiDetail && path === "/api/providers" && screen.name === "connection-error") {
                     return route.fulfill({ status: 503, json: { error: "Synthetic connection failure" } });
@@ -771,6 +786,49 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                         await page.waitForFunction(() => !document.querySelector('[title="Toggle auto-ping warmup"]').disabled);
                         assert.equal(await ping().getAttribute("aria-pressed"), "false", "failed settings save must roll back");
                         assert.deepEqual(glmConfig, { enabled: true, connections: { "other-glm": true, "fixture-glm": false } });
+                      };
+                    } else if (screen.name.startsWith("codex-")) {
+                      const useCredit = () => page.getByRole("button", { name: "Use one Codex reset credit. 1 available." });
+                      const expiry = () => page.getByRole("button", { name: "View Codex reset credit expiry" });
+                      await useCredit().waitFor();
+                      await expiry().waitFor();
+                      if (screen.name === "codex-confirm") {
+                        await useCredit().click();
+                        await page.getByRole("heading", { name: "Reset Codex limit?" }).waitFor();
+                      } else if (screen.name === "codex-expiry") {
+                        await expiry().click();
+                        await page.getByRole("heading", { name: "Codex Reset Credit Expiry" }).waitFor();
+                        await page.getByText("2 reset credits", { exact: true }).waitFor();
+                      } else verifyAfterCapture = async () => {
+                        creditGetError = true;
+                        await useCredit().click();
+                        await page.getByText("Synthetic credit error", { exact: true }).waitFor();
+                        assert.equal(writes.length, 0, "a failed lookup cannot consume a credit");
+                        creditGetError = false;
+                        await expiry().click();
+                        await page.getByText("2 reset credits", { exact: true }).waitFor();
+                        await page.getByRole("button", { name: "Close reset credit expiry modal" }).click();
+                        await useCredit().click();
+                        await page.getByRole("heading", { name: "Reset Codex limit?" }).waitFor();
+                        await page.getByRole("button", { name: "Cancel", exact: true }).click();
+                        assert.equal(writes.length, 0, "cancel must not consume a credit");
+                        creditPostError = true;
+                        await useCredit().click();
+                        await page.getByRole("heading", { name: "Reset Codex limit?" }).waitFor();
+                        await page.getByRole("button", { name: "Reset limit", exact: true }).click();
+                        await page.getByText("Synthetic reset error", { exact: true }).first().waitFor();
+                        assert.equal(writes.length, 1, "failed consumption is not retried automatically");
+                        creditPostError = false;
+                        await useCredit().click();
+                        await page.getByRole("heading", { name: "Reset Codex limit?" }).waitFor();
+                        await page.getByRole("button", { name: "Reset limit", exact: true }).click();
+                        await codexResetStarted;
+                        await page.waitForFunction(() => document.querySelector('[title="Refresh quota"]').disabled);
+                        assert(await page.getByRole("button", { name: "Cancel", exact: true }).isDisabled(), "reset cannot be cancelled while the request is pending");
+                        assert(await expiry().isDisabled(), "other row actions are disabled during reset");
+                        releaseCodexReset();
+                        await page.getByRole("button", { name: "No Codex reset credits available" }).waitFor();
+                        assert(await page.getByRole("button", { name: "No Codex reset credits available" }).isDisabled());
                       };
                     } else verifyAfterCapture = async () => {
                       const before = quotaReads;
