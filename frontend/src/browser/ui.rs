@@ -21,6 +21,7 @@ pub fn Button(
 ) -> Element {
     let variant = match variant {
         "secondary" => "bg-canvas text-ink border border-hairline hover:border-ink/40 hover:bg-surface-soft disabled:border-hairline disabled:text-muted",
+        "outline" => "bg-transparent text-ink border border-ink/80 hover:bg-ink/5 disabled:border-hairline disabled:text-muted",
         "ghost" => "bg-transparent text-ink hover:bg-surface-card disabled:text-muted",
         "danger" => "bg-[color:var(--color-danger)] text-white hover:opacity-90 disabled:bg-hairline disabled:text-muted",
         _ => "bg-brand-coral text-on-primary hover:bg-brand-coral-active disabled:bg-primary-disabled disabled:text-muted-soft",

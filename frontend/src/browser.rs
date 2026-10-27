@@ -11,6 +11,7 @@ mod callback;
 mod console_log;
 mod endpoint;
 mod i18n;
+mod profile;
 mod providers;
 mod shell;
 mod skills;
@@ -122,6 +123,8 @@ enum Route {
     Skills {},
     #[route("/dashboard/console-log")]
     ConsoleLog {},
+    #[route("/dashboard/profile")]
+    Profile {},
     #[route("/login")]
     Login {},
     #[route("/callback")]
@@ -175,6 +178,11 @@ fn Skills() -> Element {
 
 #[component]
 fn ConsoleLog() -> Element {
+    rsx! { shell::Dashboard {} }
+}
+
+#[component]
+fn Profile() -> Element {
     rsx! { shell::Dashboard {} }
 }
 

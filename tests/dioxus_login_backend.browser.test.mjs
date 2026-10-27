@@ -1,6 +1,129 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
+import { isDeepStrictEqual } from "node:util";
+
+test("Dioxus Profile database backup requires password reauthentication on an isolated backend", {
+  skip: process.env.RUN_DIOXUS_BACKEND_TEST !== "1",
+  timeout: 60_000,
+}, async () => {
+  assert.equal(process.env.DIOXUS_BACKEND_OUTPUT_SUPPRESSED, "1");
+  const { chromium } = await import(process.env.DASHBOARD_PLAYWRIGHT_MODULE || "playwright");
+  const browser = await chromium.launch({
+    headless: true,
+    chromiumSandbox: true,
+    ...(process.env.DASHBOARD_CHROMIUM_EXECUTABLE ? { executablePath: process.env.DASHBOARD_CHROMIUM_EXECUTABLE } : {}),
+  });
+  try {
+    const context = await browser.newContext({ serviceWorkers: "block", acceptDownloads: true });
+    try {
+      const password = "synthetic-browser-only";
+      const wrongPassword = "synthetic-wrong-password";
+      let backup;
+      let exports = 0;
+      let imports = 0;
+      const blocked = [];
+      await context.route("**/*", async (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        if (url.origin !== "https://app:4623") {
+          blocked.push("external request");
+          return route.abort("blockedbyclient");
+        }
+        const method = request.method();
+        const path = url.pathname;
+        if (method === "POST" && path === "/api/auth/login" && !url.search) {
+          const body = request.postDataJSON();
+          if (body?.password === password && Object.keys(body).length === 1) return route.continue();
+        }
+        if (method === "POST" && path === "/api/auth/password" && !url.search) {
+          const body = request.postDataJSON();
+          if (body?.newPassword === password && Object.keys(body).length === 1) return route.continue();
+        }
+        if (method === "PATCH" && path === "/api/settings" && !url.search) {
+          const body = request.postDataJSON();
+          if (body?.requireLogin === true && Object.keys(body).length === 1) return route.continue();
+        }
+        if (path === "/api/settings/database" && !url.search) {
+          if (method === "GET" && [wrongPassword, password][exports] === request.headers()["x-op-password"]) {
+            exports++;
+            return route.continue();
+          }
+          if (method === "POST" && backup && imports < 2) {
+            const body = request.postDataJSON();
+            const sentPassword = body.password;
+            delete body.password;
+            if (sentPassword === [wrongPassword, password][imports] && isDeepStrictEqual(body, backup)) {
+              imports++;
+              return route.continue();
+            }
+          }
+        }
+        if (method === "GET" && !url.search && (
+          ["/login", "/dashboard/profile", "/favicon.svg", "/api/auth/status", "/api/build", "/api/settings", "/api/providers"].includes(path) ||
+          path.startsWith("/assets/") || path.startsWith("/_astro/") || path.startsWith("/i18n/")
+        )) return route.continue();
+        blocked.push(`${method} ${path}`);
+        return route.abort("blockedbyclient");
+      });
+      const page = await context.newPage();
+      page.setDefaultTimeout(5_000);
+      await page.goto("https://app:4623/login");
+      assert.equal(await page.locator('script[src*="/assets/openproxy-dashboard-"]').count(), 1);
+      const login = await page.evaluate(async (password) => (await fetch("/api/auth/login", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password }),
+      })).status, password);
+      assert.equal(login, 200);
+      const connections = await page.evaluate(async () => (await (await fetch("/api/providers")).json()).connections.length);
+      assert.equal(connections, 0, "the fresh disposable backend has no provider connections");
+      // INITIAL_PASSWORD permits the first login but is not the stored bcrypt
+      // hash required by database reauthentication. Set it only in this tmpfs.
+      const setup = await page.evaluate(async (password) => {
+        const headers = { "Content-Type": "application/json" };
+        const saved = await fetch("/api/auth/password", { method: "POST", headers, body: JSON.stringify({ newPassword: password }) });
+        const enabled = await fetch("/api/settings", { method: "PATCH", headers, body: JSON.stringify({ requireLogin: true }) });
+        const settings = await (await fetch("/api/settings")).json();
+        return { saved: saved.status, enabled: enabled.status, hasPassword: settings.hasPassword, requireLogin: settings.requireLogin };
+      }, password);
+      assert.deepEqual(setup, { saved: 200, enabled: 200, hasPassword: true, requireLogin: true });
+      await page.goto("https://app:4623/dashboard/profile");
+      await page.getByRole("heading", { name: "Database", exact: true }).waitFor();
+      const confirm = async (value) => {
+        const dialog = page.getByRole("dialog", { name: "Confirm Password" });
+        await dialog.getByPlaceholder("Current password", { exact: true }).fill(value);
+        await dialog.getByRole("button", { name: "Confirm", exact: true }).click();
+      };
+
+      await page.getByRole("button", { name: /Download Backup/ }).click();
+      await confirm(wrongPassword);
+      await page.getByText("Invalid password", { exact: true }).waitFor();
+      await page.getByRole("button", { name: /Download Backup/ }).click();
+      const downloadPromise = page.waitForEvent("download");
+      await confirm(password);
+      const download = await downloadPromise;
+      assert.match(download.suggestedFilename(), /^openproxy-backup-.*\.json$/);
+      const chunks = [];
+      for await (const chunk of await download.createReadStream()) chunks.push(chunk);
+      backup = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      assert(backup && typeof backup === "object" && !Array.isArray(backup));
+      const file = { name: "synthetic-backup.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(backup)) };
+
+      await page.locator('input[type="file"]').setInputFiles(file);
+      await confirm(wrongPassword);
+      await page.getByText("Invalid password", { exact: true }).waitFor();
+      await page.locator('input[type="file"]').setInputFiles(file);
+      await confirm(password);
+      await page.getByText("Database imported from synthetic-backup.json", { exact: true }).waitFor();
+      assert.equal(exports, 2);
+      assert.equal(imports, 2);
+      assert.deepEqual(blocked, []);
+    } finally {
+      await context.close();
+    }
+  } finally {
+    await browser.close();
+  }
+});
 
 // Run first against a fresh, output-suppressed .ui-browser backend. No Codex
 // connection is needed to edit its advertised context setting.

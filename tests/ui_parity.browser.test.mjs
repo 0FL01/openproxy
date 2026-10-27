@@ -110,6 +110,15 @@ const screens = [
   { section: "skills", name: "copied", action: "copied" },
   { section: "console-log", name: "empty" },
   { section: "console-log", name: "streaming" },
+  { section: "profile", name: "security" },
+  { section: "profile", name: "appearance" },
+  { section: "profile", name: "language" },
+  { section: "profile", name: "network" },
+  { section: "profile", name: "observability" },
+  { section: "profile", name: "database" },
+  { section: "profile", name: "database-auth" },
+  { section: "profile", name: "ready" },
+  { section: "profile", name: "bottom" },
   { section: "callback", name: "code", query: callbackCodeQuery, colorScheme: "light" },
   { section: "callback", name: "error", query: callbackErrorQuery, colorScheme: "light" },
   { section: "callback", name: "no-auth-data", query: "", colorScheme: "light" },
@@ -203,13 +212,35 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
               const codexWrites = screen.name === "on" ? [true, false].map((on) => ({
                 method: "PATCH", path: "/api/settings", body: { codexAutoPing: codexConfig(on) },
               })) : [];
-              const expectedWrites = screen.section === "console-log" && screen.name === "streaming" ? [{ method: "DELETE", path: "/api/translator/console-logs", body: null }] : isOpenRouter ? [{ method: "POST", path: "/api/models/custom", body: { providerAlias: "openrouter", id: "sample/model:free", type: "llm" } }] : screen.section === "provider-kilocode" ? (kiloWrites[screen.action] || []) : screen.section === "provider-codex-autoping" ? codexWrites : screen.login
+              const profileWrites = {
+                security: [
+                { method: "POST", path: "/api/auth/password", body: { currentPassword: "fixture-current", newPassword: "fixture-new-pass" } },
+                { method: "PATCH", path: "/api/settings", body: { requireLogin: false } },
+                { method: "PATCH", path: "/api/settings", body: { requireLogin: true } },
+                { method: "POST", path: "/api/auth/password", body: { currentPassword: "fixture-current", newPassword: "fixture-new-pass" } },
+                ],
+                language: [{ method: "POST", path: "/api/locale", body: { locale: "ru" } }],
+                network: [
+                  { method: "PATCH", path: "/api/settings", body: { outboundProxyEnabled: true } },
+                  { method: "POST", path: "/api/settings/proxy-test", body: { proxyUrl: "http://127.0.0.1:7897" } },
+                  { method: "PATCH", path: "/api/settings", body: { outboundProxyUrl: "http://127.0.0.1:7897", outboundNoProxy: "localhost" } },
+                  { method: "PATCH", path: "/api/settings", body: { outboundProxyEnabled: false } },
+                ],
+                observability: [true, false].map((enabled) => ({ method: "PATCH", path: "/api/settings", body: { observabilityEnabled: enabled } })),
+                database: [
+                  { method: "POST", path: "/api/settings/database", body: { metadata: { fixture: true }, password: "fixture-current" } },
+                  { method: "POST", path: "/api/shutdown", body: null },
+                  { method: "POST", path: "/api/auth/logout", body: {} },
+                ],
+              };
+              const expectedWrites = screen.section === "profile" ? (profileWrites[screen.name] || []) : screen.section === "console-log" && screen.name === "streaming" ? [{ method: "DELETE", path: "/api/translator/console-logs", body: null }] : isOpenRouter ? [{ method: "POST", path: "/api/models/custom", body: { providerAlias: "openrouter", id: "sample/model:free", type: "llm" } }] : screen.section === "provider-kilocode" ? (kiloWrites[screen.action] || []) : screen.section === "provider-codex-autoping" ? codexWrites : screen.login
                 ? [{ method: "POST", path: "/api/auth/login", body: { password: "fixture-password" } }]
                 : screen.action === "created"
                   ? [{ method: "POST", path: "/api/keys", body: { name: "Fixture new" } }]
                   : [];
               try {
                 const page = await context.newPage();
+                if (screen.section === "profile") page.setDefaultTimeout(10000);
                 if (screen.section === "skills") {
                   await page.addInitScript(() => {
                     Object.defineProperty(navigator.clipboard, "writeText", {
@@ -245,6 +276,9 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 }
                 let created = false;
                 let authenticated = screen.section !== "login";
+                let profileSettings = { requireLogin: true, hasPassword: true, outboundProxyEnabled: false, outboundProxyUrl: "", outboundNoProxy: "", observabilityEnabled: false };
+                let profilePasswords = 0;
+                let profileExports = [];
                 let kiloDisabled = ["fixture-custom-disabled", "fixture-disabled"];
                 let kiloCustom = [
                   { providerAlias: "kc", id: "fixture-custom", name: "Fixture Custom", type: "llm" },
@@ -275,7 +309,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     (screen.section === "providers-new" && !url.search && ["/dashboard/providers/new", "/providers/codex.png", "/providers/opencode-zen.png", "/providers/openai.png"].includes(path)) ||
                     (screen.section === "provider-kilocode" && !url.search && ["/dashboard/providers/kilocode", "/providers/kilocode.png"].includes(path)) ||
                     (screen.section === "skills" && !url.search && path === "/dashboard/skills") ||
-                    (screen.section === "console-log" && !url.search && path === "/dashboard/console-log");
+                    (screen.section === "console-log" && !url.search && path === "/dashboard/console-log") ||
+                    (screen.section === "profile" && !url.search && path === "/dashboard/profile");
                   if (url.origin === appUrl && method === "GET" && assets) {
                     if (!isCodexDetail) return route.continue();
                     // Do not let even an allowed asset redirect around the
@@ -325,7 +360,9 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     expectedWrites.some((write) => write.method === method && write.path === `${path}${url.search}`);
                   const routerMutation = isOpenRouter && method === "POST" && !url.search && path === "/api/models/custom";
                   const consoleRequest = screen.section === "console-log" && !url.search && ((method === "GET" && path === "/api/translator/console-logs/stream") || (method === "DELETE" && path === "/api/translator/console-logs" && screen.name === "streaming"));
-                  const valid = url.origin === appUrl && (providerGet || providerNewGet || kiloGet || kiloMutation || compatibleGet || codexGet || codexMutation || routerGet || routerMutation || xaiGet || consoleRequest || (!isCodexDetail && !["providers", "providers-new", "provider-kilocode", "provider-compatible", "provider-openrouter", "provider-xai", "callback"].includes(screen.section) && (
+                  const profileMutation = screen.section === "profile" && !url.search && ((method === "POST" && ["/api/auth/password", "/api/auth/logout", "/api/locale", "/api/settings/proxy-test", "/api/settings/database", "/api/shutdown"].includes(path)) || (method === "PATCH" && path === "/api/settings"));
+                  const profileExport = screen.section === "profile" && screen.name === "database" && method === "GET" && !url.search && path === "/api/settings/database";
+                  const valid = url.origin === appUrl && (providerGet || providerNewGet || kiloGet || kiloMutation || compatibleGet || codexGet || codexMutation || routerGet || routerMutation || xaiGet || consoleRequest || profileMutation || profileExport || (!isCodexDetail && !["providers", "providers-new", "provider-kilocode", "provider-compatible", "provider-openrouter", "provider-xai", "callback"].includes(screen.section) && (
                     (method === "GET" && ["/api/auth/status", "/api/settings", "/api/keys", "/api/build", "/api/catalog"].includes(path)) ||
                     (method === "POST" && path === "/api/auth/login" && !!screen.login) ||
                     (method === "POST" && path === "/api/keys" && screen.action === "created")
@@ -342,7 +379,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       return route.abort("blockedbyclient");
                     }
                     const write = { method, path: ["provider-kilocode", "provider-codex-autoping"].includes(screen.section) ? `${path}${url.search}` : path, body: requestBody };
-                    if ((["provider-kilocode", "provider-codex-autoping", "console-log"].includes(screen.section) || isOpenRouter) && !isDeepStrictEqual(write, expectedWrites[writes.length])) {
+                    if ((["provider-kilocode", "provider-codex-autoping", "console-log", "profile"].includes(screen.section) || isOpenRouter) && !isDeepStrictEqual(write, expectedWrites[writes.length])) {
                       unexpected.push(`unexpected mutation ${method} ${url.origin}${path}${url.search}`);
                       return route.abort("blockedbyclient");
                     }
@@ -377,9 +414,31 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                         ? { error: "Invalid password", resetHint: "Forgot password? Run `openproxy auth reset-password` on the host to restore the generated initial password." }
                         : { error: "Invalid password. Please try again." };
                     }
+                  } else if (path === "/api/auth/password") {
+                    profilePasswords += 1;
+                    if (profilePasswords === 2) authenticated = false;
+                    body = { success: true, sessionsInvalidated: profilePasswords === 2 };
+                  } else if (profileExport) {
+                    const password = request.headers()["x-op-password"];
+                    profileExports.push(password);
+                    if (password !== "fixture-current") { status = 401; body = { error: "Invalid password" }; }
+                    else body = { metadata: { fixture: true } };
+                  } else if (path === "/api/settings/database") {
+                    body = { success: true };
+                  } else if (path === "/api/auth/logout") {
+                    authenticated = false;
+                    body = { success: true };
+                  } else if (path === "/api/shutdown") {
+                    body = { success: true };
+                  } else if (path === "/api/locale") {
+                    headers["set-cookie"] = "locale=ru; Path=/; Secure; SameSite=Lax";
+                    body = { success: true };
+                  } else if (path === "/api/settings/proxy-test") {
+                    body = { ok: true, status: "connected", elapsedMs: 12 };
                   } else if (path === "/api/settings") {
+                    if (screen.section === "profile" && method === "PATCH") Object.assign(profileSettings, request.postDataJSON());
                     if (screen.section === "provider-codex-autoping" && method === "PATCH") currentCodexConfig = request.postDataJSON().codexAutoPing;
-                    body = { requireLogin: true, requireApiKey: !screen.insecure, hasPassword: true,
+                    body = { requireLogin: true, requireApiKey: !screen.insecure, hasPassword: true, ...(screen.section === "profile" ? profileSettings : {}),
                       ...(isCodexDetail ? { codexAutoPing: currentCodexConfig, glmAutoPing: { enabled: false, connections: {} } } : {}) };
                   } else if (path === "/api/build") {
                     body = { commit: ["provider-kilocode", "provider-compatible"].includes(screen.section) || isCodexDetail || isOpenRouter || isXaiDetail ? null : fixtureCommit };
@@ -472,7 +531,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   if (path === "/api/oauth/codex/stop-proxy") interceptedCodexStop += 1;
                 });
 
-                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : screen.section === "providers-new" ? "/dashboard/providers/new" : screen.section === "provider-kilocode" ? "/dashboard/providers/kilocode" : screen.section === "provider-compatible" ? compatiblePath : isCodexDetail ? codexPath : isOpenRouter ? "/dashboard/providers/openrouter" : isXaiDetail ? "/dashboard/providers/xai" : screen.section === "skills" ? "/dashboard/skills" : screen.section === "console-log" ? "/dashboard/console-log" : screen.section === "callback" ? "/callback" : "/dashboard/endpoint";
+                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : screen.section === "providers-new" ? "/dashboard/providers/new" : screen.section === "provider-kilocode" ? "/dashboard/providers/kilocode" : screen.section === "provider-compatible" ? compatiblePath : isCodexDetail ? codexPath : isOpenRouter ? "/dashboard/providers/openrouter" : isXaiDetail ? "/dashboard/providers/xai" : screen.section === "skills" ? "/dashboard/skills" : screen.section === "console-log" ? "/dashboard/console-log" : screen.section === "profile" ? "/dashboard/profile" : screen.section === "callback" ? "/callback" : "/dashboard/endpoint";
                 const sourceRoute = screen.section === "provider-compatible" ? compatibleTemplate : path;
                 const response = await page.goto(`${appUrl}${path}${screen.query || ""}`, { waitUntil: "domcontentloaded" });
                 assert(response?.ok(), `failed to load ${path}`);
@@ -484,7 +543,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       assert(html.includes(marker), "record mode requires the standalone Astro callback markup");
                     }
                   } else {
-                    const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : screen.section === "providers-new" ? "ProvidersNewPageClient." : ["provider-kilocode", "provider-compatible"].includes(screen.section) || isCodexDetail || isOpenRouter || isXaiDetail ? "ProviderDetailPageClient." : screen.section === "skills" ? "SkillsPageClient." : screen.section === "console-log" ? "ConsoleLogClient." : "EndpointPageClient.";
+                    const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : screen.section === "providers-new" ? "ProvidersNewPageClient." : ["provider-kilocode", "provider-compatible"].includes(screen.section) || isCodexDetail || isOpenRouter || isXaiDetail ? "ProviderDetailPageClient." : screen.section === "skills" ? "SkillsPageClient." : screen.section === "console-log" ? "ConsoleLogClient." : screen.section === "profile" ? "ProfilePageClient." : "EndpointPageClient.";
                     assert(html.includes(`component-url="/_astro/${component}`), "record mode requires the Astro reference");
                     if (screen.section === "provider-compatible") assert(source.routes[sourceRoute], "dynamic Astro provider template hash must be pinned before recording");
                     if (isCodexDetail) assert(source.routes[sourceRoute], "Astro Codex route hash must be pinned before recording");
@@ -510,6 +569,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 else if (isXaiDetail) await page.getByRole("checkbox", { name: "Select connection Fixture xAI" }).waitFor();
                 else if (screen.section === "skills") await page.getByRole("heading", { name: "OpenProxy (Entry)", exact: true }).waitFor();
                 else if (screen.section === "console-log") await page.getByRole("button", { name: /Clear/ }).waitFor();
+                else if (screen.section === "profile") await page.getByRole("heading", { name: "Security", exact: true }).waitFor();
                 else if (screen.section === "callback") await page.getByRole("heading", { name: screen.name === "error" ? "Authentication Failed" : screen.name === "no-auth-data" ? "No Auth Data Found" : "Authentication Complete", exact: true }).waitFor();
                 else await page.getByText("Fixture key", { exact: true }).waitFor();
                 const disableMotion = () => page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}" });
@@ -630,6 +690,141 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   }
                   await page.mouse.move(1, 1);
                   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+                } else if (screen.section === "profile") {
+                  await page.waitForLoadState("networkidle");
+                  if (viewport.name === "desktop") await page.getByText(fixtureCommit.slice(0, 8), { exact: true }).first().waitFor();
+                  const heading = { security: "Security", appearance: "Appearance", language: "Language", network: "Network", observability: "Observability", database: "Database", "database-auth": "Database" }[screen.name];
+                  const card = heading ? page.getByRole("heading", { name: heading, exact: true }).locator(screen.name === "appearance" ? "../../../.." : "../..") : null;
+                  if (screen.name === "appearance") {
+                    verifyAfterCapture = async () => {
+                      await card.getByRole("button").filter({ hasText: "dark_mode" }).click();
+                      await page.waitForFunction(() => document.documentElement.classList.contains("dark") && JSON.parse(localStorage.getItem("theme")).state.theme === "dark");
+                      await card.getByRole("button").filter({ hasText: "contrast" }).click();
+                      await page.waitForFunction(() => JSON.parse(localStorage.getItem("theme")).state.theme === "system");
+                    };
+                  } else if (screen.name === "language") {
+                    verifyAfterCapture = async () => {
+                      await card.getByRole("button", { name: /Display language/ }).click();
+                      await page.getByText("Select Language", { exact: true }).waitFor();
+                      await page.getByTitle("Русский").click();
+                      await page.getByRole("button").filter({ hasText: "🇷🇺" }).waitFor();
+                      assert.match(await page.evaluate(() => document.cookie), /locale=ru/);
+                    };
+                  } else if (screen.name === "network") {
+                    const toggle = card.getByRole("switch");
+                    await page.waitForFunction(() => {
+                      const heading = [...document.querySelectorAll("h3")].find((h) => h.textContent === "Network");
+                      return heading?.parentElement?.parentElement?.querySelector('[role="switch"]:not(:disabled)');
+                    });
+                    verifyAfterCapture = async () => {
+                      await toggle.click();
+                      await card.getByPlaceholder("http://127.0.0.1:7897").fill("http://127.0.0.1:7897");
+                      await card.getByPlaceholder("localhost,127.0.0.1").fill("localhost");
+                      await card.getByRole("button", { name: "Test proxy URL" }).click();
+                      await card.getByText("Proxy test OK (connected) in 12ms", { exact: true }).waitFor();
+                      await card.getByRole("button", { name: "Apply" }).click();
+                      await card.getByText("Proxy settings applied", { exact: true }).waitFor();
+                      await toggle.click();
+                      await card.getByPlaceholder("http://127.0.0.1:7897").waitFor({ state: "detached" });
+                    };
+                  } else if (screen.name === "observability") {
+                    const toggle = card.getByRole("switch");
+                    await page.waitForFunction(() => {
+                      const heading = [...document.querySelectorAll("h3")].find((h) => h.textContent === "Observability");
+                      return heading?.parentElement?.parentElement?.querySelector('[role="switch"]:not(:disabled)');
+                    });
+                    verifyAfterCapture = async () => {
+                      await toggle.click();
+                      await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="Enable Request Logging"]')?.getAttribute("aria-checked") === "true" || [...document.querySelectorAll("h3")].find((h) => h.textContent === "Observability")?.parentElement?.parentElement?.querySelector('[role="switch"]')?.getAttribute("aria-checked") === "true");
+                      await toggle.click();
+                      await page.waitForFunction(() => [...document.querySelectorAll("h3")].find((h) => h.textContent === "Observability")?.parentElement?.parentElement?.querySelector('[role="switch"]')?.getAttribute("aria-checked") === "false");
+                    };
+                  } else if (screen.name === "database" || screen.name === "database-auth") {
+                    await page.waitForFunction(() => {
+                      const heading = [...document.querySelectorAll("h3")].find((h) => h.textContent === "Security");
+                      const button = heading?.parentElement?.parentElement?.querySelector('[role="switch"]');
+                      return button && !button.disabled && button.getAttribute("aria-checked") === "true";
+                    });
+                    const backup = card.getByRole("button", { name: /Download Backup/ });
+                    const openAuth = async () => {
+                      await backup.click();
+                      await page.getByRole("heading", { name: "Confirm Password", exact: true }).waitFor();
+                      assert(await page.getByRole("button", { name: "Confirm", exact: true }).isDisabled());
+                    };
+                    if (screen.name === "database-auth") {
+                      await openAuth();
+                      await page.getByText("Enter your current password to export the database.", { exact: true }).waitFor();
+                      verifyAfterCapture = async () => { await page.getByRole("button", { name: "Cancel", exact: true }).click(); assert.deepEqual(profileExports, []); };
+                    } else {
+                      verifyAfterCapture = async () => {
+                        await openAuth();
+                        await page.getByPlaceholder("Current password", { exact: true }).fill("fixture-wrong");
+                        await page.getByRole("button", { name: "Confirm", exact: true }).click();
+                        await card.getByText("Invalid password", { exact: true }).waitFor();
+                        await openAuth();
+                        await page.getByPlaceholder("Current password", { exact: true }).fill("fixture-current");
+                        const downloading = page.waitForEvent("download");
+                        await page.getByRole("button", { name: "Confirm", exact: true }).click();
+                        const download = await downloading;
+                        assert.match(download.suggestedFilename(), /^openproxy-backup-.*\.json$/);
+                        const chunks = [];
+                        for await (const chunk of await download.createReadStream()) chunks.push(chunk);
+                        assert.deepEqual(JSON.parse(Buffer.concat(chunks).toString()), { metadata: { fixture: true } });
+                        await card.getByText("Database backup downloaded", { exact: true }).waitFor();
+                        assert.deepEqual(profileExports, ["fixture-wrong", "fixture-current"]);
+                        const file = { name: "fixture.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify({ metadata: { fixture: true } })) };
+                        await card.locator('input[type="file"]').setInputFiles(file);
+                        await page.getByRole("heading", { name: "Confirm Password", exact: true }).waitFor();
+                        assert.equal(writes.length, 0, "import must wait for password confirmation");
+                        await page.getByRole("button", { name: "Cancel", exact: true }).click();
+                        await card.locator('input[type="file"]').setInputFiles(file);
+                        await page.getByPlaceholder("Current password", { exact: true }).fill("fixture-current");
+                        await page.getByRole("button", { name: "Confirm", exact: true }).click();
+                        await card.getByText("Database imported from fixture.json", { exact: true }).waitFor();
+                        await page.locator("main").getByRole("button", { name: /Shutdown/ }).click();
+                        await page.getByRole("heading", { name: "Shutdown Server", exact: true }).waitFor();
+                        await page.getByRole("button", { name: "Cancel", exact: true }).click();
+                        assert.equal(writes.length, 1, "cancel must not shut down the server");
+                        await page.locator("main").getByRole("button", { name: /Shutdown/ }).click();
+                        await page.getByRole("button", { name: "Shutdown", exact: true }).click();
+                        await page.getByRole("heading", { name: "Shutdown Server", exact: true }).waitFor({ state: "detached" });
+                        await page.getByRole("button", { name: /Logout/ }).click();
+                        await page.waitForURL(`${appUrl}/login`);
+                      };
+                    }
+                  } else if (screen.name === "bottom") {
+                    await page.locator("main .overflow-y-auto").evaluate((element) => { element.scrollTop = element.scrollHeight; });
+                  } else if (screen.name === "security") {
+                  const toggle = card.getByRole("switch");
+                  await page.waitForFunction(() => {
+                    const heading = [...document.querySelectorAll("h3")].find((h) => h.textContent === "Security");
+                    const button = heading?.parentElement?.parentElement?.querySelector('[role="switch"]');
+                    return button && !button.disabled && button.getAttribute("aria-checked") === "true";
+                  });
+                  await card.getByPlaceholder("Enter current password").waitFor();
+                  verifyAfterCapture = async () => {
+                    const fill = async (confirmation) => {
+                      await card.getByPlaceholder("Enter current password").fill("fixture-current");
+                      await card.getByPlaceholder("Enter new password").fill("fixture-new-pass");
+                      await card.getByPlaceholder("Confirm password").fill(confirmation);
+                    };
+                    await fill("fixture-mismatch");
+                    await card.getByRole("button", { name: "Update Password" }).click();
+                    await card.getByText("Passwords do not match", { exact: true }).waitFor();
+                    assert.equal(writes.length, 0, "mismatched passwords are never sent");
+                    await fill("fixture-new-pass");
+                    await card.getByRole("button", { name: "Update Password" }).click();
+                    await card.getByText("Password updated successfully.", { exact: true }).waitFor();
+                    assert.equal(await card.getByPlaceholder("Enter current password").inputValue(), "");
+                    await toggle.click();
+                    await card.getByPlaceholder("Enter current password").waitFor({ state: "detached" });
+                    await toggle.click();
+                    await card.getByPlaceholder("Enter current password").waitFor();
+                    await fill("fixture-new-pass");
+                    await card.getByRole("button", { name: "Update Password" }).click();
+                    await page.waitForURL(`${appUrl}/login`);
+                  };
+                  }
                 } else if (screen.section === "console-log") {
                   const output = page.locator("#console-log-output, div.bg-black.rounded-b-lg");
                   await output.waitFor();
@@ -1148,7 +1343,11 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   }
                 }
 
-                const image = await page.screenshot({ fullPage: true, animations: "disabled" });
+                // The Profile route is incremental; these are card comparisons,
+                // not a claim of full-page Profile parity.
+                const image = screen.section === "profile" && !["database-auth", "ready", "bottom"].includes(screen.name)
+                  ? await page.getByRole("heading", { name: { security: "Security", appearance: "Appearance", language: "Language", network: "Network", observability: "Observability", database: "Database" }[screen.name], exact: true }).locator(screen.name === "appearance" ? "../../../.." : "../..").screenshot({ animations: "disabled" })
+                  : await page.screenshot({ fullPage: true, animations: "disabled" });
                 if (verifyAfterCapture) await verifyAfterCapture();
                 scenarioReady = true;
                 return image;

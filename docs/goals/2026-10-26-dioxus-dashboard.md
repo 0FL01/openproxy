@@ -72,7 +72,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 ## Current Checkpoint
 
 - Closes: the next R2/R3 route slice.
-- Smallest next action: migrate the Profile page using its existing authentication and settings APIs.
+- Smallest next action: migrate the DB Backups route using its existing APIs.
 - Expected evidence: focused synthetic UI behavior and a comparison with the reference.
 - Stop or replan if: the route cannot be preserved within the frozen frontend and API boundaries.
 
@@ -85,8 +85,9 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - Skills: the Dioxus page and clipboard feedback matched eight self-repeating Astro desktop/mobile light/dark screenshots at AE=0 without masks; the synthetic browser verified the copied URL, links and feedback reset.
 - Console Log: eight self-repeating Astro desktop/mobile light/dark screenshots matched at AE=0 without masks. The synthetic browser exercised native EventSource init/line, the 200-line bound and autoscroll, then verified a mocked DELETE followed by a synthetic clear event. No real logs were read.
 - xAI: twelve force-refresh and twenty diagnostic desktop/mobile light/dark screenshots matched self-repeating Astro references at AE=0 without masks. Focused synthetic checks covered canonical connection selection, concurrent catalog reloads, saved-model preservation and failure/session handling. Live xAI was not contacted.
+- Profile: 36 self-repeating Astro desktop/mobile light/dark card, modal and full-page screenshots matched at AE=0 without masks. Synthetic checks exercised settings and account actions. A fresh isolated backend verified database export/import rejects an incorrect reauthentication password and accepts the synthetic correct password; no real data was used.
 - Blocker: none external. Dioxus re-encodes PNG color metadata; `frontend/scripts/build.sh` preserves original provider icons for the served output. The skeleton and theme cannot appear before WASM startup as Astro's synchronous HTML/script did.
-- Next: migrate Profile and the other missing routes, remaining provider-specific behavior, and the Translator editor. Cline's live query-preservation behavior remains unverified.
+- Next: migrate DB Backups and the other missing routes, remaining provider-specific behavior, and the Translator editor. Cline's live query-preservation behavior remains unverified.
 
 ## Material Decisions
 
@@ -123,6 +124,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-10-27: R2/R3 Console Log matched eight self-repeating synthetic Astro references at AE=0; stream and clear-event behavior were checked without reading real logs.
 - 2026-10-27: R2/R3 xAI force-refresh ready, pending and failure states matched twelve self-repeating synthetic Astro references at AE=0. Focused synthetic behavior checks passed; no live provider was contacted.
 - 2026-10-27: R2/R3 xAI stale, unavailable, empty, no-connection and connection-error diagnostics matched twenty self-repeating synthetic Astro references at AE=0. Shared connection and force-refresh browser smokes passed.
+- 2026-10-27: R2/R3 Profile settings matched 36 self-repeating synthetic Astro references at AE=0; its database backup reauthentication passed against a fresh isolated backend.
 
 ## Completion
 

@@ -5,6 +5,7 @@ use super::{
     endpoint::EndpointPage,
     i18n::I18n,
     json_body, navigate,
+    profile::ProfilePage,
     providers::{NewProviderPage, ProviderDetailPage, ProvidersPage},
     request, request_with_cache,
     skills::SkillsPage,
@@ -277,6 +278,10 @@ fn DashboardContent() -> Element {
     let mut sidebar_open = use_signal(|| false);
     let mut toasts = use_context::<Signal<Vec<Toast>>>();
     let search = use_signal(String::new);
+    let theme = use_signal(current_theme);
+    let dark = use_signal(|| theme_is_dark(&theme()));
+    let lang_open = use_signal(|| false);
+    let locale = use_signal(cookie_locale);
     let pathname = web_sys::window()
         .and_then(|window| window.location().pathname().ok())
         .unwrap_or_default();
@@ -307,10 +312,10 @@ fn DashboardContent() -> Element {
             }
             main { class: "flex flex-col flex-1 h-full min-w-0 relative transition-colors duration-300 isolate",
                 div { class: "landing-grid absolute inset-0 pointer-events-none -z-10", aria_hidden: "true" }
-                Header { on_menu: move |_| sidebar_open.set(true), search, is_providers, is_providers_new: is_providers_new || is_provider_detail, provider_id: provider_id.clone() }
+                Header { on_menu: move |_| sidebar_open.set(true), search, is_providers, is_providers_new: is_providers_new || is_provider_detail, provider_id: provider_id.clone(), theme, dark, lang_open, locale }
                 div { class: "flex-1 overflow-y-auto custom-scrollbar p-6 lg:p-10",
                     div { class: "max-w-7xl mx-auto",
-                        if is_providers { ProvidersPage { search } } else if is_providers_new { NewProviderPage {} } else if let Some(id) = provider_id { ProviderDetailPage { id } } else if pathname == "/dashboard/skills" { SkillsPage {} } else if pathname == "/dashboard/console-log" { ConsoleLogPage {} } else { EndpointPage {} }
+                        if is_providers { ProvidersPage { search } } else if is_providers_new { NewProviderPage {} } else if let Some(id) = provider_id { ProviderDetailPage { id } } else if pathname == "/dashboard/skills" { SkillsPage {} } else if pathname == "/dashboard/console-log" { ConsoleLogPage {} } else if pathname == "/dashboard/profile" { ProfilePage { theme, dark, lang_open, locale } } else { EndpointPage {} }
                     }
                 }
             }
@@ -458,16 +463,20 @@ fn Sidebar(on_close: EventHandler<()>) -> Element {
     }
 }
 
-fn toggle_theme(mut theme: Signal<String>, mut dark: Signal<bool>) {
+fn toggle_theme(theme: Signal<String>, dark: Signal<bool>) {
     // Zustand toggles the stored value: system always becomes dark, even on a dark system.
     let next = if theme.peek().as_str() == "dark" {
         "light"
     } else {
         "dark"
     };
+    set_theme(theme, dark, next);
+}
+
+pub(super) fn set_theme(mut theme: Signal<String>, mut dark: Signal<bool>, next: &str) {
     theme.set(next.to_owned());
     apply_theme(next);
-    dark.set(next == "dark");
+    dark.set(theme_is_dark(next));
     if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
         let _ = storage.set_item(
             "theme",
@@ -526,7 +535,7 @@ fn CloseMenuOnOutside(mut open: Signal<bool>) -> Element {
 }
 
 // Ordered exactly like the reference language picker.
-const LOCALES: [(&str, &str, &str); 35] = [
+pub(super) const LOCALES: [(&str, &str, &str); 35] = [
     ("en", "English", "🇺🇸"),
     ("vi", "Tiếng Việt", "🇻🇳"),
     ("zh-CN", "简体中文", "🇨🇳"),
@@ -597,13 +606,13 @@ fn Header(
     is_providers: bool,
     is_providers_new: bool,
     provider_id: Option<String>,
+    theme: Signal<String>,
+    mut dark: Signal<bool>,
+    mut lang_open: Signal<bool>,
+    mut locale: Signal<String>,
 ) -> Element {
     let mut menu = use_signal(|| false);
-    let mut lang_open = use_signal(|| false);
-    let mut locale = use_signal(cookie_locale);
     let mut pending = use_signal(|| false);
-    let theme = use_signal(current_theme);
-    let mut dark = use_signal(|| theme_is_dark(&theme()));
     let i18n = use_context::<I18n>();
     use_hook(move || {
         let media = web_sys::window()?
@@ -623,12 +632,15 @@ fn Header(
     let show_title = pathname == "/dashboard"
         || pathname.contains("/endpoint")
         || pathname == "/dashboard/console-log"
+        || pathname == "/dashboard/profile"
         || is_providers
         || is_providers_new;
     let (title, description, page_icon) = if is_providers || is_providers_new {
         ("Providers", "Manage your AI provider connections", "dns")
     } else if pathname == "/dashboard/console-log" {
         ("Console Log", "Live server console output", "monitor")
+    } else if pathname == "/dashboard/profile" {
+        ("Settings", "Manage your preferences", "settings")
     } else {
         ("Endpoint", "API endpoint configuration", "api")
     };
