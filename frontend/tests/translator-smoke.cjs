@@ -176,6 +176,20 @@ async function main() {
     assert.equal(await scopeButton.getAttribute("aria-checked"), "true");
     await scopedDialog.getByLabel("Find", { exact: true }).fill("cat");
     await scopedDialog.getByText(/^[1-3] of 3$/).waitFor();
+    await scopeButton.click();
+    const multilingualWords = "кот котик КОТ";
+    if (reference) await page.evaluate(text => window.monaco.editor.getEditors()[0].setValue(text), multilingualWords);
+    else await editor().fill(multilingualWords);
+    await scopedDialog.getByLabel("Find", { exact: true }).fill("кот");
+    await scopedDialog.getByRole("checkbox", { name: "Match Whole Word (Alt+W)" }).click();
+    await scopedDialog.getByText(/^[1-2] of 2$/).waitFor();
+    await scopedDialog.getByLabel("Replace", { exact: true }).fill("пёс");
+    await scopedDialog.getByRole("button", { name: /^Replace All \(/ }).click();
+    assert.equal(await value(), "пёс котик пёс", "whole-word replacement preserves a longer Cyrillic word");
+    if (reference) await page.evaluate(() => window.monaco.editor.getEditors()[0].focus()); else await editor().focus();
+    await page.keyboard.press("Control+z");
+    assert.equal(await value(), multilingualWords, "whole-word replacement is undoable");
+    await scopedDialog.getByRole("checkbox", { name: "Match Whole Word (Alt+W)" }).click();
     if (process.env.TRANSLATOR_FIND_SELECTION_ONLY === "1") {
       assert.deepEqual(errors, []);
       console.log("synthetic translator scoped find smoke passed");

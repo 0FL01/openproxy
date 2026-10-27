@@ -139,7 +139,22 @@ fn find_regex(
             })
             .collect()
     };
-    let pattern = if whole_word {
+    let pattern = if whole_word && !regex {
+        // Monaco treats every character except its configured separators as a word character.
+        const SEPARATORS: &str = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/? \t\r\n";
+        const WORD_CHARACTER: &str = r#"[^`~!@#$%^&*()\-=+\[\]{}\\|;:'",.<>/? \t\r\n]"#;
+        let left = if query.starts_with(|ch| SEPARATORS.contains(ch)) {
+            String::new()
+        } else {
+            format!("(?<!{WORD_CHARACTER})")
+        };
+        let right = if query.ends_with(|ch| SEPARATORS.contains(ch)) {
+            String::new()
+        } else {
+            format!("(?!{WORD_CHARACTER})")
+        };
+        format!("{left}(?:{pattern}){right}")
+    } else if whole_word {
         format!("\\b(?:{pattern})\\b")
     } else {
         pattern
