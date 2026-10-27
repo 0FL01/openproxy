@@ -20,6 +20,7 @@ const state = {
   ],
   aliases: { legacy: "kc/legacy-model", builtin: "kc/fixture-standard", codexLegacy: "cx/codex-legacy" },
   disabled: { kc: ["fixture-disabled", "custom-disabled"], cx: [] },
+  nodes: [{ id: "openai-compatible-fixture", name: "Fixture Node", type: "openai-compatible", prefix: "fixture-prefix", apiType: "responses", baseUrl: "https://example.invalid/v1" }],
   filters: {}, favorites: { kc: ["fixture-standard"] }, pools: [],
 };
 
@@ -141,7 +142,38 @@ const server = http.createServer(async (req, res) => {
       state.connections.push({ id: `xai-added-${index}`, provider: "xai", name: state.authOnly ? `xAI fixture ${index}` : "xAI fixture", authType: "oauth", isActive: true });
       return respond(200, { success: true });
     }
-    if (url.pathname === "/api/provider-nodes") return respond(200, { nodes: [{ id: "openai-compatible-fixture", name: "Fixture Node", type: "openai-compatible", prefix: "fixture-prefix", apiType: "responses", baseUrl: "https://example.invalid/v1" }] });
+    if (url.pathname === "/api/provider-nodes") {
+      state.nodeReads = (state.nodeReads || 0) + 1;
+      if (state.holdNodeRead) await new Promise(resolve => { state.releaseNodeRead = resolve; });
+      if (state.nodeReadMode === "fail") return respond(503, { error: "Synthetic node read failure" });
+      if (state.nodeReadMode === "unauthorized") { state.expired = true; return respond(401, { error: "expired" }); }
+      if (state.nodeReadMode === "malformed") return respond(200, { nodes: {} });
+      return respond(200, { nodes: state.nodes });
+    }
+    if (url.pathname === "/api/provider-nodes/validate" && req.method === "POST") {
+      if (state.expired) return respond(401, { error: "expired" });
+      const valid = state.nodeCheckValid !== false;
+      if (state.holdNodeCheck) { state.holdNodeCheck = false; await new Promise(resolve => { state.releaseNodeCheck = resolve; }); }
+      return respond(200, { valid });
+    }
+    if (url.pathname.startsWith("/api/provider-nodes/") && req.method === "PUT") {
+      if (state.expired) return respond(401, { error: "expired" });
+      if (state.rejectNodeSave) return respond(400, { error: "Synthetic node update rejected" });
+      if (state.holdNodeSave) { state.holdNodeSave = false; await new Promise(resolve => { state.releaseNodeSave = resolve; }); }
+      const node = state.nodes.find(item => item.id === decodeURIComponent(url.pathname.split("/").pop()));
+      if (!node) return respond(404, { error: "Node not found" });
+      Object.assign(node, body);
+      return respond(200, { node });
+    }
+    if (url.pathname.startsWith("/api/provider-nodes/") && req.method === "DELETE") {
+      if (state.holdNodeDelete) { state.holdNodeDelete = false; await new Promise(resolve => { state.releaseNodeDelete = resolve; }); }
+      if (state.expired) return respond(401, { error: "expired" });
+      if (state.rejectNodeDelete) return respond(500, { error: "Synthetic node delete rejected" });
+      const id = decodeURIComponent(url.pathname.split("/").pop());
+      if (!state.nodes.some(node => node.id === id)) return respond(404, { error: "Node not found" });
+      state.nodes = state.nodes.filter(node => node.id !== id);
+      return respond(200, { success: true, message: "Node deleted" });
+    }
     if (url.pathname === "/api/proxy-pools") return respond(200, { proxyPools: state.pools });
     if (url.pathname === "/api/providers/kilo/free-models") return respond(200, { models: [{ id: "fixture-free", name: "Fixture Free" }, { id: "fixture-standard", name: "Duplicate live" }] });
     if (url.pathname === "/api/providers/suggested-models") {
@@ -168,10 +200,33 @@ const server = http.createServer(async (req, res) => {
       return respond(200, req.method === "GET" ? { ids: saved } : { success: true });
     }
     if (url.pathname === "/api/models/custom") {
+      if (req.method === "GET") {
+        state.customReads = (state.customReads || 0) + 1;
+        if (state.customReadStatus) {
+          if (state.customReadStatus === 401) state.expired = true;
+          return respond(state.customReadStatus, { error: "Synthetic custom-model read failure" });
+        }
+      }
       if (req.method === "POST") {
         if (state.expired) return respond(401, { error: "expired" });
+        if (state.unauthorizedCustomId === body.id) { state.expired = true; return respond(401, { error: "expired" }); }
+        if (state.rejectCustomIds?.includes(body.id)) return respond(400, { error: "Synthetic custom-model failure" });
         if (state.rejectCustom) return respond(400, { error: "Fixture rejection" });
         if (state.holdCustom) await new Promise(resolve => { state.releaseCustom = resolve; });
+        if (state.importOnly) {
+          if (state.malformedCustomId === body.id) {
+            state.malformedCustomId = undefined;
+            state.custom.push(body);
+            return respond(200, { success: true });
+          }
+          if (state.concurrentCustomId === body.id) {
+            state.concurrentCustomId = undefined;
+            state.custom.push({ ...body, name: "Other writer", opencode: { limit: { context: 654321 } } });
+          }
+          const exists = state.custom.some(model => model.providerAlias === body.providerAlias && model.id === body.id && (model.type || "llm") === body.type);
+          if (!exists) state.custom.push(body);
+          return respond(200, { success: true, added: !exists });
+        }
         state.custom.push(body);
       }
       if (req.method === "DELETE") state.custom = state.custom.filter(m => !(m.providerAlias === url.searchParams.get("providerAlias") && m.id === url.searchParams.get("id") && (m.type || "llm") === url.searchParams.get("type")));
@@ -190,6 +245,15 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/api/models/test") {
       if (state.holdModelTest) await new Promise(resolve => { state.releaseModelTest = resolve; });
       return respond(200, state.modelTestResult || { ok: true });
+    }
+    if (/^\/api\/providers\/[^/]+\/models$/.test(url.pathname) && req.method === "GET") {
+      state.importGets ||= [];
+      state.importGets.push(url.pathname);
+      const status = state.importStatus || 200;
+      const data = structuredClone(state.importData || { models: [] });
+      if (state.holdImport) await new Promise(resolve => { state.releaseImport = resolve; });
+      if (status === 401) state.expired = true;
+      return respond(status, data);
     }
     if (/^\/api\/providers\/[^/]+\/test$/.test(url.pathname) && req.method === "POST") {
       if (state.holdConnectionTest && url.pathname.includes("bulk-one")) await new Promise(resolve => { state.releaseConnectionTest = resolve; });
@@ -1043,6 +1107,477 @@ async function runPopupFixture(page, origin) {
   }
 }
 
+async function runUuidCompatibleNodeFixture(page, origin) {
+  // The real POST /api/provider-nodes returns UUIDs, not type-prefixed IDs.
+  const openId = "1fc62630-3530-41a5-a346-8a75ea520dc1";
+  const anthropicId = "76a9513d-1ce3-4e98-a7de-3af2e964c8bb";
+  const missingId = "adf83924-b3bb-4d44-b4c6-35ac547f7a38";
+  const mismatchId = "openai-compatible-persisted-anthropic";
+  state.nodes.push(
+    { id: openId, name: "UUID OpenAI", type: "openai-compatible", prefix: "uuid-open", apiType: "responses", baseUrl: "https://uuid-open.example.invalid/v1" },
+    { id: anthropicId, name: "UUID Anthropic", type: "anthropic-compatible", prefix: "uuid-anthropic", apiType: null, baseUrl: "https://uuid-anthropic.example.invalid/v1" },
+    { id: mismatchId, name: "Type Beats Prefix", type: "anthropic-compatible", prefix: "mixed", baseUrl: "https://mixed.example.invalid/v1" },
+    { id: "unsupported-node", name: "Unsupported Node", type: "other", prefix: "unsupported" },
+    { id: "codex", name: "Must Not Shadow Builtin", type: "anthropic-compatible", prefix: "shadow" },
+  );
+  const details = title => page.getByRole("heading", { name: title }).locator("xpath=../..");
+  await page.goto(`${origin}/dashboard/providers`);
+  await page.getByRole("link", { name: /UUID OpenAI/ }).waitFor();
+  state.holdNodeRead = true;
+  await page.getByRole("link", { name: /UUID OpenAI/ }).click();
+  await waitForFixture(() => typeof state.releaseNodeRead === "function");
+  assert.ok(await page.locator("main .animate-pulse").count() > 0, "UUID details stay in the loading state until node metadata arrives");
+  assert.equal(await page.getByText("Provider not found", { exact: true }).count(), 0);
+  state.holdNodeRead = false;
+  state.releaseNodeRead();
+  await page.locator("main h1").getByText("UUID OpenAI").waitFor();
+  assert.equal(new URL(page.url()).pathname, `/dashboard/providers/${openId}`);
+  await page.getByText("Responses API · https://uuid-open.example.invalid/v1/responses", { exact: true }).waitFor();
+  assert.equal(await page.locator('main img[alt="UUID OpenAI"]').getAttribute("src"), "/providers/oai-r.png");
+
+  const openCard = details("OpenAI Compatible Details");
+  await openCard.getByRole("button", { name: /Add API Key/ }).click();
+  const add = page.getByRole("dialog", { name: "Add UUID OpenAI API Key" });
+  await add.getByLabel("Name", { exact: true }).fill("UUID connection");
+  await add.getByLabel("API Key", { exact: true }).fill("synthetic-uuid-key");
+  assert.equal(await add.getByRole("button", { name: "Save", exact: true }).isDisabled(), true, "compatible default model is required even with a UUID");
+  await add.getByLabel("Default Model").fill("  uuid-model  ");
+  await add.getByRole("button", { name: "Save", exact: true }).click();
+  await add.waitFor({ state: "detached" });
+  const created = state.writes.filter(write => write.path === "/api/providers" && write.method === "POST").at(-1).body;
+  assert.equal(created.provider, openId);
+  assert.equal(created.defaultModel, "uuid-model");
+  await page.getByText("UUID connection", { exact: true }).waitFor();
+  assert.equal(await openCard.getByRole("button", { name: /Add API Key/ }).isDisabled(), true);
+  await page.getByRole("checkbox", { name: "Select connection UUID connection" }).locator("xpath=../..").getByRole("button", { name: /edit Edit/ }).click();
+  const connectionEdit = page.getByRole("dialog", { name: "Edit Connection" });
+  assert.equal(await connectionEdit.getByRole("button", { name: "Test Connection", exact: true }).count(), 0, "UUID compatible connections keep the compatible edit behavior");
+  await connectionEdit.getByRole("button", { name: "Close" }).click();
+
+  await page.getByLabel("Model ID", { exact: true }).fill("uuid-custom");
+  await page.getByRole("button", { name: /^add Add$/ }).click();
+  await page.locator("code").filter({ hasText: "uuid-open/uuid-custom" }).waitFor();
+  assert.deepEqual(state.writes.filter(write => write.path === "/api/models/custom" && write.method === "POST").at(-1).body, { providerAlias: openId, id: "uuid-custom", type: "llm" });
+  await openCard.getByRole("button", { name: /^edit Edit$/ }).click();
+  let edit = page.getByRole("dialog", { name: "Edit OpenAI Compatible" });
+  await edit.getByLabel("Name", { exact: true }).fill("UUID OpenAI Updated");
+  await edit.getByLabel("Prefix", { exact: true }).fill("uuid-updated");
+  await edit.getByLabel("API Type", { exact: true }).selectOption("chat");
+  await edit.getByRole("button", { name: "Save", exact: true }).click();
+  await edit.waitFor({ state: "detached" });
+  assert.deepEqual(state.writes.filter(write => write.path === `/api/provider-nodes/${openId}` && write.method === "PUT").at(-1).body, { name: "UUID OpenAI Updated", prefix: "uuid-updated", baseUrl: "https://uuid-open.example.invalid/v1", apiType: "chat" });
+  await page.locator("code").filter({ hasText: "uuid-updated/uuid-custom" }).waitFor();
+  assert.equal(await page.locator('main img[alt="UUID OpenAI Updated"]').getAttribute("src"), "/providers/oai-cc.png");
+  await page.reload();
+  await page.locator("code").filter({ hasText: "uuid-updated/uuid-custom" }).waitFor();
+  await details("OpenAI Compatible Details").getByRole("button", { name: /^delete Delete$/ }).click();
+  await page.getByRole("dialog", { name: "Delete compatible node" }).getByRole("button", { name: "Delete", exact: true }).click();
+  await page.waitForURL(`${origin}/dashboard/providers`);
+  assert.ok(!state.nodes.some(node => node.id === openId));
+  assert.ok(state.connections.some(conn => conn.provider === openId), "node delete must not cascade to connections");
+  assert.ok(state.custom.some(model => model.providerAlias === openId && model.id === "uuid-custom"), "node delete must not cascade to models");
+
+  await page.getByRole("link", { name: /UUID Anthropic/ }).click();
+  await page.locator("main h1").getByText("UUID Anthropic").waitFor();
+  await page.getByText("Messages API · https://uuid-anthropic.example.invalid/v1/messages", { exact: true }).waitFor();
+  assert.equal(await page.locator('main img[alt="UUID Anthropic"]').getAttribute("src"), "/providers/anthropic-m.png");
+  await page.getByLabel("Model ID", { exact: true }).fill("anthropic-uuid-custom");
+  await page.getByRole("button", { name: /^add Add$/ }).click();
+  await page.locator("code").filter({ hasText: "uuid-anthropic/anthropic-uuid-custom" }).waitFor();
+  assert.deepEqual(state.writes.filter(write => write.path === "/api/models/custom" && write.method === "POST").at(-1).body, { providerAlias: anthropicId, id: "anthropic-uuid-custom", type: "llm" });
+  await details("Anthropic Compatible Details").getByRole("button", { name: /^edit Edit$/ }).click();
+  edit = page.getByRole("dialog", { name: "Edit Anthropic Compatible" });
+  assert.equal(await edit.getByLabel("API Type", { exact: true }).count(), 0);
+  await edit.getByLabel("Name", { exact: true }).fill("UUID Anthropic Updated");
+  await edit.getByRole("button", { name: "Save", exact: true }).click();
+  await edit.waitFor({ state: "detached" });
+  assert.deepEqual(state.writes.filter(write => write.path === `/api/provider-nodes/${anthropicId}` && write.method === "PUT").at(-1).body, { name: "UUID Anthropic Updated", prefix: "uuid-anthropic", baseUrl: "https://uuid-anthropic.example.invalid/v1" });
+  await details("Anthropic Compatible Details").getByRole("button", { name: /^delete Delete$/ }).click();
+  await page.getByRole("dialog", { name: "Delete compatible node" }).getByRole("button", { name: "Delete", exact: true }).click();
+  await page.waitForURL(`${origin}/dashboard/providers`);
+  assert.ok(!state.nodes.some(node => node.id === anthropicId));
+  assert.ok(state.custom.some(model => model.providerAlias === anthropicId && model.id === "anthropic-uuid-custom"));
+
+  await page.goto(`${origin}/dashboard/providers/${mismatchId}`);
+  await page.getByRole("heading", { name: "Anthropic Compatible Details" }).waitFor();
+  assert.equal(await page.locator('main img[alt="Type Beats Prefix"]').getAttribute("src"), "/providers/anthropic-m.png", "persisted type wins over the ID prefix");
+  state.nodeReadMode = "fail";
+  const readsBeforeBuiltin = state.nodeReads;
+  await page.goto(`${origin}/dashboard/providers/codex`);
+  await page.locator("main h1").filter({ hasText: "OpenAI Codex" }).last().waitFor();
+  assert.equal(state.nodeReads, readsBeforeBuiltin, "built-in details do not depend on a node lookup");
+  assert.equal(await page.getByText("Must Not Shadow Builtin").count(), 0);
+  await page.goto(`${origin}/dashboard/providers/${missingId}`);
+  await page.getByRole("alert").getByText("Compatible provider could not be loaded.").waitFor();
+  assert.equal(await page.getByText("Provider not found").count(), 0, "failed lookups are not mistaken for missing nodes");
+  state.nodeReadMode = undefined;
+  await page.reload();
+  await page.getByText("Provider not found", { exact: true }).waitFor();
+  await page.goto(`${origin}/dashboard/providers/unsupported-node`);
+  await page.getByText("Provider not found", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: /^edit Edit$/ }).count(), 0);
+  state.nodeReadMode = "malformed";
+  await page.goto(`${origin}/dashboard/providers/${missingId}`);
+  await page.getByRole("alert").getByText("Compatible provider could not be loaded.").waitFor();
+  assert.equal(await page.getByText("Provider not found").count(), 0);
+  state.nodeReadMode = "unauthorized";
+  await page.goto(`${origin}/dashboard/providers/${anthropicId}`);
+  await page.waitForURL(`${origin}/login`);
+  state.nodeReadMode = undefined;
+  state.expired = false;
+}
+
+async function runCompatibleImportFixture(page, origin) {
+  const id = "4e6808c9-b26f-42fb-b6fc-bcd09c79c55f";
+  state.importOnly = true;
+  state.writes = [];
+  state.importGets = [];
+  state.nodes = [{ id, name: "Import Fixture", type: "openai-compatible", prefix: "display-prefix", apiType: "chat", baseUrl: "https://example.invalid/v1" }];
+  state.connections = [];
+  state.custom = [];
+  state.aliases = {};
+  await page.goto(`${origin}/dashboard/providers/${id}`);
+  await page.getByText("Add OpenAI-compatible models manually or import them from the /models endpoint.", { exact: true }).waitFor();
+  await page.getByText("Add a connection to enable importing models.", { exact: true }).waitFor();
+  await page.getByText("Add a model ID above or import from the provider's /models endpoint.", { exact: true }).waitFor();
+  let importButton = page.getByRole("button", { name: /Import from \/models/ });
+  assert.equal(await importButton.isDisabled(), true);
+  await importButton.evaluate(button => button.click());
+  assert.deepEqual(state.importGets, []);
+
+  state.connections = [{ id: "inactive", provider: id, name: "Inactive", isActive: false }];
+  await page.reload();
+  await page.getByText("Add a connection to enable importing models.", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: /Import from \/models/ }).isDisabled(), true);
+
+  state.connections.push({ id: "first-default", provider: id, name: "Default active" }, { id: "second-active", provider: id, name: "Second active", isActive: true });
+  state.custom.push({ providerAlias: id, id: "existing", name: "Preserve metadata", type: "llm", opencode: { limit: { context: 123456 } } });
+  state.aliases["legacy-alias"] = `${id}/legacy`;
+  await page.reload();
+  await page.locator("code").filter({ hasText: "display-prefix/existing" }).waitFor();
+  assert.equal(await page.getByText("Add a connection to enable importing models.").count(), 0);
+  state.importData = { models: [{ id: "existing" }, { id: "legacy" }, { id: "fresh" }, { id: "fresh" }, { name: "name-fallback" }, { model: "model-fallback" }, { id: "manual-added" }, { id: "" }, { id: "  \uFEFF " }, {}, { id: 123 }] };
+  state.holdImport = true;
+  importButton = page.getByRole("button", { name: /Import from \/models/ });
+  await importButton.click();
+  await waitForFixture(() => typeof state.releaseImport === "function");
+  const importing = page.getByRole("button", { name: /Importing/ });
+  assert.equal(await importing.isDisabled(), true);
+  await importing.evaluate(button => button.click());
+  assert.deepEqual(state.importGets, ["/api/providers/first-default/models"], "only the first active connection is fetched and concurrent import is blocked");
+  await page.getByLabel("Model ID", { exact: true }).fill("manual-added");
+  await page.getByRole("button", { name: /^add Add$/ }).click();
+  await page.locator("code").filter({ hasText: "display-prefix/manual-added" }).waitFor();
+  state.holdImport = false;
+  state.releaseImport();
+  await page.getByText("Imported 3 model(s).", { exact: true }).waitFor();
+  for (const model of ["fresh", "name-fallback", "model-fallback"]) await page.locator("code").filter({ hasText: `display-prefix/${model}` }).waitFor();
+  const writes = () => state.writes.filter(write => write.path === "/api/models/custom" && write.method === "POST");
+  assert.deepEqual(writes().map(write => write.body), ["manual-added", "fresh", "name-fallback", "model-fallback"].map(model => ({ providerAlias: id, id: model, type: "llm" })));
+  assert.deepEqual(state.custom.find(model => model.id === "existing").opencode, { limit: { context: 123456 } });
+  assert.equal(state.aliases["legacy-alias"], `${id}/legacy`);
+
+  await page.getByRole("button", { name: /Import from \/models/ }).click();
+  await page.getByText("No new models were added.", { exact: true }).waitFor();
+  assert.equal(writes().length, 4);
+  state.importData = { models: [{ id: "concurrent-model" }] };
+  state.concurrentCustomId = "concurrent-model";
+  await page.getByRole("button", { name: /Import from \/models/ }).click();
+  await page.locator("code").filter({ hasText: "display-prefix/concurrent-model" }).waitFor();
+  assert.equal(writes().length, 5);
+  assert.deepEqual(state.custom.find(model => model.id === "concurrent-model").opencode, { limit: { context: 654321 } }, "an added:false race must preserve metadata and refresh the existing row");
+  state.importData = { models: [{ id: "uncertain-model" }] };
+  state.malformedCustomId = "uncertain-model";
+  await page.getByRole("button", { name: /Import from \/models/ }).click();
+  await page.getByText("Failed to import models", { exact: true }).waitFor();
+  await page.locator("code").filter({ hasText: "display-prefix/uncertain-model" }).waitFor();
+  assert.equal(writes().length, 6, "a malformed write reply reports an error but still reconciles saved rows");
+  state.importData = { models: [] };
+  await page.getByRole("button", { name: /Import from \/models/ }).click();
+  await page.getByText("No models returned from /models.", { exact: true }).waitFor();
+  state.importStatus = 503;
+  state.importData = { error: "Synthetic models failure" };
+  await page.getByRole("button", { name: /Import from \/models/ }).click();
+  await page.getByText("Synthetic models failure", { exact: true }).waitFor();
+  assert.equal(writes().length, 6, "empty and failed responses do not write models");
+
+  state.importStatus = 200;
+  state.importData = { models: [{ id: "partial-one" }, { id: "failed-id" }, { id: "partial-two" }] };
+  state.rejectCustomIds = ["failed-id"];
+  await page.getByRole("button", { name: /Import from \/models/ }).click();
+  await page.getByText("Imported 2 model(s); failed to import 1.", { exact: true }).waitFor();
+  assert.ok(state.custom.some(model => model.id === "partial-one"));
+  assert.ok(state.custom.some(model => model.id === "partial-two"));
+  assert.ok(!state.custom.some(model => model.id === "failed-id"));
+  state.rejectCustomIds = [];
+
+  await page.getByText("Failed to import models", { exact: true }).waitFor({ state: "detached" });
+  const failImport = route => route.abort("failed");
+  await page.route("**/api/providers/first-default/models", failImport);
+  await page.getByRole("button", { name: /Import from \/models/ }).click();
+  await page.getByText("Failed to import models", { exact: true }).waitFor();
+  await page.unroute("**/api/providers/first-default/models", failImport);
+
+  // A user deletion while discovery is pending must not be silently undone
+  // by recreating the same ID without its former metadata.
+  state.custom.push({ providerAlias: id, id: "deleted-during-import", name: "User metadata", type: "llm", opencode: { limit: { context: 345678 } } });
+  await page.reload();
+  const deletedModel = page.getByText("deleted-during-import", { exact: true }).locator("xpath=../..");
+  await deletedModel.waitFor();
+  state.importData = { models: [{ id: "deleted-during-import" }] };
+  state.holdImport = true;
+  delete state.releaseImport;
+  const beforeDeletedImport = writes().length;
+  await page.getByRole("button", { name: /Import from \/models/ }).click();
+  await waitForFixture(() => typeof state.releaseImport === "function");
+  await deletedModel.getByTitle("Remove model").click();
+  await deletedModel.waitFor({ state: "detached" });
+  state.holdImport = false;
+  state.releaseImport();
+  await page.getByRole("button", { name: /Import from \/models/ }).waitFor();
+  assert.equal(writes().length, beforeDeletedImport, "an ID present at click must remain excluded after a user deletion");
+  assert.equal(state.custom.some(model => model.id === "deleted-during-import"), false);
+  await page.getByText("No new models were added.", { exact: true }).waitFor();
+
+  // A committed write with a failed final read must remain visibly uncertain
+  // and recover via a read-only retry, not another model import/write.
+  state.importData = { models: [{ id: "refresh-required" }] };
+  state.customReadStatus = 503;
+  const beforeRefreshFailure = writes().length;
+  await page.getByRole("button", { name: /Import from \/models/ }).click();
+  const refreshAlert = page.getByRole("alert").filter({ hasText: "Could not refresh saved models" });
+  await refreshAlert.waitFor();
+  assert.equal(writes().length, beforeRefreshFailure + 1);
+  assert.ok(state.custom.some(model => model.id === "refresh-required"), "the synthetic backend committed the write");
+  assert.equal(await page.locator("code").filter({ hasText: "display-prefix/refresh-required" }).count(), 0);
+  assert.equal(await page.getByText("Imported 1 model(s).", { exact: true }).count(), 0, "a stale list must not report visible success");
+  assert.equal(await page.getByRole("button", { name: /Import from \/models/ }).isDisabled(), true);
+  const beforeRetryRead = state.customReads;
+  await refreshAlert.getByRole("button", { name: "Retry" }).click();
+  await waitForFixture(() => state.customReads > beforeRetryRead);
+  await refreshAlert.getByRole("button", { name: "Retry" }).waitFor();
+  assert.equal(writes().length, beforeRefreshFailure + 1, "retry never repeats writes");
+  state.customReadStatus = 0;
+  await refreshAlert.getByRole("button", { name: "Retry" }).click();
+  await refreshAlert.waitFor({ state: "detached" });
+  await page.locator("code").filter({ hasText: "display-prefix/refresh-required" }).waitFor();
+  assert.equal(writes().length, beforeRefreshFailure + 1);
+
+  state.importData = { models: [{ id: "stale-partial-ok" }, { id: "stale-partial-fail" }] };
+  state.rejectCustomIds = ["stale-partial-fail"];
+  state.customReadStatus = 503;
+  const beforePartialRefresh = writes().length;
+  await page.getByRole("button", { name: /Import from \/models/ }).click();
+  await refreshAlert.waitFor();
+  await page.getByText("Imported 1 model(s); failed to import 1.", { exact: true }).waitFor();
+  assert.equal(writes().length, beforePartialRefresh + 2);
+  state.customReadStatus = 0;
+  state.rejectCustomIds = [];
+  await refreshAlert.getByRole("button", { name: "Retry" }).click();
+  await refreshAlert.waitFor({ state: "detached" });
+  await page.locator("code").filter({ hasText: "display-prefix/stale-partial-ok" }).waitFor();
+  assert.equal(writes().length, beforePartialRefresh + 2);
+
+  state.importData = { models: [{ id: "refresh-unauthorized" }] };
+  state.customReadStatus = 401;
+  const beforeRefreshUnauthorized = writes().length;
+  await page.getByRole("button", { name: /Import from \/models/ }).click();
+  await page.waitForURL(`${origin}/login`);
+  assert.equal(writes().length, beforeRefreshUnauthorized + 1);
+  assert.ok(state.custom.some(model => model.id === "refresh-unauthorized"));
+  state.customReadStatus = 0;
+  state.expired = false;
+  await page.goto(`${origin}/dashboard/providers/${id}`);
+  await page.getByRole("button", { name: /Import from \/models/ }).waitFor();
+
+  const beforeUnauthorized = writes().length;
+  state.importStatus = 401;
+  state.importData = { error: "expired" };
+  await page.getByRole("button", { name: /Import from \/models/ }).click();
+  await page.waitForURL(`${origin}/login`);
+  assert.equal(writes().length, beforeUnauthorized);
+
+  state.expired = false;
+  state.importStatus = 200;
+  state.importData = { models: [{ id: "before-401" }, { id: "needs-auth" }, { id: "after-401" }] };
+  state.unauthorizedCustomId = "needs-auth";
+  await page.goto(`${origin}/dashboard/providers/${id}`);
+  await page.getByRole("button", { name: /Import from \/models/ }).click();
+  await page.waitForURL(`${origin}/login`);
+  assert.ok(state.custom.some(model => model.id === "before-401"));
+  assert.ok(!writes().some(write => write.body.id === "after-401"), "no additional writes follow a 401");
+}
+
+async function runCompatibleNodeFixture(page, origin) {
+  await runUuidCompatibleNodeFixture(page, origin);
+  state.writes.length = 0;
+  const openId = "openai-compatible-fixture";
+  const anthropicId = "anthropic-compatible-fixture";
+  state.nodes.push({ id: anthropicId, name: "Fixture Anthropic", type: "anthropic-compatible", prefix: "anthropic-prefix", baseUrl: "https://anthropic.example.invalid/v1" });
+  state.connections.push({ id: "node-connection", provider: openId, name: "Preserved account", authType: "apikey", isActive: true });
+  state.custom.push({ providerAlias: openId, id: "node-model", type: "llm", name: "Preserved model", opencode: { limit: { context: 123456 } } });
+  const nodeWrites = () => state.writes.filter(write => write.path.startsWith("/api/provider-nodes/"));
+  const details = title => page.getByRole("heading", { name: title }).locator("xpath=../..");
+  const edit = title => details(title).getByRole("button", { name: /^edit Edit$/ });
+  const remove = title => details(title).getByRole("button", { name: /^delete Delete$/ });
+  await page.goto(`${origin}/dashboard/providers/${openId}`);
+  await page.getByRole("heading", { name: "Fixture Node" }).waitFor();
+  await page.locator("code").filter({ hasText: "fixture-prefix/node-model" }).waitFor();
+  await edit("OpenAI Compatible Details").click();
+  let dialog = page.getByRole("dialog", { name: "Edit OpenAI Compatible" });
+  assert.equal(await dialog.getByLabel("Name", { exact: true }).inputValue(), "Fixture Node");
+  assert.equal(await dialog.getByLabel("Prefix", { exact: true }).inputValue(), "fixture-prefix");
+  assert.equal(await dialog.getByLabel("Base URL", { exact: true }).inputValue(), "https://example.invalid/v1");
+  assert.equal(await dialog.getByLabel("API Type", { exact: true }).inputValue(), "responses");
+  assert.equal(await dialog.getByLabel("API Key (for Check)").inputValue(), "");
+  assert.equal(await dialog.getByRole("button", { name: "Check", exact: true }).isDisabled(), true);
+  await dialog.getByLabel("Name", { exact: true }).fill("\uFEFF ");
+  assert.equal(await dialog.getByRole("button", { name: "Save", exact: true }).isDisabled(), true);
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await dialog.waitFor({ state: "detached" });
+  assert.equal(nodeWrites().length, 0, "cancel never writes the node");
+  await edit("OpenAI Compatible Details").click();
+  dialog = page.getByRole("dialog", { name: "Edit OpenAI Compatible" });
+  await dialog.getByLabel("Name", { exact: true }).fill("  Renamed Node  ");
+  await dialog.getByLabel("Prefix", { exact: true }).fill("new-route");
+  await dialog.getByLabel("Base URL", { exact: true }).fill("https://updated.example.invalid/v1/");
+  await dialog.getByLabel("API Type", { exact: true }).selectOption("chat");
+  await dialog.getByLabel("API Key (for Check)").fill("synthetic-check-key");
+  await dialog.getByLabel("Model ID (optional)").fill("\uFEFF fixture-model \uFEFF");
+  state.holdNodeCheck = true;
+  await dialog.getByRole("button", { name: "Check", exact: true }).click();
+  await waitForFixture(() => typeof state.releaseNodeCheck === "function");
+  await dialog.getByLabel("API Key (for Check)").fill("synthetic-replacement-key");
+  state.nodeCheckValid = false;
+  state.releaseNodeCheck();
+  await dialog.getByRole("button", { name: "Check", exact: true }).click();
+  await dialog.getByText("Invalid", { exact: true }).waitFor();
+  await page.waitForTimeout(150);
+  assert.equal(await dialog.getByText("Valid", { exact: true }).count(), 0, "stale check results cannot validate an edited key");
+  assert.deepEqual(nodeWrites().at(-1).body, { baseUrl: "https://updated.example.invalid/v1/", apiKey: "synthetic-replacement-key", type: "openai-compatible", modelId: "fixture-model" });
+  state.nodeCheckValid = true;
+  await dialog.getByRole("button", { name: "Check", exact: true }).click();
+  await dialog.getByText("Valid", { exact: true }).waitFor();
+  state.rejectNodeSave = true;
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await dialog.getByRole("alert").getByText("Synthetic node update rejected").waitFor();
+  assert.equal(state.nodes.find(node => node.id === openId).name, "Fixture Node");
+  assert.equal(await dialog.getByLabel("Name", { exact: true }).inputValue(), "  Renamed Node  ");
+  state.rejectNodeSave = false;
+  const abortSave = route => route.request().method() === "PUT" ? route.abort() : route.continue();
+  await page.route(`**/api/provider-nodes/${openId}`, abortSave);
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await dialog.getByRole("alert").getByText("Failed to update compatible node").waitFor();
+  await page.unroute(`**/api/provider-nodes/${openId}`, abortSave);
+  state.holdNodeSave = true;
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await waitForFixture(() => typeof state.releaseNodeSave === "function");
+  assert.equal(await dialog.getByRole("button", { name: "Saving..." }).isDisabled(), true);
+  const pendingWrites = nodeWrites().filter(write => write.method === "PUT").length;
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await dialog.waitFor({ state: "detached" });
+  const editButton = edit("OpenAI Compatible Details");
+  assert.equal(await editButton.isDisabled(), true, "a pending save must prevent reopening stale fields");
+  await editButton.click({ force: true });
+  assert.equal(await page.getByRole("dialog", { name: "Edit OpenAI Compatible" }).count(), 0);
+  assert.equal(nodeWrites().filter(write => write.method === "PUT").length, pendingWrites, "the dismissed save must not cause a second write");
+  state.releaseNodeSave();
+  await page.locator("main h1").filter({ hasText: "Renamed Node" }).waitFor();
+  const save = nodeWrites().filter(write => write.method === "PUT").at(-1);
+  assert.equal(save.path, `/api/provider-nodes/${openId}`);
+  assert.deepEqual(save.body, { name: "  Renamed Node  ", prefix: "new-route", baseUrl: "https://updated.example.invalid/v1/", apiType: "chat" });
+  await editButton.click();
+  const reopened = page.getByRole("dialog", { name: "Edit OpenAI Compatible" });
+  assert.equal(await reopened.getByLabel("Name", { exact: true }).inputValue(), "  Renamed Node  ");
+  assert.equal(await reopened.getByLabel("Prefix", { exact: true }).inputValue(), "new-route");
+  assert.equal(await reopened.getByLabel("API Type", { exact: true }).inputValue(), "chat");
+  await reopened.getByLabel("Base URL", { exact: true }).fill("https://followup.example.invalid/v1/");
+  await reopened.getByRole("button", { name: "Save", exact: true }).click();
+  await reopened.waitFor({ state: "detached" });
+  assert.deepEqual(nodeWrites().filter(write => write.method === "PUT").at(-1).body, { name: "  Renamed Node  ", prefix: "new-route", baseUrl: "https://followup.example.invalid/v1/", apiType: "chat" }, "a later URL-only edit must retain the first saved fields");
+  assert.deepEqual(state.nodes.find(node => node.id === openId), { id: openId, name: "  Renamed Node  ", type: "openai-compatible", prefix: "new-route", apiType: "chat", baseUrl: "https://followup.example.invalid/v1/" });
+  await page.getByText("Chat Completions · https://followup.example.invalid/v1/chat/completions", { exact: true }).waitFor();
+  await page.locator("code").filter({ hasText: "new-route/node-model" }).waitFor();
+  assert.deepEqual(state.custom.find(item => item.id === "node-model").opencode, { limit: { context: 123456 } });
+  assert.ok(state.connections.some(conn => conn.id === "node-connection"));
+  await page.reload();
+  await page.locator("main h1").filter({ hasText: "Renamed Node" }).waitFor();
+  await edit("OpenAI Compatible Details").click();
+  dialog = page.getByRole("dialog", { name: "Edit OpenAI Compatible" });
+  assert.equal(await dialog.getByLabel("Prefix", { exact: true }).inputValue(), "new-route");
+  assert.equal(await dialog.getByLabel("API Key (for Check)").inputValue(), "", "check keys are not retained on reopen");
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "detached" });
+
+  await page.goto(`${origin}/dashboard/providers/${anthropicId}`);
+  await page.getByRole("heading", { name: "Fixture Anthropic" }).waitFor();
+  await edit("Anthropic Compatible Details").click();
+  dialog = page.getByRole("dialog", { name: "Edit Anthropic Compatible" });
+  assert.equal(await dialog.getByLabel("API Type", { exact: true }).count(), 0);
+  await dialog.getByLabel("Name", { exact: true }).fill("Anthropic Renamed");
+  await dialog.getByLabel("Prefix", { exact: true }).fill("claude-route");
+  await dialog.getByLabel("Base URL", { exact: true }).fill("https://second.example.invalid/v1");
+  await dialog.getByLabel("API Key (for Check)").fill("synthetic-anthropic-key");
+  await dialog.getByRole("button", { name: "Check", exact: true }).click();
+  await dialog.getByText("Valid", { exact: true }).waitFor();
+  assert.deepEqual(nodeWrites().at(-1).body, { baseUrl: "https://second.example.invalid/v1", apiKey: "synthetic-anthropic-key", type: "anthropic-compatible" });
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await dialog.waitFor({ state: "detached" });
+  assert.deepEqual(nodeWrites().filter(write => write.method === "PUT").at(-1).body, { name: "Anthropic Renamed", prefix: "claude-route", baseUrl: "https://second.example.invalid/v1" });
+  await page.getByText("Messages API · https://second.example.invalid/v1/messages", { exact: true }).waitFor();
+  await edit("Anthropic Compatible Details").click();
+  dialog = page.getByRole("dialog", { name: "Edit Anthropic Compatible" });
+  await dialog.getByLabel("Name", { exact: true }).fill("Unauthorized change");
+  state.expired = true;
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await page.waitForURL(`${origin}/login`);
+  assert.equal(state.nodes.find(node => node.id === anthropicId).name, "Anthropic Renamed");
+  state.expired = false;
+
+  await page.goto(`${origin}/dashboard/providers/${openId}`);
+  await remove("OpenAI Compatible Details").click();
+  let confirm = page.getByRole("dialog", { name: "Delete compatible node" });
+  await confirm.getByText("Delete this OpenAI Compatible node", { exact: false }).waitFor();
+  await confirm.getByRole("button", { name: "Cancel", exact: true }).click();
+  assert.equal(nodeWrites().filter(write => write.method === "DELETE").length, 0);
+  await remove("OpenAI Compatible Details").click();
+  confirm = page.getByRole("dialog", { name: "Delete compatible node" });
+  state.rejectNodeDelete = true;
+  await confirm.getByRole("button", { name: "Delete", exact: true }).click();
+  await confirm.waitFor({ state: "detached" });
+  await page.getByText("Failed to delete node", { exact: true }).waitFor();
+  assert.ok(state.nodes.some(node => node.id === openId));
+  assert.ok(state.connections.some(conn => conn.id === "node-connection"));
+  state.rejectNodeDelete = false;
+  state.holdNodeDelete = true;
+  await remove("OpenAI Compatible Details").click();
+  confirm = page.getByRole("dialog", { name: "Delete compatible node" });
+  await confirm.getByRole("button", { name: "Delete", exact: true }).click();
+  await waitForFixture(() => typeof state.releaseNodeDelete === "function");
+  await confirm.getByRole("button", { name: "Close" }).click();
+  await confirm.waitFor({ state: "detached" });
+  state.releaseNodeDelete();
+  await page.waitForURL(`${origin}/dashboard/providers`);
+  assert.ok(!state.nodes.some(node => node.id === openId));
+  assert.ok(state.nodes.some(node => node.id === anthropicId));
+  assert.ok(state.connections.some(conn => conn.id === "node-connection"), "node deletion does not delete connections");
+  assert.ok(state.custom.some(item => item.providerAlias === openId && item.id === "node-model"), "node deletion does not delete custom models");
+
+  await page.goto(`${origin}/dashboard/providers/${anthropicId}`);
+  await remove("Anthropic Compatible Details").click();
+  confirm = page.getByRole("dialog", { name: "Delete compatible node" });
+  state.releaseNodeDelete = undefined;
+  state.holdNodeDelete = true;
+  await confirm.getByRole("button", { name: "Delete", exact: true }).click();
+  await waitForFixture(() => typeof state.releaseNodeDelete === "function");
+  await confirm.getByRole("button", { name: "Close" }).click();
+  await confirm.waitFor({ state: "detached" });
+  state.expired = true;
+  state.releaseNodeDelete();
+  await page.waitForURL(`${origin}/login`);
+  assert.ok(state.nodes.some(node => node.id === anthropicId), "a 401 never deletes a node");
+}
+
 async function main() {
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const origin = `http://${process.env.PROVIDER_POPUP_ONLY === "1" ? "localhost" : "127.0.0.1"}:${server.address().port}`;
@@ -1071,6 +1606,18 @@ async function main() {
       await runCallbackFixture(page, origin);
       assert.deepEqual(errors, []);
       console.log("synthetic OAuth callback smoke passed");
+      return;
+    }
+    if (process.env.PROVIDER_IMPORT_ONLY === "1") {
+      await runCompatibleImportFixture(page, origin);
+      assert.deepEqual(errors, []);
+      console.log("synthetic compatible model import smoke passed");
+      return;
+    }
+    if (process.env.PROVIDER_NODE_ONLY === "1") {
+      await runCompatibleNodeFixture(page, origin);
+      assert.deepEqual(errors, []);
+      console.log("synthetic compatible node edit/delete smoke passed");
       return;
     }
     if (process.env.PROVIDER_AUTH_ONLY === "1") {
@@ -1455,7 +2002,7 @@ async function main() {
     await page.getByText("check_circle", { exact: true }).waitFor();
     await page.getByTitle("Remove model").click();
     await page.locator("code").filter({ hasText: "fixture-prefix/vendor/model" }).waitFor({ state: "detached" });
-    await page.getByRole("button", { name: /delete Delete/ }).click();
+    await page.getByRole("checkbox", { name: "Select connection Compatible fixture" }).locator("xpath=../..").getByRole("button", { name: /delete Delete/ }).click();
     await page.getByRole("dialog", { name: "Delete connection" }).getByRole("button", { name: "Delete" }).click();
     await page.getByRole("dialog", { name: "Delete connection" }).waitFor({ state: "detached" });
     await page.getByRole("heading", { name: "OpenAI Compatible Details" }).locator("xpath=../..").getByRole("button", { name: /Add API Key/ }).click();
@@ -1501,7 +2048,7 @@ async function main() {
     assert.deepEqual(errors, []);
     console.log("synthetic provider detail smoke passed");
   } finally {
-    for (const key of ["releaseCustom", "releaseDelete", "releaseToggle", "releaseCatalog", "releaseLive", "releaseFavorites", "releaseModelTest", "releaseConnectionTest", "releaseProxy", "releaseStop"]) if (typeof state[key] === "function") state[key]();
+    for (const key of ["releaseCustom", "releaseDelete", "releaseToggle", "releaseCatalog", "releaseLive", "releaseFavorites", "releaseModelTest", "releaseConnectionTest", "releaseProxy", "releaseStop", "releaseNodeSave", "releaseImport"]) if (typeof state[key] === "function") state[key]();
     await browser.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
   }
 }

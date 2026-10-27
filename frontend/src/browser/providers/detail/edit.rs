@@ -10,6 +10,7 @@ pub(super) fn EditConnection(
     mut selected: Signal<Option<Value>>,
     pools: Signal<Vec<Value>>,
     on_saved: Callback<()>,
+    #[props(default)] compatible: bool,
 ) -> Element {
     let mut name = use_signal(String::new);
     let mut email = use_signal(String::new);
@@ -80,7 +81,8 @@ pub(super) fn EditConnection(
     let id = text(&conn, "id").to_owned();
     let azure = provider_id == "azure";
     let cloudflare = provider_id == "cloudflare-ai";
-    let compatible = provider_id.starts_with("openai-compatible-")
+    let compatible = compatible
+        || provider_id.starts_with("openai-compatible-")
         || provider_id.starts_with("anthropic-compatible-");
     let config = if azure {
         Some(

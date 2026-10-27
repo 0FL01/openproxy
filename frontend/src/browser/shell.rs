@@ -131,15 +131,20 @@ pub struct Toast {
     message: String,
     error: bool,
     warning: bool,
+    info: bool,
     title: Option<String>,
 }
 
 pub fn notify(toasts: Signal<Vec<Toast>>, message: &str, error: bool) {
-    push_toast(toasts, message, error, false, None);
+    push_toast(toasts, message, error, false, false, None);
 }
 
 pub fn notify_warning(toasts: Signal<Vec<Toast>>, message: &str, title: Option<&str>) {
-    push_toast(toasts, message, false, true, title);
+    push_toast(toasts, message, false, true, false, title);
+}
+
+pub fn notify_info(toasts: Signal<Vec<Toast>>, message: &str) {
+    push_toast(toasts, message, false, false, true, None);
 }
 
 fn push_toast(
@@ -147,6 +152,7 @@ fn push_toast(
     message: &str,
     error: bool,
     warning: bool,
+    info: bool,
     title: Option<&str>,
 ) {
     let id = TOAST_ID.with(|id| {
@@ -159,6 +165,7 @@ fn push_toast(
         message: message.to_owned(),
         error,
         warning,
+        info,
         title: title.map(str::to_owned),
     });
     spawn(async move {
@@ -280,9 +287,9 @@ fn DashboardContent() -> Element {
         div { class: "flex h-screen w-full overflow-hidden bg-canvas",
             div { class: "fixed top-4 right-4 z-[80] flex w-[min(92vw,380px)] flex-col gap-2",
                 for toast in toasts() {
-                    div { key: "{toast.id}", class: if toast.error { "relative overflow-hidden rounded-mini-md pl-4 pr-3 py-3 shadow-modal before:absolute before:left-0 before:top-0 before:bottom-0 before:w-[3px] bg-surface border border-hairline before:bg-brand-coral" } else if toast.warning { "relative overflow-hidden rounded-mini-md pl-4 pr-3 py-3 shadow-modal before:absolute before:left-0 before:top-0 before:bottom-0 before:w-[3px] bg-surface border border-hairline before:bg-accent-amber" } else { "relative overflow-hidden rounded-mini-md pl-4 pr-3 py-3 shadow-modal before:absolute before:left-0 before:top-0 before:bottom-0 before:w-[3px] bg-surface border border-hairline before:bg-success-text" },
+                    div { key: "{toast.id}", class: if toast.error { "relative overflow-hidden rounded-mini-md pl-4 pr-3 py-3 shadow-modal before:absolute before:left-0 before:top-0 before:bottom-0 before:w-[3px] bg-surface border border-hairline before:bg-brand-coral" } else if toast.warning { "relative overflow-hidden rounded-mini-md pl-4 pr-3 py-3 shadow-modal before:absolute before:left-0 before:top-0 before:bottom-0 before:w-[3px] bg-surface border border-hairline before:bg-accent-amber" } else if toast.info { "relative overflow-hidden rounded-mini-md pl-4 pr-3 py-3 shadow-modal before:absolute before:left-0 before:top-0 before:bottom-0 before:w-[3px] bg-surface border border-hairline before:bg-brand-blue-deep" } else { "relative overflow-hidden rounded-mini-md pl-4 pr-3 py-3 shadow-modal before:absolute before:left-0 before:top-0 before:bottom-0 before:w-[3px] bg-surface border border-hairline before:bg-success-text" },
                         div { class: "flex items-start gap-2.5",
-                            span { class: if toast.error { "material-symbols-outlined text-[20px] leading-5 text-brand-coral" } else if toast.warning { "material-symbols-outlined text-[20px] leading-5 text-accent-amber" } else { "material-symbols-outlined text-[20px] leading-5 text-success-text" }, if toast.error { "error" } else if toast.warning { "warning" } else { "check_circle" } }
+                            span { class: if toast.error { "material-symbols-outlined text-[20px] leading-5 text-brand-coral" } else if toast.warning { "material-symbols-outlined text-[20px] leading-5 text-accent-amber" } else if toast.info { "material-symbols-outlined text-[20px] leading-5 text-brand-blue-deep" } else { "material-symbols-outlined text-[20px] leading-5 text-success-text" }, if toast.error { "error" } else if toast.warning { "warning" } else if toast.info { "info" } else { "check_circle" } }
                             div { class: "min-w-0 flex-1", if let Some(title) = toast.title { p { class: "text-[13px] font-semibold mb-0.5 text-ink", "{title}" } } p { class: "text-[12px] leading-snug text-text-muted whitespace-pre-wrap break-words", "{toast.message}" } }
                             button { r#type: "button", class: "text-text-muted hover:text-ink transition-colors", aria_label: "Dismiss notification", onclick: move |_| toasts.write().retain(|n| n.id != toast.id), span { class: "material-symbols-outlined text-[16px]", "close" } }
                         }

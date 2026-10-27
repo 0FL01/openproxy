@@ -1,4 +1,5 @@
 //! Incremental provider detail: real connections and Available Models.
+mod compatible_edit;
 mod edit;
 mod oauth;
 mod oauth_events;
@@ -9,13 +10,14 @@ use crate::{
     available_models::{self, ModelRow, Source},
     browser::{
         endpoint::copy_text,
-        shell::{dashboard_get_no_store, notify},
+        navigate,
+        shell::{dashboard_get_no_store, notify, notify_info, notify_warning},
         ui::{Button, CardSkeleton, Modal, Toggle, CARD_CLASS},
     },
     thinking,
 };
 use dioxus::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Default, PartialEq)]
 struct Models {
@@ -115,6 +117,13 @@ fn storage_alias(id: &str) -> String {
     let aliases: Value =
         serde_json::from_str(include_str!("../provider_aliases.json")).unwrap_or_default();
     aliases[id].as_str().unwrap_or(id).to_owned()
+}
+
+fn is_compatible_node(node: &Value) -> bool {
+    matches!(
+        text(node, "type"),
+        "openai-compatible" | "anthropic-compatible"
+    )
 }
 
 fn thinking_options(id: &str, alias: &str, data: &Models) -> Vec<String> {
@@ -299,11 +308,138 @@ async fn refresh_disabled(alias: &str, mut models: Signal<Models>) {
     }
 }
 
-async fn refresh_custom(mut models: Signal<Models>) {
+async fn refresh_custom(mut models: Signal<Models>) -> bool {
     if let Some(data) = get("/api/models/custom").await
         && data["models"].is_array()
     {
         models.write().custom = array(&data, "models");
+        true
+    } else {
+        false
+    }
+}
+
+fn compatible_ids(alias: &str, models: &Models) -> HashSet<String> {
+    available_models::build(alias, &[], &[], &models.custom, &models.aliases, &[])
+        .into_iter()
+        .map(|row| row.id)
+        .collect()
+}
+
+async fn import_compatible_models(
+    alias: &str,
+    connection_id: &str,
+    mut seen: HashSet<String>,
+    models: Signal<Models>,
+    mut refresh_failed: Signal<bool>,
+    toasts: Signal<Vec<Toast>>,
+) {
+    let response = match dashboard_request(
+        "GET",
+        &format!("/api/providers/{}/models", encoded(connection_id)),
+        None,
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(_) => {
+            notify(toasts, "Failed to import models", true);
+            return;
+        }
+    };
+    let ok = response.ok();
+    let data = json_body(&response).await.unwrap_or_default();
+    if !ok {
+        notify(
+            toasts,
+            data["error"].as_str().unwrap_or("Failed to import models"),
+            true,
+        );
+        return;
+    }
+    let Some(items) = data["models"].as_array().filter(|items| !items.is_empty()) else {
+        notify_warning(toasts, "No models returned from /models.", None);
+        return;
+    };
+    let mut imported = 0_usize;
+    let mut failed = 0_usize;
+    let mut attempted = false;
+    let mut first_error = String::new();
+    for item in items {
+        // The reference tries id, then name, then model. Only nonempty strings
+        // are valid persisted IDs; do not mutate the spelling of a valid ID.
+        let Some(id) = ["id", "name", "model"]
+            .into_iter()
+            .filter_map(|key| item[key].as_str())
+            .find(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        if js_trim(id).is_empty()
+            || !seen.insert(id.to_owned())
+            || compatible_ids(alias, &models.peek()).contains(id)
+        {
+            continue;
+        }
+        attempted = true;
+        match dashboard_request(
+            "POST",
+            "/api/models/custom",
+            Some(&json!({"providerAlias":alias,"id":id,"type":"llm"})),
+        )
+        .await
+        {
+            Ok(response) => {
+                let ok = response.ok();
+                let unauthorized = response.status() == 401;
+                let result = json_body(&response).await;
+                let added = result
+                    .as_ref()
+                    .filter(|value| value["success"] == true)
+                    .and_then(|value| value["added"].as_bool());
+                if ok && let Some(added) = added {
+                    if added {
+                        imported += 1;
+                    }
+                } else {
+                    failed += 1;
+                    if first_error.is_empty() {
+                        first_error = result
+                            .as_ref()
+                            .and_then(|v| v["error"].as_str())
+                            .unwrap_or("Failed to import models")
+                            .to_owned();
+                    }
+                }
+                if unauthorized {
+                    break;
+                }
+            }
+            Err(_) => {
+                failed += 1;
+                if first_error.is_empty() {
+                    first_error = "Failed to import models".into();
+                }
+            }
+        }
+    }
+    // Even an unacknowledged response can follow a committed write. Reconcile
+    // the saved list without treating an invalid response as a successful add.
+    let refreshed = !attempted || refresh_custom(models).await;
+    if !refreshed {
+        refresh_failed.set(true);
+    }
+    if failed > 0 {
+        let message = if imported > 0 {
+            format!("Imported {imported} model(s); failed to import {failed}.")
+        } else {
+            first_error
+        };
+        notify(toasts, &message, true);
+    } else if refreshed && imported == 0 {
+        notify_info(toasts, "No new models were added.");
+    } else if refreshed {
+        notify(toasts, &format!("Imported {imported} model(s)."), false);
     }
 }
 
@@ -490,9 +626,10 @@ struct ConnectionTests {
 
 #[component]
 pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
-    let compatible =
-        id.starts_with("openai-compatible-") || id.starts_with("anthropic-compatible-");
-    let anthropic = id.starts_with("anthropic-compatible-");
+    // Built-in providers retain precedence. Every other ID, including UUIDs
+    // returned by the node API, must be resolved from persisted node metadata.
+    let built_in = provider(&id);
+    let resolve_node = built_in.is_none();
     let alias = storage_alias(&id);
     let mut models = use_signal(Models::default);
     let mut thinking_mode = use_signal(|| "auto".to_owned());
@@ -511,9 +648,22 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
     let mut proxy_open = use_signal(|| false);
     let mut proxy_busy = use_signal(|| false);
     let mut connection_tests = use_signal(ConnectionTests::default);
+    let mut importing_models = use_signal(|| false);
+    let mut import_refresh_failed = use_signal(|| false);
+    let mut retrying_import_refresh = use_signal(|| false);
     let mut node = use_signal(|| None::<Value>);
-    let mut node_loading = use_signal(|| compatible);
+    let mut node_loading = use_signal(|| resolve_node);
     let mut node_error = use_signal(|| false);
+    let mut node_edit = use_signal(|| None::<u64>);
+    let mut node_edit_generation = use_signal(|| 0_u64);
+    let mut node_saving = use_signal(|| false);
+    let mut node_save_error = use_signal(String::new);
+    let mut node_validating = use_signal(|| false);
+    let mut node_validation = use_signal(|| None::<bool>);
+    let mut node_validation_generation = use_signal(|| 0_u64);
+    let mut node_delete = use_signal(|| None::<u64>);
+    let mut node_delete_generation = use_signal(|| 0_u64);
+    let mut node_deleting = use_signal(|| false);
     let loading = use_signal(|| true);
     let connection_error = use_signal(|| false);
     let connection_generation = use_signal(|| 0_u64);
@@ -537,6 +687,54 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
     let copied = use_signal(String::new);
     let generation = use_signal(|| 0_u32);
     let toasts = use_context::<Signal<Vec<Toast>>>();
+    let import_models = {
+        let alias = alias.clone();
+        use_callback(move |()| {
+            if *importing_models.peek() || *import_refresh_failed.peek() {
+                return;
+            }
+            let connection = connections
+                .peek()
+                .iter()
+                .find(|connection| connection["isActive"] != false)
+                .and_then(|connection| connection["id"].as_str())
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned);
+            let Some(connection) = connection else {
+                notify_warning(toasts, "Add a connection to enable importing models.", None);
+                return;
+            };
+            let alias = alias.clone();
+            // Keep the click-time exclusion set even if the user deletes a
+            // row while discovery is in flight; still check live rows later.
+            let seen = compatible_ids(&alias, &models.peek());
+            importing_models.set(true);
+            spawn(async move {
+                import_compatible_models(
+                    &alias,
+                    &connection,
+                    seen,
+                    models,
+                    import_refresh_failed,
+                    toasts,
+                )
+                .await;
+                importing_models.set(false);
+            });
+        })
+    };
+    let retry_import_refresh = use_callback(move |()| {
+        if *retrying_import_refresh.peek() || !*import_refresh_failed.peek() {
+            return;
+        }
+        retrying_import_refresh.set(true);
+        spawn(async move {
+            if refresh_custom(models).await {
+                import_refresh_failed.set(false);
+            }
+            retrying_import_refresh.set(false);
+        });
+    });
     {
         let id = id.clone();
         let alias = alias.clone();
@@ -585,6 +783,119 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
                     connection_generation,
                 )
                 .await;
+            });
+        })
+    };
+    // These requests belong to the detail page, not the dismissible dialog:
+    // a completed save/delete must still reconcile the real backend state.
+    let close_node_edit = use_callback(move |attempt: u64| {
+        if *node_edit.peek() == Some(attempt) {
+            node_edit.set(None);
+            node_validation_generation += 1;
+            node_validating.set(false);
+            node_validation.set(None);
+        }
+    });
+    let node_fields_changed = use_callback(move |()| {
+        node_validation_generation += 1;
+        node_validating.set(false);
+        node_validation.set(None);
+        node_save_error.set(String::new());
+    });
+    let check_node = use_callback(move |work: compatible_edit::NodeRequest| {
+        if *node_edit.peek() != Some(work.attempt) || *node_validating.peek() {
+            return;
+        }
+        node_validation_generation += 1;
+        let generation = *node_validation_generation.peek();
+        node_validating.set(true);
+        node_validation.set(None);
+        spawn(async move {
+            let valid =
+                match dashboard_request("POST", "/api/provider-nodes/validate", Some(&work.body))
+                    .await
+                {
+                    Ok(response) => json_body(&response)
+                        .await
+                        .is_some_and(|data| data["valid"] == true),
+                    Err(_) => false,
+                };
+            if *node_edit.peek() == Some(work.attempt)
+                && *node_validation_generation.peek() == generation
+            {
+                node_validation.set(Some(valid));
+                node_validating.set(false);
+            }
+        });
+    });
+    let save_node = {
+        let id = id.clone();
+        use_callback(move |work: compatible_edit::NodeRequest| {
+            if *node_edit.peek() != Some(work.attempt) || *node_saving.peek() {
+                return;
+            }
+            node_saving.set(true);
+            node_save_error.set(String::new());
+            let id = id.clone();
+            spawn(async move {
+                let path = format!("/api/provider-nodes/{}", encoded(&id));
+                let result = match dashboard_request("PUT", &path, Some(&work.body)).await {
+                    Ok(response) => {
+                        let ok = response.ok();
+                        let data = json_body(&response).await.unwrap_or_default();
+                        if ok
+                            && text(&data["node"], "id") == id
+                            && is_compatible_node(&data["node"])
+                        {
+                            Ok(data["node"].clone())
+                        } else {
+                            Err(data["error"]
+                                .as_str()
+                                .filter(|error| !error.is_empty())
+                                .unwrap_or("Failed to update compatible node")
+                                .to_owned())
+                        }
+                    }
+                    Err(_) => Err("Failed to update compatible node".to_owned()),
+                };
+                match result {
+                    Ok(updated) => {
+                        node.set(Some(updated));
+                        refresh_after_connection.call(());
+                        close_node_edit.call(work.attempt);
+                    }
+                    Err(error) if *node_edit.peek() == Some(work.attempt) => {
+                        node_save_error.set(error)
+                    }
+                    Err(_) => notify(toasts, "Failed to update compatible node", true),
+                }
+                node_saving.set(false);
+            });
+        })
+    };
+    let delete_node = {
+        let id = id.clone();
+        use_callback(move |attempt: u64| {
+            if *node_delete.peek() != Some(attempt) || *node_deleting.peek() {
+                return;
+            }
+            node_deleting.set(true);
+            let id = id.clone();
+            spawn(async move {
+                let path = format!("/api/provider-nodes/{}", encoded(&id));
+                let ok = dashboard_request("DELETE", &path, None)
+                    .await
+                    .is_ok_and(|response| response.ok());
+                if ok {
+                    notify(toasts, "Compatible node deleted", false);
+                    let _ = navigate("/dashboard/providers");
+                } else {
+                    notify(toasts, "Failed to delete node", true);
+                }
+                if *node_delete.peek() == Some(attempt) {
+                    node_delete.set(None);
+                }
+                node_deleting.set(false);
             });
         })
     };
@@ -1043,12 +1354,16 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
         use_future(move || {
             let id = id.clone();
             async move {
-                if compatible {
+                if resolve_node {
                     match get("/api/provider-nodes")
                         .await
                         .and_then(|v| v["nodes"].as_array().cloned())
                     {
-                        Some(items) => node.set(items.into_iter().find(|v| text(v, "id") == id)),
+                        Some(items) => node.set(
+                            items
+                                .into_iter()
+                                .find(|v| text(v, "id") == id && is_compatible_node(v)),
+                        ),
                         None => node_error.set(true),
                     }
                     node_loading.set(false);
@@ -1166,7 +1481,7 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
                         } else {
                             (false, "Network error".to_owned())
                         };
-                        if !compatible {
+                        if node.peek().is_none() {
                             models_test_error.set(error.clone());
                         }
                         results.write().insert(
@@ -1189,6 +1504,10 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
         return rsx! { div { role: "alert", class: "text-center py-20", "Compatible provider could not be loaded." a { href: "/dashboard/providers", class: "text-primary mt-4 inline-block", "Back to Providers" } } };
     }
     let current_node = node();
+    let compatible = current_node.is_some();
+    let anthropic = current_node
+        .as_ref()
+        .is_some_and(|node| text(node, "type") == "anthropic-compatible");
     let info = if compatible {
         current_node.as_ref().map(|node| json!({
         "id":id,
@@ -1197,7 +1516,7 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
         "textIcon":if anthropic { "AC" } else { "OC" }
     }))
     } else {
-        provider(&id)
+        built_in
     };
     let Some(info) = info else {
         return rsx! { div { class: "text-center py-20", p { class: "text-text-muted", "Provider not found" } a { href: "/dashboard/providers", class: "text-primary mt-4 inline-block", "Back to Providers" } } };
@@ -1315,9 +1634,13 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
             if details["freeTierInfo"].is_object() { FreeTier { info: details["freeTierInfo"].clone() } }
             if let Some(node) = current_node { div { class: CARD_CLASS,
                 div { class: "mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between", div { class: "min-w-0", h2 { class: "text-lg font-semibold", if anthropic { "Anthropic Compatible Details" } else { "OpenAI Compatible Details" } }
-                    p { class: "break-all text-sm text-text-muted", if anthropic { "Messages API" } else if text(&node, "apiType") == "responses" { "Responses API" } else { "Chat Completions" } " · " "{text(&node, \"baseUrl\").trim_end_matches('/')}" "/" if anthropic { "messages" } else if text(&node, "apiType") == "responses" { "responses" } else { "chat/completions" } }
+                    p { class: "break-all text-sm text-text-muted", if anthropic { "Messages API" } else if text(&node, "apiType") == "responses" { "Responses API" } else { "Chat Completions" } " · " "{text(&node, \"baseUrl\").strip_suffix('/').unwrap_or(text(&node, \"baseUrl\"))}" "/" if anthropic { "messages" } else if text(&node, "apiType") == "responses" { "responses" } else { "chat/completions" } }
                 }
-                    Button { label: "Add API Key".to_owned(), small: true, icon: "add".to_owned(), disabled: connection_count > 0, extra_class: "w-full sm:w-auto", onclick: { let id = id.clone(); move |_| add_key.set(Some(id.clone())) } }
+                    div { class: "grid grid-cols-1 gap-2 sm:flex sm:items-center",
+                        Button { label: "Add API Key".to_owned(), small: true, icon: "add".to_owned(), disabled: connection_count > 0, extra_class: "w-full sm:w-auto", onclick: { let id = id.clone(); move |_| add_key.set(Some(id.clone())) } }
+                        Button { label: "Edit".to_owned(), small: true, variant: "secondary", icon: "edit".to_owned(), extra_class: "w-full sm:w-auto", disabled: node_saving(), onclick: move |_| { if *node_saving.peek() { return; } node_edit_generation += 1; node_save_error.set(String::new()); node_validation_generation += 1; node_validation.set(None); node_validating.set(false); node_edit.set(Some(*node_edit_generation.peek())); } }
+                        Button { label: "Delete".to_owned(), small: true, variant: "secondary", icon: "delete".to_owned(), extra_class: "w-full sm:w-auto", onclick: move |_| { node_delete_generation += 1; node_delete.set(Some(*node_delete_generation.peek())); } }
+                    }
                 }
                 if connection_count > 0 { p { class: "text-sm text-text-muted", "Only one connection is allowed per compatible node. Add another node if you need more connections." } }
             } }
@@ -1370,7 +1693,13 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
                 if !models_test_error().is_empty() { p { class: "text-xs text-red-500 mb-3 break-words", "{models_test_error}" } }
                 if data.error { div { role: "alert", class: "text-sm text-text-muted", "Unable to load available models. Saved configuration was not changed." Button { label: "Retry".to_owned(), small: true, variant: "secondary", onclick: move |_| { models.write().error = false; let id = id_for_retry.clone(); let alias = alias_for_retry.clone(); spawn(async move { load_models(id, alias, load).await; }); } } } }
                 else if !data.ready { p { class: "text-sm text-text-muted", "Loading models..." } }
-                else if compatible { CompatibleModels { alias: alias.clone(), display_alias: display_alias.clone(), anthropic, rows: active, models, copied: copied(), results: results(), can_test: connection_count > 0, action, toasts } }
+                else if compatible {
+                    if import_refresh_failed() { div { role: "alert", class: "mb-3 flex flex-col items-start gap-2 sm:flex-row sm:items-center",
+                        p { class: "text-sm text-red-500", "Could not refresh saved models. Changes may have been saved; retry to update the list." }
+                        Button { label: if retrying_import_refresh() { "Retrying...".to_owned() } else { "Retry".to_owned() }, small: true, variant: "secondary", loading: retrying_import_refresh(), onclick: move |_| retry_import_refresh.call(()) }
+                    } }
+                    CompatibleModels { alias: alias.clone(), display_alias: display_alias.clone(), anthropic, rows: active, models, copied: copied(), results: results(), can_test: connection_count > 0, can_import: connections().iter().any(|connection| connection["isActive"] != false), importing: importing_models(), refresh_required: import_refresh_failed(), import: import_models, action, toasts }
+                }
                 else { div { class: "flex flex-wrap gap-3",
                     for row in active { ModelChip { key: "{row.id}", row, provider_id: id.clone(), alias: alias.clone(), models: data.clone(), thinking_mode: thinking_mode(), results: results(), copied: copied(), can_test: connection_count > 0 || is_no_auth, action } }
                     if id != "a6api" { button { class: "flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-primary/40 px-3 py-2 text-xs text-primary transition-colors hover:border-primary hover:bg-primary/5 sm:w-auto", onclick: move |_| { model_id.set(String::new()); modal_error.set(String::new()); modal_test_status.set(String::new()); modal_test_error.set(String::new()); modal_test_generation += 1; add.set(true); }, span { class: "material-symbols-outlined text-sm", "add" } "Add Model" } }
@@ -1381,10 +1710,12 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
         if add() { AddModel { alias: alias.clone(), model_id, saving, modal_error, add, test_status: modal_test_status, test_error: modal_test_error, test_generation: modal_test_generation, test: modal_test, save: save_model } }
         if let Some(ids) = disable_all() { Modal { title: "Disable all models".to_owned(), small: true, on_close: move |_| disable_all.set(None), footer: rsx! { Button { label: "Cancel".to_owned(), variant: "ghost", onclick: move |_| disable_all.set(None) } Button { label: "Disable all".to_owned(), variant: "danger", onclick: { let alias = alias.clone(); let ids = ids.clone(); move |_| { let alias = alias.clone(); let ids = ids.clone(); disable_all.set(None); spawn(async move { if dashboard_request("POST", "/api/models/disabled", Some(&json!({"providerAlias":alias,"ids":ids}))).await.is_ok() { refresh_disabled(&alias, models).await; } }); } } } }, p { class: "text-text-muted", "Disable all " strong { "{ids.len()}" } " model(s) for this provider?" } } }
         if let Some(conn) = delete_connection() { DeleteConnection { conn, delete_connection, deleting, action: connection_action } }
+        if let Some(attempt) = node_edit() { if let Some(current) = node() { compatible_edit::EditCompatibleNode { key: "{attempt}", node: current, anthropic, attempt, saving: node_saving, save_error: node_save_error, validating: node_validating, validation: node_validation, close: close_node_edit, changed: node_fields_changed, save: save_node, check: check_node } } }
+        if let Some(attempt) = node_delete() { Modal { title: "Delete compatible node".to_owned(), small: true, on_close: move |_| { if *node_delete.peek() == Some(attempt) { node_delete.set(None); } }, footer: rsx! { Button { label: "Cancel".to_owned(), variant: "ghost", disabled: node_deleting(), onclick: move |_| { if *node_delete.peek() == Some(attempt) { node_delete.set(None); } } } Button { label: "Delete".to_owned(), variant: "danger", loading: node_deleting(), onclick: move |_| delete_node.call(attempt) } }, p { class: "text-text-muted", "Delete this " if anthropic { "Anthropic" } else { "OpenAI" } " Compatible node " code { "{name}" } "?" } } }
         if bulk_delete() { Modal { title: format!("Delete {} Connection{}", selected_ids.len(), if selected_ids.len() == 1 { "" } else { "s" }), small: true, on_close: move |_| { if !bulk_deleting() { bulk_delete.set(false); } }, footer: rsx! { Button { label: "Cancel".to_owned(), variant: "ghost", disabled: bulk_deleting(), onclick: move |_| bulk_delete.set(false) } Button { label: "Delete".to_owned(), variant: "danger", loading: bulk_deleting(), onclick: { let ids = selected_ids.clone(); move |_| connection_action.call(ConnectionAction::BulkDelete(ids.clone())) } } }, p { class: "text-text-muted", "Delete " "{selected_ids.len()}" " connection" if selected_ids.len() != 1 { "s" } "? This cannot be undone." } } }
         if proxy_open() { ApplyProxyModal { pools: pools(), count: connection_count, busy: proxy_busy(), open: proxy_open, action: connection_action } }
-        KeyModal { provider: add_key, pools, connections, provider_name: Some(name.clone()), on_refresh: refresh_after_connection }
-        edit::EditConnection { provider_id: id.clone(), selected: edit_connection, pools, on_saved: refresh_after_connection }
+        KeyModal { provider: add_key, pools, connections, provider_name: Some(name.clone()), on_refresh: refresh_after_connection, compatible }
+        edit::EditConnection { provider_id: id.clone(), selected: edit_connection, pools, on_saved: refresh_after_connection, compatible }
         if let Some(attempt) = oauth_open() { oauth::OAuthFlow { key: "{attempt}", provider: id.clone(), name: name.clone(), attempt, on_close: move |_| { if *oauth_open.peek() == Some(attempt) { oauth_open.set(None); } }, on_request: oauth_request } }
     }
 }
@@ -1774,6 +2105,10 @@ fn CompatibleModels(
     copied: String,
     results: HashMap<String, ModelTest>,
     can_test: bool,
+    can_import: bool,
+    importing: bool,
+    refresh_required: bool,
+    import: Callback<()>,
     action: Callback<Action>,
     toasts: Signal<Vec<Toast>>,
 ) -> Element {
@@ -1824,11 +2159,13 @@ fn CompatibleModels(
         })
     };
     rsx! { div { class: "flex flex-col gap-4",
-        p { class: "text-sm text-text-muted", "Add " if anthropic { "Anthropic" } else { "OpenAI" } "-compatible models manually." }
+        p { class: "text-sm text-text-muted", "Add " if anthropic { "Anthropic" } else { "OpenAI" } "-compatible models manually or import them from the /models endpoint." }
         div { class: "flex items-end gap-2 flex-wrap", div { class: "flex-1 min-w-[240px]", label { r#for: "new-compatible-model-input", class: "text-xs text-text-muted mb-1 block", "Model ID" } input { id: "new-compatible-model-input", r#type: "text", value: "{input}", placeholder: if anthropic { "claude-3-opus-20240229" } else { "gpt-4o" }, class: "w-full px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary", oninput: move |e| input.set(e.value()), onkeydown: move |e| { if e.key() == Key::Enter { add.call(()); } } } }
             Button { small: true, icon: "add".to_owned(), label: if adding() { "Adding...".to_owned() } else { "Add".to_owned() }, disabled: trimmed.is_empty() || adding(), onclick: move |_| add.call(()) }
+            Button { small: true, variant: "secondary", icon: "download".to_owned(), label: if importing { "Importing...".to_owned() } else { "Import from /models".to_owned() }, disabled: !can_import || importing || refresh_required, onclick: move |_| import.call(()) }
         }
-        if rows.is_empty() { div { class: "flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-surface/30 py-8 text-center", span { class: "material-symbols-outlined text-2xl text-text-muted", "psychology" } p { class: "text-sm text-text-muted", "No models yet" } } }
+        if !can_import { p { class: "text-xs text-text-muted", "Add a connection to enable importing models." } }
+        if rows.is_empty() { div { class: "flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-surface/30 py-8 text-center", span { class: "material-symbols-outlined text-2xl text-text-muted", "psychology" } p { class: "text-sm text-text-muted", "No models yet" } p { class: "text-xs text-text-muted", "Add a model ID above or import from the provider's /models endpoint." } } }
         else { div { class: "flex flex-col gap-3", for row in rows {
             CompatibleModelRow { key: "{row.id}", test: results.get(&row.id).cloned().unwrap_or_default(), row, display_alias: display_alias.clone(), copied: copied.clone(), can_test, action }
         } } }

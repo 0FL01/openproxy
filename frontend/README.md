@@ -47,6 +47,8 @@ CHROME_BIN=/path/to/chromium node tests/endpoint-smoke.cjs
 CHROME_BIN=/path/to/chromium node tests/providers-smoke.cjs
 CHROME_BIN=/path/to/chromium node tests/providers-new-smoke.cjs
 CHROME_BIN=/path/to/chromium node tests/provider-detail-smoke.cjs
+PROVIDER_NODE_ONLY=1 CHROME_BIN=/path/to/chromium node tests/provider-detail-smoke.cjs
+PROVIDER_IMPORT_ONLY=1 CHROME_BIN=/path/to/chromium node tests/provider-detail-smoke.cjs
 PROVIDER_CALLBACK_ONLY=1 CHROME_BIN=/path/to/chromium node tests/provider-detail-smoke.cjs
 PROVIDER_POPUP_ONLY=1 CHROME_BIN=/path/to/chromium node tests/provider-detail-smoke.cjs
 
@@ -110,7 +112,13 @@ The detail page reads the existing catalog, connections, custom models,
 legacy aliases and disabled IDs. Standard providers support model copy,
 favorites, test, add/remove, individual disable/restore, disable/activate all,
 and the persisted free-only filter. Compatible nodes support manual add/remove,
-copy and test using the node ID for storage and the node prefix for display.
+import from the first active connection, copy and test using the node ID for
+storage and the node prefix for display.
+Details resolve UUID and legacy prefixed node IDs using the persisted compatible
+type; known built-in providers retain precedence over node IDs.
+Their detail page supports editing node configuration, explicit credential
+checks and confirmed deletion using the existing node APIs. Deleting a node
+does not delete its connections or custom models.
 Connection add/edit, status, priority ordering, selection, bulk deletion, proxy
 assignment and paced one-by-one testing use the existing connection APIs.
 Editing never pre-populates a stored API key; a blank replacement leaves it
@@ -145,8 +153,8 @@ page renders only after WASM starts; it cannot reproduce Astro's pre-WASM first
 paint.
 
 Detail is **not reference-complete or pixel-perfect**: some OAuth modal details
-(including copy buttons), auto-ping, compatible-node edit/delete and
-model import, advertised context, suggested-model chips, and xAI-specific
+(including copy buttons), auto-ping, advertised
+context, suggested-model chips, and xAI-specific
 force-refresh and diagnostic states remain to migrate. Local OAuth proxy ownership is coordinated
 within this browser application only: the backend stop endpoint is
 provider-wide, so other tabs/processes and an unconfirmed stop after a

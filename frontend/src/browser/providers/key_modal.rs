@@ -64,6 +64,7 @@ pub(super) fn KeyModal(
     connections: Signal<Vec<Value>>,
     #[props(default)] provider_name: Option<String>,
     #[props(default)] on_refresh: Option<EventHandler<()>>,
+    #[props(default)] compatible: bool,
 ) -> Element {
     let name = use_signal(String::new);
     let key = use_signal(String::new);
@@ -116,8 +117,9 @@ pub(super) fn KeyModal(
     let cloudflare = id == "cloudflare-ai";
     let xiaomi = id == "xiaomi-tokenplan";
     let xai = id == "xai";
-    let compatible =
-        id.starts_with("openai-compatible-") || id.starts_with("anthropic-compatible-");
+    let compatible = compatible
+        || id.starts_with("openai-compatible-")
+        || id.starts_with("anthropic-compatible-");
     let supports_bulk = !azure && !xai;
     let single_variant = if bulk() { "ghost" } else { "primary" };
     let bulk_variant = if bulk() { "primary" } else { "ghost" };

@@ -7,7 +7,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use once_cell::sync::Lazy;
 use openproxy::db::Db;
-use openproxy::server::api::providers;
+use openproxy::server::api::{provider_nodes, providers};
 use openproxy::server::state::AppState;
 use openproxy::types::{ApiKey, ProviderConnection, ProviderNode};
 use serde_json::json;
@@ -282,6 +282,154 @@ async fn provider_models_route_fetches_openai_compatible_models_from_remote_mode
     assert_eq!(json["connectionId"], "compat-1");
     assert_eq!(json["models"][0]["id"], "gpt-4.1-mini");
     assert_eq!(json["models"][0]["name"], "GPT 4.1 Mini");
+}
+
+#[tokio::test]
+async fn provider_models_route_fetches_openai_compatible_models_from_remote_models_endpoint_for_uuid_node(
+) {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .and(header("authorization", "Bearer compat-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{ "id": "model-one", "name": "Model One", "owned_by": "mock" }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/override/models"))
+        .and(header("authorization", "Bearer compat-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{ "id": "override-model" }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let db = Arc::new(Db::load_from(temp.path()).await.expect("db"));
+    db.update(|state| {
+        state.api_keys.push(ApiKey {
+            id: "test-key-id".into(),
+            name: "test".into(),
+            key: TEST_KEY.into(),
+            machine_id: None,
+            is_active: Some(true),
+            created_at: None,
+            extra: BTreeMap::new(),
+        });
+    })
+    .await
+    .expect("seed auth");
+    let state = AppState::new(Arc::clone(&db));
+    let app = provider_nodes::routes()
+        .merge(providers::routes())
+        .with_state(state);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/provider-nodes")
+                .header("Authorization", format!("Bearer {TEST_KEY}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "Local compatible node",
+                        "prefix": "local-compatible",
+                        "type": "openai-compatible",
+                        "apiType": "chat",
+                        "baseUrl": format!("{}/v1/", server.uri()),
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let node_id = created["node"]["id"].as_str().expect("node id");
+    assert!(uuid::Uuid::parse_str(node_id).is_ok());
+
+    let mut connection = connection_with_id(node_id, "uuid-connection");
+    connection.api_key = Some("compat-key".to_string());
+    connection.provider_specific_data.remove("baseUrl");
+    let mut override_connection = connection_with_id(node_id, "uuid-override");
+    override_connection.api_key = Some("compat-key".to_string());
+    override_connection.provider_specific_data.insert(
+        "baseUrl".to_string(),
+        serde_json::Value::String(format!("{}/override", server.uri())),
+    );
+    db.update(|state| {
+        state.provider_connections.push(connection);
+        state.provider_connections.push(override_connection);
+    })
+    .await
+    .expect("seed connections");
+    let before = db.reload_snapshot().await.expect("reload persisted data");
+    assert_eq!(before.provider_nodes.len(), 1);
+    assert_eq!(before.provider_nodes[0].id, node_id);
+    assert!(!before.provider_connections[0]
+        .provider_specific_data
+        .contains_key("baseUrl"));
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/providers/uuid-connection/models")
+                .header("Authorization", format!("Bearer {TEST_KEY}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(status, StatusCode::OK, "{payload}");
+    assert_eq!(
+        payload,
+        json!({
+            "provider": node_id,
+            "connectionId": "uuid-connection",
+            "models": [{ "id": "model-one", "name": "Model One", "owned_by": "mock" }],
+        })
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/providers/uuid-override/models")
+                .header("Authorization", format!("Bearer {TEST_KEY}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(payload["connectionId"], "uuid-override");
+    assert_eq!(payload["models"][0]["id"], "override-model");
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    let after = db
+        .reload_snapshot()
+        .await
+        .expect("reload data after listing");
+    assert_eq!(after.provider_nodes, before.provider_nodes);
+    assert_eq!(after.provider_connections, before.provider_connections);
 }
 
 #[tokio::test]

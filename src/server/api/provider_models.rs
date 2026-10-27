@@ -90,7 +90,26 @@ pub(super) async fn list_provider_models(
         return json_error(StatusCode::NOT_FOUND, "Connection not found");
     };
 
-    match fetch_provider_models_response(&state, &connection).await {
+    // Newly created compatible nodes use UUIDs; leave built-in and legacy
+    // prefix dispatch unchanged for every other provider ID.
+    let node = uuid::Uuid::parse_str(&connection.provider)
+        .ok()
+        .and_then(|_| {
+            snapshot
+                .provider_nodes
+                .iter()
+                .find(|node| node.id == connection.provider)
+        });
+    let result = match node {
+        Some(node) if node.r#type == "openai-compatible" => {
+            fetch_openai_compatible_models(&connection, node.base_url.as_deref()).await
+        }
+        Some(node) if node.r#type == "anthropic-compatible" => {
+            fetch_anthropic_compatible_models(&connection, node.base_url.as_deref()).await
+        }
+        _ => fetch_provider_models_response(&state, &connection).await,
+    };
+    match result {
         Ok(payload) => Json(payload).into_response(),
         Err(error) => json_error(error.status, &error.message),
     }
@@ -240,13 +259,13 @@ pub(super) async fn import_provider_models(
 
 pub(super) async fn fetch_compatible_model_ids(connection: &ProviderConnection) -> Vec<String> {
     let models = if is_openai_compatible_provider(&connection.provider) {
-        fetch_openai_compatible_models(connection)
+        fetch_openai_compatible_models(connection, None)
             .await
             .ok()
             .map(|payload| payload.models)
             .unwrap_or_default()
     } else if is_anthropic_compatible_provider(&connection.provider) {
-        fetch_anthropic_compatible_models(connection)
+        fetch_anthropic_compatible_models(connection, None)
             .await
             .ok()
             .map(|payload| payload.models)
@@ -393,11 +412,11 @@ async fn fetch_provider_models_response(
     connection: &ProviderConnection,
 ) -> Result<ProviderModelsResponse, RouteError> {
     if is_openai_compatible_provider(&connection.provider) {
-        return fetch_openai_compatible_models(connection).await;
+        return fetch_openai_compatible_models(connection, None).await;
     }
 
     if is_anthropic_compatible_provider(&connection.provider) {
-        return fetch_anthropic_compatible_models(connection).await;
+        return fetch_anthropic_compatible_models(connection, None).await;
     }
 
     match connection.provider.as_str() {
@@ -975,8 +994,9 @@ async fn fetch_openrouter_models(
 
 async fn fetch_openai_compatible_models(
     connection: &ProviderConnection,
+    node_base_url: Option<&str>,
 ) -> Result<ProviderModelsResponse, RouteError> {
-    let base_url = provider_specific_string(connection, "baseUrl").ok_or_else(|| {
+    let base_url = compatible_base_url(connection, node_base_url).ok_or_else(|| {
         RouteError::bad_request("No base URL configured for OpenAI compatible provider")
     })?;
     let url = format!("{}/models", base_url.trim_end_matches('/'));
@@ -986,8 +1006,9 @@ async fn fetch_openai_compatible_models(
 
 async fn fetch_anthropic_compatible_models(
     connection: &ProviderConnection,
+    node_base_url: Option<&str>,
 ) -> Result<ProviderModelsResponse, RouteError> {
-    let base_url = provider_specific_string(connection, "baseUrl").ok_or_else(|| {
+    let base_url = compatible_base_url(connection, node_base_url).ok_or_else(|| {
         RouteError::bad_request("No base URL configured for Anthropic compatible provider")
     })?;
     let normalized = normalize_anthropic_models_base_url(&base_url);
@@ -1506,6 +1527,18 @@ fn provider_specific_string(connection: &ProviderConnection, key: &str) -> Optio
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn compatible_base_url(
+    connection: &ProviderConnection,
+    node_base_url: Option<&str>,
+) -> Option<String> {
+    provider_specific_string(connection, "baseUrl").or_else(|| {
+        node_base_url
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
 }
 
 fn is_openai_compatible_provider(provider: &str) -> bool {
