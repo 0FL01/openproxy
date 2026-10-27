@@ -144,6 +144,38 @@ async function main() {
       console.log("synthetic translator line deletion smoke passed");
       return;
     }
+    const uncommented = '{\n  "name": 1\n}';
+    if (reference) await page.evaluate(text => { const editor = window.monaco.editor.getEditors()[0]; editor.setValue(text); editor.setPosition({ lineNumber: 2, column: 5 }); editor.focus(); }, uncommented);
+    else { await editor().fill(uncommented); await editor().evaluate(input => input.setSelectionRange(6, 6)); }
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.keyboard.press("Control+/");
+    assert.equal(await value(), '{\n//   "name": 1\n}', "Ctrl+/ comments an indented JSON line");
+    assert.deepEqual(await lineSelection(), [9, 9], "commenting keeps the cursor within the original text");
+    await page.keyboard.press("Control+z");
+    assert.equal(await value(), uncommented, "commenting a line is one undoable edit");
+    if (reference) await page.evaluate(() => { const editor = window.monaco.editor.getEditors()[0]; editor.setPosition({ lineNumber: 2, column: 1 }); editor.focus(); });
+    else await editor().evaluate(input => input.setSelectionRange(2, 2));
+    await page.keyboard.press("Control+/");
+    assert.deepEqual(await lineSelection(), [5, 5], "a cursor at the insertion point follows the line comment");
+    await page.keyboard.press("Control+z");
+    const multipleLines = '{\n  "first": 1,\n\n    "second": 2\n}';
+    const lastLineStart = multipleLines.indexOf("\n}") + 1;
+    if (reference) await page.evaluate(({ text, end }) => { const editor = window.monaco.editor.getEditors()[0], model = editor.getModel(); editor.setValue(text); const startPosition = model.getPositionAt(4), endPosition = model.getPositionAt(end); editor.setSelection(new window.monaco.Selection(startPosition.lineNumber, startPosition.column, endPosition.lineNumber, endPosition.column)); editor.focus(); }, { text: multipleLines, end: lastLineStart });
+    else { await editor().fill(multipleLines); await editor().evaluate((input, end) => input.setSelectionRange(4, end), lastLineStart); }
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.keyboard.press("Control+/");
+    const commentedLines = '{\n//   "first": 1,\n\n//     "second": 2\n}';
+    assert.equal(await value(), commentedLines, "line comments skip empty lines and a selection ending at the next line");
+    assert.deepEqual(await lineSelection(), [7, lastLineStart + 6], "commenting preserves the selected text");
+    await page.keyboard.press("Control+/");
+    assert.equal(await value(), multipleLines, "Ctrl+/ removes existing line comments");
+    await page.keyboard.press("Control+z");
+    assert.equal(await value(), commentedLines, "uncommenting is one undoable edit");
+    if (process.env.TRANSLATOR_COMMENT_ONLY === "1") {
+      assert.deepEqual(errors, []);
+      console.log("synthetic translator line comment smoke passed");
+      return;
+    }
     if (!reference) {
       await page.getByRole("button", { name: /Load$/ }).click();
       await page.waitForFunction(value => document.querySelector('textarea[aria-label="Translator editor"]')?.value === value, JSON.stringify(source));

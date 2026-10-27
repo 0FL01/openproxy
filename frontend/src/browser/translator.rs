@@ -467,6 +467,126 @@ fn delete_lines(input: &web_sys::HtmlTextAreaElement) {
     }
 }
 
+fn toggle_json_line_comments(input: &web_sys::HtmlTextAreaElement) {
+    let start = input.selection_start().ok().flatten().unwrap_or_default() as usize;
+    let end = input.selection_end().ok().flatten().unwrap_or(start as u32) as usize;
+    let direction = input
+        .selection_direction()
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let text: Vec<u16> = input.value().encode_utf16().collect();
+    let newline = b'\n' as u16;
+    let line_start = text[..start]
+        .iter()
+        .rposition(|ch| *ch == newline)
+        .map_or(0, |index| index + 1);
+    let selected_end = if end > start && text[end - 1] == newline {
+        end - 1
+    } else {
+        end
+    };
+    let line_end = text[selected_end..]
+        .iter()
+        .position(|ch| *ch == newline)
+        .map_or(text.len(), |index| selected_end + index);
+    let lines: Vec<_> = text[line_start..line_end]
+        .split(|ch| *ch == newline)
+        .collect();
+    let indents: Vec<_> = lines
+        .iter()
+        .map(|line| {
+            line.iter()
+                .take_while(|ch| **ch == b' ' as u16 || **ch == b'\t' as u16)
+                .count()
+        })
+        .collect();
+    let has_content = lines
+        .iter()
+        .zip(&indents)
+        .any(|(line, indent)| *indent < line.len());
+    let remove = has_content
+        && lines.iter().zip(&indents).all(|(line, indent)| {
+            *indent == line.len() || line[*indent..].starts_with(&[b'/' as u16, b'/' as u16])
+        });
+    let column = lines
+        .iter()
+        .zip(&indents)
+        .filter(|(line, indent)| !has_content || **indent < line.len())
+        .map(|(line, indent)| {
+            line[..*indent].iter().fold(0, |column, ch| {
+                if *ch == b'\t' as u16 {
+                    column + 4 - column % 4
+                } else {
+                    column + 1
+                }
+            })
+        })
+        .min()
+        .unwrap_or_default()
+        / 4
+        * 4;
+    let mut updated = Vec::new();
+    let mut edits = Vec::new();
+    let mut offset = line_start;
+    for (index, (line, indent)) in lines.iter().zip(&indents).enumerate() {
+        if index > 0 {
+            updated.push(newline);
+        }
+        if has_content && *indent == line.len() {
+            updated.extend_from_slice(line);
+        } else if remove {
+            let count = 2 + usize::from(line.get(indent + 2) == Some(&(b' ' as u16)));
+            updated.extend_from_slice(&line[..*indent]);
+            updated.extend_from_slice(&line[indent + count..]);
+            edits.push((offset + indent, count, 0));
+        } else {
+            let mut width = 0;
+            let mut at = 0;
+            while at < *indent && width < column {
+                let next = if line[at] == b'\t' as u16 {
+                    width + 4 - width % 4
+                } else {
+                    width + 1
+                };
+                if next > column {
+                    break;
+                }
+                width = next;
+                at += 1;
+            }
+            updated.extend_from_slice(&line[..at]);
+            updated.extend_from_slice(&[b'/' as u16, b'/' as u16, b' ' as u16]);
+            updated.extend_from_slice(&line[at..]);
+            edits.push((offset + at, 0, 3));
+        }
+        offset += line.len() + 1;
+    }
+    let position_after = |position: usize| {
+        let mut result = position as isize;
+        for (at, removed, added) in &edits {
+            if position >= at + removed {
+                result += *added as isize - *removed as isize;
+            } else if position > *at {
+                result += *added as isize - (position - at) as isize;
+            }
+        }
+        result as u32
+    };
+    if insert_text(
+        input,
+        line_start as u32,
+        line_end as u32,
+        &String::from_utf16_lossy(&updated),
+    ) {
+        let _ = input.set_selection_range_with_direction(
+            position_after(start),
+            position_after(end),
+            &direction,
+        );
+    }
+}
+
 fn indent_selection(input: &web_sys::HtmlTextAreaElement, backwards: bool) {
     const TAB_SIZE: u32 = 4;
     let text = js_sys::JsString::from(input.value());
@@ -1078,6 +1198,10 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
                             } else if (event.modifiers().ctrl() || event.modifiers().meta()) && event.modifiers().shift() && !event.modifiers().alt() && key.eq_ignore_ascii_case("k") {
                                 event.prevent_default();
                                 if let Some(input) = textarea.peek().as_ref() { delete_lines(input); }
+                                update_cursor.call(());
+                            } else if json && (event.modifiers().ctrl() || event.modifiers().meta()) && !event.modifiers().shift() && !event.modifiers().alt() && key == "/" {
+                                event.prevent_default();
+                                if let Some(input) = textarea.peek().as_ref() { toggle_json_line_comments(input); }
                                 update_cursor.call(());
                             } else if (event.modifiers().ctrl() || event.modifiers().meta()) && (key.eq_ignore_ascii_case("f") || key.eq_ignore_ascii_case("h")) {
                                 event.prevent_default();
