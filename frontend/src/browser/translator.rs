@@ -1610,8 +1610,7 @@ fn Editor(
         } else {
             (matches[current].0, matches[current].1)
         };
-        let selected = input_text.slice(start, end);
-        let replacement = if *regex.peek() && *whole_word.peek() {
+        let replacement = if *regex.peek() {
             let chosen = if all {
                 &matches[..]
             } else {
@@ -1636,13 +1635,9 @@ fn Editor(
                     .unwrap_or_default(),
             );
             result
-        } else if *regex.peek() {
-            selected
-                .replace_by_pattern(&pattern, &replacement.peek())
-                .as_string()
-                .unwrap_or_default()
         } else if all {
-            selected
+            input_text
+                .slice(start, end)
                 .replace_by_pattern(&pattern, &replacement.peek().replace('$', "$$"))
                 .as_string()
                 .unwrap_or_default()

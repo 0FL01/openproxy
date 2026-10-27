@@ -214,8 +214,26 @@ async function main() {
     if (reference) await page.evaluate(() => window.monaco.editor.getEditors()[0].focus()); else await editor().focus();
     await page.keyboard.press("Control+z");
     assert.equal(await value(), multilingualWords);
-    await scopedDialog.getByRole("checkbox", { name: "Use Regular Expression (Alt+R)" }).click();
     await scopedDialog.getByRole("checkbox", { name: "Match Whole Word (Alt+W)" }).click();
+    await scopedDialog.getByText(/^[1-3] of 3$/).waitFor();
+    await scopedDialog.getByRole("button", { name: /^Replace All \(/ }).click();
+    assert.equal(await value(), "Кот$:кот Кот$:котик КОТ$:КОТ", "regex replacement syntax also applies without whole-word mode");
+    if (reference) await page.evaluate(() => window.monaco.editor.getEditors()[0].focus()); else await editor().focus();
+    await page.keyboard.press("Control+z");
+    assert.equal(await value(), multilingualWords);
+
+    const contextualText = "precat cat";
+    if (reference) await page.evaluate(text => window.monaco.editor.getEditors()[0].setValue(text), contextualText);
+    else await editor().fill(contextualText);
+    await scopedDialog.getByLabel("Find", { exact: true }).fill("(?<=pre)(cat)");
+    await scopedDialog.getByText("1 of 1", { exact: true }).waitFor();
+    await scopedDialog.getByLabel("Replace", { exact: true }).fill("$1!");
+    await scopedDialog.getByRole("button", { name: /^Replace \(/ }).click();
+    assert.equal(await value(), "precat! cat", "single replacement retains the regex match's surrounding context");
+    if (reference) await page.evaluate(() => window.monaco.editor.getEditors()[0].focus()); else await editor().focus();
+    await page.keyboard.press("Control+z");
+    assert.equal(await value(), contextualText, "contextual replacement is undoable");
+    await scopedDialog.getByRole("checkbox", { name: "Use Regular Expression (Alt+R)" }).click();
     if (process.env.TRANSLATOR_FIND_SELECTION_ONLY === "1") {
       assert.deepEqual(errors, []);
       console.log("synthetic translator scoped find smoke passed");
