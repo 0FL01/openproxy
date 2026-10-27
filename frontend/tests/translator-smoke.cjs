@@ -120,6 +120,32 @@ async function main() {
       console.log("synthetic translator move lines smoke passed");
       return;
     }
+    if (reference) await page.evaluate(() => window.monaco.editor.getEditors()[0].setPosition({ lineNumber: 2, column: 3 }));
+    else await editor().evaluate(input => input.setSelectionRange(8, 8));
+    await page.keyboard.press("Control+Alt+Shift+ArrowDown");
+    assert.equal(await value(), "alpha\nbeta\nbeta\ngamma", "Copy Line Down duplicates the current line");
+    assert.deepEqual(await lineSelection(), [13, 13], "copying down moves the caret with its line");
+    await page.keyboard.press("Control+z");
+    assert.equal(await value(), lines, "copying a line down is undoable");
+    if (reference) await page.evaluate(() => window.monaco.editor.getEditors()[0].setPosition({ lineNumber: 2, column: 3 }));
+    else await editor().evaluate(input => input.setSelectionRange(8, 8));
+    await page.keyboard.press("Control+Alt+Shift+ArrowUp");
+    assert.equal(await value(), "alpha\nbeta\nbeta\ngamma", "Copy Line Up duplicates the current line");
+    assert.deepEqual(await lineSelection(), [8, 8], "copying up keeps the caret in its line");
+    await page.keyboard.press("Control+z");
+    assert.equal(await value(), lines, "copying a line up is undoable");
+    if (reference) await page.evaluate(() => { const e = window.monaco.editor.getEditors()[0]; e.setSelection(new window.monaco.Selection(2, 1, 3, 1)); e.focus(); });
+    else await editor().evaluate(input => input.setSelectionRange(6, 11));
+    await page.keyboard.press("Control+Alt+Shift+ArrowDown");
+    assert.equal(await value(), "alpha\nbeta\nbeta\ngamma", "a selection ending at the next line copies only the selected line");
+    assert.deepEqual(await lineSelection(), [11, 16], "copying selected lines keeps the selection");
+    await page.keyboard.press("Control+z");
+    assert.equal(await value(), lines, "copying selected lines is undoable");
+    if (process.env.TRANSLATOR_COPY_LINES_ONLY === "1") {
+      assert.deepEqual(errors, []);
+      console.log("synthetic translator copy lines smoke passed");
+      return;
+    }
     const cdp = await context.newCDPSession(page);
     for (const { text, start, end } of [
       { text: '{"text":""}', start: 9, end: 9 },

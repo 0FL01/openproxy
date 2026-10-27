@@ -542,6 +542,48 @@ fn move_lines(input: &web_sys::HtmlTextAreaElement, down: bool) {
     }
 }
 
+fn copy_lines(input: &web_sys::HtmlTextAreaElement, down: bool) {
+    let start = input.selection_start().ok().flatten().unwrap_or_default() as usize;
+    let end = input.selection_end().ok().flatten().unwrap_or(start as u32) as usize;
+    let direction = input
+        .selection_direction()
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let text: Vec<u16> = input.value().encode_utf16().collect();
+    let newline = b'\n' as u16;
+    let line_start = text[..start]
+        .iter()
+        .rposition(|ch| *ch == newline)
+        .map_or(0, |index| index + 1);
+    let selected_end = if end > start && text[end - 1] == newline {
+        end - 1
+    } else {
+        end
+    };
+    let line_end = text[selected_end..]
+        .iter()
+        .position(|ch| *ch == newline)
+        .map_or(text.len(), |index| selected_end + index);
+    let selected_lines = String::from_utf16_lossy(&text[line_start..line_end]);
+    let (position, replacement, delta) = if down {
+        (
+            line_start,
+            format!("{selected_lines}\n"),
+            line_end - line_start + 1,
+        )
+    } else {
+        (line_end, format!("\n{selected_lines}"), 0)
+    };
+    if insert_text(input, position as u32, position as u32, &replacement) {
+        let _ = input.set_selection_range_with_direction(
+            (start + delta) as u32,
+            (end + delta) as u32,
+            &direction,
+        );
+    }
+}
+
 fn toggle_json_line_comments(input: &web_sys::HtmlTextAreaElement) {
     let start = input.selection_start().ok().flatten().unwrap_or_default() as usize;
     let end = input.selection_end().ok().flatten().unwrap_or(start as u32) as usize;
@@ -1352,6 +1394,11 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
                             } else if event.modifiers().alt() && !event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().shift() && matches!(event.key(), Key::ArrowUp | Key::ArrowDown) {
                                 event.prevent_default();
                                 if let Some(input) = textarea.peek().as_ref() { move_lines(input, event.key() == Key::ArrowDown); }
+                                update_cursor.call(());
+                            } else if event.modifiers().alt() && event.modifiers().shift() && !event.modifiers().meta() && matches!(event.key(), Key::ArrowUp | Key::ArrowDown)
+                                && event.modifiers().ctrl() == web_sys::window().and_then(|window| window.navigator().user_agent().ok()).is_some_and(|agent| agent.contains("Linux")) {
+                                event.prevent_default();
+                                if let Some(input) = textarea.peek().as_ref() { copy_lines(input, event.key() == Key::ArrowDown); }
                                 update_cursor.call(());
                             } else if json && (event.modifiers().ctrl() || event.modifiers().meta()) && !event.modifiers().shift() && !event.modifiers().alt() && key == "/" {
                                 event.prevent_default();
