@@ -1610,50 +1610,48 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
                         onkeydown: move |event| {
                             if event.is_composing() { return; }
                             let key = event.key().to_string();
-                            if json && !event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().alt() {
-                                if let Some(input) = textarea.peek().clone() {
-                                    let before = input.value();
-                                    update_auto_pairs(&pair_text.peek(), &before, &mut auto_pairs.write());
-                                    pair_text.set(before.clone());
-                                    let start = input.selection_start().ok().flatten().unwrap_or_default();
-                                    let end = input.selection_end().ok().flatten().unwrap_or(start);
-                                    if key == "Backspace" && start == end && start > 0 {
-                                        let pair = auto_pairs.peek().iter().find(|(_, position)| *position == start).copied();
-                                        if let Some((closing, _)) = pair {
-                                            let opening = match closing { '}' => '{', ']' => '[', '"' => '"', _ => '\0' };
-                                            let text = js_sys::JsString::from(before.clone());
-                                            if text.slice(start - 1, start).as_string().as_deref() == Some(&opening.to_string()) && insert_text(&input, start - 1, start + 1, "") {
-                                                let after = input.value();
-                                                update_auto_pairs(&before, &after, &mut auto_pairs.write());
-                                                pair_text.set(after);
-                                                event.prevent_default();
-                                                update_cursor.call(());
-                                                return;
-                                            }
-                                        }
-                                    }
-                                    if start == end && key.chars().count() == 1 {
-                                        let closing = key.chars().next().unwrap();
-                                        let index = auto_pairs.peek().iter().position(|pair| *pair == (closing, start));
-                                        if let Some(index) = index {
-                                            auto_pairs.write().remove(index);
-                                            let _ = input.set_selection_range(start + 1, start + 1);
+                            if json && !event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().alt() && let Some(input) = textarea.peek().clone() {
+                                let before = input.value();
+                                update_auto_pairs(&pair_text.peek(), &before, &mut auto_pairs.write());
+                                pair_text.set(before.clone());
+                                let start = input.selection_start().ok().flatten().unwrap_or_default();
+                                let end = input.selection_end().ok().flatten().unwrap_or(start);
+                                if key == "Backspace" && start == end && start > 0 {
+                                    let pair = auto_pairs.peek().iter().find(|(_, position)| *position == start).copied();
+                                    if let Some((closing, _)) = pair {
+                                        let opening = match closing { '}' => '{', ']' => '[', '"' => '"', _ => '\0' };
+                                        let text = js_sys::JsString::from(before.clone());
+                                        if text.slice(start - 1, start).as_string().as_deref() == Some(&opening.to_string()) && insert_text(&input, start - 1, start + 1, "") {
+                                            let after = input.value();
+                                            update_auto_pairs(&before, &after, &mut auto_pairs.write());
+                                            pair_text.set(after);
                                             event.prevent_default();
                                             update_cursor.call(());
                                             return;
                                         }
                                     }
-                                    if close_json_pair(&input, &key) {
-                                        let after = input.value();
-                                        update_auto_pairs(&before, &after, &mut auto_pairs.write());
-                                        pair_text.set(after);
-                                        if start == end && let Some(closing) = match key.as_str() { "{" => Some('}'), "[" => Some(']'), "\"" => Some('"'), _ => None } {
-                                            auto_pairs.write().push((closing, start + 1));
-                                        }
+                                }
+                                if start == end && key.chars().count() == 1 {
+                                    let closing = key.chars().next().unwrap();
+                                    let index = auto_pairs.peek().iter().position(|pair| *pair == (closing, start));
+                                    if let Some(index) = index {
+                                        auto_pairs.write().remove(index);
+                                        let _ = input.set_selection_range(start + 1, start + 1);
                                         event.prevent_default();
                                         update_cursor.call(());
                                         return;
                                     }
+                                }
+                                if close_json_pair(&input, &key) {
+                                    let after = input.value();
+                                    update_auto_pairs(&before, &after, &mut auto_pairs.write());
+                                    pair_text.set(after);
+                                    if start == end && let Some(closing) = match key.as_str() { "{" => Some('}'), "[" => Some(']'), "\"" => Some('"'), _ => None } {
+                                        auto_pairs.write().push((closing, start + 1));
+                                    }
+                                    event.prevent_default();
+                                    update_cursor.call(());
+                                    return;
                                 }
                             }
                             if json && event.key() == Key::Enter && !event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().alt() && !event.modifiers().shift() && textarea.peek().as_ref().is_some_and(|input| expand_json_brackets(input) || indent_json_newline(input)) {

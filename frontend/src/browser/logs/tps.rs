@@ -154,7 +154,7 @@ pub(super) fn TpsPanel(
     let mut task = use_signal(|| None::<Task>);
     let mut running = use_signal(|| false);
     let mut first = use_signal(|| true);
-    let mut previous_refresh = use_signal(|| refresh());
+    let mut previous_refresh = use_signal(&*refresh);
     let recheck = use_context::<SessionRecheck>();
     {
         let recheck = recheck.clone();

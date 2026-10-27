@@ -22,7 +22,8 @@ impl Drop for DrawerGuard {
 
 #[component]
 fn Field(label: &'static str, value: Option<String>) -> Element {
-    rsx! { div { class: "min-w-0", div { class: "text-xs font-medium uppercase tracking-wide text-text-muted", "{label}" } div { class: "mt-1 break-all font-mono text-sm text-text-main", "{value.unwrap_or_else(|| \"—\".to_owned())}" } } }
+    let value = value.as_deref().unwrap_or("—");
+    rsx! { div { class: "min-w-0", div { class: "text-xs font-medium uppercase tracking-wide text-text-muted", "{label}" } div { class: "mt-1 break-all font-mono text-sm text-text-main", "{value}" } } }
 }
 
 fn display(value: &Value) -> Option<String> {
