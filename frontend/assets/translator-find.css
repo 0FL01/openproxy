@@ -63,6 +63,7 @@
   font-size: 13px;
   line-height: 19px;
 }
+.translator-find .find-input:placeholder-shown { white-space: nowrap; }
 .translator-find .find-options { position: absolute; top: 2px; right: 1px; display: flex; }
 .translator-find .find-icon {
   display: flex;
@@ -104,5 +105,5 @@
 .translator-find .replace-box .find-input { width: calc(100% - 22px); }
 .translator-find.reduced .find-count { display: none; }
 .translator-find.reduced .replace-box { flex-basis: calc(100% - 62px); }
-.translator-find.collapsed .find-options { display: none; }
-.translator-find.collapsed .find-input { width: 100%; }
+.translator-find.collapsed .find-box:not(.replace-box) .find-options { display: none; }
+.translator-find.collapsed .find-box:not(.replace-box) .find-input { width: 100%; }

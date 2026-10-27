@@ -258,6 +258,15 @@ async function main() {
       const replace = dialog.getByLabel("Replace", { exact: true });
       const preserve = dialog.getByRole("checkbox", { name: /Preserve Case/ });
       await find.fill("cat");
+      await page.setViewportSize({ width: 390, height: 844 });
+      await preserve.waitFor({ state: "visible" });
+      assert.equal(await replace.evaluate(input => getComputedStyle(input).whiteSpace), "nowrap", "the empty replacement placeholder stays on one line");
+      await preserve.click();
+      assert.equal(await preserve.getAttribute("aria-checked"), "true", "Preserve Case remains usable in the collapsed Replace panel");
+      await preserve.click();
+      assert.equal(await preserve.getAttribute("aria-checked"), "false");
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await dialog.getByRole("checkbox", { name: /Match Case/ }).waitFor({ state: "visible" });
       await replace.fill("dog");
       await preserve.click();
       await replace.press("Alt+p");
