@@ -4,7 +4,9 @@ use super::{
     i18n::I18n,
     json_body, navigate,
     providers::{NewProviderPage, ProviderDetailPage, ProvidersPage},
-    request, request_with_cache, theme_is_dark,
+    request, request_with_cache,
+    skills::SkillsPage,
+    theme_is_dark,
     ui::Button,
     ui::Modal,
     AbortOnDrop,
@@ -306,7 +308,7 @@ fn DashboardContent() -> Element {
                 Header { on_menu: move |_| sidebar_open.set(true), search, is_providers, is_providers_new: is_providers_new || is_provider_detail, provider_id: provider_id.clone() }
                 div { class: "flex-1 overflow-y-auto custom-scrollbar p-6 lg:p-10",
                     div { class: "max-w-7xl mx-auto",
-                        if is_providers { ProvidersPage { search } } else if is_providers_new { NewProviderPage {} } else if let Some(id) = provider_id { ProviderDetailPage { id } } else { EndpointPage {} }
+                        if is_providers { ProvidersPage { search } } else if is_providers_new { NewProviderPage {} } else if let Some(id) = provider_id { ProviderDetailPage { id } } else if pathname == "/dashboard/skills" { SkillsPage {} } else { EndpointPage {} }
                     }
                 }
             }

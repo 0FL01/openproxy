@@ -12,6 +12,7 @@ mod endpoint;
 mod i18n;
 mod providers;
 mod shell;
+mod skills;
 mod ui;
 
 // Preserve the reference bytes; dx otherwise re-minifies CSS in the public dir.
@@ -116,6 +117,8 @@ enum Route {
     ProvidersNew {},
     #[route("/dashboard/providers/:id")]
     ProviderDetail { id: String },
+    #[route("/dashboard/skills")]
+    Skills {},
     #[route("/login")]
     Login {},
     #[route("/callback")]
@@ -159,6 +162,11 @@ fn ProviderDetail(id: String) -> Element {
             restore_provider_location(&path);
         }
     });
+    rsx! { shell::Dashboard {} }
+}
+
+#[component]
+fn Skills() -> Element {
     rsx! { shell::Dashboard {} }
 }
 

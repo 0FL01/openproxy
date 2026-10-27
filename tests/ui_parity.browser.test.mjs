@@ -98,6 +98,8 @@ const screens = [
   { section: "provider-codex-autoping", name: "on" },
   { section: "provider-codex-bulk-add", name: "dialog" },
   { section: "provider-openrouter", name: "suggested" },
+  { section: "skills", name: "ready" },
+  { section: "skills", name: "copied", action: "copied" },
   { section: "callback", name: "code", query: callbackCodeQuery, colorScheme: "light" },
   { section: "callback", name: "error", query: callbackErrorQuery, colorScheme: "light" },
   { section: "callback", name: "no-auth-data", query: "", colorScheme: "light" },
@@ -194,6 +196,14 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   : [];
               try {
                 const page = await context.newPage();
+                if (screen.section === "skills") {
+                  await page.addInitScript(() => {
+                    Object.defineProperty(navigator.clipboard, "writeText", {
+                      configurable: true,
+                      value: async (value) => { window.__fixtureCopied = value; },
+                    });
+                  });
+                }
                 if (screen.storedTheme) {
                   await page.addInitScript((theme) => localStorage.setItem("theme", JSON.stringify({ state: { theme }, version: 0 })), screen.storedTheme);
                 }
@@ -241,7 +251,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     : (!["providers-new", "provider-kilocode"].includes(screen.section) && (path === "/login" || path === "/dashboard/endpoint")) || path === "/favicon.svg" || path.startsWith("/_astro/") || path.startsWith("/assets/") || path.startsWith("/i18n/") ||
                     (screen.section === "providers" && (path === "/dashboard/providers" || /^\/providers\/[a-z0-9_-]+\.png$/.test(path))) ||
                     (screen.section === "providers-new" && !url.search && ["/dashboard/providers/new", "/providers/codex.png", "/providers/opencode-zen.png", "/providers/openai.png"].includes(path)) ||
-                    (screen.section === "provider-kilocode" && !url.search && ["/dashboard/providers/kilocode", "/providers/kilocode.png"].includes(path));
+                    (screen.section === "provider-kilocode" && !url.search && ["/dashboard/providers/kilocode", "/providers/kilocode.png"].includes(path)) ||
+                    (screen.section === "skills" && !url.search && path === "/dashboard/skills");
                   if (url.origin === appUrl && method === "GET" && assets) {
                     if (!isCodexDetail) return route.continue();
                     // Do not let even an allowed asset redirect around the
@@ -418,7 +429,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   if (path === "/api/oauth/codex/stop-proxy") interceptedCodexStop += 1;
                 });
 
-                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : screen.section === "providers-new" ? "/dashboard/providers/new" : screen.section === "provider-kilocode" ? "/dashboard/providers/kilocode" : screen.section === "provider-compatible" ? compatiblePath : isCodexDetail ? codexPath : isOpenRouter ? "/dashboard/providers/openrouter" : screen.section === "callback" ? "/callback" : "/dashboard/endpoint";
+                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : screen.section === "providers-new" ? "/dashboard/providers/new" : screen.section === "provider-kilocode" ? "/dashboard/providers/kilocode" : screen.section === "provider-compatible" ? compatiblePath : isCodexDetail ? codexPath : isOpenRouter ? "/dashboard/providers/openrouter" : screen.section === "skills" ? "/dashboard/skills" : screen.section === "callback" ? "/callback" : "/dashboard/endpoint";
                 const sourceRoute = screen.section === "provider-compatible" ? compatibleTemplate : path;
                 const response = await page.goto(`${appUrl}${path}${screen.query || ""}`, { waitUntil: "domcontentloaded" });
                 assert(response?.ok(), `failed to load ${path}`);
@@ -430,7 +441,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       assert(html.includes(marker), "record mode requires the standalone Astro callback markup");
                     }
                   } else {
-                    const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : screen.section === "providers-new" ? "ProvidersNewPageClient." : ["provider-kilocode", "provider-compatible"].includes(screen.section) || isCodexDetail || isOpenRouter ? "ProviderDetailPageClient." : "EndpointPageClient.";
+                    const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : screen.section === "providers-new" ? "ProvidersNewPageClient." : ["provider-kilocode", "provider-compatible"].includes(screen.section) || isCodexDetail || isOpenRouter ? "ProviderDetailPageClient." : screen.section === "skills" ? "SkillsPageClient." : "EndpointPageClient.";
                     assert(html.includes(`component-url="/_astro/${component}`), "record mode requires the Astro reference");
                     if (screen.section === "provider-compatible") assert(source.routes[sourceRoute], "dynamic Astro provider template hash must be pinned before recording");
                     if (isCodexDetail) assert(source.routes[sourceRoute], "Astro Codex route hash must be pinned before recording");
@@ -452,6 +463,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 else if (screen.section === "provider-compatible") await page.getByRole("heading", { name: "OpenAI Compatible Details", exact: true }).waitFor();
                 else if (isCodexDetail) await page.getByRole("checkbox", { name: "Select connection Fixture Codex" }).waitFor();
                 else if (isOpenRouter) await page.getByText("Suggested free models (≥200k context):", { exact: true }).waitFor();
+                else if (screen.section === "skills") await page.getByRole("heading", { name: "OpenProxy (Entry)", exact: true }).waitFor();
                 else if (screen.section === "callback") await page.getByRole("heading", { name: screen.name === "error" ? "Authentication Failed" : screen.name === "no-auth-data" ? "No Auth Data Found" : "Authentication Complete", exact: true }).waitFor();
                 else await page.getByText("Fixture key", { exact: true }).waitFor();
                 const disableMotion = () => page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}" });
@@ -529,6 +541,26 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   }
                   await page.mouse.move(1, 1);
                   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+                } else if (screen.section === "skills") {
+                  const rawUrl = "https://raw.githubusercontent.com/0FL01/openproxy/refs/heads/main/.agents/skills/openproxy/SKILL.md";
+                  const copy = page.getByTitle(rawUrl);
+                  await copy.waitFor();
+                  assert.equal(await page.getByText(`Read this skill and use it: ${rawUrl}`, { exact: true }).count(), 1);
+                  assert.equal(await page.getByRole("link", { name: new RegExp(rawUrl) }).getAttribute("href"), "https://github.com/0FL01/openproxy/blob/main/.agents/skills/openproxy/SKILL.md");
+                  assert.equal(await page.getByRole("link", { name: /View on GitHub/ }).getAttribute("href"), "https://github.com/0FL01/openproxy/tree/main/.agents/skills");
+                  const checkCopy = async () => {
+                    await copy.click();
+                    await copy.filter({ hasText: "Copied!" }).waitFor();
+                    assert.equal(await page.evaluate(() => window.__fixtureCopied), rawUrl);
+                  };
+                  await page.waitForLoadState("networkidle");
+                  if (screen.action === "copied") await checkCopy();
+                  await page.mouse.move(1, 1);
+                  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+                  verifyAfterCapture = async () => {
+                    if (screen.action !== "copied") await checkCopy();
+                    await copy.filter({ hasText: "Copy link" }).waitFor();
+                  };
                 } else if (isOpenRouter) {
                   const section = page.getByText("Suggested free models (≥200k context):", { exact: true }).locator("..");
                   const suggestion = section.getByTitle("Suggested Model · 262k ctx");
