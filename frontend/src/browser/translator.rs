@@ -265,10 +265,15 @@ fn close_json_pair(input: &web_sys::HtmlTextAreaElement, key: &str) -> bool {
     };
     let start = input.selection_start().ok().flatten().unwrap_or_default();
     let end = input.selection_end().ok().flatten().unwrap_or(start);
+    let text = js_sys::JsString::from(input.value());
     if start != end {
+        let selected = text.slice(start, end).as_string().unwrap_or_default();
+        if insert_text(input, start, end, &format!("{key}{selected}{closing}")) {
+            let _ = input.set_selection_range(start + 1, end + 1);
+            return true;
+        }
         return false;
     }
-    let text = js_sys::JsString::from(input.value());
     let before = text.slice(0, start).as_string().unwrap_or_default();
     let after = text
         .slice(start, text.length())
@@ -972,7 +977,7 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
                                         let after = input.value();
                                         update_auto_pairs(&before, &after, &mut auto_pairs.write());
                                         pair_text.set(after);
-                                        if let Some(closing) = match key.as_str() { "{" => Some('}'), "[" => Some(']'), "\"" => Some('"'), _ => None } {
+                                        if start == end && let Some(closing) = match key.as_str() { "{" => Some('}'), "[" => Some(']'), "\"" => Some('"'), _ => None } {
                                             auto_pairs.write().push((closing, start + 1));
                                         }
                                         event.prevent_default();

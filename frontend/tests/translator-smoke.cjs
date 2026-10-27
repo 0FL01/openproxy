@@ -74,6 +74,8 @@ async function main() {
     await page.goto(`${origin}/dashboard/translator`);
     await page.getByRole("heading", { name: "Translator Debug" }).waitFor();
     const editor = () => page.getByLabel("Translator editor");
+    const value = () => reference ? page.evaluate(() => window.monaco.editor.getEditors()[0].getValue()) : editor().inputValue();
+    const selection = () => reference ? page.evaluate(() => { const s = window.monaco.editor.getEditors()[0].getSelection(); return [s.startColumn - 1, s.endColumn - 1]; }) : editor().evaluate(input => [input.selectionStart, input.selectionEnd]);
     const settleReferenceJson = () => page.waitForFunction(async () => {
       try {
         const model = window.monaco?.editor.getEditors()[0]?.getModel();
@@ -83,6 +85,25 @@ async function main() {
         return true;
       } catch { return false; }
     });
+    if (reference) {
+      await page.locator(".monaco-editor .view-lines").waitFor();
+      await page.evaluate(() => window.monaco.editor.getEditors()[0].setValue("text"));
+    } else {
+      await editor().fill("text");
+    }
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    if (reference) await page.evaluate(() => { const editor = window.monaco.editor.getEditors()[0]; editor.setSelection(new window.monaco.Selection(1, 1, 1, 5)); editor.focus(); });
+    else await editor().evaluate(input => input.setSelectionRange(0, input.value.length));
+    await page.keyboard.type("{");
+    assert.equal(await value(), "{text}", "an opening brace surrounds the selected JSON text");
+    assert.deepEqual(await selection(), [1, 5], "the surrounded text remains selected");
+    await page.keyboard.press("Control+z");
+    assert.equal(await value(), "text", "surrounding a selection is one undoable edit");
+    if (process.env.TRANSLATOR_SELECTION_ONLY === "1") {
+      assert.deepEqual(errors, []);
+      console.log("synthetic translator selection smoke passed");
+      return;
+    }
     if (!reference) {
       await page.getByRole("button", { name: /Load$/ }).click();
       await page.waitForFunction(value => document.querySelector('textarea[aria-label="Translator editor"]')?.value === value, JSON.stringify(source));
@@ -131,7 +152,6 @@ async function main() {
       await editor().fill("😺 a+b A+B");
       await editor().press("Control+f");
     }
-    const selection = () => reference ? page.evaluate(() => { const s = window.monaco.editor.getEditors()[0].getSelection(); return [s.startColumn - 1, s.endColumn - 1]; }) : editor().evaluate(input => [input.selectionStart, input.selectionEnd]);
     const find = page.getByRole("dialog", { name: "Find / Replace" }).getByLabel("Find", { exact: true });
     await find.fill("a+b");
     await page.getByText("1 of 2", { exact: true }).waitFor();
@@ -188,7 +208,6 @@ async function main() {
     const replace = page.getByRole("dialog", { name: "Find / Replace" }).getByLabel("Replace", { exact: true });
     await replace.fill("dog");
     await page.getByRole("button", { name: /^Replace \(/ }).click();
-    const value = () => reference ? page.evaluate(() => window.monaco.editor.getEditors()[0].getValue()) : editor().inputValue();
     await page.waitForFunction(({ reference }) => reference ? window.monaco.editor.getEditors()[0].getValue() === "dog cat" : document.querySelector('textarea[aria-label="Translator editor"]')?.value === "dog cat", { reference });
     if (reference) await page.evaluate(() => window.monaco.editor.getEditors()[0].focus()); else await editor().focus();
     await page.keyboard.press("Control+z");
