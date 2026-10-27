@@ -466,6 +466,51 @@ fn insert_text(input: &web_sys::HtmlTextAreaElement, start: u32, end: u32, text:
         == Some(true)
 }
 
+fn backspace_indent(input: &web_sys::HtmlTextAreaElement) -> bool {
+    let Some(start) = input.selection_start().ok().flatten() else {
+        return false;
+    };
+    if input.selection_end().ok().flatten() != Some(start) {
+        return false;
+    }
+    let before = js_sys::JsString::from(input.value())
+        .slice(0, start)
+        .as_string()
+        .unwrap_or_default();
+    let indent = before.rsplit('\n').next().unwrap_or("");
+    if indent.is_empty() || !indent.bytes().all(|ch| matches!(ch, b' ' | b'\t')) {
+        return false;
+    }
+    let columns = indent.bytes().fold(0, |column, ch| {
+        column + if ch == b'\t' { 4 - column % 4 } else { 1 }
+    });
+    let target = (columns - 1) / 4 * 4;
+    let mut column = 0;
+    let mut keep = 0;
+    for ch in indent.bytes() {
+        let next = column + if ch == b'\t' { 4 - column % 4 } else { 1 };
+        if next > target {
+            break;
+        }
+        column = next;
+        keep += 1;
+    }
+    let count = indent.len() - keep;
+    if count <= 1 {
+        return false;
+    }
+    // Native backward deletions preserve both the original caret and the
+    // browser's consecutive-delete undo group; do not replace a selection.
+    let mut changed = false;
+    for _ in 0..count {
+        if !editing_command("delete") {
+            break;
+        }
+        changed = true;
+    }
+    changed
+}
+
 fn in_json_string(text: &str) -> bool {
     let mut in_string = false;
     let mut escaped = false;
@@ -2046,7 +2091,7 @@ impl CompositionEdit {
     }
 }
 
-fn history_command(command: &str) -> bool {
+fn editing_command(command: &str) -> bool {
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return false;
     };
@@ -2903,6 +2948,12 @@ fn Editor(
                                 }
                                 return;
                             }
+                            if key == "Backspace" && !control && !modifiers.alt() && let Some(input) = textarea.peek().as_ref() && backspace_indent(input) {
+                                event.prevent_default();
+                                composition_extendable.set(false);
+                                update_cursor.call(());
+                                return;
+                            }
                             if json && !event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().alt() && let Some(input) = textarea.peek().clone() {
                                 let before = input.value();
                                 update_auto_pairs(&pair_text.peek(), &before, &mut auto_pairs.write());
@@ -3102,10 +3153,10 @@ fn Editor(
                                             for edit in edits.iter().skip(1) {
                                                 if value == *final_value { break; }
                                                 let Some(expected) = edit.apply(&value, undo) else { break };
-                                                if !history_command(if undo { "undo" } else { "redo" }) { break; }
+                                                if !editing_command(if undo { "undo" } else { "redo" }) { break; }
                                                 value = input.value();
                                                 if value != expected && value != *final_value {
-                                                    let _ = history_command(if undo { "redo" } else { "undo" });
+                                                    let _ = editing_command(if undo { "redo" } else { "undo" });
                                                     value = input.value();
                                                     break;
                                                 }

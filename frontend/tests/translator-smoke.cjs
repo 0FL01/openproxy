@@ -283,6 +283,21 @@ async function main() {
       await page.keyboard.press("Control+z");
       assert.equal(await plainValue(), "alpha\nbeta");
       assert.equal(await plainCursor(), 7);
+      const indented = "      alpha 😺\nnext";
+      if (reference) await page.evaluate(text => { const e = window.monaco.editor.getEditors()[1]; e.setValue(text); e.setPosition({ lineNumber: 1, column: 7 }); e.focus(); }, indented);
+      else { await editor().nth(1).fill(indented); await editor().nth(1).evaluate(input => { input.setSelectionRange(6, 6); input.focus(); }); }
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.keyboard.press("Backspace");
+      assert.equal(await plainValue(), "    alpha 😺\nnext", "Backspace in indentation deletes to the previous four-column stop");
+      assert.equal(await plainCursor(), 4);
+      await page.keyboard.press("Backspace");
+      assert.equal(await plainValue(), "alpha 😺\nnext");
+      await page.keyboard.press("Control+z");
+      assert.equal(await plainValue(), indented, "consecutive indentation Backspaces retain native deletion history grouping");
+      assert.equal(await plainCursor(), 6);
+      await page.keyboard.press("Control+Shift+z");
+      assert.equal(await plainValue(), "alpha 😺\nnext");
+      assert.equal(await plainCursor(), 0);
       assert.deepEqual(errors, []);
       console.log("synthetic translator line-indentation smoke passed");
       return;
