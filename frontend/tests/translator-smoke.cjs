@@ -199,6 +199,15 @@ async function main() {
         const matches = [...root.querySelectorAll(reference ? ".view-overlays .findMatch, .view-overlays .currentFindMatch" : ".find-match")];
         return matches.length === 2 && matches.every(element => { const rect = element.getBoundingClientRect(); return rect.top === line.top && rect.bottom === line.bottom; });
       }, reference), true, "Find match backgrounds fill the visual line height");
+      const findMarker = ({ reference, present, y }) => {
+        const canvas = reference ? document.querySelector(".monaco-editor canvas.decorationsOverviewRuler") : document.querySelector('textarea[aria-label="Translator editor"]').parentElement.parentElement.querySelector("canvas");
+        if (!canvas) return false;
+        const pixels = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+        const rows = [];
+        for (let i = 0; i < pixels.length; i += 4) if (pixels[i] > 150 && pixels[i + 1] > 90 && pixels[i + 2] < 60 && pixels[i + 3] > 0) rows.push(Math.floor(i / 4 / canvas.width));
+        return present ? rows.length > 0 && Math.min(...rows) === y[0] && Math.max(...rows) === y[1] : rows.length === 0;
+      };
+      await page.waitForFunction(findMarker, { reference, present: true, y: [34, 48] }, { timeout: 5000 });
       assert.deepEqual(await dialog.evaluate(element => [element.offsetWidth, element.offsetHeight]), [419, 33], "desktop Find panel matches the reference dimensions");
       assert.equal(await dialog.getByLabel("Find", { exact: true }).evaluate(element => element.offsetWidth), 167);
       const lineTop = ({ reference, expected }) => {
@@ -214,6 +223,7 @@ async function main() {
       await dialog.getByLabel("Find", { exact: true }).press("Escape");
       await page.waitForFunction(lineTop, { reference, expected: 0 }, { timeout: 5000 });
       await page.waitForFunction(reference => !document.querySelector(reference ? ".monaco-editor .view-overlays .rangeHighlight" : ".find-range-highlight"), reference);
+      await page.waitForFunction(findMarker, { reference, present: false });
 
       if (reference) await page.evaluate(({ offset }) => { const e = window.monaco.editor.getEditors()[0], model = e.getModel(), start = model.getPositionAt(offset), end = model.getPositionAt(offset + 6); e.setSelection(new window.monaco.Selection(start.lineNumber, start.column, end.lineNumber, end.column)); e.focus(); }, { offset });
       else { await editor().focus(); await editor().evaluate((input, offset) => { input.setSelectionRange(offset, offset + 6); input.dispatchEvent(new Event("select", { bubbles: true })); }, offset); }
@@ -249,6 +259,7 @@ async function main() {
         return [ranges[0].top === lines[0].top, ranges.at(-1).bottom === lines.at(-1).bottom];
       }, reference);
       assert.deepEqual(wrappedCoverage, [true, true], "the range highlight covers the wrapped logical line");
+      await page.waitForFunction(findMarker, { reference, present: true, y: [82, 96] });
       await dialog.getByLabel("Find", { exact: true }).press("Escape");
       await page.setViewportSize(viewport);
 

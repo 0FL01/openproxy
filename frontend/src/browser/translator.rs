@@ -1478,6 +1478,14 @@ fn Editor(
     let mut regex = use_signal(|| false);
     let mut preserve_case = use_signal(|| *preserve_case_setting.peek());
     let mut find_scope = use_signal(|| None::<(u32, u32)>);
+    let matches = find_ranges(
+        &value,
+        &query(),
+        match_case(),
+        whole_word(),
+        regex(),
+        find_scope(),
+    );
     let mut active_line = use_signal(|| 0_usize);
     let mut active_visual_top = use_signal(|| 0_i32);
     let mut has_selection = use_signal(|| false);
@@ -1502,7 +1510,7 @@ fn Editor(
             }
         }
     }));
-    use_effect(use_reactive((&value,), move |(value,)| {
+    use_effect(use_reactive((&value, &matches), move |(value, matches)| {
         if !value.is_empty() && !*has_changed.peek() {
             has_changed.set(true);
         }
@@ -1536,6 +1544,87 @@ fn Editor(
         } else {
             0
         };
+        if find_open() && !matches.is_empty() {
+            let lines: Vec<_> = value.split('\n').collect();
+            let mut starts = vec![0_u32];
+            for (index, unit) in value.encode_utf16().enumerate() {
+                if unit == b'\n' as u16 {
+                    starts.push(index as u32 + 1);
+                }
+            }
+            let tops = line_tops();
+            let rendered = rendered();
+            let position_top = |offset: u32| {
+                let line_number = starts.partition_point(|start| *start <= offset) - 1;
+                let base = tops
+                    .get(line_number)
+                    .copied()
+                    .unwrap_or(line_number as i32 * 16);
+                let visual = rendered
+                    .as_ref()
+                    .and_then(|element| {
+                        let line = element
+                            .child_nodes()
+                            .item(line_number as u32)?
+                            .dyn_into::<web_sys::HtmlElement>()
+                            .ok()?;
+                        let text = lines[line_number];
+                        if line.offset_height() <= 16
+                            || line.text_content().as_deref() != Some(text)
+                        {
+                            return None;
+                        }
+                        let length = text.encode_utf16().count();
+                        if length == 0 {
+                            return None;
+                        }
+                        let first = character_top(&line, 0)?;
+                        let current = character_top(
+                            &line,
+                            ((offset - starts[line_number]) as usize).min(length - 1),
+                        )?;
+                        Some((current - first).round().max(0.0) as i32)
+                    })
+                    .unwrap_or(0);
+                base + visual + padding
+            };
+            let ratio = height as f64 / document_height;
+            let half_min = (6.0 * scale) as i32 / 2;
+            let mut combined: Option<(i32, i32)> = None;
+            context.set_fill_style_str("rgba(209,134,22,0.49)");
+            let draw = |start: i32, end: i32| {
+                context.fill_rect(
+                    1.0,
+                    start as f64,
+                    (width.saturating_sub(1) / 2) as f64,
+                    (end - start) as f64,
+                );
+            };
+            for (start, end) in matches {
+                let mut y1 = (position_top(start).max(0) as f64 * ratio) as i32;
+                let mut y2 = ((position_top(end.saturating_sub(u32::from(end > start))) + 16).max(0)
+                    as f64
+                    * ratio) as i32;
+                if y2 - y1 < half_min * 2 {
+                    let center = ((y1 + y2) / 2).clamp(half_min, height as i32 - half_min);
+                    y1 = center - half_min;
+                    y2 = center + half_min;
+                }
+                if let Some((previous_start, previous_end)) = combined {
+                    if y1 <= previous_end + 1 {
+                        combined = Some((previous_start, previous_end.max(y2)));
+                    } else {
+                        draw(previous_start, previous_end);
+                        combined = Some((y1, y2));
+                    }
+                } else {
+                    combined = Some((y1, y2));
+                }
+            }
+            if let Some((start, end)) = combined {
+                draw(start, end);
+            }
+        }
         let top = line_tops().get(line).copied().unwrap_or(line as i32 * 16)
             + active_visual_top()
             + padding;
@@ -1849,14 +1938,6 @@ fn Editor(
             current_find.set(None);
         }
     });
-    let matches = find_ranges(
-        &value,
-        &query(),
-        match_case(),
-        whole_word(),
-        regex(),
-        find_scope(),
-    );
     let count = if matches.is_empty() {
         "No results".to_owned()
     } else {
