@@ -797,6 +797,66 @@ struct CompositionUndo {
     start: u32,
     end: u32,
     direction: String,
+    edits: Vec<CompositionEdit>,
+}
+
+#[derive(Clone)]
+struct CompositionEdit {
+    start: usize,
+    removed: String,
+    inserted: String,
+}
+
+impl CompositionEdit {
+    fn new(before: &str, after: &str) -> Self {
+        let start = before
+            .chars()
+            .zip(after.chars())
+            .take_while(|(left, right)| left == right)
+            .map(|(ch, _)| ch.len_utf8())
+            .sum::<usize>();
+        let suffix = before[start..]
+            .chars()
+            .rev()
+            .zip(after[start..].chars().rev())
+            .take_while(|(left, right)| left == right)
+            .map(|(ch, _)| ch.len_utf8())
+            .sum::<usize>();
+        Self {
+            start,
+            removed: before[start..before.len() - suffix].to_owned(),
+            inserted: after[start..after.len() - suffix].to_owned(),
+        }
+    }
+
+    fn apply(&self, text: &str, undo: bool) -> Option<String> {
+        let (from, to) = if undo {
+            (&self.inserted, &self.removed)
+        } else {
+            (&self.removed, &self.inserted)
+        };
+        let end = self.start.checked_add(from.len())?;
+        if text.get(self.start..end)? != from {
+            return None;
+        }
+        Some(format!(
+            "{}{to}{}",
+            text.get(..self.start)?,
+            text.get(end..)?
+        ))
+    }
+}
+
+fn history_command(command: &str) -> bool {
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return false;
+    };
+    js_sys::Reflect::get(document.as_ref(), &"execCommand".into())
+        .ok()
+        .and_then(|value| value.dyn_into::<js_sys::Function>().ok())
+        .and_then(|function| function.call1(document.as_ref(), &command.into()).ok())
+        .and_then(|value| value.as_bool())
+        == Some(true)
 }
 
 #[component]
@@ -812,6 +872,8 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
     let mut last_input = use_signal(move || initial_value);
     let mut composition_start = use_signal(|| None::<CompositionUndo>);
     let mut composition_undo = use_signal(|| None::<CompositionUndo>);
+    let mut composition_extendable = use_signal(|| false);
+    let mut adjusting_history = use_signal(|| false);
     let mut auto_pairs = use_signal(Vec::<(char, u32)>::new);
     let mut ruler = use_signal(|| None::<web_sys::HtmlCanvasElement>);
     let mut has_changed = use_signal(|| !value.is_empty());
@@ -1245,24 +1307,73 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
                                     start,
                                     end: input.selection_end().ok().flatten().unwrap_or(start),
                                     direction: input.selection_direction().ok().flatten().unwrap_or_default(),
+                                    edits: Vec::new(),
                                 }));
                             }
                         },
                         oncompositionend: move |_| {
                             if let Some(mut composition) = composition_start.take() && let Some(input) = textarea.peek().as_ref() {
                                 composition.after = input.value();
-                                if composition.before != composition.after { composition_undo.set(Some(composition)); }
+                                if composition.before != composition.after {
+                                    let edit = CompositionEdit::new(&composition.before, &composition.after);
+                                    let previous = composition_undo.peek().clone();
+                                    if *composition_extendable.peek() && let Some(mut group) = previous && group.after == composition.before {
+                                        group.after = composition.after;
+                                        group.edits.push(edit);
+                                        composition_undo.set(Some(group));
+                                    } else {
+                                        composition.edits.push(edit);
+                                        composition_undo.set(Some(composition));
+                                    }
+                                    composition_extendable.set(true);
+                                }
                             }
                         },
                         oninput: move |event| {
-                            let value = event.value();
-                            let is_undo = event.data().downcast::<web_sys::Event>()
+                            if *adjusting_history.peek() { return; }
+                            let mut value = event.value();
+                            let input_type = event.data().downcast::<web_sys::Event>()
                                 .and_then(|event| event.dyn_ref::<web_sys::InputEvent>())
-                                .is_some_and(|event| event.input_type() == "historyUndo");
-                            if is_undo && let Some(composition) = composition_undo.peek().as_ref()
-                                && *last_input.peek() == composition.after && value == composition.before
-                                && let Some(input) = textarea.peek().as_ref() {
-                                let _ = input.set_selection_range_with_direction(composition.start, composition.end, &composition.direction);
+                                .map(|event| event.input_type()).unwrap_or_default();
+                            if input_type != "insertCompositionText" && value != *last_input.peek() { composition_extendable.set(false); }
+                            let undo = input_type == "historyUndo";
+                            let redo = input_type == "historyRedo";
+                            if (undo || redo) && let Some(group) = composition_undo.peek().clone()
+                                && let Some(input) = textarea.peek().clone() {
+                                let edits: Vec<_> = if undo { group.edits.iter().rev().collect() } else { group.edits.iter().collect() };
+                                let initial = if undo { &group.after } else { &group.before };
+                                let final_value = if undo { &group.before } else { &group.after };
+                                if *last_input.peek() == *initial && (value == *final_value || edits.first().and_then(|edit| edit.apply(initial, undo)).as_ref() == Some(&value)) {
+                                    if value != *final_value {
+                                        // Additional native history events must run after this handler returns.
+                                        spawn(async move {
+                                            adjusting_history.set(true);
+                                            let edits: Vec<_> = if undo { group.edits.iter().rev().collect() } else { group.edits.iter().collect() };
+                                            let final_value = if undo { &group.before } else { &group.after };
+                                            for edit in edits.iter().skip(1) {
+                                                if value == *final_value { break; }
+                                                let Some(expected) = edit.apply(&value, undo) else { break };
+                                                if !history_command(if undo { "undo" } else { "redo" }) { break; }
+                                                value = input.value();
+                                                if value != expected && value != *final_value {
+                                                    let _ = history_command(if undo { "redo" } else { "undo" });
+                                                    value = input.value();
+                                                    break;
+                                                }
+                                            }
+                                            adjusting_history.set(false);
+                                            if undo && value == group.before {
+                                                let _ = input.set_selection_range_with_direction(group.start, group.end, &group.direction);
+                                            }
+                                            last_input.set(value.clone());
+                                            on_change.call(value);
+                                            update_cursor.call(());
+                                        });
+                                        return;
+                                    } else if undo {
+                                        let _ = input.set_selection_range_with_direction(group.start, group.end, &group.direction);
+                                    }
+                                }
                             }
                             last_input.set(value.clone());
                             on_change.call(value);

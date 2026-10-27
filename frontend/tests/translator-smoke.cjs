@@ -113,6 +113,28 @@ async function main() {
       await page.keyboard.type("x");
       assert.equal(await value(), text.slice(0, start) + "x" + text.slice(end), "typing after undo preserves surrounding text");
     }
+    const compositionBase = '{"text":""}';
+    if (reference) await page.evaluate(text => window.monaco.editor.getEditors()[0].setValue(text), compositionBase);
+    else await editor().fill(compositionBase);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    if (reference) await page.evaluate(() => { const e = window.monaco.editor.getEditors()[0]; e.setPosition({ lineNumber: 1, column: 10 }); e.focus(); });
+    else await editor().evaluate(input => { input.setSelectionRange(9, 9); input.focus(); });
+    for (const composed of ["猫", "犬"]) {
+      await cdp.send("Input.imeSetComposition", { text: composed, selectionStart: composed.length, selectionEnd: composed.length });
+      await cdp.send("Input.insertText", { text: composed });
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    }
+    assert.equal(await value(), '{"text":"猫犬"}', "consecutive IME compositions are committed");
+    await page.keyboard.press("Control+z");
+    assert.equal(await value(), compositionBase, "one undo removes consecutive IME compositions");
+    assert.deepEqual(await selection(), [9, 9], "grouped IME undo restores the initial cursor");
+    await page.keyboard.press("Control+Shift+z");
+    assert.equal(await value(), '{"text":"猫犬"}', "one redo restores the composition group");
+    await cdp.send("Input.imeSetComposition", { text: "鳥", selectionStart: 1, selectionEnd: 1 });
+    await cdp.send("Input.insertText", { text: "鳥" });
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.keyboard.press("Control+z");
+    assert.equal(await value(), '{"text":"猫犬"}', "a composition after redo is a separate undo group");
     if (process.env.TRANSLATOR_IME_ONLY === "1") {
       assert.deepEqual(errors, []);
       console.log("synthetic translator IME smoke passed");
