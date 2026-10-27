@@ -18,6 +18,10 @@ const referenceDir = resolve(process.env.UI_REFERENCE_DIR || "tests/ui/reference
 const artifactDir = resolve(process.env.UI_ARTIFACT_DIR || ".ui-browser/artifacts");
 const appUrl = "https://app:4623";
 const fixtureCommit = "0123456789abcdef0123456789abcdef01234567";
+const translatorFixtures = {
+  populated: '{\n  "model": "fixture",\n  "count": 42,\n  "enabled": true\n}',
+  wrapped: `{\n  "message": "${"x".repeat(200)}",\n  "count": 42\n}`,
+};
 const callbackCodeQuery = "?code=fixture-code&state=fixture-state";
 const callbackErrorQuery = "?error=fixture-error&error_description=Fixture+authorization+denied&state=fixture-state";
 const compatibleId = "openai-compatible-00000000-0000-4000-8000-000000000001";
@@ -142,6 +146,7 @@ const screens = [
   { section: "proxy-pools", name: "add" },
   { section: "translator", name: "ready" },
   { section: "translator", name: "populated" },
+  { section: "translator", name: "wrapped" },
   { section: "callback", name: "code", query: callbackCodeQuery, colorScheme: "light" },
   { section: "callback", name: "error", query: callbackErrorQuery, colorScheme: "light" },
   { section: "callback", name: "no-auth-data", query: "", colorScheme: "light" },
@@ -263,7 +268,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 { method: "DELETE", path: "/api/db-backups", body: {} },
                 { method: "POST", path: "/api/db-backups/import", body: { filename: "fixture.json", content: '{"fixture":true}', password: "fixture-current" } },
               ] : [];
-              const expectedWrites = screen.section === "translator" && screen.name === "populated" ? [{ method: "POST", path: "/api/translator/translate", body: { step: 1, body: { model: "fixture", count: 42, enabled: true } } }] : screen.section === "quota" && screen.name === "codex-ready" ? Array.from({ length: 2 }, () => ({ method: "POST", path: "/api/usage/fixture-codex/codex-reset-credits", body: null })) : screen.section === "quota" && screen.name === "glm-ping" ? [true, false, true].map((enabled) => ({ method: "PATCH", path: "/api/settings", body: { glmAutoPing: { enabled: true, connections: { "other-glm": true, "fixture-glm": enabled } } } })) : screen.section === "quota" && screen.name === "ready" ? [false, true].map((isActive) => ({ method: "PUT", path: "/api/providers/fixture-github", body: { isActive } })) : screen.section === "db-backups" ? backupWrites : screen.section === "profile" ? (profileWrites[screen.name] || []) : screen.section === "console-log" && screen.name === "streaming" ? [{ method: "DELETE", path: "/api/translator/console-logs", body: null }] : isOpenRouter ? [{ method: "POST", path: "/api/models/custom", body: { providerAlias: "openrouter", id: "sample/model:free", type: "llm" } }] : screen.section === "provider-kilocode" ? (kiloWrites[screen.action] || []) : screen.section === "provider-codex-autoping" ? codexWrites : screen.login
+              const expectedWrites = screen.section === "translator" && translatorFixtures[screen.name] ? [{ method: "POST", path: "/api/translator/translate", body: { step: 1, body: JSON.parse(translatorFixtures[screen.name]) } }] : screen.section === "quota" && screen.name === "codex-ready" ? Array.from({ length: 2 }, () => ({ method: "POST", path: "/api/usage/fixture-codex/codex-reset-credits", body: null })) : screen.section === "quota" && screen.name === "glm-ping" ? [true, false, true].map((enabled) => ({ method: "PATCH", path: "/api/settings", body: { glmAutoPing: { enabled: true, connections: { "other-glm": true, "fixture-glm": enabled } } } })) : screen.section === "quota" && screen.name === "ready" ? [false, true].map((isActive) => ({ method: "PUT", path: "/api/providers/fixture-github", body: { isActive } })) : screen.section === "db-backups" ? backupWrites : screen.section === "profile" ? (profileWrites[screen.name] || []) : screen.section === "console-log" && screen.name === "streaming" ? [{ method: "DELETE", path: "/api/translator/console-logs", body: null }] : isOpenRouter ? [{ method: "POST", path: "/api/models/custom", body: { providerAlias: "openrouter", id: "sample/model:free", type: "llm" } }] : screen.section === "provider-kilocode" ? (kiloWrites[screen.action] || []) : screen.section === "provider-codex-autoping" ? codexWrites : screen.login
                 ? [{ method: "POST", path: "/api/auth/login", body: { password: "fixture-password" } }]
                 : screen.action === "created"
                   ? [{ method: "POST", path: "/api/keys", body: { name: "Fixture new" } }]
@@ -427,7 +432,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   const logRequest = screen.section === "logs" && method === "GET" && ["/api/request-logs", "/api/request-logs/tps-stats"].includes(path) && [...url.searchParams.keys()].every((key) => ["page", "pageSize", "apiKeyId", "status", "provider", "model", "hiddenProviders"].includes(key));
                   const quotaRequest = screen.section === "quota" && ((method === "GET" && ((!url.search && ["/api/providers", "/api/usage/fixture-github", "/api/usage/fixture-glm", "/api/usage/fixture-codex", "/api/usage/fixture-commandcode", "/api/usage/fixture-a6", "/api/usage/fixture-antigravity", "/api/usage/fixture-kimi", "/api/usage/fixture-claude", "/api/usage/fixture-codex/codex-reset-credits"].includes(path)) || (path === "/api/proxy-pools" && url.search === "?isActive=true"))) || (method === "POST" && !url.search && path === "/api/usage/fixture-codex/codex-reset-credits" && screen.name === "codex-ready") || (method === "PUT" && !url.search && path === "/api/providers/fixture-github") || (screen.name === "glm-ping" && method === "PATCH" && !url.search && path === "/api/settings"));
                   const proxyPoolsRequest = screen.section === "proxy-pools" && method === "GET" && path === "/api/proxy-pools" && url.search === "?includeUsage=true";
-                  const translatorRequest = screen.section === "translator" && screen.name === "populated" && method === "POST" && path === "/api/translator/translate" && !url.search;
+                  const translatorRequest = screen.section === "translator" && !!translatorFixtures[screen.name] && method === "POST" && path === "/api/translator/translate" && !url.search;
                   const valid = url.origin === appUrl && (providerGet || providerNewGet || kiloGet || kiloMutation || compatibleGet || codexGet || codexMutation || routerGet || routerMutation || xaiGet || consoleRequest || profileMutation || profileExport || backupRequest || logRequest || quotaRequest || proxyPoolsRequest || translatorRequest || (!isCodexDetail && !["providers", "providers-new", "provider-kilocode", "provider-compatible", "provider-openrouter", "provider-xai", "callback"].includes(screen.section) && (
                     (method === "GET" && ["/api/auth/status", "/api/settings", "/api/keys", "/api/build", "/api/catalog"].includes(path)) ||
                     (method === "POST" && path === "/api/auth/login" && !!screen.login) ||
@@ -780,8 +785,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   await page.mouse.move(1, 1);
                   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
                 } else if (screen.section === "translator") {
-                  if (screen.name === "populated") {
-                    const content = '{\n  "model": "fixture",\n  "count": 42,\n  "enabled": true\n}';
+                  if (translatorFixtures[screen.name]) {
+                    const content = translatorFixtures[screen.name];
                     const detection = page.waitForResponse(response => response.url() === `${appUrl}/api/translator/translate` && response.request().method() === "POST");
                     if (mode === "record") await page.evaluate(value => window.monaco.editor.getEditors()[0].setValue(value), content);
                     else {

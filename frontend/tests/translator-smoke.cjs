@@ -293,6 +293,50 @@ async function main() {
     } else await editor().fill(numericJson);
     await page.getByRole("button", { name: /Format$/ }).click();
     assert.equal(await value(), JSON.stringify(JSON.parse(numericJson), null, 2), "Format uses JavaScript JSON number semantics");
+
+    const wrappedJson = `{\n  "message": "${"x".repeat(200)}",\n  "count": 42\n}`;
+    if (reference) {
+      await settleReferenceJson();
+      await page.evaluate(text => window.monaco.editor.getEditors()[0].setValue(text), wrappedJson);
+    } else await editor().fill(wrappedJson);
+    const wrappedLayout = ({ reference, minGap }) => {
+      let numbers, text;
+      if (reference) {
+        const root = document.querySelector(".monaco-editor");
+        numbers = root && [...root.querySelectorAll(".margin-view-overlays .line-numbers")];
+        text = root && [...root.querySelectorAll(".view-lines .view-line")].find(line => line.textContent.includes("count"));
+      } else {
+        const input = document.querySelector('textarea[aria-label="Translator editor"]');
+        numbers = input && [...input.parentElement.previousElementSibling.children];
+        text = input && [...input.parentElement.querySelector("pre").children][2];
+      }
+      const second = numbers?.find(line => line.textContent.trim() === "2");
+      const third = numbers?.find(line => line.textContent.trim() === "3");
+      if (!second || !third || !text) return null;
+      const gap = third.getBoundingClientRect().top - second.getBoundingClientRect().top;
+      const alignment = third.getBoundingClientRect().top - text.getBoundingClientRect().top;
+      return gap > minGap && Math.abs(alignment) < 1 ? { gap, alignment } : null;
+    };
+    const desktopLayout = await page.waitForFunction(wrappedLayout, { reference, minGap: 16 });
+    const desktopGap = (await desktopLayout.jsonValue()).gap;
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForFunction(wrappedLayout, { reference, minGap: desktopGap });
+    await (reference ? page.locator(".monaco-editor") : editor()).scrollIntoViewIfNeeded();
+    const point = await page.evaluate(reference => {
+      const root = reference ? document.querySelector(".monaco-editor") : document.querySelector('textarea[aria-label="Translator editor"]').parentElement;
+      const numbers = reference ? [...root.querySelectorAll(".margin-view-overlays .line-numbers")] : [...root.previousElementSibling.children];
+      const second = numbers.find(line => line.textContent.trim() === "2");
+      const text = reference ? root.querySelector(".view-lines") : root.querySelector("pre");
+      return { x: text.getBoundingClientRect().left + 29, y: second.getBoundingClientRect().top + 24 };
+    }, reference);
+    await page.mouse.click(point.x, point.y);
+    const expectedOffset = wrappedJson.indexOf('"' + "x".repeat(200)) + 2;
+    if (reference) {
+      const position = await page.evaluate(() => window.monaco.editor.getEditors()[0].getPosition());
+      assert.deepEqual([position.lineNumber, position.column], [2, expectedOffset - wrappedJson.indexOf("\n")]);
+    } else {
+      assert.deepEqual(await selection(), [expectedOffset, expectedOffset], "clicking a wrapped row positions the caret in the underlying text");
+    }
     assert.deepEqual(errors, []);
     console.log("synthetic translator flow passed");
   } finally { await browser.close(); server.close(); }

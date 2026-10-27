@@ -2,8 +2,8 @@
 use super::{endpoint::copy_text, json_body, shell::dashboard_request, ui::Button};
 use dioxus::prelude::*;
 use serde_json::{json, Value};
-use std::collections::HashSet;
-use wasm_bindgen::{JsCast, JsValue};
+use std::{collections::HashSet, rc::Rc};
+use wasm_bindgen::{closure::Closure, JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
 const STEPS: [(&str, &str); 7] = [
@@ -518,17 +518,18 @@ fn json_tokens(text: &str) -> Vec<(&str, &'static str)> {
     tokens
 }
 
-fn json_guides(text: &str) -> Vec<(usize, usize, usize)> {
-    let mut guides = Vec::new();
+fn json_guides(text: &str) -> Vec<Vec<(usize, bool)>> {
+    let mut lines = Vec::new();
     let mut depth = 0_usize;
-    for (line, source) in text.split('\n').enumerate() {
+    for source in text.split('\n') {
+        let mut guides = Vec::new();
         let leading_closers = source
             .trim_start()
             .chars()
             .take_while(|ch| matches!(ch, '}' | ']'))
             .count();
         for level in 0..depth.saturating_sub(leading_closers) {
-            guides.push((level, line * 16, 16));
+            guides.push((level, false));
         }
         let previous = depth;
         for (token, _) in json_tokens(source) {
@@ -539,15 +540,31 @@ fn json_guides(text: &str) -> Vec<(usize, usize, usize)> {
             }
         }
         for level in previous..depth {
-            guides.push((level, line * 16 + 14, 2));
+            guides.push((level, true));
         }
+        lines.push(guides);
     }
-    guides
+    lines
+}
+
+struct EditorSizeObserver {
+    observer: web_sys::ResizeObserver,
+    _callback: Closure<dyn FnMut(js_sys::Array, web_sys::ResizeObserver)>,
+}
+
+impl Drop for EditorSizeObserver {
+    fn drop(&mut self) {
+        self.observer.disconnect();
+    }
 }
 
 #[component]
 fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element {
     let mut textarea = use_signal(|| None::<web_sys::HtmlTextAreaElement>);
+    let mut size_observer = use_signal(|| None::<Rc<EditorSizeObserver>>);
+    let mut editor_width = use_signal(|| 0_i32);
+    let mut rendered = use_signal(|| None::<web_sys::HtmlElement>);
+    let mut line_tops = use_signal(Vec::<i32>::new);
     let initial_value = value.clone();
     let mut pair_text = use_signal(move || initial_value);
     let mut auto_pairs = use_signal(Vec::<(char, u32)>::new);
@@ -563,6 +580,29 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
     let mut regex = use_signal(|| false);
     let mut active_line = use_signal(|| 0_usize);
     let mut scroll_top = use_signal(|| 0_i32);
+    use_effect(use_reactive((&value,), move |_| {
+        let _ = editor_width();
+        let Some(element) = rendered() else { return };
+        spawn(async move {
+            let frame = js_sys::Promise::new(&mut |resolve, _| {
+                if let Some(window) = web_sys::window() {
+                    let _ = window.request_animation_frame(&resolve);
+                }
+            });
+            let _ = JsFuture::from(frame).await;
+            let children = element.child_nodes();
+            let tops = (0..children.length())
+                .filter_map(|index| {
+                    children
+                        .item(index)?
+                        .dyn_into::<web_sys::HtmlElement>()
+                        .ok()
+                })
+                .map(|line| line.offset_top())
+                .collect();
+            line_tops.set(tops);
+        });
+    }));
     use_effect(use_reactive((&value,), move |(value,)| {
         if !value.is_empty() && !*has_changed.peek() {
             has_changed.set(true);
@@ -739,7 +779,6 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
             let _ = input.set_selection_range(ranges[index].0, ranges[index].1);
         }
     });
-    let lines = value.lines().count().max(1) + usize::from(value.ends_with('\n'));
     let matches = find_ranges(&value, &query(), match_case(), whole_word(), regex());
     let count = if matches.is_empty() {
         "No results".to_owned()
@@ -755,8 +794,64 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
     } else {
         vec![(value.as_str(), "#d4d4d4")]
     };
+    let mut lines = vec![Vec::new()];
+    for (text, color) in tokens {
+        for (index, part) in text.split('\n').enumerate() {
+            if index > 0 {
+                lines.push(Vec::new());
+            }
+            if !part.is_empty() {
+                lines.last_mut().unwrap().push((part, color));
+            }
+        }
+    }
     let scroll = scroll_top();
-    let line_top = active_line() as i32 * 16 - scroll;
+    let mut wrapping_indent = None::<f64>;
+    let mut wrapping_width = editor_width() as f64;
+    if let Some(context) = ruler()
+        .as_ref()
+        .and_then(|canvas| canvas.get_context("2d").ok().flatten())
+        .and_then(|value| value.dyn_into::<web_sys::CanvasRenderingContext2d>().ok())
+    {
+        context.set_font("12px 'Droid Sans Mono', monospace");
+        let width = editor_width() as f64;
+        if width > 0.0 {
+            // Monaco reserves two pixels for the cursor and wraps on whole columns.
+            if let Ok(character) = context.measure_text("n") {
+                let character_width = (character.width() * 256.0).round() / 256.0;
+                if character_width > 0.0 {
+                    wrapping_width =
+                        ((width - 2.0) / character_width).floor().max(1.0) * character_width;
+                }
+            }
+            for line in value.split('\n') {
+                if context
+                    .measure_text(line)
+                    .is_ok_and(|metrics| metrics.width() > wrapping_width)
+                {
+                    let prefix = line.len() - line.trim_start_matches(' ').len();
+                    let indent = context
+                        .measure_text(&line[..prefix])
+                        .map_or(0.0, |metrics| (metrics.width() * 64.0).round() / 64.0);
+                    // One textarea can share the overlay's hanging indent only if
+                    // all wrapped lines use the same indentation.
+                    if wrapping_indent.is_some_and(|previous| (previous - indent).abs() > 0.01) {
+                        wrapping_indent = None;
+                        break;
+                    }
+                    wrapping_indent = Some(indent);
+                }
+            }
+        }
+    }
+    let wrapping_indent = wrapping_indent.unwrap_or(0.0);
+    let right_padding = (editor_width() as f64 - wrapping_width).max(0.0);
+    let wrapping_width = if wrapping_width > 0.0 {
+        format!("{wrapping_width}px")
+    } else {
+        "calc(100% - 14px)".to_owned()
+    };
+    let current_line_width = editor_width() + 14;
     let indent = value
         .lines()
         .filter_map(|line| {
@@ -774,21 +869,41 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
         div { style: "height:400px;position:relative;background:#1e1e1e;color:#d4d4d4;",
             div { style: "position:relative;overflow:hidden;width:100%;height:400px;",
                 div { aria_hidden: "true", style: "position:absolute;transform:translate3d(0,0,0);contain:strict;top:0;height:400px;width:62px;background:#1e1e1e;font-family:'Droid Sans Mono',monospace;font-size:12px;line-height:16px;",
-                    div { style: "position:absolute;top:-{scroll}px;left:0;width:36px;text-align:right;pointer-events:none;",
-                        for line in 1..=lines { div { key: "{line}", style: if value.is_empty() { "color:rgba(133,133,133,.4)" } else if line == active_line() + 1 { "color:#c6c6c6" } else { "color:#858585" }, "{line}" } }
+                    for line in 0..lines.len() {
+                        { let top = line_tops().get(line).copied().unwrap_or(line as i32 * 16) - scroll; let color = if value.is_empty() { "rgba(133,133,133,.4)" } else if line == active_line() { "#c6c6c6" } else { "#858585" }; rsx! {
+                            div { key: "{line}", style: "position:absolute;top:{top}px;left:0;width:36px;text-align:right;color:{color};pointer-events:none;", "{line + 1}" }
+                        } }
                     }
                 }
                 div { style: "position:absolute;overflow:hidden;left:62px;right:0;height:400px;",
-                    for (index, (level, top, height)) in guides.iter().enumerate() {
-                        div { key: "{index}", aria_hidden: "true", style: "position:absolute;left:{*level as f64 * indent as f64 * 7.2246}px;top:{*top as i32 - scroll}px;width:1px;height:{height}px;background:#707070;pointer-events:none;" }
-                    }
-                    div { aria_hidden: "true", style: "position:absolute;top:{line_top}px;left:0;width:100%;height:16px;border:2px solid #282828;pointer-events:none;" }
-                    pre { aria_hidden: "true", style: "position:absolute;top:-{scroll}px;left:0;right:14px;margin:0;padding:0;white-space:pre-wrap;overflow-wrap:anywhere;pointer-events:none;font-family:'Droid Sans Mono',monospace;font-size:12px;line-height:16px;",
-                        for (index, (text, color)) in tokens.iter().enumerate() { span { key: "{index}", style: "color:{color}", "{text}" } }
+                    pre { aria_hidden: "true", style: "position:absolute;top:-{scroll}px;left:0;right:0;margin:0;white-space:pre-wrap;overflow-wrap:anywhere;pointer-events:none;font-family:'Droid Sans Mono',monospace;font-size:12px;line-height:16px;",
+                        onmounted: move |event| { if let Some(element) = event.data().downcast::<web_sys::Element>() && let Ok(element) = element.clone().dyn_into::<web_sys::HtmlElement>() { rendered.set(Some(element)); } },
+                        for (line, segments) in lines.iter().enumerate() {
+                            div { key: "{line}", style: "position:relative;width:{wrapping_width};min-height:16px;padding-left:{wrapping_indent}px;text-indent:-{wrapping_indent}px;",
+                                if let Some(line_guides) = guides.get(line) {
+                                    for (index, (level, start)) in line_guides.iter().enumerate() {
+                                        { let vertical = if *start { "bottom:0;height:2px" } else { "top:0;height:100%" }; rsx! { div { key: "{index}", style: "position:absolute;left:{*level as f64 * indent as f64 * 7.2246}px;{vertical};width:1px;background:#707070;" } } }
+                                    }
+                                }
+                                if line == active_line() { div { style: "position:absolute;top:0;left:0;width:{current_line_width}px;height:16px;border:2px solid #282828;" } }
+                                for (index, (text, color)) in segments.iter().enumerate() { span { key: "{index}", style: "color:{color}", "{text}" } }
+                            }
+                        }
                     }
                     textarea { aria_label: "Translator editor", spellcheck: "false", value: "{value}",
-                        style: "position:absolute;inset:0 14px 0 0;width:calc(100% - 14px);height:100%;resize:none;border:0;outline:0;padding:0;background:transparent;color:transparent;caret-color:white;font-family:'Droid Sans Mono',monospace;font-size:12px;line-height:16px;white-space:pre-wrap;overflow-wrap:anywhere;",
-                        onmounted: move |event| { if let Some(element) = event.data().downcast::<web_sys::Element>() && let Ok(input) = element.clone().dyn_into::<web_sys::HtmlTextAreaElement>() { textarea.set(Some(input)); } },
+                        style: "position:absolute;inset:0 14px 0 0;width:calc(100% - 14px);height:100%;resize:none;border:0;outline:0;padding:0 {right_padding}px 0 {wrapping_indent}px;text-indent:-{wrapping_indent}px each-line;background:transparent;color:transparent;caret-color:white;font-family:'Droid Sans Mono',monospace;font-size:12px;line-height:16px;white-space:pre-wrap;overflow-wrap:anywhere;",
+                        onmounted: move |event| {
+                            if let Some(element) = event.data().downcast::<web_sys::Element>() && let Ok(input) = element.clone().dyn_into::<web_sys::HtmlTextAreaElement>() && let Some(container) = input.parent_element() {
+                                editor_width.set(container.client_width().saturating_sub(14));
+                                let observed = container.clone();
+                                let callback = Closure::<dyn FnMut(js_sys::Array, web_sys::ResizeObserver)>::new(move |_, _| editor_width.set(observed.client_width().saturating_sub(14)));
+                                if let Ok(observer) = web_sys::ResizeObserver::new(callback.as_ref().unchecked_ref()) {
+                                    observer.observe(&container);
+                                    size_observer.set(Some(Rc::new(EditorSizeObserver { observer, _callback: callback })));
+                                }
+                                textarea.set(Some(input));
+                            }
+                        },
                         onkeydown: move |event| {
                             if event.is_composing() { return; }
                             let key = event.key().to_string();
