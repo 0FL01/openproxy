@@ -11,7 +11,7 @@ use std::cmp::Ordering;
 use wasm_bindgen::JsValue;
 
 mod compatible;
-mod detail;
+pub(super) mod detail;
 mod key_modal;
 mod new;
 use compatible::CompatibleModal;

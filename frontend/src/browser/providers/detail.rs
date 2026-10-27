@@ -46,7 +46,7 @@ struct AutoPing {
     connections: serde_json::Map<String, Value>,
 }
 
-fn auto_ping_key(provider: &str) -> Option<&'static str> {
+pub(in crate::browser) fn auto_ping_key(provider: &str) -> Option<&'static str> {
     match provider {
         "codex" => Some("codexAutoPing"),
         "glm" => Some("glmAutoPing"),
@@ -54,7 +54,7 @@ fn auto_ping_key(provider: &str) -> Option<&'static str> {
     }
 }
 
-fn auto_ping_eligible(provider: &str, auth: &str) -> bool {
+pub(in crate::browser) fn auto_ping_eligible(provider: &str, auth: &str) -> bool {
     match provider {
         "codex" => auth == "oauth",
         "glm" => matches!(js_trim(auth).to_lowercase().as_str(), "apikey" | "api_key"),
@@ -62,7 +62,9 @@ fn auto_ping_eligible(provider: &str, auth: &str) -> bool {
     }
 }
 
-fn auto_ping_connections(value: &Value) -> (serde_json::Map<String, Value>, bool) {
+pub(in crate::browser) fn auto_ping_connections(
+    value: &Value,
+) -> (serde_json::Map<String, Value>, bool) {
     let Some(config) = value.as_object() else {
         return (Default::default(), false);
     };
@@ -90,7 +92,7 @@ fn auto_ping_request_error(error: wasm_bindgen::JsValue, fallback: &str) -> Stri
         .unwrap_or_else(|| fallback.to_owned())
 }
 
-async fn load_auto_ping_settings() -> Result<Value, String> {
+pub(in crate::browser) async fn load_auto_ping_settings() -> Result<Value, String> {
     let response = dashboard_get_no_store("/api/settings")
         .await
         .map_err(|error| auto_ping_request_error(error, "Failed to load auto-ping settings"))?;
@@ -103,7 +105,7 @@ async fn load_auto_ping_settings() -> Result<Value, String> {
         .ok_or_else(|| "Failed to load auto-ping settings".to_owned())
 }
 
-async fn save_auto_ping(
+pub(in crate::browser) async fn save_auto_ping(
     key: &str,
     connections: &serde_json::Map<String, Value>,
 ) -> Result<(), String> {
@@ -127,7 +129,9 @@ async fn save_auto_ping(
     }
 }
 
-async fn initialize_auto_ping(key: Option<&str>) -> Result<serde_json::Map<String, Value>, String> {
+pub(in crate::browser) async fn initialize_auto_ping(
+    key: Option<&str>,
+) -> Result<serde_json::Map<String, Value>, String> {
     let mut settings = load_auto_ping_settings().await?;
     for setting in ["codexAutoPing", "glmAutoPing"] {
         if auto_ping_connections(&settings[setting]).1 {

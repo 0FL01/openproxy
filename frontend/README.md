@@ -85,8 +85,8 @@ the browser does not bypass or replace that check.
 ## Reference assets and known gaps
 
 Quota Tracker implements the empty state and a basic connected-account view
-with refresh, filtering, sorting and connection controls. Provider-specific
-quota formatting, Codex reset credits and Codex/GLM auto-ping remain incomplete.
+with refresh, filtering, sorting, connection controls and Codex/GLM auto-ping.
+Provider-specific quota formatting and Codex reset credits remain incomplete.
 
 `assets/dashboard.BZnXx_Nc.css` and its referenced
 `public/_astro/material-symbols-outlined.CqIkmgaP.woff2` are exact copies from

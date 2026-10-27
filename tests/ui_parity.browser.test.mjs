@@ -129,6 +129,7 @@ const screens = [
   { section: "logs", name: "trace" },
   { section: "quota", name: "empty" },
   { section: "quota", name: "ready" },
+  { section: "quota", name: "glm-ping" },
   { section: "proxy-pools", name: "empty" },
   { section: "proxy-pools", name: "ready" },
   { section: "proxy-pools", name: "selected" },
@@ -254,7 +255,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 { method: "DELETE", path: "/api/db-backups", body: {} },
                 { method: "POST", path: "/api/db-backups/import", body: { filename: "fixture.json", content: '{"fixture":true}', password: "fixture-current" } },
               ] : [];
-              const expectedWrites = screen.section === "quota" && screen.name === "ready" ? [false, true].map((isActive) => ({ method: "PUT", path: "/api/providers/fixture-github", body: { isActive } })) : screen.section === "db-backups" ? backupWrites : screen.section === "profile" ? (profileWrites[screen.name] || []) : screen.section === "console-log" && screen.name === "streaming" ? [{ method: "DELETE", path: "/api/translator/console-logs", body: null }] : isOpenRouter ? [{ method: "POST", path: "/api/models/custom", body: { providerAlias: "openrouter", id: "sample/model:free", type: "llm" } }] : screen.section === "provider-kilocode" ? (kiloWrites[screen.action] || []) : screen.section === "provider-codex-autoping" ? codexWrites : screen.login
+              const expectedWrites = screen.section === "quota" && screen.name === "glm-ping" ? [true, false, true].map((enabled) => ({ method: "PATCH", path: "/api/settings", body: { glmAutoPing: { enabled: true, connections: { "other-glm": true, "fixture-glm": enabled } } } })) : screen.section === "quota" && screen.name === "ready" ? [false, true].map((isActive) => ({ method: "PUT", path: "/api/providers/fixture-github", body: { isActive } })) : screen.section === "db-backups" ? backupWrites : screen.section === "profile" ? (profileWrites[screen.name] || []) : screen.section === "console-log" && screen.name === "streaming" ? [{ method: "DELETE", path: "/api/translator/console-logs", body: null }] : isOpenRouter ? [{ method: "POST", path: "/api/models/custom", body: { providerAlias: "openrouter", id: "sample/model:free", type: "llm" } }] : screen.section === "provider-kilocode" ? (kiloWrites[screen.action] || []) : screen.section === "provider-codex-autoping" ? codexWrites : screen.login
                 ? [{ method: "POST", path: "/api/auth/login", body: { password: "fixture-password" } }]
                 : screen.action === "created"
                   ? [{ method: "POST", path: "/api/keys", body: { name: "Fixture new" } }]
@@ -310,7 +311,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 ];
                 let kiloFreeOnly = false;
                 let routerCustom = [];
-                let quotaConnections = screen.name === "ready" ? [{ id: "fixture-github", provider: "github", name: "Fixture account", authType: "oauth", isActive: true }] : [];
+                let quotaConnections = screen.name === "ready" ? [{ id: "fixture-github", provider: "github", name: "Fixture account", authType: "oauth", isActive: true }] : screen.name === "glm-ping" ? [{ id: "fixture-glm", provider: "glm", name: "Fixture account", authType: "apikey", isActive: true }] : [];
+                let glmConfig = { enabled: true, connections: { "other-glm": true } };
                 let quotaReads = 0;
                 const proxyPools = screen.name === "empty" ? [] : [
                   { id: "fixture-one", name: "Fixture Proxy", proxyUrl: "http://fixture.example.invalid:8080/", noProxy: "localhost", isActive: true, testStatus: "active", boundConnectionCount: 2, lastTestedAt: null },
@@ -343,7 +345,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     (screen.section === "profile" && !url.search && path === "/dashboard/profile") ||
                     (screen.section === "db-backups" && !url.search && path === "/dashboard/db-backups") ||
                     (screen.section === "logs" && !url.search && path === "/dashboard/logs") ||
-                    (screen.section === "quota" && !url.search && ["/dashboard/quota", "/providers/github.png"].includes(path)) ||
+                    (screen.section === "quota" && !url.search && ["/dashboard/quota", "/providers/github.png", "/providers/glm.png"].includes(path)) ||
                     (screen.section === "proxy-pools" && !url.search && path === "/dashboard/proxy-pools");
                   if (url.origin === appUrl && method === "GET" && assets) {
                     if (!isCodexDetail) return route.continue();
@@ -398,7 +400,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   const profileExport = screen.section === "profile" && screen.name === "database" && method === "GET" && !url.search && path === "/api/settings/database";
                   const backupRequest = screen.section === "db-backups" && !url.search && ((method === "GET" && ["/api/db-backups", "/api/db-backups/export"].includes(path)) || (screen.name === "ready" && ((method === "PUT" && path === "/api/db-backups") || (method === "DELETE" && ["/api/db-backups", "/api/db-backups/fixture-1"].includes(path)) || (method === "POST" && ["/api/db-backups/restore", "/api/db-backups/import"].includes(path)))));
                   const logRequest = screen.section === "logs" && method === "GET" && ["/api/request-logs", "/api/request-logs/tps-stats"].includes(path) && [...url.searchParams.keys()].every((key) => ["page", "pageSize", "apiKeyId", "status", "provider", "model", "hiddenProviders"].includes(key));
-                  const quotaRequest = screen.section === "quota" && ((method === "GET" && ((!url.search && ["/api/providers", "/api/usage/fixture-github"].includes(path)) || (path === "/api/proxy-pools" && url.search === "?isActive=true"))) || (method === "PUT" && !url.search && path === "/api/providers/fixture-github"));
+                  const quotaRequest = screen.section === "quota" && ((method === "GET" && ((!url.search && ["/api/providers", "/api/usage/fixture-github", "/api/usage/fixture-glm"].includes(path)) || (path === "/api/proxy-pools" && url.search === "?isActive=true"))) || (method === "PUT" && !url.search && path === "/api/providers/fixture-github") || (screen.name === "glm-ping" && method === "PATCH" && !url.search && path === "/api/settings"));
                   const proxyPoolsRequest = screen.section === "proxy-pools" && method === "GET" && path === "/api/proxy-pools" && url.search === "?includeUsage=true";
                   const valid = url.origin === appUrl && (providerGet || providerNewGet || kiloGet || kiloMutation || compatibleGet || codexGet || codexMutation || routerGet || routerMutation || xaiGet || consoleRequest || profileMutation || profileExport || backupRequest || logRequest || quotaRequest || proxyPoolsRequest || (!isCodexDetail && !["providers", "providers-new", "provider-kilocode", "provider-compatible", "provider-openrouter", "provider-xai", "callback"].includes(screen.section) && (
                     (method === "GET" && ["/api/auth/status", "/api/settings", "/api/keys", "/api/build", "/api/catalog"].includes(path)) ||
@@ -439,6 +441,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     return route.fulfill({ status: 503, json: { error: "Synthetic discovery failure" } });
                   }
                   if (screen.section === "quota" && path === "/api/usage/fixture-github") { quotaReads += 1; return route.fulfill({ json: { plan: "pro", quotas: { "Premium Requests": { used: 25, total: 100, resetAt: null } } } }); }
+                  if (screen.section === "quota" && path === "/api/usage/fixture-glm") return route.fulfill({ json: { plan: "pro", quotas: { "Premium Requests": { used: 25, total: 100, resetAt: null } } } });
                   if (screen.section === "quota" && path === "/api/providers/fixture-github") { quotaConnections[0].isActive = request.postDataJSON().isActive; return route.fulfill({ json: { success: true } }); }
                   if (isXaiDetail && path === "/api/providers" && screen.name === "connection-error") {
                     return route.fulfill({ status: 503, json: { error: "Synthetic connection failure" } });
@@ -519,8 +522,13 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   } else if (path === "/api/settings") {
                     if (screen.section === "profile" && method === "PATCH") Object.assign(profileSettings, request.postDataJSON());
                     if (screen.section === "provider-codex-autoping" && method === "PATCH") currentCodexConfig = request.postDataJSON().codexAutoPing;
+                    if (screen.section === "quota" && screen.name === "glm-ping" && method === "PATCH") {
+                      if (writes.length === 3) return route.fulfill({ status: 503, json: { error: "Synthetic settings failure" } });
+                      glmConfig = request.postDataJSON().glmAutoPing;
+                    }
                     body = { requireLogin: true, requireApiKey: !screen.insecure, hasPassword: true, ...(screen.section === "profile" ? profileSettings : {}),
-                      ...(isCodexDetail ? { codexAutoPing: currentCodexConfig, glmAutoPing: { enabled: false, connections: {} } } : {}) };
+                      ...(isCodexDetail ? { codexAutoPing: currentCodexConfig, glmAutoPing: { enabled: false, connections: {} } } : {}),
+                      ...(screen.section === "quota" && screen.name === "glm-ping" ? { codexAutoPing: { enabled: false, connections: {} }, glmAutoPing: glmConfig } : {}) };
                   } else if (path === "/api/build") {
                     body = { commit: ["provider-kilocode", "provider-compatible"].includes(screen.section) || isCodexDetail || isOpenRouter || isXaiDetail ? null : fixtureCommit };
                   } else if (path === "/api/catalog") {
@@ -749,7 +757,22 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     await page.getByText("Fixture account", { exact: true }).waitFor();
                     await page.getByText("Premium Requests", { exact: true }).waitFor();
                     await page.getByText("75%", { exact: true }).waitFor();
-                    verifyAfterCapture = async () => {
+                    if (screen.name === "glm-ping") {
+                      const ping = () => page.getByTitle("Toggle auto-ping warmup");
+                      await ping().waitFor();
+                      verifyAfterCapture = async () => {
+                        await ping().click();
+                        await page.getByRole("button", { name: "Disable auto-ping for Fixture account" }).waitFor();
+                        await page.waitForFunction(() => !document.querySelector('[title="Toggle auto-ping warmup"]').disabled);
+                        await ping().click();
+                        await page.getByRole("button", { name: "Enable auto-ping for Fixture account" }).waitFor();
+                        await page.waitForFunction(() => !document.querySelector('[title="Toggle auto-ping warmup"]').disabled);
+                        await ping().click();
+                        await page.waitForFunction(() => !document.querySelector('[title="Toggle auto-ping warmup"]').disabled);
+                        assert.equal(await ping().getAttribute("aria-pressed"), "false", "failed settings save must roll back");
+                        assert.deepEqual(glmConfig, { enabled: true, connections: { "other-glm": true, "fixture-glm": false } });
+                      };
+                    } else verifyAfterCapture = async () => {
                       const before = quotaReads;
                       await page.getByTitle("Refresh quota").click();
                       await page.waitForFunction(() => !document.querySelector('[title="Refresh quota"]').disabled);

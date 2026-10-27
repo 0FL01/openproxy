@@ -58,6 +58,10 @@ const server = http.createServer(async (req, res) => {
       }
     }
     if (url.pathname === "/api/build") return respond(200, {});
+    if (state.quotaPingOnly && req.method === "GET" && url.pathname.startsWith("/api/usage/")) {
+      const id = decodeURIComponent(url.pathname.split("/").pop());
+      return respond(200, id === "codex-empty" ? { message: "No quota snapshot" } : { quotas: { session: { used: 25, total: 100 } } });
+    }
     if (url.pathname === "/api/catalog") {
       state.catalogRequests = (state.catalogRequests || 0) + 1;
       const dynamic = provider => {
@@ -357,6 +361,35 @@ async function waitForFixture(predicate) {
     if (Date.now() > deadline) throw new Error("synthetic fixture action timed out");
     await new Promise(resolve => setTimeout(resolve, 10));
   }
+}
+
+async function runQuotaPingFixture(page, origin) {
+  state.quotaPingOnly = true;
+  state.connections = [
+    { id: "codex-one", provider: "codex", name: "Codex with quota", authType: "oauth", isActive: true },
+    { id: "codex-empty", provider: "codex", name: "Codex without quota", authType: "oauth", isActive: true },
+    { id: "glm-oauth", provider: "glm", name: "GLM OAuth", authType: "oauth", isActive: true },
+    { id: "glm-key", provider: "glm", name: "GLM key", authType: "apikey", isActive: true },
+  ];
+  state.settings = {
+    codexAutoPing: { enabled: true, connections: { other: true } },
+    glmAutoPing: { enabled: false, connections: {} },
+    otherSetting: { untouched: true },
+  };
+  state.writes = [];
+  await page.goto(`${origin}/dashboard/quota`);
+  await page.getByRole("button", { name: "Enable auto-ping for Codex with quota" }).waitFor();
+  await page.getByRole("button", { name: "Enable auto-ping for GLM key" }).waitFor();
+  assert.equal(await page.getByRole("button", { name: /auto-ping for Codex without quota/ }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: /auto-ping for GLM OAuth/ }).count(), 0);
+  await page.getByRole("button", { name: "Enable auto-ping for Codex with quota" }).click();
+  await waitForFixture(() => state.settings.codexAutoPing.connections["codex-one"] === true);
+  assert.deepEqual(state.settings.codexAutoPing, { enabled: true, connections: { other: true, "codex-one": true } });
+  assert.deepEqual(state.settings.glmAutoPing, { enabled: false, connections: {} });
+  assert.deepEqual(state.settings.otherSetting, { untouched: true });
+  await page.reload();
+  await page.getByRole("button", { name: "Disable auto-ping for Codex with quota" }).waitFor();
+  assert.equal(state.writes.length, 1, "reloading the quota page does not write settings");
 }
 
 async function runXaiForceFixture(page, origin) {
@@ -2184,6 +2217,12 @@ async function main() {
     page.setDefaultTimeout(10000);
     const errors = []; page.on("pageerror", error => errors.push(String(error)));
     await page.context().route("**/*", route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
+    if (process.env.PROVIDER_QUOTA_PING_ONLY === "1") {
+      await runQuotaPingFixture(page, origin);
+      assert.deepEqual(errors, []);
+      console.log("synthetic quota auto-ping smoke passed");
+      return;
+    }
     if (process.env.PROVIDER_XAI_FORCE_ONLY === "1") {
       await runXaiForceFixture(page, origin);
       assert.deepEqual(errors, []);
