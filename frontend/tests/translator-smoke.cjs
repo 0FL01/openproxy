@@ -243,6 +243,15 @@ async function main() {
     assert.equal(await value(), "{\n    \n}", "Enter expands a JSON bracket pair with an indented line");
     await page.keyboard.press("Control+z");
     assert.equal(await value(), "{}", "JSON auto-indentation remains undoable");
+    const indentedJson = '{\n  "name": "value",\n}';
+    const lineEnd = indentedJson.indexOf("\n}");
+    if (reference) await page.evaluate(text => { const editor = window.monaco.editor.getEditors()[0]; editor.setValue(text); editor.setPosition({ lineNumber: 2, column: text.split("\n")[1].length + 1 }); editor.focus(); }, indentedJson);
+    else { await editor().fill(indentedJson); await editor().evaluate((input, position) => input.setSelectionRange(position, position), lineEnd); }
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.keyboard.press("Enter");
+    assert.equal(await value(), '{\n  "name": "value",\n  \n}', "Enter preserves the indentation of a JSON property");
+    await page.keyboard.press("Control+z");
+    assert.equal(await value(), indentedJson, "newline indentation is one undoable edit");
     if (reference) await page.evaluate(() => { const editor = window.monaco.editor.getEditors()[0]; editor.setValue('"{}"'); editor.setPosition({ lineNumber: 1, column: 3 }); editor.focus(); });
     else { await editor().fill('"{}"'); await editor().evaluate(input => input.setSelectionRange(2, 2)); }
     await page.keyboard.press("Enter");

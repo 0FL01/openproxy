@@ -355,6 +355,23 @@ fn expand_json_brackets(input: &web_sys::HtmlTextAreaElement) -> bool {
     }
 }
 
+fn indent_json_newline(input: &web_sys::HtmlTextAreaElement) -> bool {
+    let start = input.selection_start().ok().flatten().unwrap_or_default();
+    let end = input.selection_end().ok().flatten().unwrap_or(start);
+    let before = js_sys::JsString::from(input.value())
+        .slice(0, start)
+        .as_string()
+        .unwrap_or_default();
+    let indentation: String = before
+        .rsplit('\n')
+        .next()
+        .unwrap_or("")
+        .chars()
+        .take_while(|ch| matches!(ch, ' ' | '\t'))
+        .collect();
+    !indentation.is_empty() && insert_text(input, start, end, &format!("\n{indentation}"))
+}
+
 fn indent_selection(input: &web_sys::HtmlTextAreaElement, backwards: bool) {
     const TAB_SIZE: u32 = 4;
     let text = js_sys::JsString::from(input.value());
@@ -953,7 +970,7 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
                                     }
                                 }
                             }
-                            if json && event.key() == Key::Enter && !event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().alt() && !event.modifiers().shift() && textarea.peek().as_ref().is_some_and(expand_json_brackets) {
+                            if json && event.key() == Key::Enter && !event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().alt() && !event.modifiers().shift() && textarea.peek().as_ref().is_some_and(|input| expand_json_brackets(input) || indent_json_newline(input)) {
                                 event.prevent_default();
                             } else if event.key() == Key::Tab && !event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().alt() {
                                 event.prevent_default();
