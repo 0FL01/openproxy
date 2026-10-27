@@ -86,6 +86,87 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
+    if (process.env.TRANSLATOR_PRESERVE_CASE_ONLY === "1") {
+      const initial = '{"one":"cat CAT Cat cAt"}';
+      if (reference) await page.evaluate(text => { const e = window.monaco.editor.getEditors()[0]; e.setValue(text); e.setPosition({ lineNumber: 1, column: 1 }); e.focus(); }, initial);
+      else { await editor().fill(initial); await editor().evaluate(input => input.setSelectionRange(0, 0)); }
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.keyboard.press("Control+h");
+      const dialog = page.getByRole("dialog", { name: "Find / Replace" });
+      const find = dialog.getByLabel("Find", { exact: true });
+      const replace = dialog.getByLabel("Replace", { exact: true });
+      const preserve = dialog.getByRole("checkbox", { name: /Preserve Case/ });
+      await find.fill("cat");
+      await replace.fill("dog");
+      await preserve.click();
+      await replace.press("Alt+p");
+      assert.equal(await preserve.getAttribute("aria-checked"), "false");
+      await replace.press("Alt+p");
+      assert.equal(await preserve.getAttribute("aria-checked"), "true");
+      if (reference) await page.evaluate(() => window.monaco.editor.getEditors()[0].focus()); else await editor().focus();
+      await page.keyboard.press("Alt+p");
+      assert.equal(await preserve.getAttribute("aria-checked"), "false");
+      await page.keyboard.press("Alt+p");
+      assert.equal(await preserve.getAttribute("aria-checked"), "true");
+      await dialog.getByRole("button", { name: /Replace All/ }).click();
+      assert.equal(await value(), '{"one":"dog DOG Dog dog"}');
+      if (reference) await page.evaluate(() => window.monaco.editor.getEditors()[0].focus()); else await editor().focus();
+      await page.keyboard.press("Control+z");
+      assert.equal(await value(), initial, "preserve-case replacement remains undoable");
+      if (reference) await page.evaluate(() => window.monaco.editor.getEditors()[0].setSelection(new window.monaco.Selection(1, 9, 1, 12)));
+      else await editor().evaluate(input => { input.setSelectionRange(8, 11); input.dispatchEvent(new Event("select", { bubbles: true })); });
+      await page.getByText("1 of 4", { exact: true }).waitFor({ state: "attached" });
+      await dialog.getByRole("button", { name: /^Replace \(/ }).click();
+      if (reference) await page.waitForFunction(() => window.monaco.editor.getEditors()[0].getValue() === '{"one":"dog CAT Cat cAt"}');
+      else await page.waitForFunction(() => document.querySelector('[aria-label="Translator editor"]')?.value === '{"one":"dog CAT Cat cAt"}');
+      assert.equal(await value(), '{"one":"dog CAT Cat cAt"}');
+      if (reference) await page.evaluate(() => window.monaco.editor.getEditors()[0].focus()); else await editor().focus();
+      await page.keyboard.press("Control+z");
+      assert.equal(await value(), initial);
+
+      const separated = '{"one":"foo-BAR Foo-bar"}';
+      if (reference) await page.evaluate(text => window.monaco.editor.getEditors()[0].setValue(text), separated);
+      else await editor().fill(separated);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await find.fill("foo-bar");
+      await replace.fill("ping-pong");
+      await dialog.getByRole("button", { name: /Replace All/ }).click();
+      assert.equal(await value(), '{"one":"ping-PONG Ping-pong"}');
+
+      const captures = '{"one":"cat CAT"}';
+      if (reference) await page.evaluate(text => window.monaco.editor.getEditors()[0].setValue(text), captures);
+      else await editor().fill(captures);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await find.fill("(cat)");
+      await dialog.getByRole("checkbox", { name: /Use Regular Expression/ }).click();
+      await replace.fill("bird");
+      await dialog.getByRole("button", { name: /Replace All/ }).click();
+      assert.equal(await value(), '{"one":"bird BIRD"}', "static regex replacements preserve case");
+      if (reference) await page.evaluate(() => window.monaco.editor.getEditors()[0].focus()); else await editor().focus();
+      await page.keyboard.press("Control+z");
+      assert.equal(await value(), captures);
+      await replace.fill("$1lower");
+      await page.getByText("1 of 2", { exact: true }).waitFor({ state: "attached" });
+      await dialog.getByRole("button", { name: /Replace All/ }).click();
+      assert.equal(await value(), '{"one":"catlower CATlower"}', "dynamic capture replacements do not apply preserve-case transformation");
+
+      if (reference) await settleReferenceJson();
+      await page.getByRole("button", { name: /Source Body/ }).click();
+      if (reference) {
+        await page.locator(".monaco-editor .view-lines").nth(1).waitFor();
+        await page.evaluate(() => window.monaco.editor.getEditors()[1].focus());
+      } else await editor().nth(1).focus();
+      await page.keyboard.press("Control+h");
+      const secondDialog = page.getByRole("dialog", { name: "Find / Replace" }).nth(1);
+      const secondPreserve = secondDialog.getByRole("checkbox", { name: /Preserve Case/ });
+      await secondPreserve.waitFor();
+      assert.equal(await secondPreserve.getAttribute("aria-checked"), "true", "new editors inherit the last preserve-case setting");
+      await page.getByRole("dialog", { name: "Find / Replace" }).first().getByRole("checkbox", { name: /Preserve Case/ }).click();
+      assert.equal(await secondPreserve.getAttribute("aria-checked"), "true", "an already open editor retains its own setting");
+      assert.deepEqual(errors, []);
+      console.log("synthetic translator preserve-case smoke passed");
+      return;
+    }
     if (process.env.TRANSLATOR_FIND_VIEWZONE_ONLY === "1") {
       const text = '{"message":"needle needle"}';
       const offset = text.indexOf("needle");

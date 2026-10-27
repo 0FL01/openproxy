@@ -22,6 +22,7 @@ const translatorFixtures = {
   populated: '{\n  "model": "fixture",\n  "count": 42,\n  "enabled": true\n}',
   wrapped: `{\n  "message": "${"x".repeat(200)}",\n  "count": 42\n}`,
   find: '{"message":"needle needle"}',
+  replace: '{"message":"needle needle"}',
 };
 const callbackCodeQuery = "?code=fixture-code&state=fixture-state";
 const callbackErrorQuery = "?error=fixture-error&error_description=Fixture+authorization+denied&state=fixture-state";
@@ -155,6 +156,7 @@ const screens = [
   { section: "translator", name: "populated" },
   { section: "translator", name: "wrapped" },
   { section: "translator", name: "find" },
+  { section: "translator", name: "replace" },
   { section: "callback", name: "code", query: callbackCodeQuery, colorScheme: "light" },
   { section: "callback", name: "error", query: callbackErrorQuery, colorScheme: "light" },
   { section: "callback", name: "no-auth-data", query: "", colorScheme: "light" },
@@ -847,7 +849,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     }
                     await detection;
                   }
-                  if (screen.name === "find") {
+                  if (["find", "replace"].includes(screen.name)) {
                     if (mode === "record") {
                       await page.evaluate(() => { const editor = window.monaco.editor.getEditors()[0]; editor.setPosition(editor.getModel().getPositionAt(editor.getValue().indexOf("needle"))); editor.focus(); });
                     } else {
@@ -856,8 +858,9 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       await editor.evaluate(element => { const offset = element.value.indexOf("needle"); element.setSelectionRange(offset, offset); });
                     }
                     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-                    await page.keyboard.press("Control+f");
+                    await page.keyboard.press(screen.name === "replace" ? "Control+h" : "Control+f");
                     await page.getByRole("dialog", { name: "Find / Replace" }).getByLabel("Find", { exact: true }).waitFor();
+                    if (screen.name === "replace") await page.getByRole("dialog", { name: "Find / Replace" }).getByLabel("Find", { exact: true }).fill("needle");
                     await page.getByText("1 of 2", { exact: true }).waitFor({ state: "attached" });
                   }
                   await page.waitForLoadState("networkidle");

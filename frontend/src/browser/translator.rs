@@ -243,8 +243,9 @@ fn find_ranges(
         .collect()
 }
 
-fn regex_replacement(template: &str, captures: &js_sys::Array<js_sys::JsString>) -> String {
+fn regex_replacement(template: &str, captures: &js_sys::Array<js_sys::JsString>) -> (String, bool) {
     let mut result = String::new();
+    let mut dynamic = false;
     let mut chars = template.chars().peekable();
     let mut case_ops = Vec::new();
     while let Some(ch) = chars.next() {
@@ -272,6 +273,7 @@ fn regex_replacement(template: &str, captures: &js_sys::Array<js_sys::JsString>)
                     continue;
                 }
                 Some('&' | '0'..='9') => {
+                    dynamic = true;
                     let marker = chars.next().unwrap();
                     let mut index = if marker == '&' {
                         0
@@ -321,7 +323,66 @@ fn regex_replacement(template: &str, captures: &js_sys::Array<js_sys::JsString>)
         }
         result.push(ch);
     }
-    result
+    (result, dynamic)
+}
+
+fn preserve_replacement_case(matched: &str, replacement: &str) -> String {
+    if matched.is_empty() {
+        return replacement.to_owned();
+    }
+    let same_parts = |separator| {
+        matched.contains(separator)
+            && replacement.contains(separator)
+            && matched.split(separator).count() == replacement.split(separator).count()
+    };
+    let hyphens = same_parts('-');
+    let underscores = same_parts('_');
+    if hyphens != underscores {
+        let separator = if hyphens { '-' } else { '_' };
+        return matched
+            .split(separator)
+            .zip(replacement.split(separator))
+            .map(|(matched, replacement)| preserve_replacement_case(matched, replacement))
+            .collect::<Vec<_>>()
+            .join(&separator.to_string());
+    }
+    let upper = |value: &str| {
+        js_sys::JsString::from(value)
+            .to_upper_case()
+            .as_string()
+            .unwrap_or_default()
+    };
+    let lower = |value: &str| {
+        js_sys::JsString::from(value)
+            .to_lower_case()
+            .as_string()
+            .unwrap_or_default()
+    };
+    if upper(matched) == matched {
+        return upper(replacement);
+    }
+    if lower(matched) == matched {
+        return lower(replacement);
+    }
+    let (Some(first_match), Some(first_replacement)) =
+        (matched.chars().next(), replacement.chars().next())
+    else {
+        return replacement.to_owned();
+    };
+    // Monaco checks the first UTF-16 code unit; a surrogate is neither upper nor lower case.
+    if first_match.len_utf16() != 1 || first_replacement.len_utf16() != 1 {
+        return replacement.to_owned();
+    }
+    let first_match = first_match.to_string();
+    let first_replacement = first_replacement.to_string();
+    let rest = &replacement[first_replacement.len()..];
+    if lower(&first_match) != first_match {
+        format!("{}{rest}", upper(&first_replacement))
+    } else if upper(&first_match) != first_match {
+        format!("{}{rest}", lower(&first_replacement))
+    } else {
+        replacement.to_owned()
+    }
 }
 
 fn adjust_find_scope(before: &str, after: &str, (start, end): (u32, u32)) -> (u32, u32) {
@@ -1385,6 +1446,7 @@ fn Editor(
     value: String,
     json: bool,
     mut tab_moves_focus: Signal<bool>,
+    mut preserve_case_setting: Signal<bool>,
     on_change: EventHandler<String>,
 ) -> Element {
     let mut textarea = use_signal(|| None::<web_sys::HtmlTextAreaElement>);
@@ -1413,6 +1475,7 @@ fn Editor(
     let mut match_case = use_signal(|| false);
     let mut whole_word = use_signal(|| false);
     let mut regex = use_signal(|| false);
+    let mut preserve_case = use_signal(|| *preserve_case_setting.peek());
     let mut find_scope = use_signal(|| None::<(u32, u32)>);
     let mut active_line = use_signal(|| 0_usize);
     let mut active_visual_top = use_signal(|| 0_i32);
@@ -1670,6 +1733,11 @@ fn Editor(
             let _ = input.focus();
         }
     });
+    let toggle_preserve = use_callback(move |_| {
+        let next = !*preserve_case.peek();
+        preserve_case.set(next);
+        preserve_case_setting.set(next);
+    });
     let replace_matches = use_callback(move |all: bool| {
         let Some(input) = textarea.peek().as_ref().cloned() else {
             return;
@@ -1702,7 +1770,7 @@ fn Editor(
         } else {
             (matches[current].0, matches[current].1)
         };
-        let replacement = if *regex.peek() {
+        let replacement = if *regex.peek() || *preserve_case.peek() {
             let chosen = if all {
                 &matches[..]
             } else {
@@ -1717,7 +1785,17 @@ fn Editor(
                         .as_string()
                         .unwrap_or_default(),
                 );
-                result.push_str(&regex_replacement(&replacement.peek(), captures));
+                let (replace, dynamic) = if *regex.peek() {
+                    regex_replacement(&replacement.peek(), captures)
+                } else {
+                    (replacement.peek().clone(), false)
+                };
+                if *preserve_case.peek() && !dynamic {
+                    let matched = captures.get(0).as_string().unwrap_or_default();
+                    result.push_str(&preserve_replacement_case(&matched, &replace));
+                } else {
+                    result.push_str(&replace);
+                }
                 previous = *match_end;
             }
             result.push_str(
@@ -1987,6 +2065,10 @@ fn Editor(
                                 event.prevent_default();
                                 if let Some(input) = textarea.peek().as_ref() { indent_selection(input, event.modifiers().shift()); }
                                 update_cursor.call(());
+                            } else if event.modifiers().alt() && !event.modifiers().ctrl() && !event.modifiers().shift() && key.eq_ignore_ascii_case("p")
+                                && event.modifiers().meta() == web_sys::window().and_then(|window| window.navigator().user_agent().ok()).is_some_and(|agent| agent.contains("Macintosh")) {
+                                event.prevent_default();
+                                toggle_preserve.call(());
                             } else if (event.modifiers().ctrl() || event.modifiers().meta()) && !event.modifiers().shift() && !event.modifiers().alt() && key.eq_ignore_ascii_case("l") {
                                 event.prevent_default();
                                 if let Some(input) = textarea.peek().as_ref() { select_line(input); }
@@ -2146,7 +2228,7 @@ fn Editor(
                     textarea { aria_label: "Find", placeholder: "Find", value: "{query}", spellcheck: "false", class: "find-input",
                         onmounted: move |event| async move { let _ = event.set_focus(true).await; if let Some(element) = event.data().downcast::<web_sys::Element>() && let Ok(input) = element.clone().dyn_into::<web_sys::HtmlTextAreaElement>() { input.select(); } },
                         oninput: move |event| { query.set(event.value()); reset_match.call(()); },
-                        onkeydown: move |event| { if event.key() == Key::Enter { event.prevent_default(); select_match.call(!event.modifiers().shift()); } else if event.key() == Key::Escape { event.prevent_default(); close_find.call(()); } else if event.modifiers().alt() { let option = match event.key().to_string().to_lowercase().as_str() { "c" => Some(0), "w" => Some(1), "r" => Some(2), _ => None }; if let Some(option) = option { event.prevent_default(); toggle_option.call(option); } else if event.key().to_string().eq_ignore_ascii_case("l") { event.prevent_default(); toggle_scope.call(()); } } }
+                        onkeydown: move |event| { if event.key() == Key::Enter { event.prevent_default(); select_match.call(!event.modifiers().shift()); } else if event.key() == Key::Escape { event.prevent_default(); close_find.call(()); } else if event.modifiers().alt() { let option = match event.key().to_string().to_lowercase().as_str() { "c" => Some(0), "w" => Some(1), "r" => Some(2), _ => None }; if let Some(option) = option { event.prevent_default(); toggle_option.call(option); } else if event.key().to_string().eq_ignore_ascii_case("l") { event.prevent_default(); toggle_scope.call(()); } else if event.key().to_string().eq_ignore_ascii_case("p") && !event.modifiers().ctrl() && !event.modifiers().shift() && event.modifiers().meta() == web_sys::window().and_then(|window| window.navigator().user_agent().ok()).is_some_and(|agent| agent.contains("Macintosh")) { event.prevent_default(); toggle_preserve.call(()); } } }
                     }
                     div { class: "find-options",
                         button { r#type: "button", class: "find-icon find-option", role: "checkbox", aria_label: "Match Case (Alt+C)", aria_checked: "{match_case}", onclick: move |_| toggle_option.call(0), "" }
@@ -2161,7 +2243,9 @@ fn Editor(
                     }
                     button { r#type: "button", class: "find-icon find-close", aria_label: "Close (Escape)", onclick: move |_| close_find.call(()), "" }
                     if replace_open() { div { class: "find-row",
-                        div { class: "find-box replace-box", textarea { aria_label: "Replace", placeholder: "Replace", value: "{replacement}", spellcheck: "false", class: "find-input", oninput: move |event| replacement.set(event.value()), onkeydown: move |event| { if event.key() == Key::Enter { event.prevent_default(); replace_matches.call(false); } else if event.key() == Key::Escape { event.prevent_default(); close_find.call(()); } else if event.modifiers().alt() && event.key().to_string().eq_ignore_ascii_case("l") { event.prevent_default(); toggle_scope.call(()); } } } }
+                        div { class: "find-box replace-box", textarea { aria_label: "Replace", placeholder: "Replace", value: "{replacement}", spellcheck: "false", class: "find-input", oninput: move |event| replacement.set(event.value()), onkeydown: move |event| { if event.key() == Key::Enter { event.prevent_default(); replace_matches.call(false); } else if event.key() == Key::Escape { event.prevent_default(); close_find.call(()); } else if event.modifiers().alt() && event.key().to_string().eq_ignore_ascii_case("l") { event.prevent_default(); toggle_scope.call(()); } else if event.modifiers().alt() && event.key().to_string().eq_ignore_ascii_case("p") && !event.modifiers().ctrl() && !event.modifiers().shift() && event.modifiers().meta() == web_sys::window().and_then(|window| window.navigator().user_agent().ok()).is_some_and(|agent| agent.contains("Macintosh")) { event.prevent_default(); toggle_preserve.call(()); } } }
+                            div { class: "find-options", button { r#type: "button", class: "find-icon find-option", role: "checkbox", aria_label: "Preserve Case (Alt+P)", title: "Preserve Case (Alt+P)", aria_checked: "{preserve_case}", onclick: move |_| toggle_preserve.call(()), "" } }
+                        }
                         button { r#type: "button", class: "find-icon", aria_label: "Replace (Ctrl+Shift+1)", onclick: move |_| replace_matches.call(false), "" }
                         button { r#type: "button", class: "find-icon", aria_label: "Replace All (Ctrl+Alt+Enter)", onclick: move |_| replace_matches.call(true), "" }
                     } }
@@ -2193,6 +2277,7 @@ fn MetaBadge(label: &'static str, value: String, color: &'static str) -> Element
 pub(super) fn TranslatorPage() -> Element {
     let mut contents = use_signal(|| vec![String::new(); STEPS.len()]);
     let tab_moves_focus = use_signal(|| false);
+    let preserve_case_setting = use_signal(|| false);
     let mut expanded = use_signal(|| vec![true, false, false, false, false, false, false]);
     let mut loading = use_signal(HashSet::<usize>::new);
     let meta = use_signal(|| None::<Value>);
@@ -2361,7 +2446,7 @@ pub(super) fn TranslatorPage() -> Element {
                                 } }
                             }
                             if is_expanded {
-                                div { class: "border border-hairline rounded-mini-lg overflow-hidden", section { style: "display:flex;position:relative;text-align:initial;width:100%;height:400px;", div { style: "width:100%;", Editor { value: content.clone(), json: step < 4, tab_moves_focus, on_change: move |value: String| { let changed = contents.peek()[step] != value; if changed { contents.write()[step] = value.clone(); if step == 0 { detect_meta(&value, meta); } } } } } } }
+                                div { class: "border border-hairline rounded-mini-lg overflow-hidden", section { style: "display:flex;position:relative;text-align:initial;width:100%;height:400px;", div { style: "width:100%;", Editor { value: content.clone(), json: step < 4, tab_moves_focus, preserve_case_setting, on_change: move |value: String| { let changed = contents.peek()[step] != value; if changed { contents.write()[step] = value.clone(); if step == 0 { detect_meta(&value, meta); } } } } } } }
                                 div { class: "flex gap-2 flex-wrap",
                                     Button { label: "Load".to_owned(), icon: "folder_open".to_owned(), variant: "outline", small: true, loading: busy.contains(&(step + 10)), onclick: move |_| load.call(step) }
                                     Button { label: "Format".to_owned(), icon: "data_object".to_owned(), variant: "outline", small: true, onclick: move |_| { let raw = contents.peek()[step].clone(); if let Ok(value) = serde_json::from_str::<Value>(&raw) { contents.write()[step] = pretty(&value); } } }
