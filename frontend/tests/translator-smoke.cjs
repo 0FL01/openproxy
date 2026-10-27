@@ -368,6 +368,47 @@ async function main() {
       console.log("synthetic translator line comment smoke passed");
       return;
     }
+    const blockText = '{"name": 1}';
+    const blockEnd = blockText.length - 1;
+    if (reference) await page.evaluate(text => window.monaco.editor.getEditors()[0].setValue(text), blockText);
+    else await editor().fill(blockText);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    if (reference) await page.evaluate(end => { const e = window.monaco.editor.getEditors()[0]; e.setSelection(new window.monaco.Selection(1, 2, 1, end + 1)); e.focus(); }, blockEnd);
+    else await editor().evaluate((input, end) => input.setSelectionRange(1, end), blockEnd);
+    await page.keyboard.press("Control+Shift+a");
+    assert.equal(await value(), '{/* "name": 1 */}', "Ctrl+Shift+A wraps selected JSON in a block comment");
+    assert.deepEqual(await lineSelection(), [4, blockEnd + 3], "block commenting retains the selected text");
+    await page.keyboard.press("Control+Shift+a");
+    assert.equal(await value(), blockText, "the shortcut removes the surrounding block comment");
+    assert.deepEqual(await lineSelection(), [1, blockEnd], "removing a block comment retains the selection");
+    await page.keyboard.press("Control+z");
+    assert.equal(await value(), '{/* "name": 1 */}', "removing a block comment is undoable");
+    if (reference) await page.evaluate(() => { const e = window.monaco.editor.getEditors()[0]; e.setValue("[]"); e.setPosition({ lineNumber: 1, column: 2 }); e.focus(); });
+    else { await editor().fill("[]"); await editor().evaluate(input => input.setSelectionRange(1, 1)); }
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.keyboard.press("Control+Shift+a");
+    assert.equal(await value(), "[/*  */]", "block commenting at a caret inserts an empty comment");
+    assert.deepEqual(await lineSelection(), [4, 4], "the caret remains inside the empty comment");
+    await page.keyboard.press("Control+z");
+    assert.equal(await value(), "[]", "inserting an empty block comment is undoable");
+    const multiBlock = '{\n  "first": 1,\n  "second": 2\n}';
+    const multiEnd = multiBlock.indexOf("\n}");
+    if (reference) await page.evaluate(text => window.monaco.editor.getEditors()[0].setValue(text), multiBlock);
+    else await editor().fill(multiBlock);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    if (reference) await page.evaluate(end => { const e = window.monaco.editor.getEditors()[0], m = e.getModel(); const a = m.getPositionAt(2), b = m.getPositionAt(end); e.setSelection(new window.monaco.Selection(a.lineNumber, a.column, b.lineNumber, b.column)); e.focus(); }, multiEnd);
+    else await editor().evaluate((input, end) => input.setSelectionRange(2, end), multiEnd);
+    await page.keyboard.press("Control+Shift+a");
+    const multiCommented = multiBlock.slice(0, 2) + "/* " + multiBlock.slice(2, multiEnd) + " */" + multiBlock.slice(multiEnd);
+    assert.equal(await value(), multiCommented, "a block comment can span selected lines");
+    await page.keyboard.press("Control+Shift+a");
+    assert.equal(await value(), multiBlock, "a multiline block comment is removable");
+    assert.deepEqual(await lineSelection(), [2, multiEnd], "removing a multiline comment retains the selection");
+    if (process.env.TRANSLATOR_BLOCK_COMMENT_ONLY === "1") {
+      assert.deepEqual(errors, []);
+      console.log("synthetic translator block comment smoke passed");
+      return;
+    }
     if (!reference) {
       await page.getByRole("button", { name: /Load$/ }).click();
       await page.waitForFunction(value => document.querySelector('textarea[aria-label="Translator editor"]')?.value === value, JSON.stringify(source));

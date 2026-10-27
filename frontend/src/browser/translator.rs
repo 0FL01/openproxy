@@ -584,6 +584,74 @@ fn copy_lines(input: &web_sys::HtmlTextAreaElement, down: bool) {
     }
 }
 
+fn toggle_json_block_comment(input: &web_sys::HtmlTextAreaElement) {
+    let start = input.selection_start().ok().flatten().unwrap_or_default() as usize;
+    let end = input.selection_end().ok().flatten().unwrap_or(start as u32) as usize;
+    let text: Vec<u16> = input.value().encode_utf16().collect();
+    let newline = b'\n' as u16;
+    let start_line = text[..start]
+        .iter()
+        .rposition(|ch| *ch == newline)
+        .map_or(0, |index| index + 1);
+    let start_line_end = text[start..]
+        .iter()
+        .position(|ch| *ch == newline)
+        .map_or(text.len(), |index| start + index);
+    let end_line = text[..end]
+        .iter()
+        .rposition(|ch| *ch == newline)
+        .map_or(0, |index| index + 1);
+    let end_line_end = text[end..]
+        .iter()
+        .position(|ch| *ch == newline)
+        .map_or(text.len(), |index| end + index);
+    let open = text[start_line..start_line_end]
+        .windows(2)
+        .enumerate()
+        .rev()
+        .find(|(index, pair)| {
+            start_line + index <= start + 2 && *pair == [b'/' as u16, b'*' as u16]
+        })
+        .map(|(index, _)| start_line + index);
+    let close = text[end_line..end_line_end]
+        .windows(2)
+        .enumerate()
+        .find(|(index, pair)| {
+            end_line + index >= end.saturating_sub(2) && *pair == [b'*' as u16, b'/' as u16]
+        })
+        .map(|(index, _)| end_line + index);
+    let has_close = |slice: &[u16]| {
+        slice
+            .windows(2)
+            .any(|pair| pair == [b'*' as u16, b'/' as u16])
+    };
+    if let (Some(open), Some(close)) = (open, close)
+        && open + 2 <= close
+        && !(if start_line == end_line {
+            has_close(&text[open + 2..close])
+        } else {
+            has_close(&text[open + 2..start_line_end]) || has_close(&text[end_line..close])
+        })
+    {
+        let inner_start = open + 2 + usize::from(text.get(open + 2) == Some(&(b' ' as u16)));
+        let inner_end = close - usize::from(close > inner_start && text[close - 1] == b' ' as u16);
+        let inner = String::from_utf16_lossy(&text[inner_start..inner_end]);
+        if insert_text(input, open as u32, (close + 2) as u32, &inner) {
+            let _ = input.set_selection_range(open as u32, (open + inner_end - inner_start) as u32);
+        }
+    } else {
+        let selected = String::from_utf16_lossy(&text[start..end]);
+        if insert_text(
+            input,
+            start as u32,
+            end as u32,
+            &format!("/* {selected} */"),
+        ) {
+            let _ = input.set_selection_range((start + 3) as u32, (end + 3) as u32);
+        }
+    }
+}
+
 fn toggle_json_line_comments(input: &web_sys::HtmlTextAreaElement) {
     let start = input.selection_start().ok().flatten().unwrap_or_default() as usize;
     let end = input.selection_end().ok().flatten().unwrap_or(start as u32) as usize;
@@ -1441,6 +1509,11 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
                             } else if json && (event.modifiers().ctrl() || event.modifiers().meta()) && !event.modifiers().shift() && !event.modifiers().alt() && key == "/" {
                                 event.prevent_default();
                                 if let Some(input) = textarea.peek().as_ref() { toggle_json_line_comments(input); }
+                                update_cursor.call(());
+                            } else if json && event.modifiers().shift() && !event.modifiers().meta() && key.eq_ignore_ascii_case("a")
+                                && if web_sys::window().and_then(|window| window.navigator().user_agent().ok()).is_some_and(|agent| agent.contains("Linux")) { event.modifiers().ctrl() && !event.modifiers().alt() } else { event.modifiers().alt() && !event.modifiers().ctrl() } {
+                                event.prevent_default();
+                                if let Some(input) = textarea.peek().as_ref() { toggle_json_block_comment(input); }
                                 update_cursor.call(());
                             } else if (event.modifiers().ctrl() || event.modifiers().meta()) && (key.eq_ignore_ascii_case("f") || key.eq_ignore_ascii_case("h")) {
                                 event.prevent_default();
