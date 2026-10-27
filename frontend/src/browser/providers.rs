@@ -15,6 +15,7 @@ mod detail;
 mod key_modal;
 mod new;
 use compatible::CompatibleModal;
+pub(super) use detail::edit::EditConnection;
 pub(super) use detail::ProviderDetailPage;
 use key_modal::KeyModal;
 pub(super) use new::NewProviderPage;

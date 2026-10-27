@@ -5,7 +5,7 @@ use dioxus::prelude::*;
 const SELECT_CLASS: &str = "w-full py-2.5 px-3 pr-10 text-sm text-text-main bg-surface-2 border border-transparent rounded-[10px] appearance-none focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500/40 transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed text-[16px] sm:text-sm";
 
 #[component]
-pub(super) fn EditConnection(
+pub(in crate::browser) fn EditConnection(
     provider_id: String,
     mut selected: Signal<Option<Value>>,
     pools: Signal<Vec<Value>>,

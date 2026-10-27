@@ -127,6 +127,8 @@ const screens = [
   { section: "logs", name: "empty" },
   { section: "logs", name: "drawer" },
   { section: "logs", name: "trace" },
+  { section: "quota", name: "empty" },
+  { section: "quota", name: "ready" },
   { section: "callback", name: "code", query: callbackCodeQuery, colorScheme: "light" },
   { section: "callback", name: "error", query: callbackErrorQuery, colorScheme: "light" },
   { section: "callback", name: "no-auth-data", query: "", colorScheme: "light" },
@@ -248,7 +250,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 { method: "DELETE", path: "/api/db-backups", body: {} },
                 { method: "POST", path: "/api/db-backups/import", body: { filename: "fixture.json", content: '{"fixture":true}', password: "fixture-current" } },
               ] : [];
-              const expectedWrites = screen.section === "db-backups" ? backupWrites : screen.section === "profile" ? (profileWrites[screen.name] || []) : screen.section === "console-log" && screen.name === "streaming" ? [{ method: "DELETE", path: "/api/translator/console-logs", body: null }] : isOpenRouter ? [{ method: "POST", path: "/api/models/custom", body: { providerAlias: "openrouter", id: "sample/model:free", type: "llm" } }] : screen.section === "provider-kilocode" ? (kiloWrites[screen.action] || []) : screen.section === "provider-codex-autoping" ? codexWrites : screen.login
+              const expectedWrites = screen.section === "quota" && screen.name === "ready" ? [false, true].map((isActive) => ({ method: "PUT", path: "/api/providers/fixture-github", body: { isActive } })) : screen.section === "db-backups" ? backupWrites : screen.section === "profile" ? (profileWrites[screen.name] || []) : screen.section === "console-log" && screen.name === "streaming" ? [{ method: "DELETE", path: "/api/translator/console-logs", body: null }] : isOpenRouter ? [{ method: "POST", path: "/api/models/custom", body: { providerAlias: "openrouter", id: "sample/model:free", type: "llm" } }] : screen.section === "provider-kilocode" ? (kiloWrites[screen.action] || []) : screen.section === "provider-codex-autoping" ? codexWrites : screen.login
                 ? [{ method: "POST", path: "/api/auth/login", body: { password: "fixture-password" } }]
                 : screen.action === "created"
                   ? [{ method: "POST", path: "/api/keys", body: { name: "Fixture new" } }]
@@ -272,6 +274,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     };
                   });
                 }
+                if (screen.section === "quota") await page.addInitScript(() => localStorage.setItem("quotaAutoRefresh", "false"));
                 if (screen.storedTheme) {
                   await page.addInitScript((theme) => localStorage.setItem("theme", JSON.stringify({ state: { theme }, version: 0 })), screen.storedTheme);
                 }
@@ -303,6 +306,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 ];
                 let kiloFreeOnly = false;
                 let routerCustom = [];
+                let quotaConnections = screen.name === "ready" ? [{ id: "fixture-github", provider: "github", name: "Fixture account", authType: "oauth", isActive: true }] : [];
+                let quotaReads = 0;
                 // The off case demonstrates that another enabled connection does
                 // not turn this connection on; the on case exercises both writes.
                 let currentCodexConfig = codexConfig(false, screen.name === "off");
@@ -329,7 +334,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     (screen.section === "console-log" && !url.search && path === "/dashboard/console-log") ||
                     (screen.section === "profile" && !url.search && path === "/dashboard/profile") ||
                     (screen.section === "db-backups" && !url.search && path === "/dashboard/db-backups") ||
-                    (screen.section === "logs" && !url.search && path === "/dashboard/logs");
+                    (screen.section === "logs" && !url.search && path === "/dashboard/logs") ||
+                    (screen.section === "quota" && !url.search && ["/dashboard/quota", "/providers/github.png"].includes(path));
                   if (url.origin === appUrl && method === "GET" && assets) {
                     if (!isCodexDetail) return route.continue();
                     // Do not let even an allowed asset redirect around the
@@ -383,7 +389,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   const profileExport = screen.section === "profile" && screen.name === "database" && method === "GET" && !url.search && path === "/api/settings/database";
                   const backupRequest = screen.section === "db-backups" && !url.search && ((method === "GET" && ["/api/db-backups", "/api/db-backups/export"].includes(path)) || (screen.name === "ready" && ((method === "PUT" && path === "/api/db-backups") || (method === "DELETE" && ["/api/db-backups", "/api/db-backups/fixture-1"].includes(path)) || (method === "POST" && ["/api/db-backups/restore", "/api/db-backups/import"].includes(path)))));
                   const logRequest = screen.section === "logs" && method === "GET" && ["/api/request-logs", "/api/request-logs/tps-stats"].includes(path) && [...url.searchParams.keys()].every((key) => ["page", "pageSize", "apiKeyId", "status", "provider", "model", "hiddenProviders"].includes(key));
-                  const valid = url.origin === appUrl && (providerGet || providerNewGet || kiloGet || kiloMutation || compatibleGet || codexGet || codexMutation || routerGet || routerMutation || xaiGet || consoleRequest || profileMutation || profileExport || backupRequest || logRequest || (!isCodexDetail && !["providers", "providers-new", "provider-kilocode", "provider-compatible", "provider-openrouter", "provider-xai", "callback"].includes(screen.section) && (
+                  const quotaRequest = screen.section === "quota" && ((method === "GET" && ((!url.search && ["/api/providers", "/api/usage/fixture-github"].includes(path)) || (path === "/api/proxy-pools" && url.search === "?isActive=true"))) || (method === "PUT" && !url.search && path === "/api/providers/fixture-github"));
+                  const valid = url.origin === appUrl && (providerGet || providerNewGet || kiloGet || kiloMutation || compatibleGet || codexGet || codexMutation || routerGet || routerMutation || xaiGet || consoleRequest || profileMutation || profileExport || backupRequest || logRequest || quotaRequest || (!isCodexDetail && !["providers", "providers-new", "provider-kilocode", "provider-compatible", "provider-openrouter", "provider-xai", "callback"].includes(screen.section) && (
                     (method === "GET" && ["/api/auth/status", "/api/settings", "/api/keys", "/api/build", "/api/catalog"].includes(path)) ||
                     (method === "POST" && path === "/api/auth/login" && !!screen.login) ||
                     (method === "POST" && path === "/api/keys" && screen.action === "created")
@@ -408,7 +415,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       return route.abort("blockedbyclient");
                     }
                     const write = { method, path: ["provider-kilocode", "provider-codex-autoping"].includes(screen.section) ? `${path}${url.search}` : path, body: requestBody };
-                    if ((["provider-kilocode", "provider-codex-autoping", "console-log", "profile", "db-backups"].includes(screen.section) || isOpenRouter) && !isDeepStrictEqual(write, expectedWrites[writes.length])) {
+                    if ((["provider-kilocode", "provider-codex-autoping", "console-log", "profile", "db-backups", "quota"].includes(screen.section) || isOpenRouter) && !isDeepStrictEqual(write, expectedWrites[writes.length])) {
                       unexpected.push(`unexpected mutation ${method} ${url.origin}${path}${url.search}`);
                       return route.abort("blockedbyclient");
                     }
@@ -421,6 +428,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     if (screen.name === "pending") await new Promise((resolve) => { releaseXaiForce = resolve; observeXaiForce(); });
                     return route.fulfill({ status: 503, json: { error: "Synthetic discovery failure" } });
                   }
+                  if (screen.section === "quota" && path === "/api/usage/fixture-github") { quotaReads += 1; return route.fulfill({ json: { plan: "pro", quotas: { "Premium Requests": { used: 25, total: 100, resetAt: null } } } }); }
+                  if (screen.section === "quota" && path === "/api/providers/fixture-github") { quotaConnections[0].isActive = request.postDataJSON().isActive; return route.fulfill({ json: { success: true } }); }
                   if (isXaiDetail && path === "/api/providers" && screen.name === "connection-error") {
                     return route.fulfill({ status: 503, json: { error: "Synthetic connection failure" } });
                   }
@@ -518,7 +527,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       ] }], xaiCatalog: { status: "ready" } }
                       : { providerIdToAlias: {}, providerModels: [], xaiCatalog: { status: "ready" } };
                   } else if (path === "/api/providers") {
-                    body = isXaiDetail ? { connections: screen.name === "no-connection" ? [] : [{ id: "fixture-xai", provider: "xai", name: "Fixture xAI", authType: "apikey", testStatus: "active", isActive: true, priority: 1 }] } : screen.section === "provider-compatible" || isOpenRouter ? { connections: [] } : screen.section === "provider-kilocode" ? { connections: [
+                    body = screen.section === "quota" ? { connections: quotaConnections } : isXaiDetail ? { connections: screen.name === "no-connection" ? [] : [{ id: "fixture-xai", provider: "xai", name: "Fixture xAI", authType: "apikey", testStatus: "active", isActive: true, priority: 1 }] } : screen.section === "provider-compatible" || isOpenRouter ? { connections: [] } : screen.section === "provider-kilocode" ? { connections: [
                       { id: "fixture-kilo-connection", provider: "kilocode", name: "Fixture connection", authType: "oauth", testStatus: "active", isActive: true, priority: 1 },
                     ] } : isCodexDetail ? { connections: [
                       { id: codexConnection, provider: "codex", name: "Fixture Codex", authType: "oauth", testStatus: "success", isActive: true, priority: 1 },
@@ -593,7 +602,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   if (path === "/api/oauth/codex/stop-proxy") interceptedCodexStop += 1;
                 });
 
-                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : screen.section === "providers-new" ? "/dashboard/providers/new" : screen.section === "provider-kilocode" ? "/dashboard/providers/kilocode" : screen.section === "provider-compatible" ? compatiblePath : isCodexDetail ? codexPath : isOpenRouter ? "/dashboard/providers/openrouter" : isXaiDetail ? "/dashboard/providers/xai" : screen.section === "skills" ? "/dashboard/skills" : screen.section === "console-log" ? "/dashboard/console-log" : screen.section === "profile" ? "/dashboard/profile" : screen.section === "db-backups" ? "/dashboard/db-backups" : screen.section === "logs" ? "/dashboard/logs" : screen.section === "callback" ? "/callback" : "/dashboard/endpoint";
+                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : screen.section === "providers-new" ? "/dashboard/providers/new" : screen.section === "provider-kilocode" ? "/dashboard/providers/kilocode" : screen.section === "provider-compatible" ? compatiblePath : isCodexDetail ? codexPath : isOpenRouter ? "/dashboard/providers/openrouter" : isXaiDetail ? "/dashboard/providers/xai" : screen.section === "skills" ? "/dashboard/skills" : screen.section === "console-log" ? "/dashboard/console-log" : screen.section === "profile" ? "/dashboard/profile" : screen.section === "db-backups" ? "/dashboard/db-backups" : screen.section === "logs" ? "/dashboard/logs" : screen.section === "quota" ? "/dashboard/quota" : screen.section === "callback" ? "/callback" : "/dashboard/endpoint";
                 const sourceRoute = screen.section === "provider-compatible" ? compatibleTemplate : path;
                 const response = await page.goto(`${appUrl}${path}${screen.query || ""}`, { waitUntil: "domcontentloaded" });
                 assert(response?.ok(), `failed to load ${path}`);
@@ -605,7 +614,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       assert(html.includes(marker), "record mode requires the standalone Astro callback markup");
                     }
                   } else {
-                    const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : screen.section === "providers-new" ? "ProvidersNewPageClient." : ["provider-kilocode", "provider-compatible"].includes(screen.section) || isCodexDetail || isOpenRouter || isXaiDetail ? "ProviderDetailPageClient." : screen.section === "skills" ? "SkillsPageClient." : screen.section === "console-log" ? "ConsoleLogClient." : screen.section === "profile" ? "ProfilePageClient." : screen.section === "db-backups" ? "DbBackupsPageClient." : screen.section === "logs" ? "ApplicationLogsClient." : "EndpointPageClient.";
+                    const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : screen.section === "providers-new" ? "ProvidersNewPageClient." : ["provider-kilocode", "provider-compatible"].includes(screen.section) || isCodexDetail || isOpenRouter || isXaiDetail ? "ProviderDetailPageClient." : screen.section === "skills" ? "SkillsPageClient." : screen.section === "console-log" ? "ConsoleLogClient." : screen.section === "profile" ? "ProfilePageClient." : screen.section === "db-backups" ? "DbBackupsPageClient." : screen.section === "logs" ? "ApplicationLogsClient." : screen.section === "quota" ? "QuotaPageClient." : "EndpointPageClient.";
                     assert(html.includes(`component-url="/_astro/${component}`), "record mode requires the Astro reference");
                     if (screen.section === "provider-compatible") assert(source.routes[sourceRoute], "dynamic Astro provider template hash must be pinned before recording");
                     if (isCodexDetail) assert(source.routes[sourceRoute], "Astro Codex route hash must be pinned before recording");
@@ -634,6 +643,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 else if (screen.section === "profile") await page.getByRole("heading", { name: "Security", exact: true }).waitFor();
                 else if (screen.section === "db-backups") await page.getByRole("heading", { name: "Database Backups", exact: true }).waitFor();
                 else if (screen.section === "logs") await page.getByRole("heading", { name: "Application Logs", exact: true }).waitFor();
+                else if (screen.section === "quota") await page.getByRole("heading", { name: screen.name === "empty" ? "No Providers Connected" : "Provider Limits", exact: true }).waitFor();
                 else if (screen.section === "callback") await page.getByRole("heading", { name: screen.name === "error" ? "Authentication Failed" : screen.name === "no-auth-data" ? "No Auth Data Found" : "Authentication Complete", exact: true }).waitFor();
                 else await page.getByText("Fixture key", { exact: true }).waitFor();
                 const disableMotion = () => page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}" });
@@ -709,6 +719,30 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     assert(await page.evaluate(() => typeof window.BroadcastChannel === "function" && typeof window.localStorage.setItem === "function"), "normal callback relays must be available");
                     assert.equal(await page.getByRole("button", { name: "Copy URL", exact: true }).count(), 0);
                   }
+                  await page.mouse.move(1, 1);
+                  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+                } else if (screen.section === "quota") {
+                  if (screen.name === "empty") await page.getByText("Connect to providers with OAuth to track your API quota limits and usage.", { exact: true }).waitFor();
+                  else {
+                    await page.getByText("Fixture account", { exact: true }).waitFor();
+                    await page.getByText("Premium Requests", { exact: true }).waitFor();
+                    await page.getByText("75%", { exact: true }).waitFor();
+                    verifyAfterCapture = async () => {
+                      const before = quotaReads;
+                      await page.getByTitle("Refresh quota").click();
+                      await page.waitForFunction(() => !document.querySelector('[title="Refresh quota"]').disabled);
+                      assert(quotaReads > before, "manual refresh must read the quota again");
+                      await page.getByTitle("Filter quota providers").click();
+                      await page.getByRole("button", { name: /github/i }).click();
+                      await page.getByText("Fixture account", { exact: true }).waitFor();
+                      await page.getByTitle("Sort accounts by earliest quota reset time").click();
+                      await page.getByTitle("Disable connection").getByRole("switch").click();
+                      await page.getByTitle("Enable connection").getByRole("switch").waitFor();
+                      await page.getByTitle("Enable connection").getByRole("switch").click();
+                      await page.getByTitle("Disable connection").getByRole("switch").waitFor();
+                    };
+                  }
+                  await page.waitForLoadState("networkidle");
                   await page.mouse.move(1, 1);
                   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
                 } else if (screen.section === "logs") {

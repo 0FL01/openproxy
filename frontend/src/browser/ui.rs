@@ -49,6 +49,7 @@ pub fn Button(
 pub fn Toggle(
     checked: bool,
     #[props(default)] small: bool,
+    #[props(default)] disabled: bool,
     label: String,
     onchange: EventHandler<bool>,
 ) -> Element {
@@ -58,6 +59,11 @@ pub fn Toggle(
         "bg-brand-500"
     } else {
         "bg-surface-3"
+    };
+    let state = if disabled {
+        "opacity-50 cursor-not-allowed"
+    } else {
+        ""
     };
     let translate = if checked {
         if small {
@@ -69,10 +75,10 @@ pub fn Toggle(
         "translate-x-0.5"
     };
     rsx! {
-        div { class: "flex items-center gap-3",
+        div { class: "flex items-center gap-3 {state}",
             button {
-                r#type: "button", role: "switch", aria_checked: "{checked}", aria_label: "{label}",
-                class: "relative inline-flex shrink-0 cursor-pointer rounded-full transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-brand-500/30 {color} {track}",
+                r#type: "button", role: "switch", aria_checked: "{checked}", aria_label: "{label}", disabled,
+                class: "relative inline-flex shrink-0 cursor-pointer rounded-full transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-brand-500/30 {color} {track} {state}",
                 onclick: move |_| onchange.call(!checked),
                 span { class: "pointer-events-none inline-block rounded-full bg-white shadow-sm transform transition duration-200 ease-in-out {translate} {size} mt-0.5" }
             }

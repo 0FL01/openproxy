@@ -15,6 +15,7 @@ mod i18n;
 mod logs;
 mod profile;
 mod providers;
+mod quota;
 mod shell;
 mod skills;
 mod ui;
@@ -131,6 +132,8 @@ enum Route {
     DbBackups {},
     #[route("/dashboard/logs")]
     Logs {},
+    #[route("/dashboard/quota")]
+    Quota {},
     #[route("/login")]
     Login {},
     #[route("/callback")]
@@ -199,6 +202,11 @@ fn DbBackups() -> Element {
 
 #[component]
 fn Logs() -> Element {
+    rsx! { shell::Dashboard {} }
+}
+
+#[component]
+fn Quota() -> Element {
     rsx! { shell::Dashboard {} }
 }
 

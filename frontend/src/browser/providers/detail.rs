@@ -2,7 +2,7 @@
 mod codex_import;
 mod compatible_edit;
 mod context_limit;
-mod edit;
+pub(super) mod edit;
 mod oauth;
 mod oauth_events;
 
