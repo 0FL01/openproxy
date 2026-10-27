@@ -1749,6 +1749,79 @@ impl Drop for EditorSizeObserver {
     }
 }
 
+struct EditorWheel {
+    root: web_sys::Element,
+    callback: Closure<dyn FnMut(web_sys::WheelEvent)>,
+}
+
+impl EditorWheel {
+    fn new(input: web_sys::HtmlTextAreaElement) -> Option<Self> {
+        let root = input.parent_element()?.parent_element()?.parent_element()?;
+        let user_agent = web_sys::window()?
+            .navigator()
+            .user_agent()
+            .unwrap_or_default();
+        let mac = user_agent.contains("Macintosh");
+        let firefox_lines = user_agent.contains("Firefox") && !mac;
+        let callback =
+            Closure::<dyn FnMut(web_sys::WheelEvent)>::new(move |event: web_sys::WheelEvent| {
+                if event.default_prevented() {
+                    return;
+                }
+                // Monaco's default wheel normalization and 50px sensitivity. The
+                // configured wrapped editor consumes horizontal wheel input too.
+                let delta = |property: &str, value: f64| {
+                    js_sys::Reflect::get(event.as_ref(), &JsValue::from_str(property))
+                        .ok()
+                        .and_then(|value| value.as_f64())
+                        .map(|value| -value * 50.0 / 120.0)
+                        .unwrap_or_else(|| {
+                            value * 50.0
+                                / if event.delta_mode() == 1 {
+                                    if firefox_lines {
+                                        3.0
+                                    } else {
+                                        1.0
+                                    }
+                                } else {
+                                    40.0
+                                }
+                        })
+                };
+                let x = delta("wheelDeltaX", event.delta_x());
+                let mut y = delta("wheelDeltaY", event.delta_y());
+                if x.abs() > y.abs() || event.shift_key() && !mac {
+                    y = 0.0;
+                }
+                if event.alt_key() {
+                    y *= 5.0;
+                }
+                event.prevent_default();
+                event.stop_propagation();
+                input.set_scroll_top(
+                    (input.scroll_top() as f64 + y.signum() * y.abs().ceil()) as i32,
+                );
+            });
+        let options = web_sys::AddEventListenerOptions::new();
+        options.set_passive(false);
+        root.add_event_listener_with_callback_and_add_event_listener_options(
+            "wheel",
+            callback.as_ref().unchecked_ref(),
+            &options,
+        )
+        .ok()?;
+        Some(Self { root, callback })
+    }
+}
+
+impl Drop for EditorWheel {
+    fn drop(&mut self) {
+        let _ = self
+            .root
+            .remove_event_listener_with_callback("wheel", self.callback.as_ref().unchecked_ref());
+    }
+}
+
 #[derive(Clone)]
 struct NativeUndo {
     before: String,
@@ -1911,6 +1984,7 @@ fn Editor(
 ) -> Element {
     let mut textarea = use_signal(|| None::<web_sys::HtmlTextAreaElement>);
     let mut size_observer = use_signal(|| None::<Rc<EditorSizeObserver>>);
+    let mut wheel_listener = use_signal(|| None::<Rc<EditorWheel>>);
     let mut editor_width = use_signal(|| 0_i32);
     let mut rendered = use_signal(|| None::<web_sys::HtmlElement>);
     let mut line_tops = use_signal(Vec::<i32>::new);
@@ -2635,6 +2709,7 @@ fn Editor(
                                     observer.observe(&container);
                                     size_observer.set(Some(Rc::new(EditorSizeObserver { observer, _callback: callback })));
                                 }
+                                wheel_listener.set(EditorWheel::new(input.clone()).map(Rc::new));
                                 textarea.set(Some(input));
                             }
                         },

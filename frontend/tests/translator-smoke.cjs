@@ -395,6 +395,26 @@ async function main() {
         await page.mouse.click(rect.caretX + 1, rect.y + rect.height / 2);
         const actualOffset = reference ? await page.evaluate(() => { const e = window.monaco.editor.getEditors()[0]; return e.getModel().getOffsetAt(e.getPosition()); }) : await editor().evaluate(input => input.selectionStart);
         assert.equal(actualOffset, offset, "a click on the scrolled text maps to its document position after resizing");
+        const scrollBeforeWheel = reference ? await page.evaluate(() => window.monaco.editor.getEditors()[0].getScrollTop()) : await editor().evaluate(input => input.scrollTop);
+        await page.mouse.move(rect.x, rect.y + rect.height / 2);
+        await page.mouse.wheel(0, -80);
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        const scrollAfterWheel = reference ? await page.evaluate(() => window.monaco.editor.getEditors()[0].getScrollTop()) : await editor().evaluate(input => input.scrollTop);
+        assert.equal(scrollBeforeWheel - scrollAfterWheel, 50, "vertical wheel uses the configured editor sensitivity");
+        if (reference) await page.evaluate(() => { const e = window.monaco.editor.getEditors()[0]; e.setScrollTop(e.getScrollHeight()); });
+        else await editor().evaluate(input => { input.scrollTop = input.scrollHeight; });
+        const scroller = page.locator("main .overflow-y-auto").first();
+        await scroller.evaluate(element => { element.scrollTop = 0; });
+        const box = await page.evaluate(reference => {
+          const root = reference ? document.querySelector(".monaco-editor") : document.querySelector('[aria-label="Translator editor"]').parentElement.parentElement;
+          const r = root.getBoundingClientRect(); return { x: r.x, y: r.y };
+        }, reference);
+        for (const x of [box.x + 100, box.x + 20]) {
+          await page.mouse.move(x, box.y + 200);
+          await page.mouse.wheel(0, 400);
+          await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+          assert.equal(await scroller.evaluate(element => element.scrollTop), 0, "wheel at the editor's lower boundary does not scroll the dashboard, including over the gutter");
+        }
       }
       assert.deepEqual(errors, []);
       console.log("synthetic translator long-document scroll smoke passed");
