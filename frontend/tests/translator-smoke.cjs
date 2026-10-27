@@ -270,6 +270,12 @@ async function main() {
         return matches.length === 2 && matches.every(element => getComputedStyle(element).backgroundColor === "rgba(234, 92, 0, 0.33)");
       }, reference);
       if (process.env.TRANSLATOR_FIND_PAINT_ONLY === "1") {
+        const optionPositions = await dialog.evaluate(root => {
+          const left = root.getBoundingClientRect().left;
+          return ["Match Case (Alt+C)", "Match Whole Word (Alt+W)", "Use Regular Expression (Alt+R)"]
+            .map(name => Math.round(root.querySelector(`[aria-label="${name}"]`).getBoundingClientRect().left - left));
+        });
+        assert.deepEqual(optionPositions, [190, 212, 234], "Find options align with the reference panel");
         const matchPoint = await page.evaluate(reference => {
           const match = document.querySelector(reference ? ".monaco-editor .view-overlays .findMatch" : ".find-match").getBoundingClientRect();
           return { x: Math.floor(match.left + 2), y: Math.floor(match.top + 1) };
@@ -282,6 +288,9 @@ async function main() {
           return [...context.getImageData(0, 0, 1, 1).data].slice(0, 3);
         }, { base64: matchPixel.toString("base64"), point: matchPoint });
         assert.ok(matchColor[0] > matchColor[1] + 15 && matchColor[1] > matchColor[2] + 15, "the current-line border does not cover the Find match");
+        await dialog.getByRole("button", { name: "Toggle Replace" }).click();
+        const preservePosition = await dialog.evaluate(root => Math.round(root.querySelector('[aria-label="Preserve Case (Alt+P)"]').getBoundingClientRect().left - root.getBoundingClientRect().left));
+        assert.equal(preservePosition, 234, "Replace option aligns with the reference panel");
         assert.deepEqual(errors, []);
         console.log("synthetic translator Find paint smoke passed");
         return;

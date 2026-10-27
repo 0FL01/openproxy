@@ -62,7 +62,7 @@
   font-size: 13px;
   line-height: 19px;
 }
-.translator-find .find-options { position: absolute; top: 2px; right: 0; display: flex; }
+.translator-find .find-options { position: absolute; top: 2px; right: 1px; display: flex; }
 .translator-find .find-icon {
   display: flex;
   flex: none;
