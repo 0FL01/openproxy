@@ -1,4 +1,6 @@
 //! Translator stages and their same-origin dashboard API actions.
+mod format;
+
 use super::{endpoint::copy_text, json_body, shell::dashboard_request, ui::Button};
 use dioxus::prelude::*;
 use serde_json::{json, Value};
@@ -1495,12 +1497,13 @@ impl Drop for EditorSizeObserver {
 }
 
 #[derive(Clone)]
-struct CompositionUndo {
+struct NativeUndo {
     before: String,
     after: String,
     start: u32,
     end: u32,
     direction: String,
+    after_selection: Option<(u32, u32, String)>,
     edits: Vec<CompositionEdit>,
 }
 
@@ -1581,8 +1584,9 @@ fn Editor(
     let mut pair_text = use_signal(move || initial_value);
     let initial_value = value.clone();
     let mut last_input = use_signal(move || initial_value);
-    let mut composition_start = use_signal(|| None::<CompositionUndo>);
-    let mut composition_undo = use_signal(|| None::<CompositionUndo>);
+    let mut composition_start = use_signal(|| None::<NativeUndo>);
+    let mut composition_undo = use_signal(|| None::<NativeUndo>);
+    let mut format_undo = use_signal(|| None::<NativeUndo>);
     let mut composition_extendable = use_signal(|| false);
     let mut composition_cursor = use_signal(|| None::<(u32, u32)>);
     let mut adjusting_history = use_signal(|| false);
@@ -1592,6 +1596,7 @@ fn Editor(
     let mut find_open = use_signal(|| false);
     let mut replace_open = use_signal(|| false);
     let mut tab_focus_announcement = use_signal(String::new);
+    let mut format_chord = use_signal(|| false);
     let mut query = use_signal(String::new);
     let mut replacement = use_signal(String::new);
     let mut match_index = use_signal(|| 0_usize);
@@ -2300,6 +2305,27 @@ fn Editor(
                         onkeydown: move |event| {
                             if event.is_composing() { return; }
                             let key = event.key().to_string();
+                            let modifiers = event.modifiers();
+                            let control = modifiers.ctrl() || modifiers.meta();
+                            let selection_format = *format_chord.peek() && control && !modifiers.shift() && !modifiers.alt() && key.eq_ignore_ascii_case("f");
+                            if !matches!(event.key(), Key::Control | Key::Meta | Key::Shift | Key::Alt) { format_chord.set(false); }
+                            let document_format = if web_sys::window().and_then(|window| window.navigator().user_agent().ok()).is_some_and(|agent| agent.contains("Linux")) {
+                                modifiers.ctrl() && modifiers.shift() && !modifiers.meta() && !modifiers.alt() && key.eq_ignore_ascii_case("i")
+                            } else { modifiers.shift() && modifiers.alt() && !control && key.eq_ignore_ascii_case("f") };
+                            if json && (document_format || selection_format) {
+                                event.prevent_default();
+                                if let Some(input) = textarea.peek().as_ref() && let Some(undo) = format::apply(input, selection_format, rendered.peek().clone()) {
+                                    format_undo.set(Some(undo));
+                                    composition_extendable.set(false);
+                                    update_cursor.call(());
+                                }
+                                return;
+                            }
+                            if json && control && !modifiers.shift() && !modifiers.alt() && key.eq_ignore_ascii_case("k") {
+                                event.prevent_default();
+                                format_chord.set(true);
+                                return;
+                            }
                             if json && !event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().alt() && let Some(input) = textarea.peek().clone() {
                                 let before = input.value();
                                 update_auto_pairs(&pair_text.peek(), &before, &mut auto_pairs.write());
@@ -2419,12 +2445,13 @@ fn Editor(
                                 if *composition_extendable.peek() && *composition_cursor.peek() != Some((start, end)) {
                                     composition_extendable.set(false);
                                 }
-                                composition_start.set(Some(CompositionUndo {
+                                composition_start.set(Some(NativeUndo {
                                     before,
                                     after: String::new(),
                                     start,
                                     end,
                                     direction: input.selection_direction().ok().flatten().unwrap_or_default(),
+                                    after_selection: None,
                                     edits: Vec::new(),
                                 }));
                             }
@@ -2465,7 +2492,10 @@ fn Editor(
                             if input_type != "insertCompositionText" && value != *last_input.peek() { composition_extendable.set(false); }
                             let undo = input_type == "historyUndo";
                             let redo = input_type == "historyRedo";
-                            if (undo || redo) && let Some(group) = composition_undo.peek().clone()
+                            if (undo || redo) && let Some(group) = format_undo.peek().as_ref().filter(|group| {
+                                if undo { *last_input.peek() == group.after && value == group.before }
+                                else { *last_input.peek() == group.before && value == group.after }
+                            }).cloned().or_else(|| composition_undo.peek().clone())
                                 && let Some(input) = textarea.peek().clone() {
                                 let edits: Vec<_> = if undo { group.edits.iter().rev().collect() } else { group.edits.iter().collect() };
                                 let initial = if undo { &group.after } else { &group.before };
@@ -2496,6 +2526,8 @@ fn Editor(
                                             }
                                             if undo && value == group.before {
                                                 let _ = input.set_selection_range_with_direction(group.start, group.end, &group.direction);
+                                            } else if redo && value == group.after && let Some((start, end, direction)) = &group.after_selection {
+                                                let _ = input.set_selection_range_with_direction(*start, *end, direction);
                                             }
                                             last_input.set(value.clone());
                                             on_change.call(value);
@@ -2504,6 +2536,8 @@ fn Editor(
                                         return;
                                     } else if undo {
                                         let _ = input.set_selection_range_with_direction(group.start, group.end, &group.direction);
+                                    } else if let Some((start, end, direction)) = &group.after_selection {
+                                        let _ = input.set_selection_range_with_direction(*start, *end, direction);
                                     }
                                 }
                             }

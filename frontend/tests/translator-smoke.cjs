@@ -86,6 +86,98 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
+    if (process.env.TRANSLATOR_FORMAT_ONLY === "1") {
+      const initial = '{"a":1e3,"a":-0.0,"text":"\\u0061","nested":[1,2]}';
+      const expected = '{\n    "a": 1e3,\n    "a": -0.0,\n    "text": "\\u0061",\n    "nested": [\n        1,\n        2\n    ]\n}';
+      const offset = initial.indexOf("1e3") + 1;
+      if (reference) {
+        await page.evaluate(({ text, offset }) => { const e = window.monaco.editor.getEditors()[0]; e.setValue(text); e.setPosition(e.getModel().getPositionAt(offset)); e.focus(); }, { text: initial, offset });
+        await settleReferenceJson();
+      } else { await editor().fill(initial); await editor().evaluate((input, offset) => { input.setSelectionRange(offset, offset); input.focus(); }, offset); }
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      const cursor = () => reference ? page.evaluate(() => { const e = window.monaco.editor.getEditors()[0]; return e.getModel().getOffsetAt(e.getPosition()); }) : editor().evaluate(input => input.selectionStart);
+      await page.keyboard.press("Control+Shift+i");
+      await page.waitForFunction(({ reference, expected }) => (reference ? window.monaco.editor.getEditors()[0].getValue() : document.querySelector('[aria-label="Translator editor"]').value) === expected, { reference, expected });
+      assert.equal(await cursor(), expected.indexOf("1e3") + 1, "formatting retains the cursor inside its token");
+      await page.keyboard.press("Control+z");
+      assert.equal(await value(), initial, "format is one undoable edit and preserves duplicate keys and literal spelling");
+      assert.equal(await cursor(), offset);
+      await page.keyboard.press("Control+Shift+z");
+      assert.equal(await value(), expected);
+      assert.equal(await cursor(), expected.indexOf("1e3") + 1);
+
+      const comments = '{\n// note {\n"one":[true,null],\n"two":2\n}';
+      const formatted = '{\n    // note {\n    "one": [\n        true,\n        null\n    ],\n    "two": 2\n}';
+      if (reference) { await page.evaluate(text => { const e = window.monaco.editor.getEditors()[0]; e.setValue(text); e.focus(); }, comments); await settleReferenceJson(); }
+      else await editor().fill(comments);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.keyboard.press("Control+Shift+i");
+      await page.waitForFunction(({ reference, expected }) => (reference ? window.monaco.editor.getEditors()[0].getValue() : document.querySelector('[aria-label="Translator editor"]').value) === expected, { reference, expected: formatted });
+
+      const partial = '{\n    "keep": [1,2],\n    "two": {"x":1,"y":2}\n}';
+      const selectionStart = partial.indexOf('{"x"');
+      const selectionEnd = partial.lastIndexOf("}");
+      const result = '{\n    "keep": [1,2],\n    "two": {\n        "x": 1,\n        "y": 2\n    }\n}';
+      if (reference) {
+        await page.evaluate(({ text, start, end }) => { const e = window.monaco.editor.getEditors()[0]; e.setValue(text); const model = e.getModel(); const a = model.getPositionAt(start); const b = model.getPositionAt(end); e.setSelection(new window.monaco.Selection(a.lineNumber, a.column, b.lineNumber, b.column)); e.focus(); }, { text: partial, start: selectionStart, end: selectionEnd });
+        await settleReferenceJson();
+      } else { await editor().fill(partial); await editor().evaluate((input, range) => { input.setSelectionRange(...range); input.focus(); }, [selectionStart, selectionEnd]); }
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.keyboard.press("Control+k");
+      await page.keyboard.press("Control+f");
+      await page.waitForFunction(({ reference, expected }) => (reference ? window.monaco.editor.getEditors()[0].getValue() : document.querySelector('[aria-label="Translator editor"]').value) === expected, { reference, expected: result });
+      await page.keyboard.press("Control+z");
+      assert.equal(await value(), partial, "selection formatting leaves the unselected sibling unchanged and undoes together");
+      const compositionBase = '{"text":""}';
+      if (reference) { await page.evaluate(text => { const e = window.monaco.editor.getEditors()[0]; e.setValue(text); e.setPosition({ lineNumber: 1, column: 10 }); e.focus(); }, compositionBase); await settleReferenceJson(); }
+      else { await editor().fill(compositionBase); await editor().evaluate(input => { input.setSelectionRange(9, 9); input.focus(); }); }
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      const cdp = await context.newCDPSession(page);
+      try {
+        for (const text of ["猫", "犬"]) {
+          await cdp.send("Input.imeSetComposition", { text, selectionStart: 1, selectionEnd: 1 });
+          await cdp.send("Input.insertText", { text });
+          await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        }
+      } finally { await cdp.detach(); }
+      await page.keyboard.press("Control+Shift+i");
+      await page.waitForFunction(({ reference }) => (reference ? window.monaco.editor.getEditors()[0].getValue() : document.querySelector('[aria-label="Translator editor"]').value) === '{\n    "text": "猫犬"\n}', { reference });
+      await page.keyboard.press("Control+z");
+      assert.equal(await value(), '{"text":"猫犬"}', "format undo retains the preceding composition group");
+      await page.keyboard.press("Control+z");
+      await page.waitForFunction(({ reference, compositionBase }) => (reference ? window.monaco.editor.getEditors()[0].getValue() : document.querySelector('[aria-label="Translator editor"]').value) === compositionBase, { reference, compositionBase });
+      assert.equal(await cursor(), 9, "undo after formatting still restores the composition cursor");
+      const long = `{\n${Array.from({ length: 60 }, (_, i) => `"row${i}":[1,2]`).join(",\n")}\n}`;
+      const longOffset = long.indexOf('"row40"') + 3;
+      if (reference) {
+        await page.evaluate(({ text, offset }) => {
+          const e = window.monaco.editor.getEditors()[0]; e.setValue(text);
+          e.setPosition(e.getModel().getPositionAt(offset)); e.focus();
+          e.setScrollTop(e.getTopForLineNumber(e.getPosition().lineNumber) - 150);
+        }, { text: long, offset: longOffset });
+        await settleReferenceJson();
+      } else {
+        await editor().fill(long);
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        await editor().evaluate((input, offset) => { input.setSelectionRange(offset, offset); input.focus(); input.scrollTop = input.parentElement.querySelector("pre").children[41].offsetTop - 150; }, longOffset);
+      }
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      const cursorTop = reference => {
+        if (reference) { const e = window.monaco.editor.getEditors()[0]; return e.getTopForLineNumber(e.getPosition().lineNumber) - e.getScrollTop(); }
+        const input = document.querySelector('[aria-label="Translator editor"]');
+        const line = input.value.slice(0, input.selectionStart).split("\n").length - 1;
+        return input.parentElement.querySelector("pre").children[line].getBoundingClientRect().top - input.getBoundingClientRect().top;
+      };
+      const top = await page.evaluate(cursorTop, reference);
+      assert(top > 60 && top < 340, "format starts with a visible, scrolled cursor");
+      await page.keyboard.press("Control+Shift+i");
+      await page.waitForFunction(({ reference, long }) => (reference ? window.monaco.editor.getEditors()[0].getValue() : document.querySelector('[aria-label="Translator editor"]').value) !== long, { reference, long });
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.ok(Math.abs(await page.evaluate(cursorTop, reference) - top) < 1, "formatting keeps the cursor at its relative viewport position");
+      assert.deepEqual(errors, []);
+      console.log("synthetic translator formatting smoke passed");
+      return;
+    }
     if (process.env.TRANSLATOR_WRAP_TOKENS_ONLY === "1") {
       const text = `{\n  "message": "${"x".repeat(200)}",\n  "count": 42\n}`;
       if (reference) { await page.evaluate(text => window.monaco.editor.getEditors()[0].setValue(text), text); await settleReferenceJson(); }
