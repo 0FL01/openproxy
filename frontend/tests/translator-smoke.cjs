@@ -281,6 +281,11 @@ async function main() {
           return [style.display, style.textAlign];
         });
         assert.deepEqual(scopeStyle, ["block", "center"], "Find in Selection uses the reference icon layout");
+        const findRadius = await dialog.getByLabel("Find", { exact: true }).evaluate((input, reference) => {
+          const box = input.closest(reference ? ".monaco-inputbox" : ".find-box");
+          return getComputedStyle(box).borderRadius;
+        }, reference);
+        assert.equal(findRadius, "2px", "Find input has the reference rounded corners");
         const matchPoint = await page.evaluate(reference => {
           const match = document.querySelector(reference ? ".monaco-editor .view-overlays .findMatch" : ".find-match").getBoundingClientRect();
           return { x: Math.floor(match.left + 2), y: Math.floor(match.top + 1) };

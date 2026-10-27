@@ -42,6 +42,7 @@
   min-width: 0;
   height: 25px;
   border: 1px solid transparent;
+  border-radius: 2px;
   background: #3c3c3c;
 }
 .translator-find .find-box:focus-within { outline: 1px solid #007fd4; outline-offset: -1px; }
