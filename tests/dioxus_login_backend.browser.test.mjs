@@ -4,7 +4,7 @@ import { test } from "node:test";
 
 // Run first against a fresh, output-suppressed .ui-browser backend. No Codex
 // connection is needed to edit its advertised context setting.
-test("Dioxus Codex advertised context persists across a page reload with an isolated backend", {
+test("Dioxus provider advertised context persists across a page reload with an isolated backend", {
   skip: process.env.RUN_DIOXUS_BACKEND_TEST !== "1",
   timeout: 60_000,
 }, async () => {
@@ -38,7 +38,7 @@ test("Dioxus Codex advertised context persists across a page reload with an isol
           try { body = request.postDataJSON(); } catch { body = null; }
           if (body?.password === fixturePassword && Object.keys(body).length === 1) return route.continue();
         }
-        if (method === "PATCH" && path === "/api/settings" && !url.search && saving && patches === 0) {
+        if (method === "PATCH" && path === "/api/settings" && !url.search && saving && patches < 2) {
           let body;
           try { body = request.postDataJSON(); } catch { body = null; }
           const limits = body?.providerContextLimits;
@@ -50,10 +50,10 @@ test("Dioxus Codex advertised context persists across a page reload with an isol
           }
         }
         const allowedGet = method === "GET" && (
-          (!url.search && ["/login", "/dashboard/providers/codex", "/favicon.svg", "/providers/codex.png"].includes(path)) ||
+          (!url.search && ["/login", "/dashboard/providers/codex", "/dashboard/providers/glm", "/favicon.svg", "/providers/codex.png", "/providers/glm.png"].includes(path)) ||
           (!url.search && ["/api/auth/status", "/api/build", "/api/settings", "/api/providers", "/api/provider-nodes",
             "/api/catalog", "/api/models", "/api/models/custom", "/api/models/alias", "/api/models/favorites", "/api/providers/filters"].includes(path)) ||
-          (path === "/api/models/disabled" && url.search === "?providerAlias=cx") ||
+          (path === "/api/models/disabled" && ["?providerAlias=cx", "?providerAlias=glm"].includes(url.search)) ||
           (path === "/api/proxy-pools" && url.search === "?isActive=true") ||
           (!url.search && (path.startsWith("/assets/") || path.startsWith("/_astro/")))
         );
@@ -115,6 +115,25 @@ test("Dioxus Codex advertised context persists across a page reload with an isol
       assert.equal(await advertisedContext.inputValue(), String(newLimit));
       assert.deepEqual(await readSettings(), { ...initial, limits: expectedLimits });
       assert.equal(patches, 1, "reload must not write settings again");
+
+      await page.goto("https://app:4623/dashboard/providers/glm");
+      await advertisedContext.waitFor();
+      await page.waitForFunction((value) => Array.from(document.querySelectorAll('input[type="number"]')).some((input) => input.value === value && !input.disabled), String(initial.limits.glm));
+      expectedLimits = { ...expectedLimits, glm: newLimit - 25_000 };
+      await advertisedContext.fill(String(expectedLimits.glm));
+      saving = true;
+      const [glmSaved] = await Promise.all([
+        page.waitForResponse((response) => response.url() === "https://app:4623/api/settings" && response.request().method() === "PATCH"),
+        advertisedContext.press("Enter"),
+      ]);
+      saving = false;
+      assert.equal(glmSaved.status(), 200);
+      assert.deepEqual((await glmSaved.json()).providerContextLimits, expectedLimits);
+      await page.reload();
+      await advertisedContext.waitFor();
+      await page.waitForFunction((value) => Array.from(document.querySelectorAll('input[type="number"]')).some((input) => input.value === value), String(expectedLimits.glm));
+      assert.deepEqual(await readSettings(), { ...initial, limits: expectedLimits });
+      assert.equal(patches, 2, "reload must not write settings again");
       assert.deepEqual(blocked, { external: 0, unexpected: 0 }, "unexpected requests must be blocked");
     } finally {
       await context.close();

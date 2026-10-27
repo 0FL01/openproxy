@@ -340,6 +340,47 @@ async function waitForFixture(predicate) {
   }
 }
 
+async function runContextFixture(page, origin) {
+  state.connections = [];
+  state.writes = [];
+  state.settings = {
+    providerContextLimits: { codex: 430000, "opencode-go": 210000, glm: 250000, claude: 600000 },
+    otherSetting: { untouched: true },
+  };
+  const context = () => page.getByLabel("Advertised Context");
+  const title = "Context metadata advertised to clients; a model's smaller native context window still applies. Proxy memory byte limits are separate.";
+  for (const [provider, value] of [["opencode-go", 210000], ["glm", 250000], ["claude", 600000]]) {
+    await page.goto(`${origin}/dashboard/providers/${provider}`);
+    await context().waitFor();
+    await page.waitForFunction(value => {
+      const input = document.querySelector('input[type="number"]');
+      return input?.value === String(value) && !input.disabled;
+    }, value);
+    assert.equal(await context().locator("xpath=..").getAttribute("title"), title);
+  }
+
+  await page.goto(`${origin}/dashboard/providers/glm`);
+  await context().waitFor();
+  await page.waitForFunction(() => document.querySelector('input[type="number"]')?.value === "250000" && !document.querySelector('input[type="number"]')?.disabled);
+  const catalogs = state.catalogRequests;
+  await context().fill("275000");
+  await context().press("Enter");
+  await waitForFixture(() => state.settings.providerContextLimits.glm === 275000 && state.catalogRequests > catalogs);
+  assert.deepEqual(state.writes.filter(w => w.path === "/api/settings").at(-1).body, {
+    providerContextLimits: { codex: 430000, "opencode-go": 210000, glm: 275000, claude: 600000 },
+  });
+  assert.deepEqual(state.settings.otherSetting, { untouched: true });
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector('input[type="number"]')?.value === "275000" && !document.querySelector('input[type="number"]')?.disabled);
+
+  await page.goto(`${origin}/dashboard/providers/opencode-zen`);
+  await page.getByText("No authentication required", { exact: true }).waitFor();
+  assert.equal(await context().count(), 0, "no-auth providers do not show the context control");
+  await page.goto(`${origin}/dashboard/providers/kilocode`);
+  await page.getByRole("heading", { name: "Available Models" }).waitFor();
+  assert.equal(await context().count(), 0, "unsupported providers do not show the context control");
+}
+
 async function runCodexControlsFixture(page, origin) {
   state.expired = false;
   state.writes = [];
@@ -1926,6 +1967,12 @@ async function main() {
     page.setDefaultTimeout(10000);
     const errors = []; page.on("pageerror", error => errors.push(String(error)));
     await page.context().route("**/*", route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
+    if (process.env.PROVIDER_CONTEXT_ONLY === "1") {
+      await runContextFixture(page, origin);
+      assert.deepEqual(errors, []);
+      console.log("synthetic provider context smoke passed");
+      return;
+    }
     if (process.env.PROVIDER_CODEX_CONTROLS_ONLY === "1") {
       await runCodexControlsFixture(page, origin);
       assert.deepEqual(errors, []);

@@ -126,9 +126,10 @@ assignment and paced one-by-one testing use the existing connection APIs.
 Codex OAuth and GLM API-key connections also support the persisted auto-ping
 setting. The existing full-map settings API cannot prevent simultaneous writes
 from different tabs from overwriting one another.
-Codex detail also supports its signup link, advertised-context setting, and
-bulk auth.json import. The context setting re-reads and merges the saved map
-before writing, but cannot prevent concurrent cross-tab full-map writes.
+Codex detail also supports its signup link and bulk auth.json import. Codex,
+OpenCode Go, GLM and Claude expose their advertised-context settings; the
+setting re-reads and merges the saved map before writing, but cannot prevent
+concurrent cross-tab full-map writes.
 Editing never pre-populates a stored API key; a blank replacement leaves it
 unchanged. Device-code OAuth and manual authorization-code exchange use the
 existing OAuth endpoints. The synchronized thinking selectors only append a
@@ -161,8 +162,7 @@ page renders only after WASM starts; it cannot reproduce Astro's pre-WASM first
 paint.
 
 Detail is **not reference-complete or pixel-perfect**: some OAuth modal details
-(including copy buttons), advertised
-context for non-Codex providers, suggested-model chips, and xAI-specific
+(including copy buttons), suggested-model chips, and xAI-specific
 force-refresh and diagnostic states remain to migrate. Local OAuth proxy ownership is coordinated
 within this browser application only: the backend stop endpoint is
 provider-wide, so other tabs/processes and an unconfirmed stop after a

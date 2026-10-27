@@ -3,7 +3,8 @@ use dioxus::prelude::*;
 use wasm_bindgen::JsCast;
 
 const DEFAULT_LIMIT: &str = "500000";
-const TITLE: &str = "Context metadata advertised to clients. Codex compatibility metadata reserves 50,000 input tokens and reports 128,000 output tokens; OpenCode owns compaction policy. Proxy memory byte limits are separate.";
+const CODEX_TITLE: &str = "Context metadata advertised to clients. Codex compatibility metadata reserves 50,000 input tokens and reports 128,000 output tokens; OpenCode owns compaction policy. Proxy memory byte limits are separate.";
+const TITLE: &str = "Context metadata advertised to clients; a model's smaller native context window still applies. Proxy memory byte limits are separate.";
 
 async fn settings() -> Result<Value, &'static str> {
     let response = dashboard_get_no_store("/api/settings")
@@ -19,24 +20,33 @@ async fn settings() -> Result<Value, &'static str> {
 }
 
 #[component]
-pub(super) fn CodexContextLimit(on_saved: Callback<()>) -> Element {
+pub(super) fn ProviderContextLimit(provider_id: String, on_saved: Callback<()>) -> Element {
     let mut draft = use_signal(|| DEFAULT_LIMIT.to_owned());
     let mut saved = use_signal(|| DEFAULT_LIMIT.to_owned());
     let mut loading = use_signal(|| true);
     let mut saving = use_signal(|| false);
     let toasts = use_context::<Signal<Vec<Toast>>>();
 
-    use_future(move || async move {
-        if let Ok(data) = settings().await {
-            let value = data["providerContextLimits"]["codex"]
-                .as_u64()
-                .filter(|value| *value > 0)
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| DEFAULT_LIMIT.to_owned());
-            draft.set(value.clone());
-            saved.set(value);
+    let title = if provider_id == "codex" {
+        CODEX_TITLE
+    } else {
+        TITLE
+    };
+    let provider_for_load = provider_id.clone();
+    use_future(move || {
+        let provider_id = provider_for_load.clone();
+        async move {
+            if let Ok(data) = settings().await {
+                let value = data["providerContextLimits"][&provider_id]
+                    .as_u64()
+                    .filter(|value| *value > 0)
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| DEFAULT_LIMIT.to_owned());
+                draft.set(value.clone());
+                saved.set(value);
+            }
+            loading.set(false);
         }
-        loading.set(false);
     });
 
     let save = use_callback(move |()| {
@@ -59,6 +69,7 @@ pub(super) fn CodexContextLimit(on_saved: Callback<()>) -> Element {
         };
         let value = value as u32;
         saving.set(true);
+        let provider_id = provider_id.clone();
         spawn(async move {
             let result = async {
                 let data = settings().await?;
@@ -67,7 +78,7 @@ pub(super) fn CodexContextLimit(on_saved: Callback<()>) -> Element {
                     Some(Value::Object(limits)) => limits.clone(),
                     _ => return Err("Failed to load context limits"),
                 };
-                limits.insert("codex".to_owned(), json!(value));
+                limits.insert(provider_id, json!(value));
                 let response = dashboard_request(
                     "PATCH",
                     "/api/settings",
@@ -98,7 +109,7 @@ pub(super) fn CodexContextLimit(on_saved: Callback<()>) -> Element {
     });
 
     rsx! {
-        label { class: "flex items-center gap-2", title: TITLE,
+        label { class: "flex items-center gap-2", title,
             span { class: "text-xs text-text-muted font-medium", "Advertised Context" }
             input {
                 r#type: "number", min: "1", max: "1000000", step: "1",
