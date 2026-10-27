@@ -144,7 +144,7 @@ fn find_regex(
     } else {
         pattern
     };
-    let flags = if match_case { "g" } else { "gi" };
+    let flags = if match_case { "gm" } else { "gim" };
     let constructor = js_sys::Reflect::get(&js_sys::global(), &"RegExp".into())
         .ok()
         .and_then(|value| value.dyn_into::<js_sys::Function>().ok())?;

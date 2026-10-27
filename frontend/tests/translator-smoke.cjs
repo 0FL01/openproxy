@@ -156,6 +156,16 @@ async function main() {
     assert.equal(await scopeButton.getAttribute("aria-checked"), "false");
     await scopedDialog.getByText(/^[1-4] of 4$/).waitFor();
     await page.waitForFunction(({ reference, count }) => { const elements = [...document.querySelectorAll(reference ? ".monaco-editor .view-overlays .findMatch, .monaco-editor .view-overlays .currentFindMatch" : ".find-match")]; return reference ? elements.length === count : elements.map(element => element.textContent).join("") === "cat".repeat(count); }, { reference, count: 4 });
+    await scopedDialog.getByRole("checkbox", { name: "Use Regular Expression (Alt+R)" }).click();
+    await scopedDialog.getByLabel("Find", { exact: true }).fill("^inside");
+    await scopedDialog.getByText("1 of 1", { exact: true }).waitFor();
+    await scopedDialog.getByLabel("Replace", { exact: true }).fill("center");
+    await scopedDialog.getByRole("button", { name: /^Replace All \(/ }).click();
+    assert.equal(await value(), scopedText.replace("inside", "center"), "an anchored expression replaces a match at a later line start");
+    if (reference) await page.evaluate(() => window.monaco.editor.getEditors()[0].focus()); else await editor().focus();
+    await page.keyboard.press("Control+z");
+    assert.equal(await value(), scopedText, "anchored replacement is undoable");
+    await scopedDialog.getByRole("checkbox", { name: "Use Regular Expression (Alt+R)" }).click();
     await scopedDialog.getByRole("button", { name: "Close (Escape)" }).click();
     await page.waitForFunction(reference => !document.querySelector(reference ? ".monaco-editor .view-overlays .findMatch, .monaco-editor .view-overlays .currentFindMatch" : ".find-match"), reference);
     if (reference) await page.evaluate(() => { const e = window.monaco.editor.getEditors()[0]; e.setSelection(new window.monaco.Selection(1, 1, 2, 19)); e.focus(); });
