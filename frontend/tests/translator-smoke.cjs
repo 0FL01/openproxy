@@ -86,6 +86,69 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
+    if (process.env.TRANSLATOR_CLIPBOARD_ONLY === "1") {
+      const text = '{\n  "text": "😺",\n  "tail": 3\n}';
+      const offset = text.indexOf("😺") + 2;
+      const move = async position => {
+        if (reference) await page.evaluate(position => { const e = window.monaco.editor.getEditors()[0]; e.setPosition(e.getModel().getPositionAt(position)); e.focus(); }, position);
+        else await editor().evaluate((input, position) => { input.setSelectionRange(position, position); input.focus(); }, position);
+      };
+      const cursor = () => reference ? page.evaluate(() => { const e = window.monaco.editor.getEditors()[0]; return e.getModel().getOffsetAt(e.getPosition()); }) : editor().evaluate(input => input.selectionStart);
+      if (reference) { await page.evaluate(text => window.monaco.editor.getEditors()[0].setValue(text), text); await settleReferenceJson(); }
+      else await editor().fill(text);
+      await move(offset);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.evaluate(() => navigator.clipboard.writeText("synthetic-original"));
+      await page.keyboard.press("Control+c");
+      const copied = '  "text": "😺",\n';
+      assert.equal(await page.evaluate(() => navigator.clipboard.readText()), copied, "Copy without a selection copies the logical line including its newline");
+      assert.equal(await value(), text);
+      assert.equal(await cursor(), offset);
+      const target = text.indexOf('"tail"') + 3;
+      await move(target);
+      await page.keyboard.press("Control+v");
+      await page.waitForFunction(({ reference, expected }) => (reference ? window.monaco.editor.getEditors()[0].getValue() : document.querySelector('[aria-label="Translator editor"]').value) === expected, { reference, expected: text.replace('  "tail"', `${copied}  "tail"`) });
+      assert.equal(await cursor(), target + copied.length, "a copied line pastes before the target line without changing its caret column");
+      await page.keyboard.press("Control+z");
+      assert.equal(await value(), text);
+      assert.equal(await cursor(), target);
+      await move(offset);
+      await page.keyboard.press("Control+x");
+      assert.equal(await value(), text.replace(copied, ""));
+      assert.equal(await page.evaluate(() => navigator.clipboard.readText()), copied);
+      assert.equal(await cursor(), text.indexOf("\n") + 1);
+      await page.keyboard.press("Control+z");
+      assert.equal(await value(), text);
+      assert.equal(await cursor(), offset, "Undo of whole-line Cut restores the original cursor");
+
+      const range = [text.indexOf("text"), text.indexOf("text") + 4];
+      if (reference) await page.evaluate(range => { const e = window.monaco.editor.getEditors()[0]; const m = e.getModel(); const a = m.getPositionAt(range[0]); const b = m.getPositionAt(range[1]); e.setSelection(new window.monaco.Selection(a.lineNumber, a.column, b.lineNumber, b.column)); }, range);
+      else await editor().evaluate((input, range) => input.setSelectionRange(...range), range);
+      await page.keyboard.press("Control+c");
+      assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "text", "an explicit selection keeps ordinary native clipboard behavior");
+      await page.keyboard.press("Control+x");
+      assert.equal(await value(), text.replace("text", ""));
+      await page.keyboard.press("Control+z");
+      assert.equal(await value(), text);
+
+      if (reference) await settleReferenceJson();
+      await page.getByRole("button", { name: /Provider Response/ }).click();
+      if (reference) { await page.locator(".monaco-editor .view-lines").nth(1).waitFor(); await page.evaluate(() => { const e = window.monaco.editor.getEditors()[1]; e.setValue("lead\n😺"); e.setPosition({ lineNumber: 2, column: 3 }); e.focus(); }); }
+      else { await editor().nth(1).fill("lead\n😺"); await editor().nth(1).evaluate(input => { input.setSelectionRange(7, 7); input.focus(); }); }
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.keyboard.press("Control+x");
+      const plainValue = () => reference ? page.evaluate(() => window.monaco.editor.getEditors()[1].getValue()) : editor().nth(1).inputValue();
+      const plainCursor = () => reference ? page.evaluate(() => { const e = window.monaco.editor.getEditors()[1]; return e.getModel().getOffsetAt(e.getPosition()); }) : editor().nth(1).evaluate(input => input.selectionStart);
+      assert.equal(await plainValue(), "lead", "cutting the last line removes the preceding newline");
+      assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "😺\n", "the copied last line still ends in a newline");
+      assert.equal(await plainCursor(), 4);
+      await page.keyboard.press("Control+z");
+      assert.equal(await plainValue(), "lead\n😺");
+      assert.equal(await plainCursor(), 7);
+      assert.deepEqual(errors, []);
+      console.log("synthetic translator clipboard smoke passed");
+      return;
+    }
     if (process.env.TRANSLATOR_INDENT_LINES_ONLY === "1") {
       const text = '{\n      "text": "😺",\n      "other": []\n}';
       const offset = text.indexOf("😺") + 2;

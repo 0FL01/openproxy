@@ -1,4 +1,5 @@
 //! Translator stages and their same-origin dashboard API actions.
+mod clipboard;
 mod format;
 
 use super::{endpoint::copy_text, json_body, shell::dashboard_request, ui::Button};
@@ -2358,6 +2359,32 @@ fn Editor(
             active_visual_top.set(top);
         }
     });
+    let on_clipboard = use_callback(move |event: ClipboardEvent| {
+        if composition_start.peek().is_some() {
+            return;
+        }
+        let data = event.data();
+        let Some(native) = data
+            .downcast::<web_sys::Event>()
+            .and_then(|event| event.dyn_ref::<web_sys::ClipboardEvent>())
+        else {
+            return;
+        };
+        let Some(input) = textarea.peek().clone() else {
+            return;
+        };
+        let undo = match native.type_().as_str() {
+            "copy" => clipboard::copy_line(&input, native, false),
+            "cut" => clipboard::copy_line(&input, native, true),
+            "paste" => clipboard::paste_line(&input, native),
+            _ => None,
+        };
+        if let Some(undo) = undo {
+            command_selections.write().record(undo);
+            composition_extendable.set(false);
+            update_cursor.call(());
+        }
+    });
     use_effect(use_reactive((&value,), move |_| {
         let _ = editor_width();
         let Some(element) = rendered() else { return };
@@ -2781,6 +2808,9 @@ fn Editor(
                         }
                     }
                     textarea { aria_label: "Translator editor", spellcheck: "false", value: "{value}",
+                        oncopy: move |event| on_clipboard.call(event),
+                        oncut: move |event| on_clipboard.call(event),
+                        onpaste: move |event| on_clipboard.call(event),
                         style: "position:absolute;inset:0 14px 0 0;width:calc(100% - 14px);height:100%;resize:none;border:0;outline:0;padding:{find_padding}px {right_padding}px 0 {wrapping_indent}px;text-indent:-{wrapping_indent}px each-line;background:transparent;color:transparent;caret-color:white;font-family:'Droid Sans Mono',monospace;font-size:12px;line-height:16px;white-space:pre-wrap;overflow-wrap:anywhere;",
                         onmounted: move |event| {
                             if let Some(element) = event.data().downcast::<web_sys::Element>() && let Ok(input) = element.clone().dyn_into::<web_sys::HtmlTextAreaElement>() && let Some(container) = input.parent_element() {
