@@ -15,6 +15,7 @@ mod i18n;
 mod logs;
 mod profile;
 mod providers;
+mod proxy_pools;
 mod quota;
 mod shell;
 mod skills;
@@ -134,6 +135,8 @@ enum Route {
     Logs {},
     #[route("/dashboard/quota")]
     Quota {},
+    #[route("/dashboard/proxy-pools")]
+    ProxyPools {},
     #[route("/login")]
     Login {},
     #[route("/callback")]
@@ -207,6 +210,11 @@ fn Logs() -> Element {
 
 #[component]
 fn Quota() -> Element {
+    rsx! { shell::Dashboard {} }
+}
+
+#[component]
+fn ProxyPools() -> Element {
     rsx! { shell::Dashboard {} }
 }
 

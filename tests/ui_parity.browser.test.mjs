@@ -129,6 +129,10 @@ const screens = [
   { section: "logs", name: "trace" },
   { section: "quota", name: "empty" },
   { section: "quota", name: "ready" },
+  { section: "proxy-pools", name: "empty" },
+  { section: "proxy-pools", name: "ready" },
+  { section: "proxy-pools", name: "selected" },
+  { section: "proxy-pools", name: "add" },
   { section: "callback", name: "code", query: callbackCodeQuery, colorScheme: "light" },
   { section: "callback", name: "error", query: callbackErrorQuery, colorScheme: "light" },
   { section: "callback", name: "no-auth-data", query: "", colorScheme: "light" },
@@ -308,6 +312,10 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 let routerCustom = [];
                 let quotaConnections = screen.name === "ready" ? [{ id: "fixture-github", provider: "github", name: "Fixture account", authType: "oauth", isActive: true }] : [];
                 let quotaReads = 0;
+                const proxyPools = screen.name === "empty" ? [] : [
+                  { id: "fixture-one", name: "Fixture Proxy", proxyUrl: "http://fixture.example.invalid:8080/", noProxy: "localhost", isActive: true, testStatus: "active", boundConnectionCount: 2, lastTestedAt: null },
+                  { id: "fixture-two", name: "Disabled Proxy", proxyUrl: "http://other.example.invalid:8080/", noProxy: "", isActive: false, testStatus: "unknown", boundConnectionCount: 0, lastTestedAt: null },
+                ];
                 // The off case demonstrates that another enabled connection does
                 // not turn this connection on; the on case exercises both writes.
                 let currentCodexConfig = codexConfig(false, screen.name === "off");
@@ -335,7 +343,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     (screen.section === "profile" && !url.search && path === "/dashboard/profile") ||
                     (screen.section === "db-backups" && !url.search && path === "/dashboard/db-backups") ||
                     (screen.section === "logs" && !url.search && path === "/dashboard/logs") ||
-                    (screen.section === "quota" && !url.search && ["/dashboard/quota", "/providers/github.png"].includes(path));
+                    (screen.section === "quota" && !url.search && ["/dashboard/quota", "/providers/github.png"].includes(path)) ||
+                    (screen.section === "proxy-pools" && !url.search && path === "/dashboard/proxy-pools");
                   if (url.origin === appUrl && method === "GET" && assets) {
                     if (!isCodexDetail) return route.continue();
                     // Do not let even an allowed asset redirect around the
@@ -390,7 +399,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   const backupRequest = screen.section === "db-backups" && !url.search && ((method === "GET" && ["/api/db-backups", "/api/db-backups/export"].includes(path)) || (screen.name === "ready" && ((method === "PUT" && path === "/api/db-backups") || (method === "DELETE" && ["/api/db-backups", "/api/db-backups/fixture-1"].includes(path)) || (method === "POST" && ["/api/db-backups/restore", "/api/db-backups/import"].includes(path)))));
                   const logRequest = screen.section === "logs" && method === "GET" && ["/api/request-logs", "/api/request-logs/tps-stats"].includes(path) && [...url.searchParams.keys()].every((key) => ["page", "pageSize", "apiKeyId", "status", "provider", "model", "hiddenProviders"].includes(key));
                   const quotaRequest = screen.section === "quota" && ((method === "GET" && ((!url.search && ["/api/providers", "/api/usage/fixture-github"].includes(path)) || (path === "/api/proxy-pools" && url.search === "?isActive=true"))) || (method === "PUT" && !url.search && path === "/api/providers/fixture-github"));
-                  const valid = url.origin === appUrl && (providerGet || providerNewGet || kiloGet || kiloMutation || compatibleGet || codexGet || codexMutation || routerGet || routerMutation || xaiGet || consoleRequest || profileMutation || profileExport || backupRequest || logRequest || quotaRequest || (!isCodexDetail && !["providers", "providers-new", "provider-kilocode", "provider-compatible", "provider-openrouter", "provider-xai", "callback"].includes(screen.section) && (
+                  const proxyPoolsRequest = screen.section === "proxy-pools" && method === "GET" && path === "/api/proxy-pools" && url.search === "?includeUsage=true";
+                  const valid = url.origin === appUrl && (providerGet || providerNewGet || kiloGet || kiloMutation || compatibleGet || codexGet || codexMutation || routerGet || routerMutation || xaiGet || consoleRequest || profileMutation || profileExport || backupRequest || logRequest || quotaRequest || proxyPoolsRequest || (!isCodexDetail && !["providers", "providers-new", "provider-kilocode", "provider-compatible", "provider-openrouter", "provider-xai", "callback"].includes(screen.section) && (
                     (method === "GET" && ["/api/auth/status", "/api/settings", "/api/keys", "/api/build", "/api/catalog"].includes(path)) ||
                     (method === "POST" && path === "/api/auth/login" && !!screen.login) ||
                     (method === "POST" && path === "/api/keys" && screen.action === "created")
@@ -545,7 +555,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       { id: "anthropic-compatible-fixture", type: "anthropic-compatible", name: "Fixture Disconnected" },
                     ] };
                   } else if (path === "/api/proxy-pools") {
-                    body = { proxyPools: [] };
+                    body = { proxyPools: screen.section === "proxy-pools" ? proxyPools : [] };
                   } else if (path === "/api/oauth/codex/stop-proxy" || path === "/api/oauth/xai/stop-proxy") {
                     // Astro's closed OAuth modal calls this on mount. Fulfill in
                     // the browser: this GET is a real side effect if forwarded.
@@ -602,7 +612,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   if (path === "/api/oauth/codex/stop-proxy") interceptedCodexStop += 1;
                 });
 
-                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : screen.section === "providers-new" ? "/dashboard/providers/new" : screen.section === "provider-kilocode" ? "/dashboard/providers/kilocode" : screen.section === "provider-compatible" ? compatiblePath : isCodexDetail ? codexPath : isOpenRouter ? "/dashboard/providers/openrouter" : isXaiDetail ? "/dashboard/providers/xai" : screen.section === "skills" ? "/dashboard/skills" : screen.section === "console-log" ? "/dashboard/console-log" : screen.section === "profile" ? "/dashboard/profile" : screen.section === "db-backups" ? "/dashboard/db-backups" : screen.section === "logs" ? "/dashboard/logs" : screen.section === "quota" ? "/dashboard/quota" : screen.section === "callback" ? "/callback" : "/dashboard/endpoint";
+                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : screen.section === "providers-new" ? "/dashboard/providers/new" : screen.section === "provider-kilocode" ? "/dashboard/providers/kilocode" : screen.section === "provider-compatible" ? compatiblePath : isCodexDetail ? codexPath : isOpenRouter ? "/dashboard/providers/openrouter" : isXaiDetail ? "/dashboard/providers/xai" : screen.section === "skills" ? "/dashboard/skills" : screen.section === "console-log" ? "/dashboard/console-log" : screen.section === "profile" ? "/dashboard/profile" : screen.section === "db-backups" ? "/dashboard/db-backups" : screen.section === "logs" ? "/dashboard/logs" : screen.section === "quota" ? "/dashboard/quota" : screen.section === "proxy-pools" ? "/dashboard/proxy-pools" : screen.section === "callback" ? "/callback" : "/dashboard/endpoint";
                 const sourceRoute = screen.section === "provider-compatible" ? compatibleTemplate : path;
                 const response = await page.goto(`${appUrl}${path}${screen.query || ""}`, { waitUntil: "domcontentloaded" });
                 assert(response?.ok(), `failed to load ${path}`);
@@ -614,7 +624,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       assert(html.includes(marker), "record mode requires the standalone Astro callback markup");
                     }
                   } else {
-                    const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : screen.section === "providers-new" ? "ProvidersNewPageClient." : ["provider-kilocode", "provider-compatible"].includes(screen.section) || isCodexDetail || isOpenRouter || isXaiDetail ? "ProviderDetailPageClient." : screen.section === "skills" ? "SkillsPageClient." : screen.section === "console-log" ? "ConsoleLogClient." : screen.section === "profile" ? "ProfilePageClient." : screen.section === "db-backups" ? "DbBackupsPageClient." : screen.section === "logs" ? "ApplicationLogsClient." : screen.section === "quota" ? "QuotaPageClient." : "EndpointPageClient.";
+                    const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : screen.section === "providers-new" ? "ProvidersNewPageClient." : ["provider-kilocode", "provider-compatible"].includes(screen.section) || isCodexDetail || isOpenRouter || isXaiDetail ? "ProviderDetailPageClient." : screen.section === "skills" ? "SkillsPageClient." : screen.section === "console-log" ? "ConsoleLogClient." : screen.section === "profile" ? "ProfilePageClient." : screen.section === "db-backups" ? "DbBackupsPageClient." : screen.section === "logs" ? "ApplicationLogsClient." : screen.section === "quota" ? "QuotaPageClient." : screen.section === "proxy-pools" ? "ProxyPoolsPageClient." : "EndpointPageClient.";
                     assert(html.includes(`component-url="/_astro/${component}`), "record mode requires the Astro reference");
                     if (screen.section === "provider-compatible") assert(source.routes[sourceRoute], "dynamic Astro provider template hash must be pinned before recording");
                     if (isCodexDetail) assert(source.routes[sourceRoute], "Astro Codex route hash must be pinned before recording");
@@ -644,6 +654,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 else if (screen.section === "db-backups") await page.getByRole("heading", { name: "Database Backups", exact: true }).waitFor();
                 else if (screen.section === "logs") await page.getByRole("heading", { name: "Application Logs", exact: true }).waitFor();
                 else if (screen.section === "quota") await page.getByRole("heading", { name: screen.name === "empty" ? "No Providers Connected" : "Provider Limits", exact: true }).waitFor();
+                else if (screen.section === "proxy-pools") await page.getByText(screen.name === "empty" ? "No proxy pool entries yet" : "Fixture Proxy", { exact: true }).waitFor();
                 else if (screen.section === "callback") await page.getByRole("heading", { name: screen.name === "error" ? "Authentication Failed" : screen.name === "no-auth-data" ? "No Auth Data Found" : "Authentication Complete", exact: true }).waitFor();
                 else await page.getByText("Fixture key", { exact: true }).waitFor();
                 const disableMotion = () => page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}" });
@@ -719,6 +730,17 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     assert(await page.evaluate(() => typeof window.BroadcastChannel === "function" && typeof window.localStorage.setItem === "function"), "normal callback relays must be available");
                     assert.equal(await page.getByRole("button", { name: "Copy URL", exact: true }).count(), 0);
                   }
+                  await page.mouse.move(1, 1);
+                  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+                } else if (screen.section === "proxy-pools") {
+                  if (screen.name === "selected") {
+                    await page.getByText("Select all", { exact: true }).locator("..").locator('input[type="checkbox"]').check();
+                    await page.getByText("2 selected", { exact: true }).waitFor();
+                  } else if (screen.name === "add") {
+                    await page.getByRole("button", { name: /Add Proxy Pool/ }).click();
+                    await page.getByRole("heading", { name: "Add Proxy Pool", exact: true }).waitFor();
+                  }
+                  await page.waitForLoadState("networkidle");
                   await page.mouse.move(1, 1);
                   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
                 } else if (screen.section === "quota") {

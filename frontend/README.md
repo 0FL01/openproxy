@@ -6,8 +6,9 @@ the shared dashboard shell and Endpoint page at `/`, `/dashboard`, and
 `/dashboard/endpoint`, the list and chooser at `/dashboard/providers` and
 `/dashboard/providers/new`, Skills at `/dashboard/skills`, Console Log at
 `/dashboard/console-log`, Settings at `/dashboard/profile`, DB Backups at
-`/dashboard/db-backups`, Application Logs at `/dashboard/logs`, and partial
-Quota Tracker (`/dashboard/quota`) and provider detail (`/dashboard/providers/:id`) pages
+`/dashboard/db-backups`, Application Logs at `/dashboard/logs`, Proxy Pools at
+`/dashboard/proxy-pools`, and partial Quota Tracker (`/dashboard/quota`) and
+provider detail (`/dashboard/providers/:id`) pages
 against the existing same-origin APIs. It does not replace the Astro frontend
 or alter how OpenProxy is packaged or served. Other dashboard pages are not
 implemented; their links remain ordinary browser navigations, not
@@ -50,6 +51,7 @@ CHROME_BIN=/path/to/chromium node tests/endpoint-smoke.cjs
 CHROME_BIN=/path/to/chromium node tests/providers-smoke.cjs
 CHROME_BIN=/path/to/chromium node tests/providers-new-smoke.cjs
 CHROME_BIN=/path/to/chromium node tests/provider-detail-smoke.cjs
+CHROME_BIN=/path/to/chromium node tests/proxy-pools-smoke.cjs
 PROVIDER_AUTOPING_ONLY=1 CHROME_BIN=/path/to/chromium node tests/provider-detail-smoke.cjs
 PROVIDER_CODEX_CONTROLS_ONLY=1 CHROME_BIN=/path/to/chromium node tests/provider-detail-smoke.cjs
 PROVIDER_NODE_ONLY=1 CHROME_BIN=/path/to/chromium node tests/provider-detail-smoke.cjs

@@ -89,6 +89,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - DB Backups: 16 self-repeating Astro desktop/mobile light/dark screenshots matched at AE=0 without masks. Synthetic checks exercised snapshot, restore, delete, prune, export and multipart import. A fresh isolated backend verified snapshot creation and wrong/correct password reauthentication for export and import; no real data was used.
 - Application Logs: 16 self-repeating Astro desktop/mobile light/dark screenshots for populated and empty logs, request details and expanded stream trace matched at AE=0 without masks. The synthetic TPS browser regression passed filtering, pagination, exclusions, persistence, visibility, polling, failure and recovery checks; no real logs or providers were accessed.
 - Quota Tracker (partial): eight self-repeating Astro desktop/mobile light/dark screenshots for empty and one synthetic GitHub account matched at AE=0 without masks. The browser checked manual refresh, filtering, sort control and disabling/enabling that account. Provider-specific formatting and controls remain incomplete; no live provider was contacted.
+- Proxy Pools: sixteen self-repeating Astro desktop/mobile light/dark screenshots for empty, populated, selected and add-dialog states matched at AE=0 without masks. Synthetic browser checks covered CRUD, import, bulk and health actions, mocked relay deployment and session recheck; no real proxy or external relay was contacted.
 - Blocker: none external. Dioxus re-encodes PNG color metadata; `frontend/scripts/build.sh` preserves original provider icons for the served output. The skeleton and theme cannot appear before WASM startup as Astro's synchronous HTML/script did.
 - Next: complete Quota Tracker, migrate the other missing routes and remaining provider-specific behavior, and implement the Translator editor. Cline's live query-preservation behavior remains unverified.
 
@@ -131,6 +132,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-10-27: R2/R3 DB Backups matched 16 self-repeating synthetic Astro references at AE=0; snapshot creation and export/import reauthentication passed against a fresh isolated backend.
 - 2026-10-27: R2/R3 Application Logs matched 16 self-repeating synthetic Astro references at AE=0; the focused synthetic TPS browser regression passed without reading real logs.
 - 2026-10-27: R2/R3 partial Quota Tracker matched eight self-repeating synthetic Astro screenshots at AE=0; connected-account refresh/filter/toggle behavior passed. Provider-specific controls and formatting remain to migrate.
+- 2026-10-27: R2/R3 Proxy Pools matched sixteen self-repeating synthetic Astro references at AE=0; its synthetic CRUD, batch, health and mocked relay browser smoke passed.
 
 ## Completion
 
