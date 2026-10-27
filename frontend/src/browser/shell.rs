@@ -15,6 +15,7 @@ use super::{
     request, request_with_cache,
     skills::SkillsPage,
     theme_is_dark,
+    translator::TranslatorPage,
     ui::Button,
     ui::Modal,
     AbortOnDrop,
@@ -320,7 +321,7 @@ fn DashboardContent() -> Element {
                 Header { on_menu: move |_| sidebar_open.set(true), search, is_providers, is_providers_new: is_providers_new || is_provider_detail, provider_id: provider_id.clone(), theme, dark, lang_open, locale }
                 div { class: "flex-1 overflow-y-auto custom-scrollbar p-6 lg:p-10",
                     div { class: "max-w-7xl mx-auto",
-                        if is_providers { ProvidersPage { search } } else if is_providers_new { NewProviderPage {} } else if let Some(id) = provider_id { ProviderDetailPage { id } } else if pathname == "/dashboard/skills" { SkillsPage {} } else if pathname == "/dashboard/console-log" { ConsoleLogPage {} } else if pathname == "/dashboard/profile" { ProfilePage { theme, dark, lang_open, locale } } else if pathname == "/dashboard/db-backups" { DbBackupsPage {} } else if pathname == "/dashboard/logs" { ApplicationLogsPage {} } else if pathname == "/dashboard/quota" { QuotaPage {} } else if pathname == "/dashboard/proxy-pools" { ProxyPoolsPage {} } else { EndpointPage {} }
+                        if is_providers { ProvidersPage { search } } else if is_providers_new { NewProviderPage {} } else if let Some(id) = provider_id { ProviderDetailPage { id } } else if pathname == "/dashboard/skills" { SkillsPage {} } else if pathname == "/dashboard/console-log" { ConsoleLogPage {} } else if pathname == "/dashboard/profile" { ProfilePage { theme, dark, lang_open, locale } } else if pathname == "/dashboard/db-backups" { DbBackupsPage {} } else if pathname == "/dashboard/logs" { ApplicationLogsPage {} } else if pathname == "/dashboard/quota" { QuotaPage {} } else if pathname == "/dashboard/proxy-pools" { ProxyPoolsPage {} } else if pathname == "/dashboard/translator" { TranslatorPage {} } else { EndpointPage {} }
                     }
                 }
             }
@@ -640,6 +641,7 @@ fn Header(
         || pathname == "/dashboard/profile"
         || pathname == "/dashboard/quota"
         || pathname == "/dashboard/proxy-pools"
+        || pathname == "/dashboard/translator"
         || is_providers
         || is_providers_new;
     let (title, description, page_icon) = if is_providers || is_providers_new {
@@ -659,6 +661,12 @@ fn Header(
             "Proxy Pools",
             "Manage your proxy pool configurations",
             "lan",
+        )
+    } else if pathname == "/dashboard/translator" {
+        (
+            "Translator",
+            "Debug translation flow between formats",
+            "translate",
         )
     } else {
         ("Endpoint", "API endpoint configuration", "api")

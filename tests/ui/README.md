@@ -16,6 +16,16 @@ first column; desktop-only scenarios produce two captures, the others four.
 The default, unfiltered compare includes all reference sections; select a
 section or screen when testing a partially migrated dashboard.
 
+## Translator reference (work in progress)
+
+`UI_PARITY_SECTION=translator` includes empty and populated editor states.
+Recording the Astro reference requires the locally installed Monaco 0.55.1
+`min/vs` directory mounted read-only at `/monaco-vs` (or set
+`UI_MONACO_VS_DIR`); the test fulfills its CDN URLs from those local files and
+blocks all other external requests. The Dioxus candidate does not ship Monaco.
+These references self-repeat, but the candidate has not yet matched them at
+AE=0 and its editor is not a full Monaco replacement.
+
 | Scenario | State captured |
 |---|---|
 | `providers-ready` | List at the top, with connected and disconnected custom providers and a connected OAuth provider. |

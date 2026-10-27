@@ -19,6 +19,7 @@ mod proxy_pools;
 mod quota;
 mod shell;
 mod skills;
+mod translator;
 mod ui;
 
 // Preserve the reference bytes; dx otherwise re-minifies CSS in the public dir.
@@ -137,6 +138,8 @@ enum Route {
     Quota {},
     #[route("/dashboard/proxy-pools")]
     ProxyPools {},
+    #[route("/dashboard/translator")]
+    Translator {},
     #[route("/login")]
     Login {},
     #[route("/callback")]
@@ -215,6 +218,11 @@ fn Quota() -> Element {
 
 #[component]
 fn ProxyPools() -> Element {
+    rsx! { shell::Dashboard {} }
+}
+
+#[component]
+fn Translator() -> Element {
     rsx! { shell::Dashboard {} }
 }
 

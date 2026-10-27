@@ -71,9 +71,9 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: the next R2/R3 route slice.
-- Smallest next action: complete Quota Tracker's provider-specific quota formatting using existing APIs.
-- Expected evidence: focused synthetic UI behavior and a comparison with the reference.
+- Closes: the next R2/R3/R4 Translator slice.
+- Smallest next action: resolve the remaining reference-confirmed empty and populated Translator editor pixel differences, then continue porting the editor's available actions.
+- Expected evidence: unmasked synthetic Astro/Dioxus comparisons and focused editor behavior checks.
 - Stop or replan if: the route cannot be preserved within the frozen frontend and API boundaries.
 
 ## Current State
@@ -90,8 +90,9 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - Application Logs: 16 self-repeating Astro desktop/mobile light/dark screenshots for populated and empty logs, request details and expanded stream trace matched at AE=0 without masks. The synthetic TPS browser regression passed filtering, pagination, exclusions, persistence, visibility, polling, failure and recovery checks; no real logs or providers were accessed.
 - Quota Tracker (partial): eight self-repeating Astro desktop/mobile light/dark screenshots for empty and one synthetic GitHub account matched at AE=0 without masks. Four more synthetic GLM auto-ping screenshots matched at AE=0; browser checks covered both GLM and Codex eligibility, settings preservation, reload and failure rollback. Twelve synthetic Codex reset-credit card, confirmation and expiry screenshots matched at AE=0; browser checks covered lookup/consume failures, cancellation, pending controls and confirmed reset. Four reset-time screenshots also matched at AE=0, with Today/Tomorrow/dated tooltips and recurring/expiry labels checked using a fixed clock. Four synthetic Command Code balance/window and A6API unlimited screenshots matched at AE=0, including missing-icon and secondary-account-label behavior; four more Antigravity, Kimi and Claude window/message screenshots matched at AE=0. The synthetic browser also checked retained last-good quota after 500 then 404, and provider 401 displayed as a message. Other provider-specific behavior remains incomplete; no live provider was contacted.
 - Proxy Pools: sixteen self-repeating Astro desktop/mobile light/dark screenshots for empty, populated, selected and add-dialog states matched at AE=0 without masks. Synthetic browser checks covered CRUD, import, bulk and health actions, mocked relay deployment and session recheck; no real proxy or external relay was contacted.
+- Translator (partial): the seven-stage page and a Rust-controlled editor are present. A synthetic browser flow passed against both Astro and Dioxus for stage actions, streaming, basic Find/Replace, undo, indentation and JSON pairing. Eight empty/populated Astro references self-repeated at AE=0, but the latest candidate comparison before later keyboard-only edits still differed by 89–126 pixels; no visual parity is claimed. The editor is not Monaco-complete, and genuine IME and accessibility parity remain unverified. No live provider was contacted.
 - Blocker: none external. Dioxus re-encodes PNG color metadata; `frontend/scripts/build.sh` preserves original provider icons for the served output. The skeleton and theme cannot appear before WASM startup as Astro's synchronous HTML/script did.
-- Next: complete Quota Tracker, migrate the other missing routes and remaining provider-specific behavior, and implement the Translator editor. Cline's live query-preservation behavior remains unverified.
+- Next: continue the Translator editor and its visual comparison, then complete remaining Quota Tracker/provider-detail behavior and packaging. Cline's live query-preservation behavior remains unverified.
 
 ## Material Decisions
 
@@ -139,6 +140,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-10-27: R2 synthetic Antigravity, Kimi and Claude quota windows matched four self-repeating Astro screenshots at AE=0.
 - 2026-10-27: R3 synthetic quota refresh retained the last successful result after 500/404 and displayed a provider 401 as a message, matching Astro without contacting providers.
 - 2026-10-27: R2/R3 Codex reset-credit controls matched twelve self-repeating synthetic Astro screenshots at AE=0; lookup, confirmation, failure and reset behavior were exercised without contacting Codex.
+- 2026-10-27: R2/R3/R4 Translator route and basic editor actions passed a synthetic browser flow against Astro and Dioxus. Empty/populated references self-repeated, but candidate screenshots still differed; full Monaco behavior, genuine IME, accessibility and visual parity remain open.
 
 ## Completion
 

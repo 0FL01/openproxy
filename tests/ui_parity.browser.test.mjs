@@ -140,6 +140,8 @@ const screens = [
   { section: "proxy-pools", name: "ready" },
   { section: "proxy-pools", name: "selected" },
   { section: "proxy-pools", name: "add" },
+  { section: "translator", name: "ready" },
+  { section: "translator", name: "populated" },
   { section: "callback", name: "code", query: callbackCodeQuery, colorScheme: "light" },
   { section: "callback", name: "error", query: callbackErrorQuery, colorScheme: "light" },
   { section: "callback", name: "no-auth-data", query: "", colorScheme: "light" },
@@ -261,7 +263,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 { method: "DELETE", path: "/api/db-backups", body: {} },
                 { method: "POST", path: "/api/db-backups/import", body: { filename: "fixture.json", content: '{"fixture":true}', password: "fixture-current" } },
               ] : [];
-              const expectedWrites = screen.section === "quota" && screen.name === "codex-ready" ? Array.from({ length: 2 }, () => ({ method: "POST", path: "/api/usage/fixture-codex/codex-reset-credits", body: null })) : screen.section === "quota" && screen.name === "glm-ping" ? [true, false, true].map((enabled) => ({ method: "PATCH", path: "/api/settings", body: { glmAutoPing: { enabled: true, connections: { "other-glm": true, "fixture-glm": enabled } } } })) : screen.section === "quota" && screen.name === "ready" ? [false, true].map((isActive) => ({ method: "PUT", path: "/api/providers/fixture-github", body: { isActive } })) : screen.section === "db-backups" ? backupWrites : screen.section === "profile" ? (profileWrites[screen.name] || []) : screen.section === "console-log" && screen.name === "streaming" ? [{ method: "DELETE", path: "/api/translator/console-logs", body: null }] : isOpenRouter ? [{ method: "POST", path: "/api/models/custom", body: { providerAlias: "openrouter", id: "sample/model:free", type: "llm" } }] : screen.section === "provider-kilocode" ? (kiloWrites[screen.action] || []) : screen.section === "provider-codex-autoping" ? codexWrites : screen.login
+              const expectedWrites = screen.section === "translator" && screen.name === "populated" ? [{ method: "POST", path: "/api/translator/translate", body: { step: 1, body: { model: "fixture", count: 42, enabled: true } } }] : screen.section === "quota" && screen.name === "codex-ready" ? Array.from({ length: 2 }, () => ({ method: "POST", path: "/api/usage/fixture-codex/codex-reset-credits", body: null })) : screen.section === "quota" && screen.name === "glm-ping" ? [true, false, true].map((enabled) => ({ method: "PATCH", path: "/api/settings", body: { glmAutoPing: { enabled: true, connections: { "other-glm": true, "fixture-glm": enabled } } } })) : screen.section === "quota" && screen.name === "ready" ? [false, true].map((isActive) => ({ method: "PUT", path: "/api/providers/fixture-github", body: { isActive } })) : screen.section === "db-backups" ? backupWrites : screen.section === "profile" ? (profileWrites[screen.name] || []) : screen.section === "console-log" && screen.name === "streaming" ? [{ method: "DELETE", path: "/api/translator/console-logs", body: null }] : isOpenRouter ? [{ method: "POST", path: "/api/models/custom", body: { providerAlias: "openrouter", id: "sample/model:free", type: "llm" } }] : screen.section === "provider-kilocode" ? (kiloWrites[screen.action] || []) : screen.section === "provider-codex-autoping" ? codexWrites : screen.login
                 ? [{ method: "POST", path: "/api/auth/login", body: { password: "fixture-password" } }]
                 : screen.action === "created"
                   ? [{ method: "POST", path: "/api/keys", body: { name: "Fixture new" } }]
@@ -349,6 +351,11 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   const url = new URL(request.url());
                   const path = url.pathname;
                   const method = request.method();
+                  if (screen.section === "translator" && mode === "record" && method === "GET" && url.origin === "https://cdn.jsdelivr.net" && path.startsWith("/npm/monaco-editor@0.55.1/min/vs/") && !url.search) {
+                    const directory = resolve(process.env.UI_MONACO_VS_DIR || "/monaco-vs");
+                    const file = resolve(directory, path.slice("/npm/monaco-editor@0.55.1/min/vs/".length));
+                    if (file.startsWith(directory + "/") && existsSync(file)) return route.fulfill({ path: file });
+                  }
                   const assets = screen.section === "callback"
                     ? ((path === "/callback" && url.search === screen.query) || (mode === "compare" && !url.search && (path === "/favicon.svg" || path.startsWith("/_astro/") || path.startsWith("/assets/"))))
                     : screen.section === "provider-compatible" || isCodexDetail || isOpenRouter || isXaiDetail
@@ -363,7 +370,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     (screen.section === "db-backups" && !url.search && path === "/dashboard/db-backups") ||
                     (screen.section === "logs" && !url.search && path === "/dashboard/logs") ||
                     (screen.section === "quota" && !url.search && ["/dashboard/quota", "/providers/github.png", "/providers/glm.png", "/providers/codex.png", "/providers/commandcode.png", "/providers/a6api.png", "/providers/antigravity.png", "/providers/kimi.png", "/providers/claude.png"].includes(path)) ||
-                    (screen.section === "proxy-pools" && !url.search && path === "/dashboard/proxy-pools");
+                    (screen.section === "proxy-pools" && !url.search && path === "/dashboard/proxy-pools") ||
+                    (screen.section === "translator" && !url.search && path === "/dashboard/translator");
                   if (url.origin === appUrl && method === "GET" && assets) {
                     if (!isCodexDetail) return route.continue();
                     // Do not let even an allowed asset redirect around the
@@ -419,7 +427,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   const logRequest = screen.section === "logs" && method === "GET" && ["/api/request-logs", "/api/request-logs/tps-stats"].includes(path) && [...url.searchParams.keys()].every((key) => ["page", "pageSize", "apiKeyId", "status", "provider", "model", "hiddenProviders"].includes(key));
                   const quotaRequest = screen.section === "quota" && ((method === "GET" && ((!url.search && ["/api/providers", "/api/usage/fixture-github", "/api/usage/fixture-glm", "/api/usage/fixture-codex", "/api/usage/fixture-commandcode", "/api/usage/fixture-a6", "/api/usage/fixture-antigravity", "/api/usage/fixture-kimi", "/api/usage/fixture-claude", "/api/usage/fixture-codex/codex-reset-credits"].includes(path)) || (path === "/api/proxy-pools" && url.search === "?isActive=true"))) || (method === "POST" && !url.search && path === "/api/usage/fixture-codex/codex-reset-credits" && screen.name === "codex-ready") || (method === "PUT" && !url.search && path === "/api/providers/fixture-github") || (screen.name === "glm-ping" && method === "PATCH" && !url.search && path === "/api/settings"));
                   const proxyPoolsRequest = screen.section === "proxy-pools" && method === "GET" && path === "/api/proxy-pools" && url.search === "?includeUsage=true";
-                  const valid = url.origin === appUrl && (providerGet || providerNewGet || kiloGet || kiloMutation || compatibleGet || codexGet || codexMutation || routerGet || routerMutation || xaiGet || consoleRequest || profileMutation || profileExport || backupRequest || logRequest || quotaRequest || proxyPoolsRequest || (!isCodexDetail && !["providers", "providers-new", "provider-kilocode", "provider-compatible", "provider-openrouter", "provider-xai", "callback"].includes(screen.section) && (
+                  const translatorRequest = screen.section === "translator" && screen.name === "populated" && method === "POST" && path === "/api/translator/translate" && !url.search;
+                  const valid = url.origin === appUrl && (providerGet || providerNewGet || kiloGet || kiloMutation || compatibleGet || codexGet || codexMutation || routerGet || routerMutation || xaiGet || consoleRequest || profileMutation || profileExport || backupRequest || logRequest || quotaRequest || proxyPoolsRequest || translatorRequest || (!isCodexDetail && !["providers", "providers-new", "provider-kilocode", "provider-compatible", "provider-openrouter", "provider-xai", "callback"].includes(screen.section) && (
                     (method === "GET" && ["/api/auth/status", "/api/settings", "/api/keys", "/api/build", "/api/catalog"].includes(path)) ||
                     (method === "POST" && path === "/api/auth/login" && !!screen.login) ||
                     (method === "POST" && path === "/api/keys" && screen.action === "created")
@@ -444,7 +453,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       return route.abort("blockedbyclient");
                     }
                     const write = { method, path: ["provider-kilocode", "provider-codex-autoping"].includes(screen.section) ? `${path}${url.search}` : path, body: requestBody };
-                    if ((["provider-kilocode", "provider-codex-autoping", "console-log", "profile", "db-backups", "quota"].includes(screen.section) || isOpenRouter) && !isDeepStrictEqual(write, expectedWrites[writes.length])) {
+                    if ((["provider-kilocode", "provider-codex-autoping", "console-log", "profile", "db-backups", "quota", "translator"].includes(screen.section) || isOpenRouter) && !isDeepStrictEqual(write, expectedWrites[writes.length])) {
                       unexpected.push(`unexpected mutation ${method} ${url.origin}${path}${url.search}`);
                       return route.abort("blockedbyclient");
                     }
@@ -453,6 +462,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   let status = 200;
                   let body = {};
                   const headers = {};
+                  if (translatorRequest) return route.fulfill({ json: { success: false, error: "Synthetic detection failure" } });
                   if (path === "/api/providers/fixture-xai/models") {
                     if (screen.name === "pending") await new Promise((resolve) => { releaseXaiForce = resolve; observeXaiForce(); });
                     return route.fulfill({ status: 503, json: { error: "Synthetic discovery failure" } });
@@ -554,7 +564,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       if (writes.length === 3) return route.fulfill({ status: 503, json: { error: "Synthetic settings failure" } });
                       glmConfig = request.postDataJSON().glmAutoPing;
                     }
-                    body = { requireLogin: true, requireApiKey: !screen.insecure, hasPassword: true, ...(screen.section === "profile" ? profileSettings : {}),
+                    body = { requireLogin: true, requireApiKey: !screen.insecure, hasPassword: true, ...(screen.section === "translator" ? { enableTranslator: true } : {}), ...(screen.section === "profile" ? profileSettings : {}),
                       ...(isCodexDetail ? { codexAutoPing: currentCodexConfig, glmAutoPing: { enabled: false, connections: {} } } : {}),
                       ...(screen.section === "quota" && screen.name === "glm-ping" ? { codexAutoPing: { enabled: false, connections: {} }, glmAutoPing: glmConfig } : {}) };
                   } else if (path === "/api/build") {
@@ -648,7 +658,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   if (path === "/api/oauth/codex/stop-proxy") interceptedCodexStop += 1;
                 });
 
-                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : screen.section === "providers-new" ? "/dashboard/providers/new" : screen.section === "provider-kilocode" ? "/dashboard/providers/kilocode" : screen.section === "provider-compatible" ? compatiblePath : isCodexDetail ? codexPath : isOpenRouter ? "/dashboard/providers/openrouter" : isXaiDetail ? "/dashboard/providers/xai" : screen.section === "skills" ? "/dashboard/skills" : screen.section === "console-log" ? "/dashboard/console-log" : screen.section === "profile" ? "/dashboard/profile" : screen.section === "db-backups" ? "/dashboard/db-backups" : screen.section === "logs" ? "/dashboard/logs" : screen.section === "quota" ? "/dashboard/quota" : screen.section === "proxy-pools" ? "/dashboard/proxy-pools" : screen.section === "callback" ? "/callback" : "/dashboard/endpoint";
+                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : screen.section === "providers-new" ? "/dashboard/providers/new" : screen.section === "provider-kilocode" ? "/dashboard/providers/kilocode" : screen.section === "provider-compatible" ? compatiblePath : isCodexDetail ? codexPath : isOpenRouter ? "/dashboard/providers/openrouter" : isXaiDetail ? "/dashboard/providers/xai" : screen.section === "skills" ? "/dashboard/skills" : screen.section === "console-log" ? "/dashboard/console-log" : screen.section === "profile" ? "/dashboard/profile" : screen.section === "db-backups" ? "/dashboard/db-backups" : screen.section === "logs" ? "/dashboard/logs" : screen.section === "quota" ? "/dashboard/quota" : screen.section === "proxy-pools" ? "/dashboard/proxy-pools" : screen.section === "translator" ? "/dashboard/translator" : screen.section === "callback" ? "/callback" : "/dashboard/endpoint";
                 const sourceRoute = screen.section === "provider-compatible" ? compatibleTemplate : path;
                 const response = await page.goto(`${appUrl}${path}${screen.query || ""}`, { waitUntil: "domcontentloaded" });
                 assert(response?.ok(), `failed to load ${path}`);
@@ -660,7 +670,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       assert(html.includes(marker), "record mode requires the standalone Astro callback markup");
                     }
                   } else {
-                    const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : screen.section === "providers-new" ? "ProvidersNewPageClient." : ["provider-kilocode", "provider-compatible"].includes(screen.section) || isCodexDetail || isOpenRouter || isXaiDetail ? "ProviderDetailPageClient." : screen.section === "skills" ? "SkillsPageClient." : screen.section === "console-log" ? "ConsoleLogClient." : screen.section === "profile" ? "ProfilePageClient." : screen.section === "db-backups" ? "DbBackupsPageClient." : screen.section === "logs" ? "ApplicationLogsClient." : screen.section === "quota" ? "QuotaPageClient." : screen.section === "proxy-pools" ? "ProxyPoolsPageClient." : "EndpointPageClient.";
+                    const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : screen.section === "providers-new" ? "ProvidersNewPageClient." : ["provider-kilocode", "provider-compatible"].includes(screen.section) || isCodexDetail || isOpenRouter || isXaiDetail ? "ProviderDetailPageClient." : screen.section === "skills" ? "SkillsPageClient." : screen.section === "console-log" ? "ConsoleLogClient." : screen.section === "profile" ? "ProfilePageClient." : screen.section === "db-backups" ? "DbBackupsPageClient." : screen.section === "logs" ? "ApplicationLogsClient." : screen.section === "quota" ? "QuotaPageClient." : screen.section === "proxy-pools" ? "ProxyPoolsPageClient." : screen.section === "translator" ? "TranslatorPageClient." : "EndpointPageClient.";
                     assert(html.includes(`component-url="/_astro/${component}`), "record mode requires the Astro reference");
                     if (screen.section === "provider-compatible") assert(source.routes[sourceRoute], "dynamic Astro provider template hash must be pinned before recording");
                     if (isCodexDetail) assert(source.routes[sourceRoute], "Astro Codex route hash must be pinned before recording");
@@ -679,6 +689,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 else if (screen.section === "providers") await page.getByRole("heading", { name: "Custom Providers (OpenAI/Anthropic Compatible)" }).waitFor();
                 else if (screen.section === "providers-new") await page.getByRole("heading", { name: "Add New Provider" }).waitFor();
                 else if (screen.section === "provider-kilocode") await page.getByRole("checkbox", { name: "Select connection Fixture connection" }).waitFor();
+                else if (screen.section === "translator") { await page.getByRole("heading", { name: "Translator Debug" }).waitFor(); if (mode === "record") await page.locator(".monaco-editor .view-lines").waitFor(); }
                 else if (screen.section === "provider-compatible") await page.getByRole("heading", { name: "OpenAI Compatible Details", exact: true }).waitFor();
                 else if (isCodexDetail) await page.getByRole("checkbox", { name: "Select connection Fixture Codex" }).waitFor();
                 else if (isOpenRouter) await page.getByText("Suggested free models (≥200k context):", { exact: true }).waitFor();
@@ -768,6 +779,21 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   }
                   await page.mouse.move(1, 1);
                   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+                } else if (screen.section === "translator") {
+                  if (screen.name === "populated") {
+                    const content = '{\n  "model": "fixture",\n  "count": 42,\n  "enabled": true\n}';
+                    const detection = page.waitForResponse(response => response.url() === `${appUrl}/api/translator/translate` && response.request().method() === "POST");
+                    if (mode === "record") await page.evaluate(value => window.monaco.editor.getEditors()[0].setValue(value), content);
+                    else {
+                      const editor = page.getByLabel("Translator editor");
+                      await editor.fill(content);
+                      await editor.evaluate(element => { element.setSelectionRange(0, 0); element.dispatchEvent(new Event("select", { bubbles: true })); element.blur(); });
+                    }
+                    await detection;
+                  }
+                  await page.waitForLoadState("networkidle");
+                  await page.mouse.move(1, 1);
+                  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
                 } else if (screen.section === "proxy-pools") {
                   if (screen.name === "selected") {
                     await page.getByText("Select all", { exact: true }).locator("..").locator('input[type="checkbox"]').check();

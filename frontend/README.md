@@ -7,9 +7,11 @@ the shared dashboard shell and Endpoint page at `/`, `/dashboard`, and
 `/dashboard/providers/new`, Skills at `/dashboard/skills`, Console Log at
 `/dashboard/console-log`, Settings at `/dashboard/profile`, DB Backups at
 `/dashboard/db-backups`, Application Logs at `/dashboard/logs`, Proxy Pools at
-`/dashboard/proxy-pools`, and partial Quota Tracker (`/dashboard/quota`) and
-provider detail (`/dashboard/providers/:id`) pages
-against the existing same-origin APIs. It does not replace the Astro frontend
+`/dashboard/proxy-pools`, and partial Quota Tracker (`/dashboard/quota`),
+Translator (`/dashboard/translator`) and provider detail
+(`/dashboard/providers/:id`) pages against the existing same-origin APIs.
+The Translator editor does not yet match Monaco's full behavior or appearance.
+This application does not replace the Astro frontend
 or alter how OpenProxy is packaged or served. Other dashboard pages are not
 implemented; their links remain ordinary browser navigations, not
 substitute pages. Login and logout use full browser redirects, as the current
