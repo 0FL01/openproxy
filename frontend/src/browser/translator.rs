@@ -611,11 +611,18 @@ fn indent_json_newline(input: &web_sys::HtmlTextAreaElement) -> bool {
     !indentation.is_empty() && insert_text(input, start, end, &format!("\n{indentation}"))
 }
 
+struct AutoIndent {
+    text: String,
+    start: usize,
+    end: usize,
+}
+
 fn insert_line(
     input: &web_sys::HtmlTextAreaElement,
     above: bool,
     json: bool,
-) -> Option<NativeUndo> {
+    automatic: Option<AutoIndent>,
+) -> Option<(NativeUndo, Option<AutoIndent>)> {
     let before = input.value();
     let start = input.selection_start().ok().flatten().unwrap_or_default();
     let end = input.selection_end().ok().flatten().unwrap_or(start);
@@ -673,26 +680,74 @@ fn insert_line(
     } else {
         format!("\n{}", " ".repeat(columns))
     };
-    if !insert_text(input, position as u32, position as u32, &text) {
+    let trim = automatic.filter(|indent| {
+        indent.text == before
+            && indent.start < indent.end
+            && indent.end <= units.len()
+            && (indent.start == 0 || units[indent.start - 1] == 10)
+            && (indent.end == units.len() || units[indent.end] == 10)
+            && units[indent.start..indent.end]
+                .iter()
+                .all(|ch| matches!(ch, 9 | 32))
+            && (position < indent.start
+                || position > indent.end
+                || position == indent.end && text.starts_with('\n')
+                || position == indent.start && text.ends_with('\n'))
+    });
+    let mut replace_start = position;
+    let mut replace_end = position;
+    let mut replacement = text.clone();
+    let mut removed_before = 0;
+    if let Some(indent) = trim {
+        replace_start = position.min(indent.start);
+        replace_end = position.max(indent.end);
+        let mut content = units[replace_start..replace_end].to_vec();
+        let insertion = position - replace_start;
+        content.splice(insertion..insertion, text.encode_utf16());
+        let shift = if position <= indent.start {
+            text.len()
+        } else {
+            0
+        };
+        content.drain(indent.start - replace_start + shift..indent.end - replace_start + shift);
+        replacement = String::from_utf16_lossy(&content);
+        if indent.end <= position {
+            removed_before = indent.end - indent.start;
+        }
+    }
+    if !insert_text(
+        input,
+        replace_start as u32,
+        replace_end as u32,
+        &replacement,
+    ) {
         return None;
     }
     let after_cursor = if at_start {
         0
     } else {
-        (position + text.len()) as u32
+        (position + text.len() - removed_before) as u32
     };
     let _ = input.set_selection_range(after_cursor, after_cursor);
     let after = input.value();
+    let automatic = (!at_start && columns > 0).then(|| AutoIndent {
+        text: after.clone(),
+        start: after_cursor as usize - columns,
+        end: after_cursor as usize,
+    });
     let edit = CompositionEdit::new(&before, &after);
-    Some(NativeUndo {
-        before,
-        after,
-        start,
-        end,
-        direction,
-        after_selection: Some((after_cursor, after_cursor, "none".into())),
-        edits: vec![edit],
-    })
+    Some((
+        NativeUndo {
+            before,
+            after,
+            start,
+            end,
+            direction,
+            after_selection: Some((after_cursor, after_cursor, "none".into())),
+            edits: vec![edit],
+        },
+        automatic,
+    ))
 }
 
 fn character_top(line: &web_sys::HtmlElement, mut index: usize) -> Option<f64> {
@@ -1753,6 +1808,7 @@ fn Editor(
     let mut composition_start = use_signal(|| None::<NativeUndo>);
     let mut composition_undo = use_signal(|| None::<NativeUndo>);
     let mut command_selections = use_signal(NativeSelectionHistory::default);
+    let mut auto_indent = use_signal(|| None::<AutoIndent>);
     let mut composition_extendable = use_signal(|| false);
     let mut composition_cursor = use_signal(|| None::<(u32, u32)>);
     let mut adjusting_history = use_signal(|| false);
@@ -2494,7 +2550,9 @@ fn Editor(
                             }
                             if control && !modifiers.alt() && event.key() == Key::Enter {
                                 event.prevent_default();
-                                if let Some(input) = textarea.peek().as_ref() && let Some(undo) = insert_line(input, modifiers.shift(), json) {
+                                let automatic = auto_indent.write().take();
+                                if let Some(input) = textarea.peek().as_ref() && let Some((undo, automatic)) = insert_line(input, modifiers.shift(), json, automatic) {
+                                    auto_indent.set(automatic);
                                     command_selections.write().record(undo);
                                     composition_extendable.set(false);
                                     update_cursor.call(());
@@ -2654,6 +2712,7 @@ fn Editor(
                         },
                         oninput: move |event| {
                             if *adjusting_history.peek() { return; }
+                            auto_indent.set(None);
                             let mut value = event.value();
                             let previous = last_input.peek().clone();
                             if previous != value { current_find.set(None); }

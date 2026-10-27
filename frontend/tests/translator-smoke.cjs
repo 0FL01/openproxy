@@ -99,6 +99,13 @@ async function main() {
       const below = '{\n  "text": "😺",\n  \n  "other": []\n}';
       assert.equal(await value(), below, "Insert Line Below retains the current JSON indentation");
       assert.equal(await cursor(), below.indexOf("\n  \n") + 3);
+      await page.keyboard.press("Control+Enter");
+      const twice = below.replace("\n  \n", "\n\n  \n");
+      assert.equal(await value(), twice, "leaving an automatically indented empty line trims only its generated spaces");
+      assert.equal(await cursor(), twice.indexOf("\n\n  \n") + 4);
+      await page.keyboard.press("Control+z");
+      assert.equal(await value(), below, "whitespace cleanup and the new line undo together");
+      assert.equal(await cursor(), below.indexOf("\n  \n") + 3);
       await page.keyboard.press("Control+z");
       assert.equal(await value(), text);
       assert.equal(await cursor(), offset, "Undo restores the original cursor, not the line-end insertion point");
@@ -117,6 +124,14 @@ async function main() {
       await page.keyboard.press("Control+Shift+Enter");
       assert.equal(await value(), "\n" + text);
       assert.equal(await cursor(), 0, "inserting above the first line leaves the cursor on the new empty first line");
+      const manual = '{\n  \n"other": []\n}';
+      if (reference) {
+        await page.evaluate(text => { const e = window.monaco.editor.getEditors()[0]; e.setValue(text); e.setPosition({ lineNumber: 2, column: 3 }); e.focus(); }, manual);
+        await settleReferenceJson();
+      } else { await editor().fill(manual); await editor().evaluate(input => { input.setSelectionRange(4, 4); input.focus(); }); }
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.keyboard.press("Control+Enter");
+      assert.equal(await value(), '{\n  \n  \n"other": []\n}', "user-provided whitespace on an empty line is not trimmed");
       if (reference) await settleReferenceJson();
       await page.getByRole("button", { name: /Client Request/ }).click();
       await page.getByRole("button", { name: /Provider Response/ }).click();
