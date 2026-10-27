@@ -1210,7 +1210,12 @@ fn history_command(command: &str) -> bool {
 }
 
 #[component]
-fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element {
+fn Editor(
+    value: String,
+    json: bool,
+    mut tab_moves_focus: Signal<bool>,
+    on_change: EventHandler<String>,
+) -> Element {
     let mut textarea = use_signal(|| None::<web_sys::HtmlTextAreaElement>);
     let mut size_observer = use_signal(|| None::<Rc<EditorSizeObserver>>);
     let mut editor_width = use_signal(|| 0_i32);
@@ -1230,6 +1235,7 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
     let mut has_changed = use_signal(|| !value.is_empty());
     let mut find_open = use_signal(|| false);
     let mut replace_open = use_signal(|| false);
+    let mut tab_focus_announcement = use_signal(String::new);
     let mut query = use_signal(String::new);
     let mut replacement = use_signal(String::new);
     let mut match_index = use_signal(|| 0_usize);
@@ -1661,7 +1667,13 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
                                     event.prevent_default();
                                     update_cursor.call(());
                                 }
-                            } else if event.key() == Key::Tab && !event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().alt() {
+                            } else if event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().alt() && key.eq_ignore_ascii_case("m")
+                                && event.modifiers().shift() == web_sys::window().and_then(|window| window.navigator().user_agent().ok()).is_some_and(|agent| agent.contains("Macintosh")) {
+                                event.prevent_default();
+                                let enabled = !*tab_moves_focus.peek();
+                                tab_moves_focus.set(enabled);
+                                tab_focus_announcement.set(if enabled { "Pressing Tab will now move focus to the next focusable element" } else { "Pressing Tab will now insert the tab character" }.to_owned());
+                            } else if event.key() == Key::Tab && !event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().alt() && !*tab_moves_focus.peek() {
                                 event.prevent_default();
                                 if let Some(input) = textarea.peek().as_ref() { indent_selection(input, event.modifiers().shift()); }
                                 update_cursor.call(());
@@ -1816,6 +1828,7 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
                     }
                 }
                 canvas { aria_hidden: "true", style: "position:absolute;transform:translate3d(0,0,0);contain:strict;top:0;right:0;width:14px;height:400px;pointer-events:none;", onmounted: move |event| { if let Some(element) = event.data().downcast::<web_sys::Element>() && let Ok(canvas) = element.clone().dyn_into::<web_sys::HtmlCanvasElement>() { ruler.set(Some(canvas)); } } }
+                if !tab_focus_announcement().is_empty() { div { role: "alert", aria_atomic: "true", style: "position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;", "{tab_focus_announcement}" } }
                 if find_open() { div { role: "dialog", aria_label: "Find / Replace", style: "position:absolute;z-index:5;top:0;right:28px;width:min(419px,calc(100% - 28px));padding:4px;background:#252526;color:#cccccc;font:12px sans-serif;box-shadow:0 2px 8px #0008;",
                     div { style: "display:flex;align-items:center;gap:4px;height:25px;",
                     button { r#type: "button", aria_label: "Toggle Replace", onclick: move |_| { let next = !*replace_open.peek(); replace_open.set(next); }, if replace_open() { "⌄" } else { "›" } }
@@ -1865,6 +1878,7 @@ fn MetaBadge(label: &'static str, value: String, color: &'static str) -> Element
 #[component]
 pub(super) fn TranslatorPage() -> Element {
     let mut contents = use_signal(|| vec![String::new(); STEPS.len()]);
+    let tab_moves_focus = use_signal(|| false);
     let mut expanded = use_signal(|| vec![true, false, false, false, false, false, false]);
     let mut loading = use_signal(HashSet::<usize>::new);
     let meta = use_signal(|| None::<Value>);
@@ -2033,7 +2047,7 @@ pub(super) fn TranslatorPage() -> Element {
                                 } }
                             }
                             if is_expanded {
-                                div { class: "border border-hairline rounded-mini-lg overflow-hidden", section { style: "display:flex;position:relative;text-align:initial;width:100%;height:400px;", div { style: "width:100%;", Editor { value: content.clone(), json: step < 4, on_change: move |value: String| { let changed = contents.peek()[step] != value; if changed { contents.write()[step] = value.clone(); if step == 0 { detect_meta(&value, meta); } } } } } } }
+                                div { class: "border border-hairline rounded-mini-lg overflow-hidden", section { style: "display:flex;position:relative;text-align:initial;width:100%;height:400px;", div { style: "width:100%;", Editor { value: content.clone(), json: step < 4, tab_moves_focus, on_change: move |value: String| { let changed = contents.peek()[step] != value; if changed { contents.write()[step] = value.clone(); if step == 0 { detect_meta(&value, meta); } } } } } } }
                                 div { class: "flex gap-2 flex-wrap",
                                     Button { label: "Load".to_owned(), icon: "folder_open".to_owned(), variant: "outline", small: true, loading: busy.contains(&(step + 10)), onclick: move |_| load.call(step) }
                                     Button { label: "Format".to_owned(), icon: "data_object".to_owned(), variant: "outline", small: true, onclick: move |_| { let raw = contents.peek()[step].clone(); if let Ok(value) = serde_json::from_str::<Value>(&raw) { contents.write()[step] = pretty(&value); } } }

@@ -86,6 +86,38 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
+    if (reference) await page.evaluate(() => { const e = window.monaco.editor.getEditors()[0]; e.setValue("ab"); e.setPosition({ lineNumber: 1, column: 3 }); e.focus(); });
+    else await editor().fill("ab");
+    await page.keyboard.press("Control+m");
+    await page.getByRole("alert").filter({ hasText: "Pressing Tab will now move focus to the next focusable element" }).waitFor();
+    await page.keyboard.press("Tab");
+    assert.match(await page.evaluate(() => document.activeElement?.textContent || ""), /Load/, "Tab moves focus out of the editor when tab focus mode is enabled");
+    assert.equal(await value(), "ab", "moving focus does not edit the document");
+    if (reference) await page.evaluate(() => window.monaco.editor.getEditors()[0].focus()); else await editor().focus();
+    await page.keyboard.press("Control+m");
+    await page.getByRole("alert").filter({ hasText: "Pressing Tab will now insert the tab character" }).waitFor();
+    await page.keyboard.press("Tab");
+    assert.equal(await value(), "ab  ", "Tab inserts indentation after tab focus mode is disabled");
+    if (process.env.TRANSLATOR_TAB_FOCUS_ONLY === "1") {
+      await page.keyboard.press("Control+m");
+      await page.getByRole("button", { name: /Source Body/ }).click();
+      if (reference) {
+        await page.locator(".monaco-editor .view-lines").nth(1).waitFor();
+        await page.evaluate(() => { const e = window.monaco.editor.getEditors()[1]; e.setValue("second"); e.setPosition({ lineNumber: 1, column: 7 }); e.focus(); });
+      } else await editor().last().fill("second");
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.keyboard.press("Tab");
+      assert.match(await page.evaluate(() => document.activeElement?.textContent || ""), /Load/, "tab focus mode is shared with another open stage");
+      if (reference) await page.evaluate(() => window.monaco.editor.getEditors()[1].focus()); else await editor().last().focus();
+      await page.keyboard.press("Control+m");
+      if (reference) await page.evaluate(() => window.monaco.editor.getEditors()[0].focus()); else await editor().first().focus();
+      await page.keyboard.press("Tab");
+      const firstValue = reference ? await page.evaluate(() => window.monaco.editor.getEditors()[0].getValue()) : await editor().first().inputValue();
+      assert.equal(firstValue, "ab      ", "disabling tab focus in another stage restores indentation here");
+      assert.deepEqual(errors, []);
+      console.log("synthetic translator tab focus smoke passed");
+      return;
+    }
     const scopedText = "outside cat\ninside cat and cat\noutside cat";
     if (reference) await page.evaluate(text => { const e = window.monaco.editor.getEditors()[0]; e.setValue(text); e.setSelection(new window.monaco.Selection(2, 1, 2, 19)); e.focus(); }, scopedText);
     else { await editor().fill(scopedText); await editor().evaluate(input => input.setSelectionRange(12, 30)); }
