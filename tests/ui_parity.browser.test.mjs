@@ -131,6 +131,7 @@ const screens = [
   { section: "quota", name: "ready" },
   { section: "quota", name: "reset-times" },
   { section: "quota", name: "provider-formats" },
+  { section: "quota", name: "provider-windows" },
   { section: "quota", name: "glm-ping" },
   { section: "quota", name: "codex-ready" },
   { section: "quota", name: "codex-confirm" },
@@ -316,7 +317,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 ];
                 let kiloFreeOnly = false;
                 let routerCustom = [];
-                let quotaConnections = ["ready", "reset-times"].includes(screen.name) ? [{ id: "fixture-github", provider: "github", name: "Fixture account", authType: "oauth", isActive: true }] : screen.name === "provider-formats" ? [{ id: "fixture-commandcode", provider: "commandcode", name: "Fixture account", email: "fixture@example.invalid", authType: "apikey", isActive: true }, { id: "fixture-a6", provider: "a6api", name: "Fixture A6", authType: "apikey", isActive: true }] : screen.name === "glm-ping" ? [{ id: "fixture-glm", provider: "glm", name: "Fixture account", authType: "apikey", isActive: true }] : screen.section === "quota" && screen.name.startsWith("codex-") ? [{ id: "fixture-codex", provider: "codex", name: "Fixture account", authType: "oauth", isActive: true }] : [];
+                let quotaConnections = ["ready", "reset-times"].includes(screen.name) ? [{ id: "fixture-github", provider: "github", name: "Fixture account", authType: "oauth", isActive: true }] : screen.name === "provider-formats" ? [{ id: "fixture-commandcode", provider: "commandcode", name: "Fixture account", email: "fixture@example.invalid", authType: "apikey", isActive: true }, { id: "fixture-a6", provider: "a6api", name: "Fixture A6", authType: "apikey", isActive: true }] : screen.name === "provider-windows" ? [{ id: "fixture-antigravity", provider: "antigravity", name: "Fixture account", authType: "oauth", isActive: true }, { id: "fixture-kimi", provider: "kimi", name: "Fixture Kimi", authType: "oauth", isActive: true }, { id: "fixture-claude", provider: "claude", name: "Fixture Claude", authType: "oauth", isActive: true }] : screen.name === "glm-ping" ? [{ id: "fixture-glm", provider: "glm", name: "Fixture account", authType: "apikey", isActive: true }] : screen.section === "quota" && screen.name.startsWith("codex-") ? [{ id: "fixture-codex", provider: "codex", name: "Fixture account", authType: "oauth", isActive: true }] : [];
                 let codexCredits = 1;
                 let creditGetError = false;
                 let creditPostError = false;
@@ -359,7 +360,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     (screen.section === "profile" && !url.search && path === "/dashboard/profile") ||
                     (screen.section === "db-backups" && !url.search && path === "/dashboard/db-backups") ||
                     (screen.section === "logs" && !url.search && path === "/dashboard/logs") ||
-                    (screen.section === "quota" && !url.search && ["/dashboard/quota", "/providers/github.png", "/providers/glm.png", "/providers/codex.png", "/providers/commandcode.png", "/providers/a6api.png"].includes(path)) ||
+                    (screen.section === "quota" && !url.search && ["/dashboard/quota", "/providers/github.png", "/providers/glm.png", "/providers/codex.png", "/providers/commandcode.png", "/providers/a6api.png", "/providers/antigravity.png", "/providers/kimi.png", "/providers/claude.png"].includes(path)) ||
                     (screen.section === "proxy-pools" && !url.search && path === "/dashboard/proxy-pools");
                   if (url.origin === appUrl && method === "GET" && assets) {
                     if (!isCodexDetail) return route.continue();
@@ -414,7 +415,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   const profileExport = screen.section === "profile" && screen.name === "database" && method === "GET" && !url.search && path === "/api/settings/database";
                   const backupRequest = screen.section === "db-backups" && !url.search && ((method === "GET" && ["/api/db-backups", "/api/db-backups/export"].includes(path)) || (screen.name === "ready" && ((method === "PUT" && path === "/api/db-backups") || (method === "DELETE" && ["/api/db-backups", "/api/db-backups/fixture-1"].includes(path)) || (method === "POST" && ["/api/db-backups/restore", "/api/db-backups/import"].includes(path)))));
                   const logRequest = screen.section === "logs" && method === "GET" && ["/api/request-logs", "/api/request-logs/tps-stats"].includes(path) && [...url.searchParams.keys()].every((key) => ["page", "pageSize", "apiKeyId", "status", "provider", "model", "hiddenProviders"].includes(key));
-                  const quotaRequest = screen.section === "quota" && ((method === "GET" && ((!url.search && ["/api/providers", "/api/usage/fixture-github", "/api/usage/fixture-glm", "/api/usage/fixture-codex", "/api/usage/fixture-commandcode", "/api/usage/fixture-a6", "/api/usage/fixture-codex/codex-reset-credits"].includes(path)) || (path === "/api/proxy-pools" && url.search === "?isActive=true"))) || (method === "POST" && !url.search && path === "/api/usage/fixture-codex/codex-reset-credits" && screen.name === "codex-ready") || (method === "PUT" && !url.search && path === "/api/providers/fixture-github") || (screen.name === "glm-ping" && method === "PATCH" && !url.search && path === "/api/settings"));
+                  const quotaRequest = screen.section === "quota" && ((method === "GET" && ((!url.search && ["/api/providers", "/api/usage/fixture-github", "/api/usage/fixture-glm", "/api/usage/fixture-codex", "/api/usage/fixture-commandcode", "/api/usage/fixture-a6", "/api/usage/fixture-antigravity", "/api/usage/fixture-kimi", "/api/usage/fixture-claude", "/api/usage/fixture-codex/codex-reset-credits"].includes(path)) || (path === "/api/proxy-pools" && url.search === "?isActive=true"))) || (method === "POST" && !url.search && path === "/api/usage/fixture-codex/codex-reset-credits" && screen.name === "codex-ready") || (method === "PUT" && !url.search && path === "/api/providers/fixture-github") || (screen.name === "glm-ping" && method === "PATCH" && !url.search && path === "/api/settings"));
                   const proxyPoolsRequest = screen.section === "proxy-pools" && method === "GET" && path === "/api/proxy-pools" && url.search === "?includeUsage=true";
                   const valid = url.origin === appUrl && (providerGet || providerNewGet || kiloGet || kiloMutation || compatibleGet || codexGet || codexMutation || routerGet || routerMutation || xaiGet || consoleRequest || profileMutation || profileExport || backupRequest || logRequest || quotaRequest || proxyPoolsRequest || (!isCodexDetail && !["providers", "providers-new", "provider-kilocode", "provider-compatible", "provider-openrouter", "provider-xai", "callback"].includes(screen.section) && (
                     (method === "GET" && ["/api/auth/status", "/api/settings", "/api/keys", "/api/build", "/api/catalog"].includes(path)) ||
@@ -457,6 +458,9 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   if (screen.section === "quota" && path === "/api/usage/fixture-github") { quotaReads += 1; return route.fulfill({ json: { plan: "pro", quotas: screen.name === "reset-times" ? { "Today": { used: 25, total: 100, resetAt: "2026-10-01T16:30:00Z" }, "Tomorrow": { used: 50, total: 100, resetAt: "2026-10-02T15:00:00Z", recurring: false }, "Expired": { used: 100, total: 100, resetAt: "2026-09-29T09:00:00Z" } } : { "Premium Requests": { used: 25, total: 100, resetAt: null } } } }); }
                   if (screen.section === "quota" && path === "/api/usage/fixture-commandcode") return route.fulfill({ json: { status: "partial", message: "Some Command Code credit fields are unavailable.", quotas: { monthly: { kind: "balance", label: "Monthly remaining", remaining: 1234.5, unit: "credit value" }, weekly: { kind: "window", label: "Weekly", used: 30, total: 100, remaining: 70, remainingPercentage: 70, resetAt: null, unit: "credit value" } } } });
                   if (screen.section === "quota" && path === "/api/usage/fixture-a6") return route.fulfill({ json: { status: "available", message: "", quotas: { "API credits": { used: 0, total: 0, remaining: 0, remainingPercentage: 100, unit: "USD", unlimited: true, recurring: false } } } });
+                  if (screen.section === "quota" && path === "/api/usage/fixture-antigravity") return route.fulfill({ json: { plan: "pro", quotas: { "claude-sonnet-4-6": { displayName: "Claude Sonnet", used: 0, total: 100, remainingPercentage: 35, resetAt: "2026-10-02T15:00:00Z" } } } });
+                  if (screen.section === "quota" && path === "/api/usage/fixture-kimi") return route.fulfill({ json: { plan: "standard", quotas: { weekly: { used: 40, total: 100, remainingPercentage: 60, resetAt: null, unlimited: false } } } });
+                  if (screen.section === "quota" && path === "/api/usage/fixture-claude") return route.fulfill({ json: { message: "Observed from synthetic traffic", quotas: { session: { used: 10, total: 100, remainingPercentage: 90, resetAt: null } } } });
                   if (screen.section === "quota" && path === "/api/usage/fixture-glm") return route.fulfill({ json: { plan: "pro", quotas: { "Premium Requests": { used: 25, total: 100, resetAt: null } } } });
                   if (screen.section === "quota" && path === "/api/usage/fixture-codex") return route.fulfill({ json: { plan: "pro", resetCredits: { availableCount: codexCredits }, quotas: { "Premium Requests": { used: 25, total: 100, resetAt: null } } } });
                   if (screen.section === "quota" && path === "/api/usage/fixture-codex/codex-reset-credits") {
@@ -786,11 +790,17 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     await page.getByText("fixture@example.invalid", { exact: true }).waitFor();
                     await page.getByText("1,234.5 credit value", { exact: true }).waitFor();
                   }
+                  if (screen.name === "provider-windows") {
+                    await page.getByText("Claude Sonnet", { exact: true }).waitFor();
+                    await page.getByText("35%", { exact: true }).waitFor();
+                    await page.getByText("Observed from synthetic traffic", { exact: true }).waitFor();
+                    await page.getByText("60%", { exact: true }).waitFor();
+                  }
                   if (screen.name === "empty") await page.getByText("Connect to providers with OAuth to track your API quota limits and usage.", { exact: true }).waitFor();
                   else {
                     await page.getByText("Fixture account", { exact: true }).waitFor();
-                    if (!["reset-times", "provider-formats"].includes(screen.name)) await page.getByText("Premium Requests", { exact: true }).waitFor();
-                    if (screen.name !== "provider-formats") await page.getByText("75%", { exact: true }).waitFor();
+                    if (!["reset-times", "provider-formats", "provider-windows"].includes(screen.name)) await page.getByText("Premium Requests", { exact: true }).waitFor();
+                    if (!["provider-formats", "provider-windows"].includes(screen.name)) await page.getByText("75%", { exact: true }).waitFor();
                     if (screen.name === "glm-ping") {
                       const ping = () => page.getByTitle("Toggle auto-ping warmup");
                       await ping().waitFor();
