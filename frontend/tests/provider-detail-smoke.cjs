@@ -363,6 +363,15 @@ async function waitForFixture(predicate) {
   }
 }
 
+// The callback form is visible before /authorize completes; an attached input
+// alone no longer proves that the OAuth attempt is ready.
+async function waitForOAuthReady(dialog) {
+  const input = dialog.getByLabel("Authorization URL");
+  await input.waitFor();
+  await dialog.page().waitForFunction(element => element.isConnected && element.value.length > 0, await input.elementHandle());
+  await dialog.getByLabel("Callback URL").waitFor();
+}
+
 async function runQuotaPingFixture(page, origin) {
   state.quotaPingOnly = true;
   state.connections = [
@@ -998,7 +1007,7 @@ async function runOAuthCopyFixture(page, origin) {
   await page.goto(`${origin}/dashboard/providers/claude`);
   await page.getByRole("button", { name: /Add Connection/ }).click();
   let dialog = page.getByRole("dialog", { name: "Connect Claude" });
-  await dialog.getByLabel("Authorization URL").waitFor();
+  await waitForOAuthReady(dialog);
   await dialog.getByRole("status").getByText("Waiting for popup authorization…", { exact: true }).waitFor();
   await dialog.getByText("Step 1: Open this URL in your browser", { exact: true }).waitFor();
   await dialog.getByText("Step 2: Paste the callback URL here", { exact: true }).waitFor();
@@ -1020,7 +1029,7 @@ async function runOAuthCopyFixture(page, origin) {
   const previousOpens = await page.evaluate(() => window.fixtureOpenCalls.length);
   await page.getByRole("button", { name: /Add Connection/ }).click();
   dialog = page.getByRole("dialog", { name: "Connect Claude" });
-  await dialog.getByLabel("Authorization URL").waitFor();
+  await waitForOAuthReady(dialog);
   await dialog.getByRole("button", { name: "Open Authorization" }).click();
   assert.equal(await page.evaluate(() => window.fixtureOpenCalls.length), previousOpens, "unsafe authorization URLs are never opened");
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
@@ -1133,10 +1142,14 @@ async function runAuthFixture(page, origin) {
   state.holdProxyResponse = true; state.releaseProxy = null;
   let firstHeld = await openProxy("xai");
   await waitForFixture(() => typeof state.releaseProxy === "function" && state.proxyLive === true);
+  await firstHeld.getByRole("status").getByText("Waiting for Grok Build OAuth…", { exact: true }).waitFor();
+  assert.equal(await firstHeld.getByLabel("Authorization URL").inputValue(), "");
+  await firstHeld.getByLabel("Callback URL").fill("fixture-early-code");
+  assert(await firstHeld.getByRole("button", { name: "Connect", exact: true }).isDisabled(), "xAI cannot submit while its proxy start is pending");
   await closeProxy(firstHeld);
   state.holdProxyResponse = false;
   let secondHeld = await openProxy("xai");
-  await secondHeld.getByLabel("Authorization URL").waitFor();
+  await waitForOAuthReady(secondHeld);
   await closeProxy(secondHeld);
   await waitForFixture(() => state.proxyStops >= initialStops + 2 && state.proxyLive === false);
   const stopsBeforeLateResponse = state.proxyStops;
@@ -1148,7 +1161,7 @@ async function runAuthFixture(page, origin) {
   async function assertStopTimeout(provider) {
     await page.goto(`${origin}/dashboard/providers/${provider}`);
     const heldStop = await openProxy(provider);
-    await heldStop.getByLabel("Authorization URL").waitFor();
+    await waitForOAuthReady(heldStop);
     state.holdStop = true; state.releaseStop = null;
     const stops = state.proxyStops;
     await closeProxy(heldStop);
@@ -1161,7 +1174,7 @@ async function runAuthFixture(page, origin) {
     await page.waitForTimeout(100);
     assert.equal(state.proxyStarts, starts, "a timed-out attempt requires explicit retry");
     await waiting.getByRole("button", { name: "Try Again" }).click();
-    await waiting.getByLabel("Authorization URL").waitFor();
+    await waitForOAuthReady(waiting);
     assert.equal(state.proxyStarts, starts + 1);
     const lastStops = state.proxyStops;
     await closeProxy(waiting);
@@ -1174,7 +1187,7 @@ async function runAuthFixture(page, origin) {
   // still complete later and kill any listener started in the meantime.
   await page.goto(`${origin}/dashboard/providers/xai`);
   const gatewayOwner = await openProxy("xai");
-  await gatewayOwner.getByLabel("Authorization URL").waitFor();
+  await waitForOAuthReady(gatewayOwner);
   state.gatewayStopOnce = true; state.gatewayStopResponded = false;
   state.gatewayStopApplied = false; state.releaseGatewayStop = null;
   await closeProxy(gatewayOwner);
@@ -1199,7 +1212,7 @@ async function runAuthFixture(page, origin) {
   const abortStop = async route => { await route.fetch(); await route.abort("failed"); };
   await page.route("**/api/oauth/xai/stop-proxy", abortStop);
   const uncertainStop = await openProxy("xai");
-  await uncertainStop.getByLabel("Authorization URL").waitFor();
+  await waitForOAuthReady(uncertainStop);
   initialStops = state.proxyStops;
   await closeProxy(uncertainStop);
   await waitForFixture(() => state.proxyStops === initialStops + 1 && state.proxyLive === false);
@@ -1226,7 +1239,7 @@ async function runAuthFixture(page, origin) {
     await closeProxy(old);
     state.holdProxy = false;
     let current = await openProxy(provider);
-    await current.getByLabel("Authorization URL").waitFor();
+    await waitForOAuthReady(current);
     await waitForFixture(() => (state.proxyStarts || 0) === starts + 2);
     const oldResponse = page.waitForResponse(response => response.url().includes(`/api/oauth/${provider}/start-proxy`));
     state.releaseProxy();
@@ -1235,7 +1248,7 @@ async function runAuthFixture(page, origin) {
     await page.waitForTimeout(150);
     assert.equal(state.proxyStops || 0, stops + 1, "late old startup cannot stop a newer active listener");
     assert.equal(state.proxyLive, true);
-    await current.getByLabel("Authorization URL").waitFor();
+    await waitForOAuthReady(current);
     await closeProxy(current);
     await waitForFixture(() => (state.proxyStops || 0) === stops + 2 && state.proxyLive === false);
   }
@@ -1251,7 +1264,7 @@ async function runAuthFixture(page, origin) {
   await waitForFixture(() => typeof state.releaseProxy === "function");
   await closeProxy(old); state.holdProxy = false;
   let current = await openProxy("xai");
-  await current.getByLabel("Authorization URL").waitFor();
+  await waitForOAuthReady(current);
   await closeProxy(current);
   await waitForFixture(() => state.proxyStops === stops + 2 && state.proxyLive === false);
   state.releaseProxy();
@@ -1259,7 +1272,7 @@ async function runAuthFixture(page, origin) {
 
   // A stop already on the wire must finish before a new startup is issued.
   current = await openProxy("xai");
-  await current.getByLabel("Authorization URL").waitFor();
+  await waitForOAuthReady(current);
   state.holdStop = true; state.releaseStop = null;
   stops = state.proxyStops;
   await closeProxy(current);
@@ -1288,7 +1301,7 @@ async function runAuthFixture(page, origin) {
   await current.getByRole("alert").getByText("Synthetic proxy failure").waitFor();
   state.rejectProxyStart = false;
   await current.getByRole("button", { name: "Try Again" }).click();
-  await current.getByLabel("Callback URL").waitFor();
+  await waitForOAuthReady(current);
   stops = state.proxyStops;
   await closeProxy(current);
   await waitForFixture(() => state.proxyStops === stops + 1 && state.proxyLive === false);
@@ -1305,7 +1318,7 @@ async function runAuthFixture(page, origin) {
   await closeProxy(old);
   await page.getByRole("button", { name: /Add Connection/ }).click();
   current = page.getByRole("dialog", { name: /Connect Claude/ });
-  await current.getByLabel("Callback URL").waitFor();
+  await waitForOAuthReady(current);
   state.holdConnectionsOnce = true; state.releaseConnections = null;
   state.releaseExchange();
   await waitForFixture(() => typeof state.releaseConnections === "function");
@@ -1326,10 +1339,10 @@ async function runAuthFixture(page, origin) {
   await waitForFixture(() => typeof state.releaseManual === "function");
   await closeProxy(old);
   current = await openProxy("xai");
-  await current.getByLabel("Callback URL").waitFor();
+  await waitForOAuthReady(current);
   state.releaseManual();
   await page.getByText("xAI fixture 1", { exact: true }).waitFor();
-  await current.getByLabel("Callback URL").waitFor();
+  await waitForOAuthReady(current);
   stops = state.proxyStops;
   await closeProxy(current);
   await waitForFixture(() => state.proxyStops === stops + 1 && state.proxyLive === false);
@@ -1340,10 +1353,10 @@ async function runAuthFixture(page, origin) {
   await closeProxy(old);
   state.proxyServerSide = false;
   current = await openProxy("xai");
-  await current.getByLabel("Callback URL").waitFor();
+  await waitForOAuthReady(current);
   state.releaseStatus();
   await page.getByText("Status account", { exact: true }).waitFor();
-  await current.getByLabel("Callback URL").waitFor();
+  await waitForOAuthReady(current);
   stops = state.proxyStops;
   await closeProxy(current);
   await waitForFixture(() => state.proxyStops === stops + 1 && state.proxyLive === false);
@@ -1504,7 +1517,7 @@ async function runCallbackFixture(page, origin) {
     const open = async () => {
       await page.getByRole("button", { name: /^add Add(?: Connection)?$/ }).click();
       const modal = page.getByRole("dialog", { name: /Connect Claude/ });
-      await modal.getByLabel("Callback URL").waitFor();
+      await waitForOAuthReady(modal);
       return modal;
     };
     let modal = await open();
@@ -1547,7 +1560,7 @@ async function runCallbackFixture(page, origin) {
     assert.notEqual(newerState, expected);
     state.releaseExchange();
     await page.getByText("Claude fixture 1", { exact: true }).waitFor();
-    await modal.getByLabel("Callback URL").waitFor();
+    await waitForOAuthReady(modal);
     await send({ code: "old-attempt", state: expected });
     await page.waitForTimeout(150);
     assert.equal(exchanges().length, before + 1, "old callbacks cannot close or exchange in a newer attempt");
@@ -1643,14 +1656,14 @@ async function runCallbackFixture(page, origin) {
     await page.goto(`${origin}/dashboard/providers/xai`);
     await page.getByRole("button", { name: /Grok Build OAuth/ }).click();
     const xaiModal = page.getByRole("dialog", { name: /Connect Grok/ });
-    await xaiModal.getByLabel("Callback URL").waitFor();
+    await waitForOAuthReady(xaiModal);
     await waitForFixture(() => typeof state.releaseStatus === "function");
     const xaiState = `fixture-state-${state.callbackAuthCounter}`;
     await send({ code: "xai-callback", state: xaiState, provider: "xai" });
     await waitForFixture(() => typeof state.releaseXaiCallback === "function");
     state.releaseStatus();
     await page.getByText("Status account", { exact: true }).waitFor();
-    await xaiModal.getByLabel("Callback URL").waitFor();
+    await waitForOAuthReady(xaiModal);
     await xaiModal.getByRole("button", { name: "Connecting..." }).waitFor();
     state.releaseXaiCallback();
     await xaiModal.waitFor({ state: "detached" });
@@ -1721,7 +1734,7 @@ async function runPopupFixture(page, origin) {
     await popup.waitForURL(`${providerOrigin}/authorize`);
     assert.equal(await popup.evaluate(() => window.opener), null, "external provider cannot access dashboard opener");
     const modal = page.getByRole("dialog", { name: `Connect ${providerName}` });
-    await modal.getByLabel("Callback URL").waitFor();
+    await waitForOAuthReady(modal);
     return { popup, modal, auth: state.popupAuthorizations.at(-1) };
   };
   const pause = () => page.waitForTimeout(500);
@@ -1765,7 +1778,7 @@ async function runPopupFixture(page, origin) {
     const oldClosed = oldPopup.waitForEvent("close", { timeout: 6000 });
     state.releaseClineExchange();
     await page.getByText("Cline fixture 1", { exact: true }).waitFor();
-    await modal.getByLabel("Callback URL").waitFor();
+    await waitForOAuthReady(modal);
     await oldClosed;
     assert.equal(popup.isClosed(), false, "old completion never closes the newer popup");
     await navigate(popup, `${origin}/callback?code=old-attempt&openproxy_oauth_nonce=${nonce}`);
@@ -1785,7 +1798,7 @@ async function runPopupFixture(page, origin) {
     });
     await page.getByRole("button", { name: /^add Add(?: Connection)?$/ }).click();
     modal = page.getByRole("dialog", { name: "Connect Claude" });
-    await modal.getByLabel("Callback URL").waitFor();
+    await waitForOAuthReady(modal);
     const openButton = modal.getByRole("button", { name: "Open Authorization" });
     await openButton.waitFor();
     const blockedEvent = page.waitForEvent("popup");
@@ -2691,7 +2704,7 @@ async function main() {
     await page.goto(`${origin}/dashboard/providers/claude`);
     await page.getByRole("button", { name: /Add Connection/ }).click();
     oauth = page.getByRole("dialog", { name: /Connect Claude/ });
-    await oauth.getByLabel("Authorization URL").waitFor();
+    await waitForOAuthReady(oauth);
     await page.waitForFunction(() => document.querySelector('input[aria-label="Authorization URL"]')?.value.includes("fixture-authorize"));
     await oauth.getByLabel("Callback URL").fill("fixture-code#fixture-state");
     await oauth.getByRole("button", { name: "Connect", exact: true }).click();

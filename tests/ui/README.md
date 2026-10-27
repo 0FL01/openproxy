@@ -331,12 +331,13 @@ parity.
 
 ## Codex manual OAuth dialog slice
 
-`UI_PARITY_SECTION=provider-codex-oauth` selects four desktop/mobile,
-light/dark captures of the manual authorization dialog. The authorize and proxy
-responses are synthetic; a stub popup remains open without navigating or
-contacting a provider. The test checks the instructions, disabled Connect
-button, callback placeholder and popup target. A blocked popup and the remaining
-OAuth states are not visualized by this scenario.
+`UI_PARITY_SECTION=provider-codex-oauth` selects eight desktop/mobile,
+light/dark captures of the manual authorization dialog before and after its
+synthetic authorize response. The ready state uses a stub popup without
+contacting a provider. In the loading state, the response is held and the test
+checks that Dioxus cannot exchange an entered callback before it arrives. A
+blocked popup and the remaining OAuth states are not visualized by these
+scenarios.
 
 ## OAuth callback slice
 

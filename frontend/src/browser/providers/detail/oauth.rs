@@ -746,8 +746,7 @@ pub(super) fn OAuthFlow(
                         "Waiting for authorization..."
                         }
                 }
-            } else if state().is_null() { p { class: "text-sm text-text-muted", "Starting authorization..." } }
-            else {
+            } else {
                 div { class: "flex items-center gap-2 px-3 py-2 border border-border rounded-lg bg-sidebar/50", role: "status",
                     span { aria_hidden: "true", class: "material-symbols-outlined text-base text-primary animate-spin", "progress_activity" }
                     span { class: "text-sm", if provider == "xai" { "Waiting for Grok Build OAuth…" } else { "Waiting for popup authorization…" } }
@@ -768,7 +767,7 @@ pub(super) fn OAuthFlow(
                             }
                             Button { label: "Copy".to_owned(), variant: "secondary", icon: if copied() == "auth_url" { "check".to_owned() } else { "content_copy".to_owned() }, disabled: text(&state(), "authUrl").is_empty(), onclick: move |_| copy_text(text(&state(), "authUrl").to_owned(), "auth_url".into(), copied, generation) }
                         }
-                        if popup().is_none() { Button { label: "Open Authorization".to_owned(), variant: "secondary", onclick: move |_| popup.set(open_auth_popup(text(&state(), "authUrl"))) } }
+                        if !state().is_null() && popup().is_none() { Button { label: "Open Authorization".to_owned(), variant: "secondary", onclick: move |_| popup.set(open_auth_popup(text(&state(), "authUrl"))) } }
                     }
                     div {
                         p { class: "text-sm font-medium mb-2",
@@ -807,7 +806,6 @@ pub(super) fn OAuthFlow(
                 Button { label: "Cancel".to_owned(), variant: "ghost", full_width: true, onclick: move |_| on_close.call(()) }
                 }
             }
-            if !device && state().is_null() && error().is_empty() { Button { label: "Cancel".to_owned(), variant: "ghost", onclick: move |_| on_close.call(()) } }
         }
     } }
 }

@@ -107,6 +107,7 @@ const screens = [
   { section: "provider-codex-autoping", name: "on" },
   { section: "provider-codex-bulk-add", name: "dialog" },
   { section: "provider-codex-oauth", name: "manual" },
+  { section: "provider-codex-oauth", name: "loading" },
   { section: "provider-openrouter", name: "suggested" },
   { section: "provider-xai", name: "ready" },
   { section: "provider-xai", name: "pending" },
@@ -212,6 +213,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
           if (screen.colorScheme && screen.colorScheme !== theme) continue;
           const name = `${screen.section}-${screen.name}-${viewport.name}-${theme}`;
           const isManualOAuth = screen.section === "provider-codex-oauth";
+          const isOAuthLoading = isManualOAuth && screen.name === "loading";
           const isCodexDetail = ["provider-codex-autoping", "provider-codex-bulk-add", "provider-codex-oauth"].includes(screen.section);
           const isKiloOAuthError = screen.action === "device-oauth-error";
           const isKiloOAuthLoading = screen.action === "device-oauth-loading";
@@ -244,6 +246,10 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
               let releaseDeviceAuth;
               let observeDeviceAuth;
               const deviceAuthStarted = new Promise((resolve) => { observeDeviceAuth = resolve; });
+              let releaseAuthorize;
+              let observeAuthorize;
+              const authorizeStarted = new Promise((resolve) => { observeAuthorize = resolve; });
+              let proxyStarts = 0;
               let releaseXaiForce;
               let observeXaiForce;
               const xaiForceStarted = new Promise((resolve) => { observeXaiForce = resolve; });
@@ -502,8 +508,17 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   let body = {};
                   const headers = {};
                   if (translatorRequest) return route.fulfill({ json: { success: false, error: "Synthetic detection failure" } });
-                  if (isManualOAuth && path === "/api/oauth/codex/authorize") return route.fulfill({ json: { authUrl: "https://fixture.invalid/authorize?client=synthetic", state: "fixture-state", codeVerifier: "fixture-verifier" } });
-                  if (isManualOAuth && path === "/api/oauth/codex/start-proxy") return route.fulfill({ json: { success: true, serverSide: false } });
+                  if (isManualOAuth && path === "/api/oauth/codex/authorize") {
+                    if (isOAuthLoading) {
+                      await new Promise((resolve) => { releaseAuthorize = resolve; observeAuthorize(); });
+                      return route.abort("blockedbyclient");
+                    }
+                    return route.fulfill({ json: { authUrl: "https://fixture.invalid/authorize?client=synthetic", state: "fixture-state", codeVerifier: "fixture-verifier" } });
+                  }
+                  if (isManualOAuth && path === "/api/oauth/codex/start-proxy") {
+                    proxyStarts += 1;
+                    return route.fulfill({ json: { success: true, serverSide: false } });
+                  }
                   if (isKiloOAuthError && path === "/api/oauth/kilocode/device-code") return route.fulfill({ status: 503, json: { error: ++deviceAuthAttempts === 1 ? "Synthetic device failure" : "Synthetic retry failure" } });
                   if (isKiloOAuthLoading && path === "/api/oauth/kilocode/device-code") {
                     deviceAuthAttempts += 1;
@@ -1472,25 +1487,66 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     await page.getByRole("button", { name: /^add Add$/ }).click();
                     const heading = page.getByRole("heading", { name: "Connect OpenAI Codex", exact: true });
                     await heading.waitFor();
+                    if (isOAuthLoading) await authorizeStarted;
                     const modal = heading.locator("../../..");
                     await modal.getByText("Waiting for popup authorization…", { exact: true }).waitFor();
                     await modal.getByText("Step 1: Open this URL in your browser", { exact: true }).waitFor();
                     await modal.getByText("Step 2: Paste the callback URL here", { exact: true }).waitFor();
                     const inputs = modal.locator("input");
                     assert.equal(await inputs.count(), 2);
-                    assert.equal(await inputs.nth(0).inputValue(), "https://fixture.invalid/authorize?client=synthetic");
+                    if (!isOAuthLoading) {
+                      await page.waitForFunction((input) => input.isConnected && input.value === "https://fixture.invalid/authorize?client=synthetic", await inputs.nth(0).elementHandle());
+                    }
+                    assert.equal(await inputs.nth(0).inputValue(), isOAuthLoading ? "" : "https://fixture.invalid/authorize?client=synthetic");
                     assert.equal(await inputs.nth(0).evaluate((input) => input.readOnly), true);
                     assert.equal(await inputs.nth(1).getAttribute("placeholder"), `${appUrl}/callback?code=...`);
                     assert.equal(await inputs.nth(1).inputValue(), "");
+                    assert.equal(await modal.getByRole("button", { name: /Copy/ }).isDisabled(), isOAuthLoading);
                     assert(await modal.getByRole("button", { name: "Connect", exact: true }).isDisabled());
                     assert(await modal.getByRole("button", { name: "Cancel", exact: true }).isEnabled());
-                    assert.equal(await modal.getByRole("button", { name: "Open Authorization", exact: true }).count(), 0, "the synthetic popup remains open");
-                    assert.equal(await page.evaluate(() => window.__fixtureOpened[0]), mode === "record" ? "https://fixture.invalid/authorize?client=synthetic" : "about:blank");
-                    if (mode === "compare") {
-                      assert.equal(await page.evaluate(() => window.__fixturePopup.location.href), "https://fixture.invalid/authorize?client=synthetic");
-                      assert.equal(await page.evaluate(() => window.__fixturePopup.opener), null);
+                    assert.equal(await modal.getByRole("button", { name: "Open Authorization", exact: true }).count(), 0);
+                    if (isOAuthLoading) {
+                      assert.equal(proxyStarts, 0);
+                      assert.equal(await page.evaluate(() => window.__fixtureOpened), undefined);
+                      if (mode === "compare") {
+                        const dialog = page.getByRole("dialog", { name: "Connect OpenAI Codex" });
+                        assert.equal(await dialog.getAttribute("aria-modal"), "true");
+                        assert.equal(await dialog.getByLabel("Authorization URL").inputValue(), "");
+                        assert.equal(await dialog.getByLabel("Callback URL").inputValue(), "");
+                        const status = dialog.getByRole("status");
+                        await status.getByText("Waiting for popup authorization…", { exact: true }).waitFor();
+                        assert.equal(await status.locator(".material-symbols-outlined").getAttribute("aria-hidden"), "true");
+                        const cdp = await context.newCDPSession(page);
+                        try {
+                          const { root } = await cdp.send("DOM.getDocument");
+                          const { nodeId } = await cdp.send("DOM.querySelector", { nodeId: root.nodeId, selector: '[role="dialog"][aria-label="Connect OpenAI Codex"] [role="status"]' });
+                          const { nodes } = await cdp.send("Accessibility.getPartialAXTree", { nodeId, fetchRelatives: false });
+                          assert.equal(nodes[0].ignored, false, "pending status is in the accessibility tree");
+                          assert.equal(nodes[0].properties.find(property => property.name === "live")?.value.value, "polite");
+                        } finally { await cdp.detach(); }
+                      }
+                      verifyAfterCapture = async () => {
+                        if (mode === "compare") {
+                          await inputs.nth(1).fill(`${appUrl}/callback?code=fixture-early&state=fixture-state`);
+                          assert(await modal.getByRole("button", { name: "Connect", exact: true }).isDisabled(), "manual exchange is disabled until authorize completes");
+                          await inputs.nth(1).press("Enter");
+                          await page.evaluate(() => window.postMessage({ type: "oauth_callback", data: { code: "fixture-early", state: "fixture-state" } }, window.location.origin));
+                          await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+                          assert.deepEqual(writes, [], "pending input or callback cannot exchange credentials");
+                          assert.equal(proxyStarts, 0, "pending input or callback cannot start the proxy");
+                        }
+                        await modal.getByRole("button", { name: "Cancel", exact: true }).press("Enter");
+                        await heading.waitFor({ state: "detached" });
+                        releaseAuthorize();
+                      };
+                    } else {
+                      assert.equal(await page.evaluate(() => window.__fixtureOpened[0]), mode === "record" ? "https://fixture.invalid/authorize?client=synthetic" : "about:blank");
+                      if (mode === "compare") {
+                        assert.equal(await page.evaluate(() => window.__fixturePopup.location.href), "https://fixture.invalid/authorize?client=synthetic");
+                        assert.equal(await page.evaluate(() => window.__fixturePopup.opener), null);
+                      }
+                      await page.waitForLoadState("networkidle");
                     }
-                    await page.waitForLoadState("networkidle");
                   }
                   await page.mouse.move(1, 1);
                   await page.waitForFunction(() => Array.from(document.images).every((image) => image.complete));
@@ -1947,6 +2003,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
               } finally {
                 if (releaseXaiForce) releaseXaiForce();
                 if (releaseDeviceAuth) releaseDeviceAuth();
+                if (releaseAuthorize) releaseAuthorize();
                 await context.close();
                 assert.deepEqual(unexpected, [], "unexpected network requests were blocked");
                 if (scenarioReady) assert.deepEqual(writes, expectedWrites, "unexpected API mutation");
