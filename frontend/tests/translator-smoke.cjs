@@ -326,6 +326,24 @@ async function main() {
     assert.equal(await value(), multipleLines, "Ctrl+/ removes existing line comments");
     await page.keyboard.press("Control+z");
     assert.equal(await value(), commentedLines, "uncommenting is one undoable edit");
+    const nestedComment = '{\n  "nested": {\n    "inside": true\n  },\n  "visible": 2\n}';
+    if (reference) await page.evaluate(text => { const e = window.monaco.editor.getEditors()[0]; e.setValue(text); e.setPosition({ lineNumber: 2, column: 3 }); e.focus(); }, nestedComment);
+    else { await editor().fill(nestedComment); await editor().evaluate(input => input.setSelectionRange(4, 4)); }
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.keyboard.press("Control+/");
+    assert.equal(await value(), '{\n//   "nested": {\n    "inside": true\n  },\n  "visible": 2\n}');
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const colors = await page.evaluate(reference => {
+      const lines = reference
+        ? [...document.querySelectorAll(".monaco-editor .view-lines .view-line")]
+        : [...document.querySelector('textarea[aria-label="Translator editor"]').parentElement.querySelector("pre").children];
+      const color = (line, value) => {
+        const span = [...line.querySelectorAll("span")].find(el => !el.children.length && el.textContent.includes(value));
+        return span && getComputedStyle(span).color;
+      };
+      return [color(lines.find(line => line.textContent.includes('"nested"')), '"nested"'), color(lines.find(line => line.textContent.trim() === "},"), "}")];
+    }, reference);
+    assert.deepEqual(colors, ["rgb(96, 139, 78)", "rgb(255, 215, 0)"], "a commented JSON line has comment color and does not change subsequent bracket depth");
     if (process.env.TRANSLATOR_COMMENT_ONLY === "1") {
       assert.deepEqual(errors, []);
       console.log("synthetic translator line comment smoke passed");

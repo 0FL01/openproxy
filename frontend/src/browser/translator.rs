@@ -800,6 +800,13 @@ fn json_tokens(text: &str) -> Vec<(&str, &'static str)> {
     while offset < bytes.len() {
         let start = offset;
         let color = match bytes[offset] {
+            b'/' if bytes.get(offset + 1) == Some(&b'/') => {
+                offset += 2;
+                while offset < bytes.len() && bytes[offset] != b'\n' {
+                    offset += 1;
+                }
+                "#608b4e"
+            }
             b'"' => {
                 offset += 1;
                 while offset < bytes.len() {
