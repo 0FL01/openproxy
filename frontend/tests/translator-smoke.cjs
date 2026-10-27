@@ -298,9 +298,40 @@ async function main() {
           return [...context.getImageData(0, 0, 1, 1).data].slice(0, 3);
         }, { base64: matchPixel.toString("base64"), point: matchPoint });
         assert.ok(matchColor[0] > matchColor[1] + 15 && matchColor[1] > matchColor[2] + 15, "the current-line border does not cover the Find match");
+        const descenderVisible = async (text, offset) => {
+          const glyph = await page.evaluate(({ reference, text, offset }) => {
+            const line = reference ? document.querySelector(".monaco-editor .view-lines .view-line")
+              : document.querySelector('textarea[aria-label="Translator editor"]').parentElement.querySelector("pre > div");
+            const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+            let node;
+            while ((node = walker.nextNode())) {
+              const index = node.textContent.indexOf(text);
+              if (index < 0) continue;
+              const range = document.createRange(); range.setStart(node, index + offset); range.setEnd(node, index + offset + 1);
+              const rect = range.getBoundingClientRect();
+              return { x: Math.floor(rect.left), width: Math.ceil(rect.right) - Math.floor(rect.left), y: Math.floor(line.getBoundingClientRect().bottom) - 2 };
+            }
+            throw new Error("Synthetic glyph not rendered");
+          }, { reference, text, offset });
+          const image = await page.screenshot({ animations: "disabled" });
+          return page.evaluate(async ({ base64, glyph }) => {
+            const image = new Image(); image.src = `data:image/png;base64,${base64}`; await image.decode();
+            const canvas = document.createElement("canvas"); canvas.width = glyph.width; canvas.height = 1;
+            const context = canvas.getContext("2d"); context.drawImage(image, glyph.x, glyph.y, glyph.width, 1, 0, 0, glyph.width, 1);
+            const pixels = context.getImageData(0, 0, glyph.width, 1).data;
+            for (let i = 0; i < pixels.length; i += 4) if (Math.max(pixels[i], pixels[i + 1], pixels[i + 2]) > 55) return true;
+            return false;
+          }, { base64: image.toString("base64"), glyph });
+        };
+        assert.ok(await descenderVisible("message", 5), "the current-line border does not cover the JSON property descender");
         await dialog.getByRole("button", { name: "Toggle Replace" }).click();
         const preservePosition = await dialog.evaluate(root => Math.round(root.querySelector('[aria-label="Preserve Case (Alt+P)"]').getBoundingClientRect().left - root.getBoundingClientRect().left));
         assert.equal(preservePosition, 234, "Replace option aligns with the reference panel");
+        await dialog.getByLabel("Find", { exact: true }).press("Escape");
+        if (reference) await page.evaluate(() => { const e = window.monaco.editor.getEditors()[0]; e.setValue('"g"'); e.setPosition({ lineNumber: 1, column: 4 }); e.focus(); });
+        else { await editor().fill('"g"'); await editor().evaluate(input => { input.setSelectionRange(3, 3); input.dispatchEvent(new Event("select", { bubbles: true })); }); }
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        assert.ok(await descenderVisible("g", 0), "the current-line border does not cover undecorated text");
         assert.deepEqual(errors, []);
         console.log("synthetic translator Find paint smoke passed");
         return;
