@@ -155,6 +155,57 @@ testing connections, OAuth, custom-model test/delete, confirming Disable All,
 Active All, alias/favorite changes, errors, other providers, or localization.
 The screenshots are Astro references, not a claim of Dioxus detail parity.
 
+## OpenAI-compatible provider detail slice
+
+`UI_PARITY_SECTION=provider-compatible` selects 16 captures of the dynamic
+detail route: four states at desktop/mobile sizes in light/dark themes.
+
+| Scenario | State captured |
+|---|---|
+| `provider-compatible-ready` | A compatible node with no connections and one synthetic custom model. |
+| `provider-compatible-edit-dialog` | The edit form with existing name, prefix, Chat Completions and base URL; check-key and model-ID fields are empty. |
+| `provider-compatible-edit-dialog-scroll-bottom` | The same form scrolled internally to its Save and Cancel controls, which are below the initial viewport at both sizes. |
+| `provider-compatible-delete-dialog` | The confirmation naming the node; deletion is not confirmed. |
+
+Each fresh context receives a synthetic pre-existing node with ID
+`openai-compatible-00000000-0000-4000-8000-000000000001`, name
+`Fixture Compatible`, prefix `fixture-openai`, type `openai-compatible`,
+`apiType: "chat"`, and base URL `https://fixture.invalid/v1`. That reserved
+invalid URL is display data only; no credential is entered and no provider
+traffic is sent. The fixture includes no connections and one custom model,
+`fixture-openai/fixture-model`.
+
+The request navigates to `/dashboard/providers/<fixture-id>`; the backend
+serves Astro's real `dashboard/providers/_dynamic.html` template. Record mode
+requires its pre-pinned hash in `reference/source.json` **and** the
+`ProviderDetailPageClient` island marker. The fixed synthetic reads are exact,
+queryless GETs for `/api/auth/status`, `/api/settings`, `/api/build`,
+`/api/catalog`, `/api/providers`, `/api/provider-nodes`, `/api/providers/filters`,
+`/api/models`, `/api/models/custom`, `/api/models/alias` and
+`/api/models/favorites`; plus `/api/proxy-pools?isActive=true` and
+`/api/models/disabled?providerAlias=` or the exact fixture ID. The build
+response has `commit: null` as in the Kilo detail slice. The exact same-origin
+Astro bundles, fonts, favicon and `/providers/oai-cc.png` observed in this
+frozen fixture are enumerated in the test; all other requests, WebSockets and
+mutations are blocked. The test never clicks Check, Save, Delete, Add API Key
+or Import from /models.
+
+For a later Dioxus comparison, provide that build's exact same-origin hashed
+static paths as the JSON array `UI_PARITY_COMPATIBLE_ASSETS` (passed into the
+browser container with `-e`), for example
+`["/assets/openproxy-dashboard-dxh123.js","/assets/openproxy-dashboard_bg-dxh123.wasm"]`.
+Only paths under `/assets/`, `/_astro/`, or `/i18n/` with no query, fragment,
+or traversal are accepted. Candidate paths are never allowed during recording.
+
+This deliberately covers a prefixed node already present in the read fixture,
+not creation or real persistence. An existing create-to-detail gap needs
+separate investigation: the current backend `POST /api/provider-nodes`
+generates an unprefixed UUID, while Astro's compatible-detail predicate checks
+for an `openai-compatible-` ID prefix. Saving/deleting, validation and errors,
+API-key connections, model changes, Responses/Anthropic-compatible nodes and
+real backend behavior are not covered. These are Astro references, not Dioxus
+parity evidence.
+
 ## OAuth callback slice
 
 `UI_PARITY_SECTION=callback` records ten captures of the standalone Astro

@@ -20,6 +20,27 @@ const appUrl = "https://app:4623";
 const fixtureCommit = "0123456789abcdef0123456789abcdef01234567";
 const callbackCodeQuery = "?code=fixture-code&state=fixture-state";
 const callbackErrorQuery = "?error=fixture-error&error_description=Fixture+authorization+denied&state=fixture-state";
+const compatibleId = "openai-compatible-00000000-0000-4000-8000-000000000001";
+const compatiblePath = `/dashboard/providers/${compatibleId}`;
+const compatibleTemplate = "/dashboard/providers/_dynamic.html";
+const compatiblePrefix = "fixture-openai";
+const compatibleBaseUrl = "https://fixture.invalid/v1";
+// Exact resources observed from the frozen Astro template in the isolated fixture.
+const compatibleAstroAssets = new Set([
+  "/favicon.svg", "/providers/oai-cc.png",
+  "/_astro/AddApiKeyModal.BxlGGI0q.js", "/_astro/Badge.D746pWIl.js", "/_astro/Button.BFNTE38v.js",
+  "/_astro/Card.BYEgKEve.js", "/_astro/DashboardLayout.CIFa2vft.js", "/_astro/Input.kBbyj-k0.js",
+  "/_astro/LanguageSwitcher.G7CXSwPB.js", "/_astro/Loading.C8ysA_qN.js", "/_astro/Modal.Bka5iDlT.js",
+  "/_astro/ProviderDetailPageClient.C-HQNUch.js", "/_astro/ProviderIcon.yxx1WU3b.js",
+  "/_astro/RuntimeI18nProvider.9AAH-dgj.js", "/_astro/Select.BnSa43mO.js", "/_astro/ThemeProvider.CSeaVM1W.js",
+  "/_astro/Toggle.DgexzGQH.js", "/_astro/__ui_browser/fonts.css", "/_astro/__ui_browser/fonts/instrument-serif.woff2",
+  "/_astro/__ui_browser/fonts/inter.woff2", "/_astro/__ui_browser/fonts/jetbrains-mono.woff2",
+  "/_astro/client.BYP9nLUz.js", "/_astro/cn.C9Gfr6mj.js", "/_astro/dashboard.BZnXx_Nc.css",
+  "/_astro/headerSearchStore.CLCS9igz.js", "/_astro/index.D9_NN57j.js", "/_astro/index.DgRPLtSb.js",
+  "/_astro/jsx-runtime.CnDyYxjH.js", "/_astro/material-symbols-outlined.CqIkmgaP.woff2",
+  "/_astro/runtime.CEWCR3UM.js", "/_astro/themeStore.y6YYrgKI.js", "/_astro/useAutoPingSettings.C0vN0LDE.js",
+  "/_astro/useCopyToClipboard.CtuHBHI_.js",
+]);
 
 const screens = [
   { section: "login", name: "ready", hasPassword: true },
@@ -62,6 +83,10 @@ const screens = [
   { section: "provider-kilocode", name: "add-model-dialog", action: "add-model-dialog" },
   { section: "provider-kilocode", name: "add-model-saved", action: "add-model-saved" },
   { section: "provider-kilocode", name: "disable-all-dialog", action: "disable-all-dialog" },
+  { section: "provider-compatible", name: "ready" },
+  { section: "provider-compatible", name: "edit-dialog", action: "edit-dialog" },
+  { section: "provider-compatible", name: "edit-dialog-scroll-bottom", action: "edit-dialog-scroll-bottom" },
+  { section: "provider-compatible", name: "delete-dialog", action: "delete-dialog" },
   { section: "callback", name: "code", query: callbackCodeQuery, colorScheme: "light" },
   { section: "callback", name: "error", query: callbackErrorQuery, colorScheme: "light" },
   { section: "callback", name: "no-auth-data", query: "", colorScheme: "light" },
@@ -78,6 +103,12 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
   assert(!selectedScreen || screens.some((screen) => `${screen.section}-${screen.name}` === selectedScreen), "unknown UI_PARITY_SCREEN");
   assert(!selectedSection || screens.some((screen) => screen.section === selectedSection), "unknown UI_PARITY_SECTION");
   assert(!selectedScreen || !selectedSection || screens.some((screen) => screen.section === selectedSection && `${screen.section}-${screen.name}` === selectedScreen), "UI_PARITY_SCREEN and UI_PARITY_SECTION disagree");
+  // Dioxus hashes change between builds. Compare runs may declare their exact,
+  // same-origin static asset paths rather than broadening the network allowlist.
+  const compatibleCandidateAssets = mode === "compare" ? JSON.parse(process.env.UI_PARITY_COMPATIBLE_ASSETS || "[]") : [];
+  assert(Array.isArray(compatibleCandidateAssets) && compatibleCandidateAssets.every((path) =>
+    typeof path === "string" && /^\/(?:assets|_astro|i18n)\/[a-zA-Z0-9_./-]+$/.test(path) && new URL(path, appUrl).pathname === path),
+  "UI_PARITY_COMPATIBLE_ASSETS must be a JSON array of exact same-origin static paths");
   const { chromium } = await import(process.env.DASHBOARD_PLAYWRIGHT_MODULE || "playwright");
   // Partial rasterization caused nondeterministic antialiasing at rounded edges.
   const launchArgs = ["--force-color-profile=srgb", "--disable-partial-raster"];
@@ -165,7 +196,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 let kiloFreeOnly = false;
                 page.on("pageerror", (error) => errors.push(error.message));
                 await page.clock.setFixedTime(new Date("2026-10-01T12:00:00Z"));
-                if (screen.section === "callback") await context.routeWebSocket("**/*", (socket) => {
+                if (["callback", "provider-compatible"].includes(screen.section)) await context.routeWebSocket("**/*", (socket) => {
                   unexpected.push("WebSocket blocked");
                   socket.close();
                 });
@@ -176,6 +207,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   const method = request.method();
                   const assets = screen.section === "callback"
                     ? ((path === "/callback" && url.search === screen.query) || (mode === "compare" && !url.search && (path === "/favicon.svg" || path.startsWith("/_astro/") || path.startsWith("/assets/"))))
+                    : screen.section === "provider-compatible"
+                    ? (!url.search && (path === compatiblePath || compatibleAstroAssets.has(path) || (mode === "compare" && compatibleCandidateAssets.includes(path))))
                     : (!["providers-new", "provider-kilocode"].includes(screen.section) && (path === "/login" || path === "/dashboard/endpoint")) || path === "/favicon.svg" || path.startsWith("/_astro/") || path.startsWith("/assets/") || path.startsWith("/i18n/") ||
                     (screen.section === "providers" && (path === "/dashboard/providers" || /^\/providers\/[a-z0-9_-]+\.png$/.test(path))) ||
                     (screen.section === "providers-new" && !url.search && ["/dashboard/providers/new", "/providers/codex.png", "/providers/opencode-zen.png", "/providers/openai.png"].includes(path)) ||
@@ -192,9 +225,14 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     (path === "/api/proxy-pools" && url.search === "?isActive=true") ||
                     (path === "/api/models/disabled" && ["?providerAlias=", "?providerAlias=kc"].includes(url.search))
                   );
+                  const compatibleGet = screen.section === "provider-compatible" && method === "GET" && (
+                    (!url.search && ["/api/auth/status", "/api/settings", "/api/build", "/api/catalog", "/api/providers", "/api/provider-nodes", "/api/providers/filters", "/api/models", "/api/models/custom", "/api/models/alias", "/api/models/favorites"].includes(path)) ||
+                    (path === "/api/proxy-pools" && url.search === "?isActive=true") ||
+                    (path === "/api/models/disabled" && ["?providerAlias=", `?providerAlias=${encodeURIComponent(compatibleId)}`].includes(url.search))
+                  );
                   const kiloMutation = screen.section === "provider-kilocode" && method !== "GET" &&
                     expectedWrites.some((write) => write.method === method && write.path === `${path}${url.search}`);
-                  const valid = url.origin === appUrl && (providerGet || providerNewGet || kiloGet || kiloMutation || (!["providers", "providers-new", "provider-kilocode", "callback"].includes(screen.section) && (
+                  const valid = url.origin === appUrl && (providerGet || providerNewGet || kiloGet || kiloMutation || compatibleGet || (!["providers", "providers-new", "provider-kilocode", "provider-compatible", "callback"].includes(screen.section) && (
                     (method === "GET" && ["/api/auth/status", "/api/settings", "/api/keys", "/api/build", "/api/catalog"].includes(path)) ||
                     (method === "POST" && path === "/api/auth/login" && !!screen.login) ||
                     (method === "POST" && path === "/api/keys" && screen.action === "created")
@@ -231,7 +269,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   } else if (path === "/api/settings") {
                     body = { requireLogin: true, requireApiKey: !screen.insecure, hasPassword: true };
                   } else if (path === "/api/build") {
-                    body = { commit: screen.section === "provider-kilocode" ? null : fixtureCommit };
+                    body = { commit: ["provider-kilocode", "provider-compatible"].includes(screen.section) ? null : fixtureCommit };
                   } else if (path === "/api/catalog") {
                     body = screen.section === "provider-kilocode"
                       ? { providerIdToAlias: { kilocode: "kc" }, providerModels: [{ alias: "kc", models: [
@@ -241,7 +279,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       ] }] }
                       : { providerIdToAlias: {}, providerModels: [], xaiCatalog: { status: "ready" } };
                   } else if (path === "/api/providers") {
-                    body = screen.section === "provider-kilocode" ? { connections: [
+                    body = screen.section === "provider-compatible" ? { connections: [] } : screen.section === "provider-kilocode" ? { connections: [
                       { id: "fixture-kilo-connection", provider: "kilocode", name: "Fixture connection", authType: "oauth", testStatus: "active", isActive: true, priority: 1 },
                     ] } : { connections: [
                       { id: "fixture-compatible-connection", provider: "openai-compatible-fixture", authType: "apikey", testStatus: "active", isActive: true },
@@ -249,7 +287,10 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       { id: "fixture-openai-connection", provider: "openai", authType: "apikey", testStatus: "active", isActive: true },
                     ] };
                   } else if (path === "/api/provider-nodes") {
-                    body = screen.section === "provider-kilocode" ? { nodes: [] } : { nodes: [
+                    body = screen.section === "provider-compatible" ? { nodes: [{
+                      id: compatibleId, type: "openai-compatible", name: "Fixture Compatible", prefix: compatiblePrefix,
+                      apiType: "chat", baseUrl: compatibleBaseUrl, createdAt: "2026-10-01T12:00:00Z", updatedAt: "2026-10-01T12:00:00Z",
+                    }] } : screen.section === "provider-kilocode" ? { nodes: [] } : { nodes: [
                       { id: "openai-compatible-fixture", type: "openai-compatible", name: "Fixture Connected", apiType: "chat" },
                       { id: "anthropic-compatible-fixture", type: "anthropic-compatible", name: "Fixture Disconnected" },
                     ] };
@@ -262,20 +303,22 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       kiloFreeOnly = request.postDataJSON().freeOnly;
                       return route.fulfill({ status: 204 });
                     }
-                    body = { filters: { kc: { freeOnly: kiloFreeOnly } } };
+                    body = screen.section === "provider-compatible" ? { filters: {} } : { filters: { kc: { freeOnly: kiloFreeOnly } } };
                   } else if (path === "/api/models/disabled") {
                     if (method === "POST") kiloDisabled = [...new Set([...kiloDisabled, ...request.postDataJSON().ids])].sort();
                     else if (method === "DELETE") kiloDisabled = kiloDisabled.filter((id) => id !== url.searchParams.get("id"));
                     body = method === "GET" ? { ids: url.searchParams.get("providerAlias") === "kc" ? kiloDisabled : [] } : { success: true };
                   } else if (path === "/api/models/custom") {
                     if (method === "POST") kiloCustom = [...kiloCustom, request.postDataJSON()];
-                    body = method === "GET" ? { models: kiloCustom } : { success: true, added: true };
+                    body = screen.section === "provider-compatible" ? { models: [{ providerAlias: compatibleId, id: "fixture-model", type: "llm" }] }
+                      : method === "GET" ? { models: kiloCustom } : { success: true, added: true };
                   } else if (path === "/api/models/alias") {
                     body = { aliases: {} };
                   } else if (path === "/api/models/favorites") {
-                    body = { favorites: { kc: ["fixture-standard"] } };
+                    body = screen.section === "provider-compatible" ? { favorites: {} } : { favorites: { kc: ["fixture-standard"] } };
                   } else if (path === "/api/models") {
-                    body = { models: [{ provider: "kilocode", model: "fixture-vision", fullModel: "kilocode/fixture-vision", caps: { vision: true, reasoning: true } }] };
+                    body = screen.section === "provider-compatible" ? { models: [] }
+                      : { models: [{ provider: "kilocode", model: "fixture-vision", fullModel: "kilocode/fixture-vision", caps: { vision: true, reasoning: true } }] };
                   } else if (path === "/api/keys") {
                     if (request.method() === "POST") {
                       created = true;
@@ -294,7 +337,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   await route.fulfill({ status, headers, json: body });
                 });
 
-                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : screen.section === "providers-new" ? "/dashboard/providers/new" : screen.section === "provider-kilocode" ? "/dashboard/providers/kilocode" : screen.section === "callback" ? "/callback" : "/dashboard/endpoint";
+                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : screen.section === "providers-new" ? "/dashboard/providers/new" : screen.section === "provider-kilocode" ? "/dashboard/providers/kilocode" : screen.section === "provider-compatible" ? compatiblePath : screen.section === "callback" ? "/callback" : "/dashboard/endpoint";
+                const sourceRoute = screen.section === "provider-compatible" ? compatibleTemplate : path;
                 const response = await page.goto(`${appUrl}${path}${screen.query || ""}`, { waitUntil: "domcontentloaded" });
                 assert(response?.ok(), `failed to load ${path}`);
                 if (mode === "record") {
@@ -305,21 +349,23 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       assert(html.includes(marker), "record mode requires the standalone Astro callback markup");
                     }
                   } else {
-                    const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : screen.section === "providers-new" ? "ProvidersNewPageClient." : screen.section === "provider-kilocode" ? "ProviderDetailPageClient." : "EndpointPageClient.";
+                    const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : screen.section === "providers-new" ? "ProvidersNewPageClient." : ["provider-kilocode", "provider-compatible"].includes(screen.section) ? "ProviderDetailPageClient." : "EndpointPageClient.";
                     assert(html.includes(`component-url="/_astro/${component}`), "record mode requires the Astro reference");
+                    if (screen.section === "provider-compatible") assert(source.routes[sourceRoute], "dynamic Astro provider template hash must be pinned before recording");
                   }
                   const hash = createHash("sha256").update(html).digest("hex");
-                  assert(!source.routes[path] || source.routes[path] === hash, `Astro reference changed for ${path}`);
-                  source.routes[path] = hash;
+                  assert(!source.routes[sourceRoute] || source.routes[sourceRoute] === hash, `Astro reference changed for ${sourceRoute}`);
+                  source.routes[sourceRoute] = hash;
                   await writeFile(sourcePath, JSON.stringify(source, null, 2) + "\n");
                 } else {
-                  assert(source.routes[path], `missing Astro reference identity for ${path}`);
+                  assert(source.routes[sourceRoute], `missing Astro reference identity for ${sourceRoute}`);
                   assert.equal(await page.locator('script[src*="/assets/openproxy-dashboard-"]').count(), 1, "compare mode requires the Dioxus candidate");
                 }
                 if (screen.section === "login") await page.getByRole("heading", { name: "OpenProxy" }).waitFor();
                 else if (screen.section === "providers") await page.getByRole("heading", { name: "Custom Providers (OpenAI/Anthropic Compatible)" }).waitFor();
                 else if (screen.section === "providers-new") await page.getByRole("heading", { name: "Add New Provider" }).waitFor();
                 else if (screen.section === "provider-kilocode") await page.getByRole("checkbox", { name: "Select connection Fixture connection" }).waitFor();
+                else if (screen.section === "provider-compatible") await page.getByRole("heading", { name: "OpenAI Compatible Details", exact: true }).waitFor();
                 else if (screen.section === "callback") await page.getByRole("heading", { name: screen.name === "error" ? "Authentication Failed" : screen.name === "no-auth-data" ? "No Auth Data Found" : "Authentication Complete", exact: true }).waitFor();
                 else await page.getByText("Fixture key", { exact: true }).waitFor();
                 await page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}" });
@@ -393,6 +439,60 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   }
                   await page.mouse.move(1, 1);
                   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+                } else if (screen.section === "provider-compatible") {
+                  const detailsHeading = page.getByRole("heading", { name: "OpenAI Compatible Details", exact: true });
+                  const details = detailsHeading.locator("../..");
+                  await page.getByRole("heading", { name: "Fixture Compatible", exact: true }).waitFor();
+                  await page.getByText("0 connections", { exact: true }).waitFor();
+                  await page.getByText("No connections yet", { exact: true }).waitFor();
+                  await page.getByText(`Chat Completions · ${compatibleBaseUrl}/chat/completions`, { exact: true }).waitFor();
+                  await page.locator("code").filter({ hasText: `${compatiblePrefix}/fixture-model` }).waitFor();
+                  assert(await details.getByRole("button", { name: /Add API Key/ }).isEnabled());
+                  await page.waitForLoadState("networkidle");
+                  const icon = page.getByRole("img", { name: "Fixture Compatible", exact: true });
+                  await icon.waitFor();
+                  assert(await icon.evaluate((element) => element.complete && element.naturalWidth > 0), "compatible icon must load");
+                  if (screen.action === "edit-dialog" || screen.action === "edit-dialog-scroll-bottom") {
+                    await details.getByRole("button", { name: /Edit/ }).click();
+                    const heading = page.getByRole("heading", { name: "Edit OpenAI Compatible", exact: true });
+                    await heading.waitFor();
+                    const modal = heading.locator("../../..");
+                    assert.equal(await modal.getByPlaceholder("OpenAI Compatible (Prod)").inputValue(), "Fixture Compatible");
+                    assert.equal(await modal.getByPlaceholder("oc-prod").inputValue(), compatiblePrefix);
+                    assert.equal(await modal.getByRole("combobox").inputValue(), "chat");
+                    assert.equal(await modal.getByPlaceholder("https://api.openai.com/v1").inputValue(), compatibleBaseUrl);
+                    assert.equal(await modal.locator('input[type="password"]').inputValue(), "");
+                    assert.equal(await modal.getByPlaceholder("e.g. my-model-id").inputValue(), "");
+                    assert(await modal.getByRole("button", { name: "Check", exact: true }).isDisabled());
+                    assert(await modal.getByRole("button", { name: "Save", exact: true }).isEnabled());
+                    if (screen.action === "edit-dialog-scroll-bottom") {
+                      const body = modal.locator(".overflow-y-auto");
+                      const scrollTop = await body.evaluate((element) => {
+                        element.scrollTop = element.scrollHeight;
+                        return element.scrollTop;
+                      });
+                      assert(scrollTop > 0, "edit dialog must overflow");
+                      assert(await modal.getByRole("button", { name: "Save", exact: true }).evaluate((element) => {
+                        const rect = element.getBoundingClientRect();
+                        const parent = element.closest(".overflow-y-auto").getBoundingClientRect();
+                        return rect.top >= parent.top && rect.bottom <= parent.bottom;
+                      }), "edit actions must be visible after scrolling");
+                    }
+                  } else if (screen.action === "delete-dialog") {
+                    await details.getByRole("button", { name: /Delete/ }).click();
+                    const heading = page.getByRole("heading", { name: "Delete compatible node", exact: true });
+                    await heading.waitFor();
+                    const modal = heading.locator("../../..");
+                    await modal.getByText("Delete this OpenAI Compatible node", { exact: false }).waitFor();
+                    await modal.locator("code").filter({ hasText: /^Fixture Compatible$/ }).waitFor();
+                    assert(await modal.getByRole("button", { name: "Delete", exact: true }).isEnabled());
+                  }
+                  await page.mouse.move(1, 1);
+                  await page.waitForFunction(() => Array.from(document.images).every((image) => image.complete));
+                  await page.evaluate(async () => {
+                    await Promise.all(Array.from(document.images, (image) => image.decode().catch(() => {})));
+                    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                  });
                 } else if (screen.section === "provider-kilocode") {
                   const modelCode = (id) => page.locator("code").filter({ hasText: new RegExp(`^kc/${id}$`) });
                   const modelRow = (id) => page.locator("div.group").filter({ has: modelCode(id) });
