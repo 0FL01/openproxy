@@ -95,6 +95,9 @@ async function main() {
       await page.keyboard.press("Control+f");
       const dialog = page.getByRole("dialog", { name: "Find / Replace" });
       await dialog.getByLabel("Find", { exact: true }).waitFor();
+      assert.deepEqual(await dialog.getByLabel("Find", { exact: true }).evaluate(input => [input.selectionStart, input.selectionEnd]), [0, 6], "the seeded search is selected on opening");
+      assert.deepEqual(await dialog.evaluate(element => [element.offsetWidth, element.offsetHeight]), [419, 33], "desktop Find panel matches the reference dimensions");
+      assert.equal(await dialog.getByLabel("Find", { exact: true }).evaluate(element => element.offsetWidth), 167);
       const lineTop = ({ reference, expected }) => {
         const input = document.querySelector('textarea[aria-label="Translator editor"]');
         const root = reference ? document.querySelector(".monaco-editor") : input?.parentElement;
@@ -104,8 +107,19 @@ async function main() {
       await page.waitForFunction(lineTop, { reference, expected: 33 }, { timeout: 5000 });
       await dialog.getByRole("button", { name: "Toggle Replace" }).click();
       await page.waitForFunction(lineTop, { reference, expected: 62 }, { timeout: 5000 });
+      assert.equal(await dialog.evaluate(element => element.offsetHeight), 62, "Replace expands the panel to the reference height");
       await dialog.getByLabel("Find", { exact: true }).press("Escape");
       await page.waitForFunction(lineTop, { reference, expected: 0 }, { timeout: 5000 });
+
+      const viewport = page.viewportSize();
+      await page.setViewportSize({ width: 390, height: 844 });
+      if (reference) await page.evaluate(() => window.monaco.editor.getEditors()[0].focus()); else await editor().focus();
+      await page.keyboard.press("Control+f");
+      await page.waitForFunction(() => document.querySelector('[role="dialog"][aria-label="Find / Replace"]')?.getBoundingClientRect().width === 170);
+      assert.equal(await dialog.getByLabel("Find", { exact: true }).evaluate(element => element.offsetWidth), 56, "mobile Find input retains space for navigation");
+      assert.equal(await dialog.locator('[aria-label="Match Case (Alt+C)"]').isVisible(), false, "mobile collapsed mode hides inline options");
+      await dialog.getByLabel("Find", { exact: true }).press("Escape");
+      await page.setViewportSize(viewport);
 
       const longText = JSON.stringify({ items: Array.from({ length: 80 }, (_, index) => `row${index} needle`) }, null, 2);
       const longOffset = longText.indexOf("needle", longText.indexOf("row40"));

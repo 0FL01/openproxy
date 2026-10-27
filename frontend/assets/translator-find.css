@@ -1,0 +1,107 @@
+@font-face {
+  font-family: "OpenProxy Codicons";
+  src: url("/assets/translator-codicon.ttf") format("truetype");
+}
+
+.translator-find {
+  position: absolute;
+  z-index: 5;
+  top: 0;
+  right: 28px;
+  width: 419px;
+  height: 33px;
+  overflow: hidden;
+  padding: 0 4px;
+  border-radius: 0 0 4px 4px;
+  background: #252526;
+  color: #ccc;
+  box-shadow: 0 0 8px 2px rgba(0, 0, 0, .36);
+  font: 12px/19px -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", HelveticaNeue-Light, system-ui, Ubuntu, "Droid Sans", sans-serif;
+}
+.translator-find.replacing { height: 62px; }
+.translator-find.narrow { width: 257px; }
+.translator-find.collapsed { width: 170px; }
+.translator-find::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 2px;
+  height: 100%;
+  background: #454545;
+}
+.translator-find .find-row {
+  display: flex;
+  align-items: center;
+  height: 25px;
+  margin: 3px 25px 0 17px;
+}
+.translator-find .find-box {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 25px;
+  border: 1px solid transparent;
+  background: #3c3c3c;
+}
+.translator-find .find-box:focus-within { outline: 1px solid #007fd4; outline-offset: -1px; }
+.translator-find .find-input {
+  display: block;
+  width: calc(100% - 66px);
+  height: 23px;
+  min-height: 0;
+  margin: 0;
+  padding: 2px 6px;
+  overflow: hidden;
+  resize: none;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #ccc;
+  font: inherit;
+  font-size: 13px;
+  line-height: 19px;
+}
+.translator-find .find-options { position: absolute; top: 2px; right: 0; display: flex; }
+.translator-find .find-icon {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 3px;
+  padding: 3px;
+  border-radius: 5px;
+  color: #ccc;
+  background: transparent;
+  cursor: pointer;
+  font: 16px/16px "OpenProxy Codicons";
+}
+.translator-find .find-icon:hover { background: #5a5d5e80; }
+.translator-find .find-icon:focus-visible { outline: 1px solid #007fd4; }
+.translator-find .find-option {
+  width: 20px;
+  height: 20px;
+  margin-left: 2px;
+  padding: 1px;
+  border: 1px solid transparent;
+}
+.translator-find .find-option[aria-checked="true"],
+.translator-find .find-scope[aria-checked="true"] { background: #007acc66; border-color: #007acc; }
+.translator-find .find-count {
+  flex: 0 0 69px;
+  height: 25px;
+  margin-left: 3px;
+  padding: 2px 0 0 2px;
+  line-height: 23px;
+}
+.translator-find .find-scope { width: 22px; height: 22px; margin-left: 2px; border: 1px solid transparent; }
+.translator-find .find-toggle { position: absolute; top: 0; left: 3px; width: 18px; height: 100%; margin: 0; border-radius: 0; }
+.translator-find .find-close { position: absolute; top: 5px; right: 4px; margin: 0; }
+.translator-find .replace-box { flex: 0 0 calc(100% - 134px); }
+.translator-find .replace-box .find-input { width: 100%; }
+.translator-find.reduced .find-count { display: none; }
+.translator-find.reduced .replace-box { flex-basis: calc(100% - 62px); }
+.translator-find.collapsed .find-options { display: none; }
+.translator-find.collapsed .find-input { width: 100%; }

@@ -6,6 +6,14 @@ use std::{collections::HashSet, rc::Rc};
 use wasm_bindgen::{closure::Closure, JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
+#[used]
+static FIND_STYLES: Asset = asset!(
+    "/assets/translator-find.css",
+    AssetOptions::css()
+        .with_minify(false)
+        .with_static_head(true)
+);
+
 const STEPS: [(&str, &str); 7] = [
     ("Client Request", "1_req_client.json"),
     ("Source Body", "2_req_source.json"),
@@ -1836,6 +1844,17 @@ fn Editor(
     };
     let highlighted =
         (find_open() && !matches.is_empty()).then(|| highlight_find_matches(&lines, &matches));
+    let root_width = editor_width() + 76;
+    let find_layout = if root_width <= 328 {
+        "reduced narrow collapsed"
+    } else if root_width <= 378 {
+        "reduced narrow"
+    } else if root_width <= 447 {
+        "reduced"
+    } else {
+        ""
+    };
+    let replacing = if replace_open() { "replacing" } else { "" };
     rsx! {
         div { style: "height:400px;position:relative;background:#1e1e1e;color:#d4d4d4;",
             div { style: "position:relative;overflow:hidden;width:100%;height:400px;",
@@ -2099,27 +2118,31 @@ fn Editor(
                 }
                 canvas { aria_hidden: "true", style: "position:absolute;transform:translate3d(0,0,0);contain:strict;top:0;right:0;width:14px;height:400px;pointer-events:none;", onmounted: move |event| { if let Some(element) = event.data().downcast::<web_sys::Element>() && let Ok(canvas) = element.clone().dyn_into::<web_sys::HtmlCanvasElement>() { ruler.set(Some(canvas)); } } }
                 if !tab_focus_announcement().is_empty() { div { role: "alert", aria_atomic: "true", style: "position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;", "{tab_focus_announcement}" } }
-                if find_open() { div { role: "dialog", aria_label: "Find / Replace", style: "position:absolute;z-index:5;top:0;right:28px;width:min(419px,calc(100% - 28px));padding:4px;background:#252526;color:#cccccc;font:12px sans-serif;box-shadow:0 2px 8px #0008;",
-                    div { style: "display:flex;align-items:center;gap:4px;height:25px;",
-                    button { r#type: "button", aria_label: "Toggle Replace", onclick: move |_| { let next = !*replace_open.peek(); replace_open.set(next); }, if replace_open() { "⌄" } else { "›" } }
-                    input { aria_label: "Find", placeholder: "Find", value: "{query}", spellcheck: "false", style: "min-width:0;flex:1;height:24px;padding:3px 6px;background:#3c3c3c;color:#cccccc;border:1px solid #007fd4;outline:none;",
-                        onmounted: move |event| async move { let _ = event.set_focus(true).await; },
+                if find_open() { div { role: "dialog", aria_label: "Find / Replace", class: "translator-find {find_layout} {replacing}",
+                    button { r#type: "button", class: "find-icon find-toggle", aria_label: "Toggle Replace", aria_expanded: "{replace_open}", onclick: move |_| { let next = !*replace_open.peek(); replace_open.set(next); }, if replace_open() { "" } else { "" } }
+                    div { class: "find-row",
+                    div { class: "find-box",
+                    textarea { aria_label: "Find", placeholder: "Find", value: "{query}", spellcheck: "false", class: "find-input",
+                        onmounted: move |event| async move { let _ = event.set_focus(true).await; if let Some(element) = event.data().downcast::<web_sys::Element>() && let Ok(input) = element.clone().dyn_into::<web_sys::HtmlTextAreaElement>() { input.select(); } },
                         oninput: move |event| { query.set(event.value()); reset_match.call(()); },
                         onkeydown: move |event| { if event.key() == Key::Enter { event.prevent_default(); select_match.call(!event.modifiers().shift()); } else if event.key() == Key::Escape { event.prevent_default(); close_find.call(()); } else if event.modifiers().alt() { let option = match event.key().to_string().to_lowercase().as_str() { "c" => Some(0), "w" => Some(1), "r" => Some(2), _ => None }; if let Some(option) = option { event.prevent_default(); toggle_option.call(option); } else if event.key().to_string().eq_ignore_ascii_case("l") { event.prevent_default(); toggle_scope.call(()); } } }
                     }
-                    button { r#type: "button", role: "checkbox", aria_label: "Match Case (Alt+C)", aria_checked: "{match_case}", style: if match_case() { "background:#004a77;color:#fff;" } else { "color:#ccc;" }, onclick: move |_| toggle_option.call(0), "Aa" }
-                    button { r#type: "button", role: "checkbox", aria_label: "Match Whole Word (Alt+W)", aria_checked: "{whole_word}", style: if whole_word() { "background:#004a77;color:#fff;" } else { "color:#ccc;" }, onclick: move |_| toggle_option.call(1), "ab" }
-                    button { r#type: "button", role: "checkbox", aria_label: "Use Regular Expression (Alt+R)", aria_checked: "{regex}", style: if regex() { "background:#004a77;color:#fff;" } else { "color:#ccc;" }, onclick: move |_| toggle_option.call(2), ".*" }
-                    span { style: "min-width:55px;text-align:center;", "{count}" }
-                    button { r#type: "button", aria_label: "Previous Match (Shift+Enter)", onclick: move |_| select_match.call(false), "↑" }
-                    button { r#type: "button", aria_label: "Next Match (Enter)", onclick: move |_| select_match.call(true), "↓" }
-                    button { r#type: "button", role: "checkbox", aria_label: "Find in Selection (Alt+L)", aria_checked: "{find_scope().is_some()}", style: if find_scope().is_some() { "background:#004a77;color:#fff;" } else { "color:#ccc;" }, onclick: move |_| toggle_scope.call(()), "☷" }
-                    button { r#type: "button", aria_label: "Close (Escape)", onclick: move |_| close_find.call(()), "×" }
+                    div { class: "find-options",
+                        button { r#type: "button", class: "find-icon find-option", role: "checkbox", aria_label: "Match Case (Alt+C)", aria_checked: "{match_case}", onclick: move |_| toggle_option.call(0), "" }
+                        button { r#type: "button", class: "find-icon find-option", role: "checkbox", aria_label: "Match Whole Word (Alt+W)", aria_checked: "{whole_word}", onclick: move |_| toggle_option.call(1), "" }
+                        button { r#type: "button", class: "find-icon find-option", role: "checkbox", aria_label: "Use Regular Expression (Alt+R)", aria_checked: "{regex}", onclick: move |_| toggle_option.call(2), "" }
                     }
-                    if replace_open() { div { style: "display:flex;align-items:center;gap:4px;height:25px;margin-left:14px;",
-                        input { aria_label: "Replace", placeholder: "Replace", value: "{replacement}", spellcheck: "false", style: "min-width:0;flex:1;height:24px;padding:3px 6px;background:#3c3c3c;color:#cccccc;border:1px solid #3c3c3c;outline:none;", oninput: move |event| replacement.set(event.value()), onkeydown: move |event| { if event.key() == Key::Enter { event.prevent_default(); replace_matches.call(false); } else if event.key() == Key::Escape { event.prevent_default(); close_find.call(()); } else if event.modifiers().alt() && event.key().to_string().eq_ignore_ascii_case("l") { event.prevent_default(); toggle_scope.call(()); } } }
-                        button { r#type: "button", aria_label: "Replace (Ctrl+Shift+1)", onclick: move |_| replace_matches.call(false), "Replace" }
-                        button { r#type: "button", aria_label: "Replace All (Ctrl+Alt+Enter)", onclick: move |_| replace_matches.call(true), "Replace All" }
+                    }
+                    span { class: "find-count", "{count}" }
+                    button { r#type: "button", class: "find-icon", aria_label: "Previous Match (Shift+Enter)", onclick: move |_| select_match.call(false), "" }
+                    button { r#type: "button", class: "find-icon", aria_label: "Next Match (Enter)", onclick: move |_| select_match.call(true), "" }
+                    button { r#type: "button", class: "find-icon find-scope", role: "checkbox", aria_label: "Find in Selection (Alt+L)", aria_checked: "{find_scope().is_some()}", onclick: move |_| toggle_scope.call(()), "" }
+                    }
+                    button { r#type: "button", class: "find-icon find-close", aria_label: "Close (Escape)", onclick: move |_| close_find.call(()), "" }
+                    if replace_open() { div { class: "find-row",
+                        div { class: "find-box replace-box", textarea { aria_label: "Replace", placeholder: "Replace", value: "{replacement}", spellcheck: "false", class: "find-input", oninput: move |event| replacement.set(event.value()), onkeydown: move |event| { if event.key() == Key::Enter { event.prevent_default(); replace_matches.call(false); } else if event.key() == Key::Escape { event.prevent_default(); close_find.call(()); } else if event.modifiers().alt() && event.key().to_string().eq_ignore_ascii_case("l") { event.prevent_default(); toggle_scope.call(()); } } } }
+                        button { r#type: "button", class: "find-icon", aria_label: "Replace (Ctrl+Shift+1)", onclick: move |_| replace_matches.call(false), "" }
+                        button { r#type: "button", class: "find-icon", aria_label: "Replace All (Ctrl+Alt+Enter)", onclick: move |_| replace_matches.call(true), "" }
                     } }
                 } }
             }
