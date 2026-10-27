@@ -15,8 +15,8 @@ pub(super) struct State {
 }
 
 impl State {
-    pub(super) fn resetting(&self, id: &str) -> bool {
-        self.resetting.as_deref() == Some(id)
+    pub(super) fn busy(&self, id: &str) -> bool {
+        self.preparing.as_deref() == Some(id) || self.resetting.as_deref() == Some(id)
     }
 }
 

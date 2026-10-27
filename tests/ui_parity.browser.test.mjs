@@ -318,6 +318,9 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 let codexCredits = 1;
                 let creditGetError = false;
                 let creditPostError = false;
+                let releaseCreditLookup;
+                let markCreditLookupStarted;
+                const creditLookupStarted = new Promise(resolve => { markCreditLookupStarted = resolve; });
                 let releaseCodexReset;
                 let markCodexResetStarted;
                 const codexResetStarted = new Promise(resolve => { markCodexResetStarted = resolve; });
@@ -454,7 +457,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   if (screen.section === "quota" && path === "/api/usage/fixture-codex") return route.fulfill({ json: { plan: "pro", resetCredits: { availableCount: codexCredits }, quotas: { "Premium Requests": { used: 25, total: 100, resetAt: null } } } });
                   if (screen.section === "quota" && path === "/api/usage/fixture-codex/codex-reset-credits") {
                     if (method === "POST") { if (creditPostError) return route.fulfill({ status: 429, json: { error: "Synthetic reset error" } }); markCodexResetStarted(); await new Promise(resolve => { releaseCodexReset = resolve; }); codexCredits = 0; return route.fulfill({ json: { reset: true } }); }
-                    if (creditGetError) return route.fulfill({ status: 503, json: { error: "Synthetic credit error" } });
+                    if (creditGetError) { markCreditLookupStarted(); await new Promise(resolve => { releaseCreditLookup = resolve; }); return route.fulfill({ status: 503, json: { error: "Synthetic credit error" } }); }
                     return route.fulfill({ json: { availableCount: codexCredits, credits: [{ status: "available", grantedAt: null, expiresAt: null }, { status: "used", grantedAt: null, expiresAt: null }] } });
                   }
                   if (screen.section === "quota" && path === "/api/providers/fixture-github") { quotaConnections[0].isActive = request.postDataJSON().isActive; return route.fulfill({ json: { success: true } }); }
@@ -802,6 +805,10 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       } else verifyAfterCapture = async () => {
                         creditGetError = true;
                         await useCredit().click();
+                        await creditLookupStarted;
+                        await page.waitForFunction(() => document.querySelector('[title="Refresh quota"]').disabled);
+                        assert(await expiry().isDisabled(), "other row actions are disabled during credit lookup");
+                        releaseCreditLookup();
                         await page.getByText("Synthetic credit error", { exact: true }).waitFor();
                         assert.equal(writes.length, 0, "a failed lookup cannot consume a credit");
                         creditGetError = false;
