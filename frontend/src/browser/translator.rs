@@ -790,6 +790,15 @@ impl Drop for EditorSizeObserver {
     }
 }
 
+#[derive(Clone)]
+struct CompositionUndo {
+    before: String,
+    after: String,
+    start: u32,
+    end: u32,
+    direction: String,
+}
+
 #[component]
 fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element {
     let mut textarea = use_signal(|| None::<web_sys::HtmlTextAreaElement>);
@@ -799,6 +808,10 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
     let mut line_tops = use_signal(Vec::<i32>::new);
     let initial_value = value.clone();
     let mut pair_text = use_signal(move || initial_value);
+    let initial_value = value.clone();
+    let mut last_input = use_signal(move || initial_value);
+    let mut composition_start = use_signal(|| None::<CompositionUndo>);
+    let mut composition_undo = use_signal(|| None::<CompositionUndo>);
     let mut auto_pairs = use_signal(Vec::<(char, u32)>::new);
     let mut ruler = use_signal(|| None::<web_sys::HtmlCanvasElement>);
     let mut has_changed = use_signal(|| !value.is_empty());
@@ -1221,7 +1234,40 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
                                 select_match.call(!event.modifiers().shift());
                             }
                         },
-                        oninput: move |event| { on_change.call(event.value()); update_cursor.call(()); },
+                        oncompositionstart: move |_| {
+                            if let Some(input) = textarea.peek().as_ref() {
+                                let before = input.value();
+                                last_input.set(before.clone());
+                                let start = input.selection_start().ok().flatten().unwrap_or_default();
+                                composition_start.set(Some(CompositionUndo {
+                                    before,
+                                    after: String::new(),
+                                    start,
+                                    end: input.selection_end().ok().flatten().unwrap_or(start),
+                                    direction: input.selection_direction().ok().flatten().unwrap_or_default(),
+                                }));
+                            }
+                        },
+                        oncompositionend: move |_| {
+                            if let Some(mut composition) = composition_start.take() && let Some(input) = textarea.peek().as_ref() {
+                                composition.after = input.value();
+                                if composition.before != composition.after { composition_undo.set(Some(composition)); }
+                            }
+                        },
+                        oninput: move |event| {
+                            let value = event.value();
+                            let is_undo = event.data().downcast::<web_sys::Event>()
+                                .and_then(|event| event.dyn_ref::<web_sys::InputEvent>())
+                                .is_some_and(|event| event.input_type() == "historyUndo");
+                            if is_undo && let Some(composition) = composition_undo.peek().as_ref()
+                                && *last_input.peek() == composition.after && value == composition.before
+                                && let Some(input) = textarea.peek().as_ref() {
+                                let _ = input.set_selection_range_with_direction(composition.start, composition.end, &composition.direction);
+                            }
+                            last_input.set(value.clone());
+                            on_change.call(value);
+                            update_cursor.call(());
+                        },
                         onselect: move |_| update_cursor.call(()),
                         onkeyup: move |_| update_cursor.call(()),
                         onscroll: move |_| { if let Some(input) = textarea.peek().as_ref() { scroll_top.set(input.scroll_top()); } }

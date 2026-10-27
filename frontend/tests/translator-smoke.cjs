@@ -85,6 +85,39 @@ async function main() {
         return true;
       } catch { return false; }
     });
+    if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
+    const cdp = await context.newCDPSession(page);
+    for (const { text, start, end } of [
+      { text: '{"text":""}', start: 9, end: 9 },
+      { text: '{"text":"hello"}', start: 10, end: 13 },
+    ]) {
+      if (reference) await page.evaluate(text => window.monaco.editor.getEditors()[0].setValue(text), text);
+      else await editor().fill(text);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      if (reference) await page.evaluate(({ start, end }) => { const e = window.monaco.editor.getEditors()[0], m = e.getModel(); const a = m.getPositionAt(start), b = m.getPositionAt(end); e.setSelection(new window.monaco.Selection(a.lineNumber, a.column, b.lineNumber, b.column)); e.focus(); }, { start, end });
+      else await editor().evaluate((input, { start, end }) => { input.setSelectionRange(start, end); input.focus(); }, { start, end });
+      for (const composed of ["n", "に", "日本"]) {
+        await cdp.send("Input.imeSetComposition", { text: composed, selectionStart: composed.length, selectionEnd: composed.length });
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        assert.equal(await value(), text.slice(0, start) + composed + text.slice(end), "composition updates the selected text");
+      }
+      await cdp.send("Input.insertText", { text: "日本" });
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.keyboard.press("Control+z");
+      assert.equal(await value(), text, "undo restores text before IME composition");
+      assert.deepEqual(await selection(), [start, end], "undo restores the original composition selection");
+      await page.keyboard.press("Control+Shift+z");
+      assert.equal(await value(), text.slice(0, start) + "日本" + text.slice(end), "redo restores the composed text");
+      await page.keyboard.press("Control+z");
+      assert.deepEqual(await selection(), [start, end], "undo after redo restores the composition selection");
+      await page.keyboard.type("x");
+      assert.equal(await value(), text.slice(0, start) + "x" + text.slice(end), "typing after undo preserves surrounding text");
+    }
+    if (process.env.TRANSLATOR_IME_ONLY === "1") {
+      assert.deepEqual(errors, []);
+      console.log("synthetic translator IME smoke passed");
+      return;
+    }
     if (reference) {
       await page.locator(".monaco-editor .view-lines").waitFor();
       await page.evaluate(() => window.monaco.editor.getEditors()[0].setValue("text"));
