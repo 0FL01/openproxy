@@ -276,6 +276,11 @@ async function main() {
             .map(name => Math.round(root.querySelector(`[aria-label="${name}"]`).getBoundingClientRect().left - left));
         });
         assert.deepEqual(optionPositions, [190, 212, 234], "Find options align with the reference panel");
+        const scopeStyle = await dialog.getByRole("checkbox", { name: "Find in Selection (Alt+L)" }).evaluate(element => {
+          const style = getComputedStyle(element);
+          return [style.display, style.textAlign];
+        });
+        assert.deepEqual(scopeStyle, ["block", "center"], "Find in Selection uses the reference icon layout");
         const matchPoint = await page.evaluate(reference => {
           const match = document.querySelector(reference ? ".monaco-editor .view-overlays .findMatch" : ".find-match").getBoundingClientRect();
           return { x: Math.floor(match.left + 2), y: Math.floor(match.top + 1) };
