@@ -2374,8 +2374,8 @@ fn Editor(
             return;
         };
         let undo = match native.type_().as_str() {
-            "copy" => clipboard::copy_line(&input, native, false),
-            "cut" => clipboard::copy_line(&input, native, true),
+            "copy" => clipboard::copy(&input, native, false, json),
+            "cut" => clipboard::copy(&input, native, true, json),
             "paste" => clipboard::paste_line(&input, native),
             _ => None,
         };
