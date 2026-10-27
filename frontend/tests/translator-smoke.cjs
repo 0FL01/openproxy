@@ -118,6 +118,32 @@ async function main() {
       console.log("synthetic translator line selection smoke passed");
       return;
     }
+    if (reference) await page.evaluate(text => { const editor = window.monaco.editor.getEditors()[0]; editor.setValue(text); editor.setPosition({ lineNumber: 2, column: 3 }); editor.focus(); }, lines);
+    else { await editor().fill(lines); await editor().evaluate(input => input.setSelectionRange(8, 8)); }
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.keyboard.press("Control+Shift+k");
+    assert.equal(await value(), "alpha\ngamma", "Ctrl+Shift+K deletes the current line");
+    assert.deepEqual(await lineSelection(), [8, 8], "deleting a line keeps the cursor column");
+    await page.keyboard.press("Control+z");
+    assert.equal(await value(), lines, "line deletion is one undoable edit");
+    if (reference) await page.evaluate(() => { const editor = window.monaco.editor.getEditors()[0]; editor.setPosition({ lineNumber: 3, column: 3 }); editor.focus(); });
+    else await editor().evaluate(input => input.setSelectionRange(13, 13));
+    await page.keyboard.press("Control+Shift+k");
+    assert.equal(await value(), "alpha\nbeta", "deleting the final line also removes its preceding newline");
+    assert.deepEqual(await lineSelection(), [8, 8], "the cursor moves to the previous line at the same column");
+    await page.keyboard.press("Control+z");
+    assert.equal(await value(), lines, "final-line deletion is undoable");
+    if (reference) await page.evaluate(() => { const editor = window.monaco.editor.getEditors()[0]; editor.setSelection(new window.monaco.Selection(1, 1, 2, 1)); editor.focus(); });
+    else await editor().evaluate(input => input.setSelectionRange(0, 6));
+    await page.keyboard.press("Control+Shift+k");
+    assert.equal(await value(), "beta\ngamma", "a selection ending at the next line does not delete that line");
+    await page.keyboard.press("Control+z");
+    assert.equal(await value(), lines, "deleting selected lines is undoable");
+    if (process.env.TRANSLATOR_DELETE_LINE_ONLY === "1") {
+      assert.deepEqual(errors, []);
+      console.log("synthetic translator line deletion smoke passed");
+      return;
+    }
     if (!reference) {
       await page.getByRole("button", { name: /Load$/ }).click();
       await page.waitForFunction(value => document.querySelector('textarea[aria-label="Translator editor"]')?.value === value, JSON.stringify(source));

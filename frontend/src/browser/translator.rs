@@ -410,6 +410,63 @@ fn select_line(input: &web_sys::HtmlTextAreaElement) {
     let _ = input.set_selection_range(line_start, line_end);
 }
 
+fn delete_lines(input: &web_sys::HtmlTextAreaElement) {
+    let start = input.selection_start().ok().flatten().unwrap_or_default() as usize;
+    let end = input.selection_end().ok().flatten().unwrap_or(start as u32) as usize;
+    let text: Vec<u16> = input.value().encode_utf16().collect();
+    if text.is_empty() {
+        return;
+    }
+    let newline = b'\n' as u16;
+    let line_start = text[..start]
+        .iter()
+        .rposition(|ch| *ch == newline)
+        .map_or(0, |index| index + 1);
+    let focus = if input.selection_direction().ok().flatten().as_deref() == Some("backward") {
+        start
+    } else {
+        end
+    };
+    let focus_start = text[..focus]
+        .iter()
+        .rposition(|ch| *ch == newline)
+        .map_or(0, |index| index + 1);
+    let column = focus - focus_start;
+    let selected_end = if end > start && text[end - 1] == newline {
+        end - 1
+    } else {
+        end
+    };
+    let line_end = text[selected_end..]
+        .iter()
+        .position(|ch| *ch == newline)
+        .map_or(text.len(), |index| selected_end + index);
+    let (delete_start, delete_end, cursor) = if line_end < text.len() {
+        let next = line_end + 1;
+        let next_length = text[next..]
+            .iter()
+            .position(|ch| *ch == newline)
+            .unwrap_or(text.len() - next);
+        (line_start, next, line_start + column.min(next_length))
+    } else if line_start > 0 {
+        let previous_end = line_start - 1;
+        let previous_start = text[..previous_end]
+            .iter()
+            .rposition(|ch| *ch == newline)
+            .map_or(0, |index| index + 1);
+        (
+            previous_end,
+            text.len(),
+            previous_start + column.min(previous_end - previous_start),
+        )
+    } else {
+        (0, text.len(), 0)
+    };
+    if insert_text(input, delete_start as u32, delete_end as u32, "") {
+        let _ = input.set_selection_range(cursor as u32, cursor as u32);
+    }
+}
+
 fn indent_selection(input: &web_sys::HtmlTextAreaElement, backwards: bool) {
     const TAB_SIZE: u32 = 4;
     let text = js_sys::JsString::from(input.value());
@@ -1017,6 +1074,10 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
                             } else if (event.modifiers().ctrl() || event.modifiers().meta()) && !event.modifiers().shift() && !event.modifiers().alt() && key.eq_ignore_ascii_case("l") {
                                 event.prevent_default();
                                 if let Some(input) = textarea.peek().as_ref() { select_line(input); }
+                                update_cursor.call(());
+                            } else if (event.modifiers().ctrl() || event.modifiers().meta()) && event.modifiers().shift() && !event.modifiers().alt() && key.eq_ignore_ascii_case("k") {
+                                event.prevent_default();
+                                if let Some(input) = textarea.peek().as_ref() { delete_lines(input); }
                                 update_cursor.call(());
                             } else if (event.modifiers().ctrl() || event.modifiers().meta()) && (key.eq_ignore_ascii_case("f") || key.eq_ignore_ascii_case("h")) {
                                 event.prevent_default();
