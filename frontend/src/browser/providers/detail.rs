@@ -1,5 +1,7 @@
 //! Incremental provider detail: real connections and Available Models.
+mod codex_import;
 mod compatible_edit;
+mod context_limit;
 mod edit;
 mod oauth;
 mod oauth_events;
@@ -778,6 +780,7 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
     let connection_error = use_signal(|| false);
     let connection_generation = use_signal(|| 0_u64);
     let mut auto_ping = use_signal(AutoPing::default);
+    let mut codex_import_open = use_signal(|| false);
     let mut image_error = use_signal(|| false);
     let mut add = use_signal(|| false);
     let mut model_id = use_signal(String::new);
@@ -1700,7 +1703,13 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
     let metadata: Value =
         serde_json::from_str(include_str!("../provider_detail_metadata.json")).unwrap_or_default();
     let details = metadata[&id].clone();
-    let site = sites[&id]["url"].as_str().map(str::to_owned);
+    // The chooser snapshot contains API-key links only; Codex's OAuth detail
+    // page additionally exposes the signup link from the provider registry.
+    let site = if id == "codex" {
+        Some("https://chatgpt.com/codex".to_owned())
+    } else {
+        sites[&id]["url"].as_str().map(str::to_owned)
+    };
     let site_label = if sites[&id]["kind"] == "key" {
         "Get API Key"
     } else {
@@ -1825,11 +1834,12 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
                                 if tests.running { Button { label: if tests.stopping { "Stopping...".to_owned() } else { "Stop".to_owned() }, small: true, variant: "ghost", icon: "stop".to_owned(), disabled: tests.stopping, onclick: move |_| connection_action.call(ConnectionAction::StopTests) } }
                             }
                             div { class: "flex items-center gap-2", span { class: "text-xs text-text-muted font-medium", "Thinking" } select { class: "text-xs px-2 py-1 border border-border rounded-md bg-background focus:outline-none focus:border-primary", title: "Appends (level) suffix to copied model names", value: "{thinking_mode}", onchange: move |e| thinking_mode.set(e.value()), for level in levels.clone() { option { value: "{level}", "{level.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default()}{level.chars().skip(1).collect::<String>()}" } } } }
+                            if id == "codex" { context_limit::CodexContextLimit { on_saved: move |_| refresh_catalog("codex".to_owned(), load) } }
                         }
                     }
                     if connection_error() { p { class: "text-sm text-text-muted", "Connections could not be loaded." } Button { label: "Retry".to_owned(), small: true, variant: "secondary", onclick: { let id = id.clone(); move |_| { let id = id.clone(); spawn(async move { load_connections(&id, connections, loading, connection_error, connection_generation).await; }); } } } }
                     else if connection_count == 0 { div { class: "flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between", div { class: "flex items-center gap-3", div { class: "inline-flex items-center justify-center w-9 h-9 rounded-full bg-primary/10 text-primary shrink-0", span { class: "material-symbols-outlined text-[18px]", if has_oauth { "lock" } else { "key" } } } div { class: "min-w-0", p { class: "text-sm text-text-muted", "No connections yet" } if has_oauth && has_api { p { class: "text-xs text-text-muted", "Choose " if id == "xai" { "Grok Build OAuth" } else { "OAuth" } " or " if id == "xai" { "xAI API Key" } else { "API Key" } "." } } } }
-                        AddButtons { provider_id: id.clone(), has_oauth, has_api, compatible, connected: false, add_key, open_oauth }
+                        AddButtons { provider_id: id.clone(), has_oauth, has_api, compatible, connected: false, add_key, open_oauth, open_codex_import: move |_| codex_import_open.set(true) }
                     } }
                     else {
                         if tests.total > 0 { div { class: "mb-4 rounded-lg border border-black/10 bg-black/[0.02] px-3 py-2 text-xs text-text-muted dark:border-white/10 dark:bg-white/[0.03]", div { class: "flex flex-wrap items-center gap-3", span { "Total: {tests.total}" } span { "Completed: {tests.completed}" } span { "Passed: {tests.passed}" } span { "Failed: {tests.failed}" } if tests.stopped { span { class: "text-amber-600 dark:text-amber-400", "Stopped" } } if let Some(current) = tests.current.clone() { span { "Running: " "{connections().iter().find(|c| text(c, \"id\") == current).and_then(|c| c[\"name\"].as_str()).unwrap_or(&current)}" } } } } }
@@ -1837,7 +1847,7 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
                         div { class: "flex min-w-0 flex-col divide-y divide-black/[0.03] dark:divide-white/[0.03]",
                             for (index, conn) in connections().into_iter().enumerate() { Connection { key: "{text(&conn, \"id\")}", selected: selected_ids.contains(&text(&conn, "id").to_owned()), index, count: connection_count, is_oauth: has_oauth, delete_connection, edit_connection, selection: selected, pools: pools(), test: tests.results.get(text(&conn, "id")).cloned(), action: connection_action, ping: auto_ping(), toggle_auto_ping, conn } }
                         }
-                        if !compatible { AddButtons { provider_id: id.clone(), has_oauth, has_api, compatible, connected: true, add_key, open_oauth } }
+                        if !compatible { AddButtons { provider_id: id.clone(), has_oauth, has_api, compatible, connected: true, add_key, open_oauth, open_codex_import: move |_| codex_import_open.set(true) } }
                     }
                 }
             }
@@ -1885,6 +1895,7 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
         KeyModal { provider: add_key, pools, connections, provider_name: Some(name.clone()), on_refresh: refresh_after_connection, compatible }
         edit::EditConnection { provider_id: id.clone(), selected: edit_connection, pools, on_saved: refresh_after_connection, compatible }
         if let Some(attempt) = oauth_open() { oauth::OAuthFlow { key: "{attempt}", provider: id.clone(), name: name.clone(), attempt, on_close: move |_| { if *oauth_open.peek() == Some(attempt) { oauth_open.set(None); } }, on_request: oauth_request } }
+        if codex_import_open() { codex_import::BulkImportCodex { on_close: move |_| codex_import_open.set(false), on_success: move |_| { codex_import_open.set(false); refresh_after_connection.call(()); } } }
     }
 }
 
@@ -1897,6 +1908,7 @@ fn AddButtons(
     connected: bool,
     mut add_key: Signal<Option<String>>,
     open_oauth: Callback<()>,
+    open_codex_import: Callback<()>,
 ) -> Element {
     let oauth_label = if provider_id == "xai" {
         "Grok Build OAuth"
@@ -1919,6 +1931,7 @@ fn AddButtons(
             Button { label: oauth_label.to_owned(), small: true, icon: "lock".to_owned(), variant: "secondary", extra_class: extra, onclick: move |_| open_oauth.call(()) }
             Button { label: key_label.to_owned(), small: true, icon: "key".to_owned(), extra_class: extra, onclick: { let id = provider_id.clone(); move |_| add_key.set(Some(id.clone())) } }
         } else if has_oauth || has_api {
+            if !compatible && provider_id == "codex" { Button { label: "Bulk Add".to_owned(), small: true, icon: "playlist_add".to_owned(), variant: "secondary", extra_class: extra, title: if connected { Some("Bulk import codex accounts from JSON") } else { None }, onclick: move |_| open_codex_import.call(()) } }
             Button { label: if connected { "Add".to_owned() } else if compatible { "Add API Key".to_owned() } else { "Add Connection".to_owned() }, small: true, icon: "add".to_owned(), extra_class: extra, onclick: { let id = provider_id.clone(); move |_| { if has_oauth { open_oauth.call(()); } else { add_key.set(Some(id.clone())); } } } }
         }
     } }

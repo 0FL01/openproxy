@@ -574,7 +574,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     assert.equal(await input.inputValue(), "", "no credentials or JSON are entered");
                     assert.match(await input.getAttribute("placeholder"), /"auth_mode": "chatgpt"/, "expected the built-in example placeholder");
                     assert(await page.getByRole("button", { name: "Import All", exact: true }).isDisabled());
-                    assert(await page.getByRole("button", { name: "Close", exact: true }).isEnabled());
+                    assert(await page.getByRole("button", { name: "Close", exact: true }).filter({ hasText: /^Close$/ }).isEnabled());
                     await page.waitForLoadState("networkidle");
                   }
                   await page.mouse.move(1, 1);

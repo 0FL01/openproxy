@@ -204,8 +204,9 @@ Then, from the repository root:
 
 ```sh
 export OPENPROXY_UI_WEB_DIR="$PWD/frontend/target/dx/openproxy-dashboard/release/web/public"
-docker compose --project-name openproxy-ui-dioxus --project-directory .ui-browser -f .ui-browser/compose.yaml up -d --no-deps --pull never backend app
-docker compose --project-name openproxy-ui-dioxus --project-directory .ui-browser -f .ui-browser/compose.yaml run --rm --no-deps --pull never -T \
+project="openproxy-ui-dioxus-$(date +%s)-$$"
+docker compose --env-file /dev/null --project-name "$project" --project-directory .ui-browser -f .ui-browser/compose.yaml -f .ui-browser/tests/silent-backend.compose.yaml up -d --no-deps --pull never backend app
+docker compose --env-file /dev/null --project-name "$project" --project-directory .ui-browser -f .ui-browser/compose.yaml -f .ui-browser/tests/silent-backend.compose.yaml run --rm --no-deps --pull never -T \
   -v "$PWD/tests/ui_parity.browser.test.mjs:/test/ui_parity.browser.test.mjs:ro" \
   -v "$PWD/tests/ui/reference:/references:ro" \
   -v "$PWD/.ui-browser/artifacts/parity-run:/artifacts" \
@@ -214,23 +215,24 @@ docker compose --project-name openproxy-ui-dioxus --project-directory .ui-browse
   -e DASHBOARD_PLAYWRIGHT_MODULE=/opt/ui-browser/node_modules/playwright/index.mjs \
   -e DASHBOARD_CHROMIUM_EXECUTABLE=/opt/chrome-linux64/chrome \
   browser node --test /test/ui_parity.browser.test.mjs
-docker compose --project-name openproxy-ui-dioxus --project-directory .ui-browser -f .ui-browser/compose.yaml run --rm --no-deps --pull never -T \
+docker compose --env-file /dev/null --project-name "$project" --project-directory .ui-browser -f .ui-browser/compose.yaml -f .ui-browser/tests/silent-backend.compose.yaml run --rm --no-deps --pull never -T \
   -v "$PWD/tests/dioxus_login_backend.browser.test.mjs:/test/dioxus_login_backend.browser.test.mjs:ro" \
-  -e RUN_DIOXUS_BACKEND_TEST=1 \
+  -e RUN_DIOXUS_BACKEND_TEST=1 -e DIOXUS_BACKEND_OUTPUT_SUPPRESSED=1 \
   -e DASHBOARD_PLAYWRIGHT_MODULE=/opt/ui-browser/node_modules/playwright/index.mjs \
   -e DASHBOARD_CHROMIUM_EXECUTABLE=/opt/chrome-linux64/chrome \
   browser node --test /test/dioxus_login_backend.browser.test.mjs
-docker compose --project-name openproxy-ui-dioxus --project-directory .ui-browser -f .ui-browser/compose.yaml stop app backend
-unset OPENPROXY_UI_WEB_DIR
+docker compose --env-file /dev/null --project-name "$project" --project-directory .ui-browser -f .ui-browser/compose.yaml -f .ui-browser/tests/silent-backend.compose.yaml down
+unset OPENPROXY_UI_WEB_DIR project
 ```
 
 Record mode verifies Astro's component identity; compare mode requires the
 Dioxus loader, so comparing the reference to itself is rejected. Before the
 full migration, select only implemented states with `UI_PARITY_SCREEN`. The
-real-backend test creates a synthetic API key and provider connections in the
-disposable database, then checks their state after a page reload. Its auto-ping
-check uses an inactive synthetic GLM connection, so it cannot start the worker
-or contact a provider; it never reads or prints the generated key value.
+real-backend test needs a fresh backend and checks the Codex advertised context
+setting, a synthetic API key and provider connections after page reload. Its
+auto-ping check uses an inactive synthetic GLM connection, so it cannot start
+the worker or contact a provider; it never reads or prints the generated key
+value. The override suppresses the synthetic key printed at backend startup.
 
 The provider-model discovery test needs a **fresh** disposable backend. Its
 startup generates a synthetic API key and writes it to stderr, so the test-only

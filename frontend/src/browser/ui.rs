@@ -16,6 +16,7 @@ pub fn Button(
     #[props(default)] loading: bool,
     #[props(default)] small: bool,
     #[props(default)] extra_class: &'static str,
+    #[props(default)] title: Option<&'static str>,
     onclick: EventHandler<MouseEvent>,
 ) -> Element {
     let variant = match variant {
@@ -32,7 +33,7 @@ pub fn Button(
     };
     let class = format!("inline-flex items-center justify-center gap-2 rounded-mini-md leading-none transition-colors duration-150 ease-out cursor-pointer tracking-tight active:scale-[0.99] disabled:cursor-not-allowed disabled:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-coral/30 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas {variant} {size} {width} {extra_class}");
     rsx! {
-        button { class, disabled: disabled || loading, onclick,
+        button { class, title, disabled: disabled || loading, onclick,
             if loading {
                 span { class: "material-symbols-outlined animate-spin text-[18px]", "progress_activity" }
             } else if let Some(icon) = icon {

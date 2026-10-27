@@ -80,6 +80,29 @@ const server = http.createServer(async (req, res) => {
       return respond(200, { connections: state.connections });
     }
     if (url.pathname === "/api/providers/validate" && req.method === "POST") return respond(200, { valid: state.validationValid !== false });
+    if (url.pathname === "/api/oauth/codex/bulk-import" && req.method === "POST") {
+      if (state.holdCodexImport) {
+        state.holdCodexImport = false;
+        await new Promise(resolve => { state.releaseCodexImport = resolve; });
+      }
+      if (state.bulkImportStatus) {
+        if (state.bulkImportStatus === 401) state.expired = true;
+        return respond(state.bulkImportStatus, { error: "Synthetic import failure" });
+      }
+      if (state.bulkImportMalformed) return respond(200, { success: true });
+      const results = body.accounts.map((account, index) => {
+        const token = account?.tokens?.access_token || account?.access_token || account?.accessToken;
+        if (!account || typeof account !== "object" || Array.isArray(account)) return { index, ok: false, error: "Item is not an object" };
+        if (account.auth_mode != null && account.auth_mode !== "chatgpt") return { index, ok: false, error: "Unexpected auth_mode (expected chatgpt)" };
+        if (!token) return { index, ok: false, error: "Missing accessToken" };
+        const id = `codex-import-${++state.codexImportCount}`;
+        // Only a sanitized connection is retained, never the synthetic token.
+        state.connections.push({ id, provider: "codex", name: `Imported ${state.codexImportCount}`, authType: "oauth", isActive: true });
+        return { index, ok: true, id };
+      });
+      const success = results.filter(result => result.ok).length;
+      return respond(200, { success, failed: results.length - success, results });
+    }
     if (url.pathname === "/api/providers" && req.method === "POST") {
       if (state.rejectAdd) return respond(400, { error: "Synthetic add rejected" });
       const conn = { id: `fixture-added-${++state.addCounter}`, provider: body.provider, name: body.name, authType: "apikey", hasApiKey: true, testStatus: body.testStatus, isActive: true, priority: body.priority, providerSpecificData: { proxyPoolId: body.proxyPoolId } };
@@ -315,6 +338,166 @@ async function waitForFixture(predicate) {
     if (Date.now() > deadline) throw new Error("synthetic fixture action timed out");
     await new Promise(resolve => setTimeout(resolve, 10));
   }
+}
+
+async function runCodexControlsFixture(page, origin) {
+  state.expired = false;
+  state.writes = [];
+  state.codexImportCount = 0;
+  state.connections = [];
+  state.settings = {
+    providerContextLimits: { codex: 430000, glm: 250000, claude: 600000 },
+    codexAutoPing: { enabled: false, connections: { orphan: false } },
+    glmAutoPing: { enabled: false, connections: {} },
+    otherSetting: { untouched: true },
+  };
+  const settingsWrites = () => state.writes.filter(w => w.path === "/api/settings" && w.method === "PATCH");
+  const importWrites = () => state.writes.filter(w => w.path === "/api/oauth/codex/bulk-import");
+  const context = () => page.getByLabel("Advertised Context");
+  const dialog = () => page.getByRole("dialog", { name: "Bulk Add Codex Accounts" });
+  const field = () => dialog().getByLabel("Codex accounts JSON");
+  const open = async () => { await page.getByRole("button", { name: /playlist_add Bulk Add/ }).click(); await dialog().waitFor(); };
+  const submit = async input => { await field().fill(input); await dialog().getByRole("button", { name: "Import All" }).click(); };
+
+  await page.goto(`${origin}/dashboard/providers/codex`);
+  await page.getByText("No connections yet").waitFor();
+  const link = page.getByRole("link", { name: /Sign up \/ Learn more/ });
+  assert.equal(await link.getAttribute("href"), "https://chatgpt.com/codex");
+  assert.equal(await link.getAttribute("target"), "_blank");
+  assert.equal(await link.getAttribute("rel"), "noopener noreferrer");
+  await context().waitFor();
+  await page.waitForFunction(() => document.querySelector('input[type="number"]')?.value === "430000" && !document.querySelector('input[type="number"]')?.disabled);
+  assert.match(await context().locator("xpath=..").getAttribute("title"), /50,000 input tokens.*128,000 output tokens/);
+  for (const invalid of ["0", "1000001", "1.5", ""]) {
+    await context().fill(invalid);
+    await context().blur();
+    await page.getByText("Context limit must be a whole number from 1 to 1,000,000", { exact: true }).last().waitFor();
+    assert.equal(await context().inputValue(), "430000");
+  }
+  assert.equal(settingsWrites().length, 0, "invalid limits never write");
+  state.settings.providerContextLimits.glm = 275000; // another writer completed after page load
+  state.holdSettingsWrite = true; state.releaseSettingsWrite = null;
+  const catalogs = state.catalogRequests;
+  await context().fill("4.5e5");
+  await context().press("Enter");
+  await waitForFixture(() => typeof state.releaseSettingsWrite === "function");
+  assert.equal(await context().isDisabled(), true);
+  assert.deepEqual(settingsWrites().at(-1).body, { providerContextLimits: { codex: 450000, glm: 275000, claude: 600000 } });
+  state.releaseSettingsWrite();
+  await page.waitForFunction(() => document.querySelector('input[type="number"]')?.value === "450000" && !document.querySelector('input[type="number"]')?.disabled);
+  await waitForFixture(() => state.catalogRequests > catalogs);
+  assert.deepEqual(state.settings.codexAutoPing, { enabled: false, connections: { orphan: false } });
+  assert.deepEqual(state.settings.otherSetting, { untouched: true });
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector('input[type="number"]')?.value === "450000" && !document.querySelector('input[type="number"]')?.disabled);
+  state.failSettingsRead = true;
+  const writesBeforeReadFailure = settingsWrites().length;
+  await context().fill("460000"); await context().blur();
+  await page.getByText("Failed to load context limits", { exact: true }).last().waitFor();
+  assert.equal(await context().inputValue(), "450000");
+  assert.equal(settingsWrites().length, writesBeforeReadFailure);
+  state.failSettingsRead = false;
+  state.rejectSettingsWrite = true;
+  await context().fill("460000"); await context().blur();
+  await page.getByText("Failed to save context limit", { exact: true }).last().waitFor();
+  assert.equal(await context().inputValue(), "450000");
+  assert.equal(state.settings.providerContextLimits.codex, 450000);
+  state.rejectSettingsWrite = false;
+  // A lost response may still have committed: a later edit re-reads the map.
+  const loseSettingsAck = async route => {
+    if (route.request().method() !== "PATCH") return route.fallback();
+    await route.fetch(); await route.abort("failed");
+  };
+  await page.route("**/api/settings", loseSettingsAck);
+  await context().fill("460000"); await context().blur();
+  await waitForFixture(() => state.settings.providerContextLimits.codex === 460000);
+  await page.waitForFunction(() => document.querySelector('input[type="number"]')?.value === "450000" && !document.querySelector('input[type="number"]')?.disabled);
+  await page.unroute("**/api/settings", loseSettingsAck);
+  state.settings.providerContextLimits.glm = 285000;
+  await context().fill("1"); await context().blur();
+  await waitForFixture(() => state.settings.providerContextLimits.codex === 1);
+  await page.waitForFunction(() => !document.querySelector('input[type="number"]')?.disabled);
+  await context().fill("1000000"); await context().press("Enter");
+  await waitForFixture(() => state.settings.providerContextLimits.codex === 1000000);
+  await page.waitForFunction(() => !document.querySelector('input[type="number"]')?.disabled);
+  await context().fill("450000"); await context().blur();
+  await waitForFixture(() => state.settings.providerContextLimits.codex === 450000);
+  await page.waitForFunction(() => !document.querySelector('input[type="number"]')?.disabled);
+  assert.deepEqual(settingsWrites().at(-1).body, { providerContextLimits: { codex: 450000, glm: 285000, claude: 600000 } });
+
+  await open();
+  assert.equal(await dialog().getByRole("button", { name: "Import All" }).isDisabled(), true);
+  await submit("{broken");
+  await dialog().getByRole("alert").getByText(/^Invalid JSON:/).waitFor();
+  await submit("[]");
+  await dialog().getByText("No accounts found in input", { exact: true }).waitFor();
+  await submit('{"accounts":[]}');
+  await dialog().getByText("No accounts found in input", { exact: true }).waitFor();
+  await submit("42");
+  await dialog().getByText("No accounts found in input", { exact: true }).waitFor();
+  assert.equal(importWrites().length, 0, "invalid or empty JSON never writes");
+  await submit('[{},42]');
+  await dialog().getByText(", ✗ 2 failed", { exact: true }).waitFor();
+  await dialog().getByText("[0] Missing accessToken", { exact: true }).waitFor();
+  await dialog().getByText("[1] Item is not an object", { exact: true }).waitFor();
+  assert.deepEqual(importWrites().at(-1).body, { accounts: [{}, 42] });
+  state.bulkImportStatus = 400;
+  await submit('{"accessToken":"synthetic-access-one"}');
+  await dialog().getByText("Synthetic import failure", { exact: true }).waitFor();
+  state.bulkImportStatus = 0;
+  state.bulkImportMalformed = true;
+  await submit('{"accessToken":"synthetic-access-one"}');
+  await dialog().getByText("Invalid import response; refresh connections before retrying.", { exact: true }).waitFor();
+  state.bulkImportMalformed = false;
+  await dialog().getByRole("button", { name: "Close", exact: true }).last().click();
+  await dialog().waitFor({ state: "detached" });
+  await open();
+  assert.equal(await field().inputValue(), "", "closing discards the draft and result");
+
+  const importCatalogs = state.catalogRequests;
+  state.holdCodexImport = true; state.releaseCodexImport = null;
+  await submit('{"accounts":[{"auth_mode":"chatgpt","tokens":{"access_token":"synthetic-access-two"}},{}]}\nfixture@terminal:~$');
+  await waitForFixture(() => typeof state.releaseCodexImport === "function");
+  assert.equal(await field().isDisabled(), true);
+  assert.equal(await dialog().getByRole("button", { name: "Close", exact: true }).last().isDisabled(), true);
+  const heldImportCount = importWrites().length;
+  await dialog().getByRole("button", { name: "Importing..." }).evaluate(element => element.click());
+  await dialog().getByRole("button", { name: "Close", exact: true }).first().click();
+  await page.keyboard.press("Escape");
+  await dialog().waitFor();
+  assert.equal(importWrites().length, heldImportCount, "in-flight imports cannot be submitted twice");
+  assert.deepEqual(importWrites().at(-1).body, { accounts: [{ auth_mode: "chatgpt", tokens: { access_token: "synthetic-access-two" } }, {}] });
+  state.releaseCodexImport();
+  await dialog().waitFor({ state: "detached" });
+  await page.getByText("Imported 1", { exact: true }).waitFor();
+  await waitForFixture(() => state.catalogRequests > importCatalogs);
+  assert.equal(await page.getByRole("button", { name: /playlist_add Bulk Add/ }).getAttribute("title"), "Bulk import codex accounts from JSON");
+
+  await open();
+  await submit('{"accessToken":"synthetic-access-three"}');
+  await dialog().waitFor({ state: "detached" });
+  await page.getByText("Imported 2", { exact: true }).waitFor();
+  assert.deepEqual(importWrites().at(-1).body, { accounts: [{ accessToken: "synthetic-access-three" }] });
+  await page.reload();
+  await page.getByText("Imported 1", { exact: true }).waitFor();
+  await page.getByText("Imported 2", { exact: true }).waitFor();
+  assert.equal(await context().inputValue(), "450000");
+  assert.deepEqual(state.settings.codexAutoPing, { enabled: false, connections: { orphan: false } });
+  assert.ok(state.writes.every(w => ["/api/settings", "/api/oauth/codex/bulk-import"].includes(w.path)), "only synthetic settings and import writes");
+
+  state.rejectSettingsWrite = 401;
+  await context().fill("470000"); await context().blur();
+  await page.waitForURL(`${origin}/login`);
+  assert.equal(state.settings.providerContextLimits.codex, 450000, "unauthorized context writes do not mutate settings");
+  state.rejectSettingsWrite = false; state.expired = false;
+  await page.goto(`${origin}/dashboard/providers/codex`);
+  await page.getByText("Imported 2", { exact: true }).waitFor();
+  await open();
+  state.bulkImportStatus = 401;
+  await submit('{"accessToken":"synthetic-access-four"}');
+  await page.waitForURL(`${origin}/login`);
+  assert.equal(state.codexImportCount, 2, "unauthorized import does not create connections");
+  state.bulkImportStatus = 0;
 }
 
 async function runAutoPingFixture(page, origin) {
@@ -1743,6 +1926,12 @@ async function main() {
     page.setDefaultTimeout(10000);
     const errors = []; page.on("pageerror", error => errors.push(String(error)));
     await page.context().route("**/*", route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
+    if (process.env.PROVIDER_CODEX_CONTROLS_ONLY === "1") {
+      await runCodexControlsFixture(page, origin);
+      assert.deepEqual(errors, []);
+      console.log("synthetic Codex detail controls smoke passed");
+      return;
+    }
     if (process.env.PROVIDER_AUTOPING_ONLY === "1") {
       await runAutoPingFixture(page, origin);
       assert.deepEqual(errors, []);

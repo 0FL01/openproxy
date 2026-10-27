@@ -2,6 +2,128 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 
+// Run first against a fresh, output-suppressed .ui-browser backend. No Codex
+// connection is needed to edit its advertised context setting.
+test("Dioxus Codex advertised context persists across a page reload with an isolated backend", {
+  skip: process.env.RUN_DIOXUS_BACKEND_TEST !== "1",
+  timeout: 60_000,
+}, async () => {
+  assert.equal(process.env.DIOXUS_BACKEND_OUTPUT_SUPPRESSED, "1", "fixture backend output must be suppressed before startup");
+  const { chromium } = await import(process.env.DASHBOARD_PLAYWRIGHT_MODULE || "playwright");
+  const browser = await chromium.launch({
+    headless: true,
+    chromiumSandbox: true,
+    ...(process.env.DASHBOARD_CHROMIUM_EXECUTABLE ? { executablePath: process.env.DASHBOARD_CHROMIUM_EXECUTABLE } : {}),
+  });
+  try {
+    const context = await browser.newContext({ serviceWorkers: "block" });
+    try {
+      const fixturePassword = "synthetic-browser-only";
+      const newLimit = 375_000;
+      let expectedLimits;
+      let saving = false;
+      let patches = 0;
+      const blocked = { external: 0, unexpected: 0 };
+      await context.route("**/*", async (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        if (url.origin !== "https://app:4623") {
+          blocked.external++;
+          return route.abort("blockedbyclient");
+        }
+        const method = request.method();
+        const path = url.pathname;
+        if (method === "POST" && path === "/api/auth/login" && !url.search) {
+          let body;
+          try { body = request.postDataJSON(); } catch { body = null; }
+          if (body?.password === fixturePassword && Object.keys(body).length === 1) return route.continue();
+        }
+        if (method === "PATCH" && path === "/api/settings" && !url.search && saving && patches === 0) {
+          let body;
+          try { body = request.postDataJSON(); } catch { body = null; }
+          const limits = body?.providerContextLimits;
+          if (body && Object.keys(body).length === 1 && limits && typeof limits === "object" &&
+              !Array.isArray(limits) && Object.keys(limits).length === Object.keys(expectedLimits).length &&
+              Object.entries(expectedLimits).every(([provider, value]) => limits[provider] === value)) {
+            patches++;
+            return route.continue();
+          }
+        }
+        const allowedGet = method === "GET" && (
+          (!url.search && ["/login", "/dashboard/providers/codex", "/favicon.svg", "/providers/codex.png"].includes(path)) ||
+          (!url.search && ["/api/auth/status", "/api/build", "/api/settings", "/api/providers", "/api/provider-nodes",
+            "/api/catalog", "/api/models", "/api/models/custom", "/api/models/alias", "/api/models/favorites", "/api/providers/filters"].includes(path)) ||
+          (path === "/api/models/disabled" && url.search === "?providerAlias=cx") ||
+          (path === "/api/proxy-pools" && url.search === "?isActive=true") ||
+          (!url.search && (path.startsWith("/assets/") || path.startsWith("/_astro/")))
+        );
+        if (allowedGet) return route.continue();
+        // Never allow provider validation, tests, model discovery, or other writes.
+        blocked.unexpected++;
+        return route.abort("blockedbyclient");
+      });
+
+      const page = await context.newPage();
+      page.setDefaultTimeout(5_000);
+      await page.goto("https://app:4623/login");
+      assert.equal(await page.locator('script[src*="/assets/openproxy-dashboard-"]').count(), 1, "test must use the Dioxus build");
+      const loginStatus = await page.evaluate(async (password) => (await fetch("/api/auth/login", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password }),
+      })).status, fixturePassword);
+      assert.equal(loginStatus, 200);
+
+      // Project only non-secret fields; the backend must have no connections.
+      const connectionCount = await page.evaluate(async () => {
+        const response = await fetch("/api/providers", { cache: "no-store" });
+        const data = await response.json();
+        return response.ok && Array.isArray(data.connections) ? data.connections.length : -1;
+      });
+      assert.equal(connectionCount, 0, "the disposable backend must start without provider connections");
+      const readSettings = () => page.evaluate(async () => {
+        const response = await fetch("/api/settings", { cache: "no-store" });
+        const settings = await response.json();
+        return { status: response.status, limits: settings.providerContextLimits,
+          codexAutoPing: settings.codexAutoPing ?? null, glmAutoPing: settings.glmAutoPing ?? null };
+      });
+      const initial = await readSettings();
+      assert.equal(initial.status, 200);
+      assert.equal(initial.limits?.codex, 500_000);
+      assert.deepEqual([initial.codexAutoPing, initial.glmAutoPing], [null, null], "auto-ping must be off");
+      expectedLimits = { ...initial.limits, codex: newLimit };
+
+      await page.goto("https://app:4623/dashboard/providers/codex");
+      await page.getByRole("heading", { name: "Available Models" }).waitFor();
+      assert.deepEqual(blocked, { external: 0, unexpected: 0 }, "unexpected requests must be blocked");
+      const advertisedContext = page.getByRole("spinbutton", { name: "Advertised Context" });
+      await advertisedContext.waitFor();
+      assert.equal(await advertisedContext.inputValue(), String(initial.limits.codex));
+      await advertisedContext.fill(String(newLimit));
+      saving = true;
+      const [saved] = await Promise.all([
+        page.waitForResponse((response) => response.url() === "https://app:4623/api/settings" && response.request().method() === "PATCH"),
+        advertisedContext.press("Enter"),
+      ]);
+      saving = false;
+      assert.equal(saved.status(), 200, "the actual backend must save the setting");
+      assert.deepEqual((await saved.json()).providerContextLimits, expectedLimits);
+      assert.equal(patches, 1);
+      assert.deepEqual(await readSettings(), { ...initial, limits: expectedLimits });
+
+      await page.reload();
+      await advertisedContext.waitFor();
+      await page.waitForFunction((value) => Array.from(document.querySelectorAll('input[type="number"]')).some((input) => input.value === value), String(newLimit));
+      assert.equal(await advertisedContext.inputValue(), String(newLimit));
+      assert.deepEqual(await readSettings(), { ...initial, limits: expectedLimits });
+      assert.equal(patches, 1, "reload must not write settings again");
+      assert.deepEqual(blocked, { external: 0, unexpected: 0 }, "unexpected requests must be blocked");
+    } finally {
+      await context.close();
+    }
+  } finally {
+    await browser.close();
+  }
+});
+
 // Run only in the isolated .ui-browser network with the Dioxus build mounted.
 test("Dioxus login, provider creation, and auto-ping persistence work with an isolated backend", {
   skip: process.env.RUN_DIOXUS_BACKEND_TEST !== "1",
