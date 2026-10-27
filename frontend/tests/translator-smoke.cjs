@@ -252,6 +252,15 @@ async function main() {
     assert.equal(await value(), '{\n  "name": "value",\n  \n}', "Enter preserves the indentation of a JSON property");
     await page.keyboard.press("Control+z");
     assert.equal(await value(), indentedJson, "newline indentation is one undoable edit");
+    const nestedJson = '{\n  "outer": {}\n}';
+    const nestedCursor = nestedJson.indexOf("{}") + 1;
+    if (reference) await page.evaluate(({ text, cursor }) => { const editor = window.monaco.editor.getEditors()[0]; editor.setValue(text); editor.setPosition(editor.getModel().getPositionAt(cursor)); editor.focus(); }, { text: nestedJson, cursor: nestedCursor });
+    else { await editor().fill(nestedJson); await editor().evaluate((input, position) => input.setSelectionRange(position, position), nestedCursor); }
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.keyboard.press("Enter");
+    assert.equal(await value(), '{\n  "outer": {\n    \n  }\n}', "Enter indents nested JSON brackets to the next tab stop");
+    await page.keyboard.press("Control+z");
+    assert.equal(await value(), nestedJson, "nested bracket indentation is one undoable edit");
     if (reference) await page.evaluate(() => { const editor = window.monaco.editor.getEditors()[0]; editor.setValue('"{}"'); editor.setPosition({ lineNumber: 1, column: 3 }); editor.focus(); });
     else { await editor().fill('"{}"'); await editor().evaluate(input => input.setSelectionRange(2, 2)); }
     await page.keyboard.press("Enter");

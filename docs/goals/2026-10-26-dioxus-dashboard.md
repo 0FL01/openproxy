@@ -142,7 +142,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-10-27: R2/R3 Codex reset-credit controls matched twelve self-repeating synthetic Astro screenshots at AE=0; lookup, confirmation, failure and reset behavior were exercised without contacting Codex.
 - 2026-10-27: R2/R3/R4 Translator route and basic editor actions passed a synthetic browser flow against Astro and Dioxus. Empty/populated references self-repeated, but candidate screenshots still differed; full Monaco behavior, genuine IME, accessibility and visual parity remain open.
 - 2026-10-27: R2/R4 wrapped-line numbers, common hanging indentation, resize and caret placement were checked against Astro with synthetic JSON. Four wrapped references self-repeated, but all candidate screenshots still differ; differing-indentation wrapping and full editor parity remain open.
-- 2026-10-27: R4 Enter on an indented JSON property and undo matched Astro in the synthetic browser; other editor actions and visual parity remain open.
+- 2026-10-27: R4 Enter on an indented JSON property and inside nested brackets, including undo, matched Astro in the synthetic browser; other editor actions and visual parity remain open.
 
 ## Completion
 

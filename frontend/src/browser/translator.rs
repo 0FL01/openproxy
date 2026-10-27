@@ -345,9 +345,20 @@ fn expand_json_brackets(input: &web_sys::HtmlTextAreaElement) -> bool {
         .chars()
         .take_while(|ch| matches!(ch, ' ' | '\t'))
         .collect();
-    let replacement = format!("\n{indentation}    \n{indentation}");
+    let column = indentation.chars().fold(0_u32, |column, ch| {
+        if ch == '\t' {
+            column + 4 - column % 4
+        } else {
+            column + 1
+        }
+    });
+    let spaces = 4 - column % 4;
+    let replacement = format!(
+        "\n{indentation}{}\n{indentation}",
+        " ".repeat(spaces as usize)
+    );
     if insert_text(input, start, end, &replacement) {
-        let cursor = start + 1 + indentation.encode_utf16().count() as u32 + 4;
+        let cursor = start + 1 + indentation.encode_utf16().count() as u32 + spaces;
         let _ = input.set_selection_range(cursor, cursor);
         true
     } else {
