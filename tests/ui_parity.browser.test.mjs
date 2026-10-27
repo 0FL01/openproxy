@@ -95,6 +95,7 @@ const screens = [
   { section: "provider-kilocode", name: "add-model-saved", action: "add-model-saved" },
   { section: "provider-kilocode", name: "disable-all-dialog", action: "disable-all-dialog" },
   { section: "provider-kilocode", name: "device-oauth", action: "device-oauth" },
+  { section: "provider-kilocode", name: "device-oauth-loading", action: "device-oauth-loading" },
   { section: "provider-kilocode", name: "device-oauth-error", action: "device-oauth-error" },
   { section: "provider-compatible", name: "ready" },
   { section: "provider-compatible", name: "edit-dialog", action: "edit-dialog" },
@@ -209,11 +210,13 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
           const isManualOAuth = screen.section === "provider-codex-oauth";
           const isCodexDetail = ["provider-codex-autoping", "provider-codex-bulk-add", "provider-codex-oauth"].includes(screen.section);
           const isKiloOAuthError = screen.action === "device-oauth-error";
+          const isKiloOAuthLoading = screen.action === "device-oauth-loading";
+          const isKiloOAuthStrict = isKiloOAuthError || isKiloOAuthLoading;
           const isOpenRouter = screen.section === "provider-openrouter";
           const isXaiDetail = screen.section === "provider-xai";
           await t.test(name, async () => {
             assert(mode !== "record" || process.env.UI_PARITY_REPLACE === "1" || !existsSync(join(referenceDir, `${name}.png`)), "reference already exists; set UI_PARITY_REPLACE=1 deliberately to replace it");
-            if ((isCodexDetail || isKiloOAuthError) && !fixtureCaTrusted) {
+            if ((isCodexDetail || isKiloOAuthStrict) && !fixtureCaTrusted) {
               // route.fetch below must validate the fixture's DNS-constrained CA.
               // Chrome already trusts it via the fixture's disposable NSS profile.
               const tls = await import("node:tls");
@@ -234,6 +237,9 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
               const unexpected = [];
               let interceptedCodexStop = 0;
               let deviceAuthAttempts = 0;
+              let releaseDeviceAuth;
+              let observeDeviceAuth;
+              const deviceAuthStarted = new Promise((resolve) => { observeDeviceAuth = resolve; });
               let releaseXaiForce;
               let observeXaiForce;
               const xaiForceStarted = new Promise((resolve) => { observeXaiForce = resolve; });
@@ -300,7 +306,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     };
                   });
                 }
-                if (screen.action === "device-oauth" || isKiloOAuthError) await page.addInitScript(() => {
+                if (screen.action === "device-oauth" || isKiloOAuthStrict) await page.addInitScript(() => {
                   window.open = (...args) => { window.__fixtureOpened = args; return null; };
                 });
                 if (isManualOAuth) await page.addInitScript(() => {
@@ -367,7 +373,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 let currentCodexConfig = codexConfig(false, screen.name === "off");
                 page.on("pageerror", (error) => errors.push(error.message));
                 await page.clock.setFixedTime(new Date("2026-10-01T12:00:00Z"));
-                if (["callback", "provider-compatible", "logs", "quota"].includes(screen.section) || isCodexDetail || isKiloOAuthError || isOpenRouter || isXaiDetail) await context.routeWebSocket("**/*", (socket) => {
+                if (["callback", "provider-compatible", "logs", "quota"].includes(screen.section) || isCodexDetail || isKiloOAuthStrict || isOpenRouter || isXaiDetail) await context.routeWebSocket("**/*", (socket) => {
                   unexpected.push("WebSocket blocked");
                   socket.close();
                 });
@@ -383,8 +389,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   }
                   const assets = screen.section === "callback"
                     ? ((path === "/callback" && url.search === screen.query) || (mode === "compare" && !url.search && (path === "/favicon.svg" || path.startsWith("/_astro/") || path.startsWith("/assets/"))))
-                    : screen.section === "provider-compatible" || isCodexDetail || isKiloOAuthError || isOpenRouter || isXaiDetail
-                    ? (!url.search && (path === (screen.section === "provider-compatible" ? compatiblePath : isKiloOAuthError ? "/dashboard/providers/kilocode" : isOpenRouter ? "/dashboard/providers/openrouter" : isXaiDetail ? "/dashboard/providers/xai" : codexPath) || path === (screen.section === "provider-compatible" ? "/providers/oai-cc.png" : isKiloOAuthError ? "/providers/kilocode.png" : isOpenRouter ? "/providers/openrouter.png" : isXaiDetail ? "/providers/xai.png" : "/providers/codex.png") || detailAstroAssets.has(path) || (mode === "compare" && detailCandidateAssets.includes(path))))
+                    : screen.section === "provider-compatible" || isCodexDetail || isKiloOAuthStrict || isOpenRouter || isXaiDetail
+                    ? (!url.search && (path === (screen.section === "provider-compatible" ? compatiblePath : isKiloOAuthStrict ? "/dashboard/providers/kilocode" : isOpenRouter ? "/dashboard/providers/openrouter" : isXaiDetail ? "/dashboard/providers/xai" : codexPath) || path === (screen.section === "provider-compatible" ? "/providers/oai-cc.png" : isKiloOAuthStrict ? "/providers/kilocode.png" : isOpenRouter ? "/providers/openrouter.png" : isXaiDetail ? "/providers/xai.png" : "/providers/codex.png") || detailAstroAssets.has(path) || (mode === "compare" && detailCandidateAssets.includes(path))))
                     : (!["providers-new", "provider-kilocode"].includes(screen.section) && (path === "/login" || path === "/dashboard/endpoint")) || path === "/favicon.svg" || path.startsWith("/_astro/") || path.startsWith("/assets/") || path.startsWith("/i18n/") ||
                     (screen.section === "providers" && (path === "/dashboard/providers" || /^\/providers\/[a-z0-9_-]+\.png$/.test(path))) ||
                     (screen.section === "providers-new" && !url.search && ["/dashboard/providers/new", "/providers/codex.png", "/providers/opencode-zen.png", "/providers/openai.png"].includes(path)) ||
@@ -398,7 +404,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     (screen.section === "proxy-pools" && !url.search && path === "/dashboard/proxy-pools") ||
                     (screen.section === "translator" && !url.search && path === "/dashboard/translator");
                   if (url.origin === appUrl && method === "GET" && assets) {
-                    if (!isCodexDetail && !isKiloOAuthError) return route.continue();
+                    if (!isCodexDetail && !isKiloOAuthStrict) return route.continue();
                     // Do not let even an allowed asset redirect around the
                     // network allowlist (especially to a side-effecting GET).
                     const response = await route.fetch({ maxRedirects: 0 });
@@ -416,7 +422,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     ["/api/auth/status", "/api/settings", "/api/build", "/api/catalog"].includes(path);
                   const kiloGet = screen.section === "provider-kilocode" && method === "GET" && (
                     (!url.search && ["/api/auth/status", "/api/settings", "/api/build", "/api/catalog", "/api/providers", "/api/provider-nodes", "/api/providers/kilo/free-models", "/api/providers/filters", "/api/models", "/api/models/custom", "/api/models/alias", "/api/models/favorites"].includes(path)) ||
-                    ((screen.action === "device-oauth" || isKiloOAuthError) && !url.search && path === "/api/oauth/kilocode/device-code") ||
+                    ((screen.action === "device-oauth" || isKiloOAuthStrict) && !url.search && path === "/api/oauth/kilocode/device-code") ||
                     (path === "/api/proxy-pools" && url.search === "?isActive=true") ||
                     (path === "/api/models/disabled" && ["?providerAlias=", "?providerAlias=kc"].includes(url.search))
                   );
@@ -494,6 +500,11 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   if (isManualOAuth && path === "/api/oauth/codex/authorize") return route.fulfill({ json: { authUrl: "https://fixture.invalid/authorize?client=synthetic", state: "fixture-state", codeVerifier: "fixture-verifier" } });
                   if (isManualOAuth && path === "/api/oauth/codex/start-proxy") return route.fulfill({ json: { success: true, serverSide: false } });
                   if (isKiloOAuthError && path === "/api/oauth/kilocode/device-code") return route.fulfill({ status: 503, json: { error: ++deviceAuthAttempts === 1 ? "Synthetic device failure" : "Synthetic retry failure" } });
+                  if (isKiloOAuthLoading && path === "/api/oauth/kilocode/device-code") {
+                    deviceAuthAttempts += 1;
+                    await new Promise((resolve) => { releaseDeviceAuth = resolve; observeDeviceAuth(); });
+                    return route.fulfill({ status: 503, json: { error: "Synthetic cancelled request" } });
+                  }
                   if (screen.action === "device-oauth" && path === "/api/oauth/kilocode/device-code") return route.fulfill({ json: {
                     device_code: "fixture-device", user_code: "ABCD-EFGH", verification_uri: "https://fixture.example.invalid/login",
                     verification_uri_complete: "https://fixture.example.invalid/login?user_code=ABCD-EFGH", interval: 300, expires_in: 1200,
@@ -1556,7 +1567,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   await restored("fixture-disabled").waitFor();
                   await restored("fixture-custom-disabled").waitFor();
                   await page.getByTitle("Show only free models").waitFor();
-                  if (screen.action && screen.action !== "device-oauth" && !isKiloOAuthError) await scrollModels();
+                  if (screen.action && screen.action !== "device-oauth" && !isKiloOAuthStrict) await scrollModels();
                   if (screen.action === "device-oauth") {
                     await page.getByRole("button", { name: /OAuth/ }).click();
                     await page.getByRole("heading", { name: "Connect Kilo Code" }).waitFor();
@@ -1566,6 +1577,34 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       const modal = page.getByRole("heading", { name: "Connect Kilo Code" }).locator("../../..");
                       await modal.getByRole("button", { name: /Open/ }).click();
                       assert.equal((await page.evaluate(() => window.__fixtureOpened))[0], "https://fixture.example.invalid/login?user_code=ABCD-EFGH");
+                    };
+                  } else if (isKiloOAuthLoading) {
+                    await page.getByRole("button", { name: /OAuth/ }).click();
+                    const heading = page.getByRole("heading", { name: "Connect Kilo Code", exact: true });
+                    await heading.waitFor();
+                    await deviceAuthStarted;
+                    assert.equal(deviceAuthAttempts, 1, "capture while the initial device-code request is held");
+                    assert.equal(await page.evaluate(() => window.__fixtureOpened), undefined);
+                    const modal = heading.locator("../../..");
+                    if (mode === "record") assert.equal((await modal.locator("div.p-6 > div.flex.flex-col.gap-4").innerText()).trim(), "", "device modal body is empty until the initial response");
+                    assert.equal(await modal.getByRole("button").count(), 1, "the header close button remains available");
+                    if (mode === "compare") {
+                      const status = modal.getByRole("status", { name: "Starting authorization..." });
+                      await status.waitFor({ state: "attached" });
+                      assert.equal(await status.textContent(), "Starting authorization...");
+                      const cdp = await context.newCDPSession(page);
+                      try {
+                        const { root } = await cdp.send("DOM.getDocument");
+                        const { nodeId } = await cdp.send("DOM.querySelector", { nodeId: root.nodeId, selector: '[role="status"][aria-label="Starting authorization..."]' });
+                        const { nodes } = await cdp.send("Accessibility.getPartialAXTree", { nodeId, fetchRelatives: false });
+                        assert.equal(nodes[0].ignored, false, "pending status is in the accessibility tree");
+                        assert.equal(nodes[0].properties.find(property => property.name === "live")?.value.value, "polite");
+                      } finally { await cdp.detach(); }
+                    }
+                    verifyAfterCapture = async () => {
+                      await modal.getByRole("button", { name: /^close$/i }).press("Enter");
+                      await heading.waitFor({ state: "detached" });
+                      assert.equal(deviceAuthAttempts, 1, "close cannot start another request");
                     };
                   } else if (isKiloOAuthError) {
                     await page.getByRole("button", { name: /OAuth/ }).click();
@@ -1870,6 +1909,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 return image;
               } finally {
                 if (releaseXaiForce) releaseXaiForce();
+                if (releaseDeviceAuth) releaseDeviceAuth();
                 await context.close();
                 assert.deepEqual(unexpected, [], "unexpected network requests were blocked");
                 if (scenarioReady) assert.deepEqual(writes, expectedWrites, "unexpected API mutation");

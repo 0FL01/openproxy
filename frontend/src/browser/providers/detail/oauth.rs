@@ -716,8 +716,9 @@ pub(super) fn OAuthFlow(
                 }
             }
             else if device {
-                if state().is_null() { p { class: "text-sm text-text-muted", "Starting authorization..." } }
-                else {
+                if state().is_null() {
+                    div { role: "status", aria_label: "Starting authorization...", style: "position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;", "Starting authorization..." }
+                } else {
                     div { class: "text-center py-4",
                         p { class: "text-sm text-text-muted mb-4", "Visit the login URL below and authorize:" }
                         div { class: "bg-sidebar p-4 rounded-lg mb-4",
@@ -806,7 +807,7 @@ pub(super) fn OAuthFlow(
                 Button { label: "Cancel".to_owned(), variant: "ghost", full_width: true, onclick: move |_| on_close.call(()) }
                 }
             }
-            if state().is_null() && error().is_empty() { Button { label: "Cancel".to_owned(), variant: "ghost", onclick: move |_| on_close.call(()) } }
+            if !device && state().is_null() && error().is_empty() { Button { label: "Cancel".to_owned(), variant: "ghost", onclick: move |_| on_close.call(()) } }
         }
     } }
 }
