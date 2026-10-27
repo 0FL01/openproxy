@@ -21,6 +21,7 @@
     "/dashboard/console-log": "bdddf98f4d3ab2efbd37724835b5526b56ba74da2404c15a42ac4e893a871835",
     "/dashboard/providers/xai": "10030796f15fbfd517654907254dead1f80d44e27928e81a207406aa4f0d8120",
     "/dashboard/profile": "9405fd206337d1d00199cfaea129ea652d124757fb3b5825892243671422ac75",
-    "/dashboard/db-backups": "1b1284ffb3f5652d0ba54ee92a5660e5f71360b3ef3a308c3e238bd353141fbb"
+    "/dashboard/db-backups": "1b1284ffb3f5652d0ba54ee92a5660e5f71360b3ef3a308c3e238bd353141fbb",
+    "/dashboard/logs": "49193e7671422d0c42fb31f0fa33b08fb980b3867429f7b1444be8638bff878e"
   }
 }

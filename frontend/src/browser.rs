@@ -12,6 +12,7 @@ mod console_log;
 mod db_backups;
 mod endpoint;
 mod i18n;
+mod logs;
 mod profile;
 mod providers;
 mod shell;
@@ -128,6 +129,8 @@ enum Route {
     Profile {},
     #[route("/dashboard/db-backups")]
     DbBackups {},
+    #[route("/dashboard/logs")]
+    Logs {},
     #[route("/login")]
     Login {},
     #[route("/callback")]
@@ -191,6 +194,11 @@ fn Profile() -> Element {
 
 #[component]
 fn DbBackups() -> Element {
+    rsx! { shell::Dashboard {} }
+}
+
+#[component]
+fn Logs() -> Element {
     rsx! { shell::Dashboard {} }
 }
 

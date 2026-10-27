@@ -14,14 +14,15 @@ test("TPS visibility, provider preferences and scoped polling survive reload/err
   timeout: 120_000,
 }, async () => {
   const { chromium } = await import(process.env.DASHBOARD_PLAYWRIGHT_MODULE || "playwright");
-  const dist = fileURLToPath(new URL("../web/dist/", import.meta.url));
+  const candidate = process.env.TPS_DASHBOARD_DIST;
+  const dist = candidate ? resolve(candidate) : fileURLToPath(new URL("../web/dist/", import.meta.url));
   const server = http.createServer(async (req, res) => {
     try {
       const path = new URL(req.url, "http://localhost").pathname;
-      const target = resolve(dist, path === "/dashboard/logs" ? "dashboard/logs.html" : `.${path}`);
+      const target = resolve(dist, path === "/dashboard/logs" ? (candidate ? "index.html" : "dashboard/logs.html") : `.${path}`);
       assert(target.startsWith(`${dist.replace(/\/$/, "")}${sep}`));
       const body = await readFile(target);
-      res.writeHead(200, { "Content-Type": ({ ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml" })[extname(target)] || "application/octet-stream" });
+      res.writeHead(200, { "Content-Type": ({ ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".wasm": "application/wasm" })[extname(target)] || "application/octet-stream" });
       res.end(body);
     } catch {
       res.writeHead(404).end();
@@ -30,7 +31,7 @@ test("TPS visibility, provider preferences and scoped polling survive reload/err
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
   let browser;
   try {
-    browser = await chromium.launch({ headless: true, ...(process.env.DASHBOARD_CHROMIUM_EXECUTABLE ? { executablePath: process.env.DASHBOARD_CHROMIUM_EXECUTABLE } : {}) });
+    browser = await chromium.launch({ headless: true, chromiumSandbox: true, ...(process.env.DASHBOARD_CHROMIUM_EXECUTABLE ? { executablePath: process.env.DASHBOARD_CHROMIUM_EXECUTABLE } : {}) });
     const page = await browser.newPage();
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -75,8 +76,11 @@ test("TPS visibility, provider preferences and scoped polling survive reload/err
     const raw = { requestId: "raw-fixture", timestamp: asOf, route: "fixture", provider: "raw-provider", model: "raw-model", status: "success", durationMs: 500, inputTokens: 32, outputTokens: 9, cachedTokens: 6, reasoningTokens: 94, totalTokens: 135, tokensPerSecond: 18, generatedOutputTokens: 9, upstreamDurationMs: 500, apiKeyId: "consumer", apiKeyName: "Fixture" };
     const legacy = { requestId: "legacy-fixture", timestamp: asOf, route: "fixture", provider: "raw-provider", model: "legacy-model", status: "success", durationMs: 500, tokensPerSecond: null, generatedOutputTokens: null, upstreamDurationMs: null };
     const zero = { ...raw, requestId: "zero-fixture", model: "zero-model", inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0, totalTokens: 0, tokensPerSecond: 0, generatedOutputTokens: 0 };
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    await page.route("**/*", (route) => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
     await page.route("**/api/**", async (route) => {
       const url = new URL(route.request().url());
+      if (url.origin !== origin) return route.abort();
       let status = 200, body = {};
       if (url.pathname === "/api/auth/status") body = { requireLogin: false, authenticated: true };
       else if (url.pathname === "/api/keys") body = { keys: [{ id: "consumer", name: "Fixture" }] };
@@ -92,7 +96,7 @@ test("TPS visibility, provider preferences and scoped polling survive reload/err
       try { await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) }); } catch { /* cancelled obsolete request */ }
     });
     await page.clock.install({ time: new Date(asOf) });
-    const url = `http://127.0.0.1:${server.address().port}/dashboard/logs`;
+    const url = `${origin}/dashboard/logs`;
     const panel = page.getByRole("region", { name: "Median TPS statistics" });
     const table = panel.getByRole("table");
     const choices = panel.getByRole("group", { name: "Providers (TPS only)" });

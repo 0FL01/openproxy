@@ -123,6 +123,10 @@ const screens = [
   { section: "db-backups", name: "empty" },
   { section: "db-backups", name: "restore" },
   { section: "db-backups", name: "auth" },
+  { section: "logs", name: "ready" },
+  { section: "logs", name: "empty" },
+  { section: "logs", name: "drawer" },
+  { section: "logs", name: "trace" },
   { section: "callback", name: "code", query: callbackCodeQuery, colorScheme: "light" },
   { section: "callback", name: "error", query: callbackErrorQuery, colorScheme: "light" },
   { section: "callback", name: "no-auth-data", query: "", colorScheme: "light" },
@@ -304,7 +308,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 let currentCodexConfig = codexConfig(false, screen.name === "off");
                 page.on("pageerror", (error) => errors.push(error.message));
                 await page.clock.setFixedTime(new Date("2026-10-01T12:00:00Z"));
-                if (["callback", "provider-compatible"].includes(screen.section) || isCodexDetail || isOpenRouter || isXaiDetail) await context.routeWebSocket("**/*", (socket) => {
+                if (["callback", "provider-compatible", "logs"].includes(screen.section) || isCodexDetail || isOpenRouter || isXaiDetail) await context.routeWebSocket("**/*", (socket) => {
                   unexpected.push("WebSocket blocked");
                   socket.close();
                 });
@@ -324,7 +328,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     (screen.section === "skills" && !url.search && path === "/dashboard/skills") ||
                     (screen.section === "console-log" && !url.search && path === "/dashboard/console-log") ||
                     (screen.section === "profile" && !url.search && path === "/dashboard/profile") ||
-                    (screen.section === "db-backups" && !url.search && path === "/dashboard/db-backups");
+                    (screen.section === "db-backups" && !url.search && path === "/dashboard/db-backups") ||
+                    (screen.section === "logs" && !url.search && path === "/dashboard/logs");
                   if (url.origin === appUrl && method === "GET" && assets) {
                     if (!isCodexDetail) return route.continue();
                     // Do not let even an allowed asset redirect around the
@@ -377,7 +382,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   const profileMutation = screen.section === "profile" && !url.search && ((method === "POST" && ["/api/auth/password", "/api/auth/logout", "/api/locale", "/api/settings/proxy-test", "/api/settings/database", "/api/shutdown"].includes(path)) || (method === "PATCH" && path === "/api/settings"));
                   const profileExport = screen.section === "profile" && screen.name === "database" && method === "GET" && !url.search && path === "/api/settings/database";
                   const backupRequest = screen.section === "db-backups" && !url.search && ((method === "GET" && ["/api/db-backups", "/api/db-backups/export"].includes(path)) || (screen.name === "ready" && ((method === "PUT" && path === "/api/db-backups") || (method === "DELETE" && ["/api/db-backups", "/api/db-backups/fixture-1"].includes(path)) || (method === "POST" && ["/api/db-backups/restore", "/api/db-backups/import"].includes(path)))));
-                  const valid = url.origin === appUrl && (providerGet || providerNewGet || kiloGet || kiloMutation || compatibleGet || codexGet || codexMutation || routerGet || routerMutation || xaiGet || consoleRequest || profileMutation || profileExport || backupRequest || (!isCodexDetail && !["providers", "providers-new", "provider-kilocode", "provider-compatible", "provider-openrouter", "provider-xai", "callback"].includes(screen.section) && (
+                  const logRequest = screen.section === "logs" && method === "GET" && ["/api/request-logs", "/api/request-logs/tps-stats"].includes(path) && [...url.searchParams.keys()].every((key) => ["page", "pageSize", "apiKeyId", "status", "provider", "model", "hiddenProviders"].includes(key));
+                  const valid = url.origin === appUrl && (providerGet || providerNewGet || kiloGet || kiloMutation || compatibleGet || codexGet || codexMutation || routerGet || routerMutation || xaiGet || consoleRequest || profileMutation || profileExport || backupRequest || logRequest || (!isCodexDetail && !["providers", "providers-new", "provider-kilocode", "provider-compatible", "provider-openrouter", "provider-xai", "callback"].includes(screen.section) && (
                     (method === "GET" && ["/api/auth/status", "/api/settings", "/api/keys", "/api/build", "/api/catalog"].includes(path)) ||
                     (method === "POST" && path === "/api/auth/login" && !!screen.login) ||
                     (method === "POST" && path === "/api/keys" && screen.action === "created")
@@ -437,6 +443,25 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   if (screen.section === "db-backups" && path === "/api/db-backups/fixture-1") { backups = []; return route.fulfill({ json: { deleted: true } }); }
                   if (screen.section === "db-backups" && path === "/api/db-backups/restore") return route.fulfill({ json: { restored: true, providerCount: 2, apiKeyCount: 1 } });
                   if (screen.section === "db-backups" && path === "/api/db-backups/import") return route.fulfill({ json: { imported: true, providerCount: 2, apiKeyCount: 1 } });
+                  if (logRequest) {
+                    const size = Number(url.searchParams.get("pageSize"));
+                    const page = Number(url.searchParams.get("page"));
+                    assert([10, 20, 50].includes(size) && page >= 1);
+                    const records = screen.name === "empty" ? [] : [
+                      { requestId: "request-1", timestamp: "2026-10-01T11:30:00Z", route: "/v1/chat/completions", status: "success", statusCode: 200, model: "fixture-model", provider: "fixture-provider", durationMs: 1800, inputTokens: 1000, outputTokens: 240, cachedTokens: 50, reasoningTokens: 20, totalTokens: 1240, tokensPerSecond: 20, generatedOutputTokens: 240, upstreamDurationMs: 12000, apiKeyId: "fixture", apiKeyName: "Fixture key" },
+                      { requestId: "request-2", timestamp: "2026-10-01T11:20:00Z", route: "/v1/responses", status: "error", statusCode: 429, errorKind: "rate_limit", errorMessage: "Synthetic failure", model: "second-model", provider: "other-provider", durationMs: 25, tokensPerSecond: null, generatedOutputTokens: null, upstreamDurationMs: null, ...(screen.name === "trace" ? { errorCode: "fixture_limit", streamTrace: { version: 1, stopReason: "error", finishReason: "failed", completedCount: 0, errorCount: 1, framesAfterCompleted: 0, doneSent: false, overflowed: 0, toolNames: ["fixture_tool"], upstreamEvents: { "response.error": 1 }, emittedEvents: { error: 1 }, itemTypes: { function_call: 1 }, entries: ["response.error", "error"] } } : {}) },
+                    ];
+                    if (path === "/api/request-logs") {
+                      const filtered = records.filter((r) => (!url.searchParams.get("status") || r.status === url.searchParams.get("status")) && (!url.searchParams.get("provider") || r.provider.includes(url.searchParams.get("provider"))) && (!url.searchParams.get("model") || r.model.includes(url.searchParams.get("model"))) && (!url.searchParams.get("apiKeyId") || r.apiKeyId === url.searchParams.get("apiKeyId")));
+                      return route.fulfill({ json: { requests: filtered.slice((page - 1) * size, page * size), pagination: { page, pageSize: size, totalItems: filtered.length, totalPages: Math.ceil(filtered.length / size) } } });
+                    }
+                    const hidden = JSON.parse(url.searchParams.get("hiddenProviders") || "[]");
+                    const providers = records.length ? ["fixture-provider"] : [];
+                    const observation = { medianTps: 20, sampleCount: 1, successfulAttemptCount: 1 };
+                    const groups = providers.filter((id) => !hidden.includes(id)).map((provider) => ({ provider, model: "fixture-model", windows: { "1h": observation, "6h": observation, "24h": observation } }));
+                    const bounds = { start: "2026-10-01T11:00:00Z", end: "2026-10-01T12:00:00Z" };
+                    return route.fulfill({ json: { asOf: "2026-10-01T12:00:00Z", windows: { "1h": bounds, "6h": bounds, "24h": bounds }, availableProviders: providers, groups, pagination: { page, pageSize: size, totalItems: groups.length, totalPages: Math.ceil(groups.length / size) } } });
+                  }
                   if (path === "/api/auth/status") {
                     body = { requireLogin: true, authenticated, hasPassword: screen.hasPassword ?? true };
                   } else if (path === "/api/auth/login") {
@@ -568,7 +593,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   if (path === "/api/oauth/codex/stop-proxy") interceptedCodexStop += 1;
                 });
 
-                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : screen.section === "providers-new" ? "/dashboard/providers/new" : screen.section === "provider-kilocode" ? "/dashboard/providers/kilocode" : screen.section === "provider-compatible" ? compatiblePath : isCodexDetail ? codexPath : isOpenRouter ? "/dashboard/providers/openrouter" : isXaiDetail ? "/dashboard/providers/xai" : screen.section === "skills" ? "/dashboard/skills" : screen.section === "console-log" ? "/dashboard/console-log" : screen.section === "profile" ? "/dashboard/profile" : screen.section === "db-backups" ? "/dashboard/db-backups" : screen.section === "callback" ? "/callback" : "/dashboard/endpoint";
+                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : screen.section === "providers-new" ? "/dashboard/providers/new" : screen.section === "provider-kilocode" ? "/dashboard/providers/kilocode" : screen.section === "provider-compatible" ? compatiblePath : isCodexDetail ? codexPath : isOpenRouter ? "/dashboard/providers/openrouter" : isXaiDetail ? "/dashboard/providers/xai" : screen.section === "skills" ? "/dashboard/skills" : screen.section === "console-log" ? "/dashboard/console-log" : screen.section === "profile" ? "/dashboard/profile" : screen.section === "db-backups" ? "/dashboard/db-backups" : screen.section === "logs" ? "/dashboard/logs" : screen.section === "callback" ? "/callback" : "/dashboard/endpoint";
                 const sourceRoute = screen.section === "provider-compatible" ? compatibleTemplate : path;
                 const response = await page.goto(`${appUrl}${path}${screen.query || ""}`, { waitUntil: "domcontentloaded" });
                 assert(response?.ok(), `failed to load ${path}`);
@@ -580,7 +605,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       assert(html.includes(marker), "record mode requires the standalone Astro callback markup");
                     }
                   } else {
-                    const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : screen.section === "providers-new" ? "ProvidersNewPageClient." : ["provider-kilocode", "provider-compatible"].includes(screen.section) || isCodexDetail || isOpenRouter || isXaiDetail ? "ProviderDetailPageClient." : screen.section === "skills" ? "SkillsPageClient." : screen.section === "console-log" ? "ConsoleLogClient." : screen.section === "profile" ? "ProfilePageClient." : screen.section === "db-backups" ? "DbBackupsPageClient." : "EndpointPageClient.";
+                    const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : screen.section === "providers-new" ? "ProvidersNewPageClient." : ["provider-kilocode", "provider-compatible"].includes(screen.section) || isCodexDetail || isOpenRouter || isXaiDetail ? "ProviderDetailPageClient." : screen.section === "skills" ? "SkillsPageClient." : screen.section === "console-log" ? "ConsoleLogClient." : screen.section === "profile" ? "ProfilePageClient." : screen.section === "db-backups" ? "DbBackupsPageClient." : screen.section === "logs" ? "ApplicationLogsClient." : "EndpointPageClient.";
                     assert(html.includes(`component-url="/_astro/${component}`), "record mode requires the Astro reference");
                     if (screen.section === "provider-compatible") assert(source.routes[sourceRoute], "dynamic Astro provider template hash must be pinned before recording");
                     if (isCodexDetail) assert(source.routes[sourceRoute], "Astro Codex route hash must be pinned before recording");
@@ -608,6 +633,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 else if (screen.section === "console-log") await page.getByRole("button", { name: /Clear/ }).waitFor();
                 else if (screen.section === "profile") await page.getByRole("heading", { name: "Security", exact: true }).waitFor();
                 else if (screen.section === "db-backups") await page.getByRole("heading", { name: "Database Backups", exact: true }).waitFor();
+                else if (screen.section === "logs") await page.getByRole("heading", { name: "Application Logs", exact: true }).waitFor();
                 else if (screen.section === "callback") await page.getByRole("heading", { name: screen.name === "error" ? "Authentication Failed" : screen.name === "no-auth-data" ? "No Auth Data Found" : "Authentication Complete", exact: true }).waitFor();
                 else await page.getByText("Fixture key", { exact: true }).waitFor();
                 const disableMotion = () => page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}" });
@@ -685,6 +711,45 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   }
                   await page.mouse.move(1, 1);
                   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+                } else if (screen.section === "logs") {
+                  const stats = page.getByRole("region", { name: "Median TPS statistics" });
+                  await stats.waitFor();
+                  if (screen.name === "empty") {
+                    await page.getByText("No application logs yet.", { exact: true }).waitFor();
+                    await stats.getByText("No saved successful attempts in the last 24 hours for these filters.", { exact: true }).waitFor();
+                  } else {
+                    await page.getByRole("row").filter({ hasText: "fixture-model" }).last().waitFor();
+                    await stats.getByText("20.0", { exact: true }).first().waitFor();
+                    if (screen.name === "drawer") {
+                      await page.getByRole("row").filter({ hasText: "fixture-model" }).last().click();
+                      await page.getByRole("heading", { name: "Request details", exact: true }).waitFor();
+                      await page.getByText("Observed throughput", { exact: true }).waitFor();
+                    } else if (screen.name === "trace") {
+                      await page.getByRole("row").filter({ hasText: "second-model" }).click();
+                      await page.getByText("Synthetic failure", { exact: true }).waitFor();
+                      await page.getByText("Stream trace", { exact: true }).click();
+                      await page.getByText("fixture_tool", { exact: true }).scrollIntoViewIfNeeded();
+                      await page.getByText("Upstream events", { exact: true }).waitFor();
+                    }
+                  }
+                  await page.waitForLoadState("networkidle");
+                  await page.mouse.move(1, 1);
+                  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+                  if (screen.name === "ready") verifyAfterCapture = async () => {
+                    await page.getByRole("checkbox", { name: "fixture-provider" }).uncheck();
+                    await stats.getByText("All matching providers are hidden", { exact: true }).waitFor();
+                    await page.getByRole("checkbox", { name: "Hide Median TPS" }).check();
+                    assert.equal(await stats.count(), 0);
+                    await page.reload({ waitUntil: "domcontentloaded" });
+                    assert(await page.getByRole("checkbox", { name: "Hide Median TPS" }).isChecked());
+                    await page.getByRole("checkbox", { name: "Hide Median TPS" }).uncheck();
+                    await stats.getByText("All matching providers are hidden", { exact: true }).waitFor();
+                    await page.getByRole("checkbox", { name: "fixture-provider" }).check();
+                    await stats.getByText("20.0", { exact: true }).first().waitFor();
+                    await page.getByLabel("Status (raw logs only)").selectOption("error");
+                    await page.getByText("rate_limit", { exact: true }).waitFor();
+                    assert.equal(await page.getByRole("row").filter({ hasText: "fixture-model" }).count(), 1, "status filters raw rows, not TPS statistics");
+                  };
                 } else if (isXaiDetail) {
                   const refresh = () => page.getByRole("button", { name: "Refresh models", exact: true });
                   const busy = () => page.getByRole("button", { name: "Refreshing models...", exact: true });

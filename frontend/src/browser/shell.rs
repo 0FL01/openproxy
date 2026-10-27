@@ -5,7 +5,9 @@ use super::{
     db_backups::DbBackupsPage,
     endpoint::EndpointPage,
     i18n::I18n,
-    json_body, navigate,
+    json_body,
+    logs::ApplicationLogsPage,
+    navigate,
     profile::ProfilePage,
     providers::{NewProviderPage, ProviderDetailPage, ProvidersPage},
     request, request_with_cache,
@@ -316,7 +318,7 @@ fn DashboardContent() -> Element {
                 Header { on_menu: move |_| sidebar_open.set(true), search, is_providers, is_providers_new: is_providers_new || is_provider_detail, provider_id: provider_id.clone(), theme, dark, lang_open, locale }
                 div { class: "flex-1 overflow-y-auto custom-scrollbar p-6 lg:p-10",
                     div { class: "max-w-7xl mx-auto",
-                        if is_providers { ProvidersPage { search } } else if is_providers_new { NewProviderPage {} } else if let Some(id) = provider_id { ProviderDetailPage { id } } else if pathname == "/dashboard/skills" { SkillsPage {} } else if pathname == "/dashboard/console-log" { ConsoleLogPage {} } else if pathname == "/dashboard/profile" { ProfilePage { theme, dark, lang_open, locale } } else if pathname == "/dashboard/db-backups" { DbBackupsPage {} } else { EndpointPage {} }
+                        if is_providers { ProvidersPage { search } } else if is_providers_new { NewProviderPage {} } else if let Some(id) = provider_id { ProviderDetailPage { id } } else if pathname == "/dashboard/skills" { SkillsPage {} } else if pathname == "/dashboard/console-log" { ConsoleLogPage {} } else if pathname == "/dashboard/profile" { ProfilePage { theme, dark, lang_open, locale } } else if pathname == "/dashboard/db-backups" { DbBackupsPage {} } else if pathname == "/dashboard/logs" { ApplicationLogsPage {} } else { EndpointPage {} }
                     }
                 }
             }
