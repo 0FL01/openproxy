@@ -388,6 +388,110 @@ fn indent_json_newline(input: &web_sys::HtmlTextAreaElement) -> bool {
     !indentation.is_empty() && insert_text(input, start, end, &format!("\n{indentation}"))
 }
 
+fn character_top(line: &web_sys::HtmlElement, mut index: usize) -> Option<f64> {
+    let children = line.child_nodes();
+    for child in 0..children.length() {
+        let Some(span) = children
+            .item(child)
+            .and_then(|node| node.dyn_into::<web_sys::HtmlElement>().ok())
+            .filter(|element| element.tag_name() == "SPAN")
+        else {
+            continue;
+        };
+        let Some(text) = span.first_child() else {
+            continue;
+        };
+        let length =
+            js_sys::JsString::from(text.text_content().unwrap_or_default()).length() as usize;
+        if index < length {
+            let range = web_sys::window()?.document()?.create_range().ok()?;
+            range.set_start(&text, index as u32).ok()?;
+            range.set_end(&text, index as u32 + 1).ok()?;
+            return Some(range.get_bounding_client_rect().top());
+        }
+        index -= length;
+    }
+    None
+}
+
+fn smart_home(
+    input: &web_sys::HtmlTextAreaElement,
+    rendered: Option<&web_sys::HtmlElement>,
+    select: bool,
+) -> bool {
+    let start = input.selection_start().ok().flatten().unwrap_or_default() as usize;
+    let end = input.selection_end().ok().flatten().unwrap_or(start as u32) as usize;
+    let backward = input.selection_direction().ok().flatten().as_deref() == Some("backward");
+    let cursor = if backward { start } else { end };
+    let text: Vec<u16> = input.value().encode_utf16().collect();
+    let line_start = text[..cursor]
+        .iter()
+        .rposition(|&ch| ch == b'\n' as u16)
+        .map_or(0, |index| index + 1);
+    let line_end = text[cursor..]
+        .iter()
+        .position(|&ch| ch == b'\n' as u16)
+        .map_or(text.len(), |index| cursor + index);
+    let line_number = text[..line_start]
+        .iter()
+        .filter(|&&ch| ch == b'\n' as u16)
+        .count();
+    let Some(line) = rendered.and_then(|element| {
+        let children = element.child_nodes();
+        (0..children.length())
+            .filter_map(|index| {
+                children
+                    .item(index)?
+                    .dyn_into::<web_sys::HtmlElement>()
+                    .ok()
+            })
+            .nth(line_number)
+    }) else {
+        return false;
+    };
+    // Leave native navigation untouched when the rendered layout is stale.
+    if line.text_content().as_deref()
+        != Some(&String::from_utf16_lossy(&text[line_start..line_end]))
+    {
+        return false;
+    }
+    if line.offset_height() > 16 && cursor > line_start {
+        let offset = cursor - line_start;
+        let Some(first_top) = character_top(&line, 0) else {
+            return false;
+        };
+        let Some(current_top) = character_top(&line, offset) else {
+            return false;
+        };
+        if current_top != first_top {
+            let Some(previous_top) = character_top(&line, offset - 1) else {
+                return false;
+            };
+            if previous_top == current_top {
+                // Native Home first moves to the beginning of this visual line.
+                return false;
+            }
+        }
+    }
+    let first = text[line_start..line_end]
+        .iter()
+        .position(|&ch| ch != b' ' as u16 && ch != b'\t' as u16)
+        .map_or(line_start, |offset| line_start + offset);
+    let target = if cursor == first { line_start } else { first } as u32;
+    if !select {
+        return input.set_selection_range(target, target).is_ok();
+    }
+    let anchor = if backward { end } else { start } as u32;
+    let direction = if target < anchor {
+        "backward"
+    } else {
+        "forward"
+    };
+    input
+        .set_selection_range_with_direction(target.min(anchor), target.max(anchor), direction)
+        .is_ok()
+}
+
 fn select_line(input: &web_sys::HtmlTextAreaElement) {
     let start = input.selection_start().ok().flatten().unwrap_or_default();
     let end = input.selection_end().ok().flatten().unwrap_or(start);
@@ -1485,6 +1589,11 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
                             }
                             if json && event.key() == Key::Enter && !event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().alt() && !event.modifiers().shift() && textarea.peek().as_ref().is_some_and(|input| expand_json_brackets(input) || indent_json_newline(input)) {
                                 event.prevent_default();
+                            } else if event.key() == Key::Home && !event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().alt() {
+                                if let Some(input) = textarea.peek().as_ref() && smart_home(input, rendered.peek().as_ref(), event.modifiers().shift()) {
+                                    event.prevent_default();
+                                    update_cursor.call(());
+                                }
                             } else if event.key() == Key::Tab && !event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().alt() {
                                 event.prevent_default();
                                 if let Some(input) = textarea.peek().as_ref() { indent_selection(input, event.modifiers().shift()); }

@@ -88,6 +88,36 @@ async function main() {
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
     const lines = "alpha\nbeta\ngamma";
     const lineSelection = () => reference ? page.evaluate(() => { const editor = window.monaco.editor.getEditors()[0]; const s = editor.getSelection(); return [editor.getModel().getOffsetAt(s.getStartPosition()), editor.getModel().getOffsetAt(s.getEndPosition())]; }) : editor().evaluate(input => [input.selectionStart, input.selectionEnd]);
+    const indentedLine = "alpha\n    beta\ngamma";
+    if (reference) await page.evaluate(text => { const e = window.monaco.editor.getEditors()[0]; e.setValue(text); e.setPosition({ lineNumber: 2, column: 9 }); e.focus(); }, indentedLine);
+    else { await editor().fill(indentedLine); await editor().evaluate(input => input.setSelectionRange(14, 14)); }
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.keyboard.press("Home");
+    assert.deepEqual(await lineSelection(), [10, 10], "Home moves to the first non-whitespace character");
+    await page.keyboard.press("Home");
+    assert.deepEqual(await lineSelection(), [6, 6], "a second Home moves to the beginning of the line");
+    if (reference) await page.evaluate(() => window.monaco.editor.getEditors()[0].setPosition({ lineNumber: 2, column: 9 }));
+    else await editor().evaluate(input => input.setSelectionRange(14, 14));
+    await page.keyboard.press("Shift+Home");
+    assert.deepEqual(await lineSelection(), [10, 14], "Shift+Home selects back to the first non-whitespace character");
+    await page.keyboard.press("Shift+Home");
+    assert.deepEqual(await lineSelection(), [6, 14], "repeated Shift+Home extends the backward selection to the line start");
+    const viewport = page.viewportSize();
+    const wrappedHome = "  " + "x".repeat(200);
+    await page.setViewportSize({ width: 390, height: 844 });
+    if (reference) await page.evaluate(text => { const e = window.monaco.editor.getEditors()[0]; e.setValue(text); e.setPosition({ lineNumber: 1, column: 71 }); e.focus(); }, wrappedHome);
+    else { await editor().fill(wrappedHome); await editor().evaluate(input => input.setSelectionRange(70, 70)); }
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.keyboard.press("Home");
+    assert.deepEqual(await lineSelection(), [62, 62], "Home first moves to the beginning of a wrapped visual line");
+    await page.keyboard.press("Home");
+    assert.deepEqual(await lineSelection(), [2, 2], "a second Home moves to the logical line's first non-whitespace character");
+    await page.setViewportSize(viewport);
+    if (process.env.TRANSLATOR_HOME_ONLY === "1") {
+      assert.deepEqual(errors, []);
+      console.log("synthetic translator Home smoke passed");
+      return;
+    }
     if (reference) await page.evaluate(text => { const e = window.monaco.editor.getEditors()[0]; e.setValue(text); e.setPosition({ lineNumber: 2, column: 3 }); e.focus(); }, lines);
     else { await editor().fill(lines); await editor().evaluate(input => input.setSelectionRange(8, 8)); }
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
