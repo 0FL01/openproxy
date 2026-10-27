@@ -86,6 +86,53 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
+    if (process.env.TRANSLATOR_INDENT_LINES_ONLY === "1") {
+      const text = '{\n      "text": "😺",\n      "other": []\n}';
+      const offset = text.indexOf("😺") + 2;
+      const cursor = () => reference ? page.evaluate(() => { const e = window.monaco.editor.getEditors()[0]; return e.getModel().getOffsetAt(e.getPosition()); }) : editor().evaluate(input => input.selectionStart);
+      if (reference) {
+        await page.evaluate(({ text, offset }) => { const e = window.monaco.editor.getEditors()[0]; e.setValue(text); e.setPosition(e.getModel().getPositionAt(offset)); e.focus(); }, { text, offset });
+        await settleReferenceJson();
+      } else { await editor().fill(text); await editor().evaluate((input, offset) => { input.setSelectionRange(offset, offset); input.focus(); }, offset); }
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.keyboard.press("Control+]");
+      assert.equal(await value(), text.replace('      "text"', '        "text"'), "Indent Line advances to the next four-column stop, not the caret");
+      assert.equal(await cursor(), offset + 2);
+      await page.keyboard.press("Control+z");
+      assert.equal(await value(), text);
+      assert.equal(await cursor(), offset);
+      await page.keyboard.press("Control+[");
+      assert.equal(await value(), text.replace('      "text"', '    "text"'), "Outdent Line moves to the previous four-column stop");
+      assert.equal(await cursor(), offset - 2);
+      await page.keyboard.press("Control+z");
+      assert.equal(await value(), text);
+      assert.equal(await cursor(), offset);
+      const range = [text.indexOf("\n") + 3, text.lastIndexOf("}")];
+      if (reference) await page.evaluate(range => { const e = window.monaco.editor.getEditors()[0]; const model = e.getModel(); const a = model.getPositionAt(range[0]); const b = model.getPositionAt(range[1]); e.setSelection(new window.monaco.Selection(b.lineNumber, b.column, a.lineNumber, a.column)); }, range);
+      else await editor().evaluate((input, range) => input.setSelectionRange(...range, "backward"), range);
+      await page.keyboard.press("Control+]");
+      assert.equal(await value(), text.replaceAll('      "', '        "'), "a selection ending at the following line start excludes that line");
+      const selected = () => reference ? page.evaluate(() => { const e = window.monaco.editor.getEditors()[0]; const s = e.getSelection(); return [e.getModel().getOffsetAt(s.getStartPosition()), e.getModel().getOffsetAt(s.getEndPosition()), s.getDirection() === 0 ? "forward" : "backward"]; }) : editor().evaluate(input => [input.selectionStart, input.selectionEnd, input.selectionDirection]);
+      assert.deepEqual(await selected(), [range[0], range[1] + 4, "backward"], "leading-whitespace selection start and direction are preserved");
+      await page.keyboard.press("Control+z");
+      assert.equal(await value(), text);
+      assert.deepEqual(await selected(), [...range, "backward"]);
+      if (reference) await settleReferenceJson();
+      await page.getByRole("button", { name: /Client Request/ }).click();
+      await page.getByRole("button", { name: /Provider Response/ }).click();
+      if (reference) { await page.locator(".monaco-editor .view-lines").waitFor(); await page.evaluate(() => { const e = window.monaco.editor.getEditors()[0]; e.setValue("alpha\nbeta"); e.setPosition({ lineNumber: 2, column: 2 }); e.focus(); }); }
+      else { await editor().fill("alpha\nbeta"); await editor().evaluate(input => { input.setSelectionRange(7, 7); input.focus(); }); }
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.keyboard.press("Control+]");
+      assert.equal(await value(), "alpha\n    beta");
+      assert.equal(await cursor(), 11);
+      await page.keyboard.press("Control+z");
+      assert.equal(await value(), "alpha\nbeta");
+      assert.equal(await cursor(), 7);
+      assert.deepEqual(errors, []);
+      console.log("synthetic translator line-indentation smoke passed");
+      return;
+    }
     if (process.env.TRANSLATOR_INSERT_LINE_ONLY === "1") {
       const text = '{\n  "text": "😺",\n  "other": []\n}';
       const offset = text.indexOf("😺") + 2;

@@ -1377,6 +1377,120 @@ fn indent_selection(input: &web_sys::HtmlTextAreaElement, backwards: bool) {
     }
 }
 
+fn indent_lines(input: &web_sys::HtmlTextAreaElement, backwards: bool) -> Option<NativeUndo> {
+    let before = input.value();
+    let text = js_sys::JsString::from(before.as_str());
+    let start = input.selection_start().ok().flatten().unwrap_or_default();
+    let end = input.selection_end().ok().flatten().unwrap_or(start);
+    let direction = input
+        .selection_direction()
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let prefix = text.slice(0, start).as_string().unwrap_or_default();
+    let line_start = start
+        - prefix
+            .rsplit('\n')
+            .next()
+            .unwrap_or("")
+            .encode_utf16()
+            .count() as u32;
+    let last = if end > start && text.slice(end - 1, end).as_string().as_deref() == Some("\n") {
+        end - 1
+    } else {
+        end
+    };
+    let suffix = text
+        .slice(last, text.length())
+        .as_string()
+        .unwrap_or_default();
+    let line_end = last
+        + suffix
+            .split('\n')
+            .next()
+            .unwrap_or("")
+            .encode_utf16()
+            .count() as u32;
+    let lines = text
+        .slice(line_start, line_end)
+        .as_string()
+        .unwrap_or_default();
+    let multiple = lines.contains('\n');
+    let mut offset = line_start;
+    let mut change = 0_i64;
+    let mut new_start = start as i64;
+    let mut new_end = end as i64;
+    let mut first_indent = None;
+    let updated = lines
+        .split('\n')
+        .map(|line| {
+            let old_indent = line
+                .bytes()
+                .take_while(|byte| matches!(byte, b' ' | b'\t'))
+                .count();
+            let columns = line[..old_indent].bytes().fold(0_usize, |column, byte| {
+                if byte == b'\t' {
+                    column + 4 - column % 4
+                } else {
+                    column + 1
+                }
+            });
+            let columns = if backwards {
+                columns.saturating_sub(1) / 4 * 4
+            } else {
+                (columns / 4 + 1) * 4
+            };
+            let indent = if multiple && line.is_empty() {
+                String::new()
+            } else {
+                " ".repeat(columns)
+            };
+            first_indent.get_or_insert(old_indent as u32);
+            let old_end = offset + old_indent as u32;
+            let delta = indent.len() as i64 - old_indent as i64;
+            let map = |original, mapped| {
+                if original >= old_end {
+                    mapped + delta
+                } else if original >= offset {
+                    offset as i64 + change + indent.len() as i64
+                } else {
+                    mapped
+                }
+            };
+            new_start = map(start, new_start);
+            new_end = map(end, new_end);
+            change += delta;
+            offset += line.encode_utf16().count() as u32 + 1;
+            format!("{indent}{}", &line[old_indent..])
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if updated == lines || !insert_text(input, line_start, line_end, &updated) {
+        return None;
+    }
+    // A selected range starting in the leading whitespace retains its start
+    // column on indent; outdent may still pull it toward the new line start.
+    if start != end && start - line_start <= first_indent.unwrap_or_default() {
+        new_start = new_start.min(start as i64);
+    }
+    let after_selection = (
+        new_start as u32,
+        new_end.max(new_start) as u32,
+        direction.clone(),
+    );
+    let _ =
+        input.set_selection_range_with_direction(after_selection.0, after_selection.1, &direction);
+    Some(NativeUndo {
+        before,
+        after: input.value(),
+        start,
+        end,
+        direction,
+        after_selection: Some(after_selection),
+        edits: Vec::new(),
+    })
+}
+
 fn json_tokens(text: &str) -> Vec<(&str, &'static str)> {
     const BASE: &str = "#d4d4d4";
     const BRACKETS: [&str; 3] = ["#ffd700", "#da70d6", "#179fff"];
@@ -2553,6 +2667,15 @@ fn Editor(
                                 let automatic = auto_indent.write().take();
                                 if let Some(input) = textarea.peek().as_ref() && let Some((undo, automatic)) = insert_line(input, modifiers.shift(), json, automatic) {
                                     auto_indent.set(automatic);
+                                    command_selections.write().record(undo);
+                                    composition_extendable.set(false);
+                                    update_cursor.call(());
+                                }
+                                return;
+                            }
+                            if control && !modifiers.shift() && !modifiers.alt() && matches!(key.as_str(), "[" | "]") {
+                                event.prevent_default();
+                                if let Some(input) = textarea.peek().as_ref() && let Some(undo) = indent_lines(input, key == "[") {
                                     command_selections.write().record(undo);
                                     composition_extendable.set(false);
                                     update_cursor.call(());
