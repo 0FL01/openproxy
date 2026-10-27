@@ -635,6 +635,59 @@ fn character_top(line: &web_sys::HtmlElement, mut index: usize) -> Option<f64> {
     None
 }
 
+fn ascii_visual_line_ends(line: &web_sys::HtmlElement) -> Vec<usize> {
+    let text = line.text_content().unwrap_or_default();
+    if !text.is_ascii() || text.len() <= 50 {
+        return Vec::new();
+    }
+    let mut ends = Vec::new();
+    let mut start = 0;
+    while start < text.len() {
+        let Some(top) = character_top(line, start) else {
+            return Vec::new();
+        };
+        let mut low = start + 1;
+        let mut high = text.len();
+        while low < high {
+            let middle = low + (high - low) / 2;
+            if character_top(line, middle).is_some_and(|next| next > top) {
+                high = middle;
+            } else {
+                low = middle + 1;
+            }
+        }
+        ends.push(low);
+        start = low;
+    }
+    ends
+}
+
+fn ascii_token_parts<'a>(text: &'a str, offset: usize, ends: &[usize]) -> Vec<&'a str> {
+    if ends.is_empty() || !text.is_ascii() {
+        return vec![text];
+    }
+    // Monaco bounds ASCII spans to 50 characters separately on each visual row.
+    // Keep shaping-sensitive non-ASCII text on its existing rendering path.
+    let mut parts = Vec::new();
+    let mut start = 0;
+    for end in ends
+        .iter()
+        .copied()
+        .chain(std::iter::once(offset + text.len()))
+    {
+        let end = end.saturating_sub(offset).min(text.len());
+        while start < end {
+            let next = (start + 50).min(end);
+            parts.push(&text[start..next]);
+            start = next;
+        }
+        if start == text.len() {
+            break;
+        }
+    }
+    parts
+}
+
 fn smart_home(
     input: &web_sys::HtmlTextAreaElement,
     rendered: Option<&web_sys::HtmlElement>,
@@ -1523,6 +1576,7 @@ fn Editor(
     let mut editor_width = use_signal(|| 0_i32);
     let mut rendered = use_signal(|| None::<web_sys::HtmlElement>);
     let mut line_tops = use_signal(Vec::<i32>::new);
+    let mut visual_line_ends = use_signal(Vec::<Vec<usize>>::new);
     let initial_value = value.clone();
     let mut pair_text = use_signal(move || initial_value);
     let initial_value = value.clone();
@@ -1818,16 +1872,16 @@ fn Editor(
             });
             let _ = JsFuture::from(frame).await;
             let children = element.child_nodes();
-            let tops = (0..children.length())
+            let lines: Vec<_> = (0..children.length())
                 .filter_map(|index| {
                     children
                         .item(index)?
                         .dyn_into::<web_sys::HtmlElement>()
                         .ok()
                 })
-                .map(|line| line.offset_top())
                 .collect();
-            line_tops.set(tops);
+            line_tops.set(lines.iter().map(|line| line.offset_top()).collect());
+            visual_line_ends.set(lines.iter().map(ascii_visual_line_ends).collect());
             update_cursor.call(());
         });
     }));
@@ -2148,8 +2202,38 @@ fn Editor(
         None
     };
     let find_matches = if find_open() { matches.as_slice() } else { &[] };
-    let highlighted = (!find_matches.is_empty() || !brackets.is_empty())
+    let mut highlighted = (!find_matches.is_empty() || !brackets.is_empty())
         .then(|| highlight_find_matches(&lines, find_matches, &brackets));
+    let ends = visual_line_ends.read();
+    if let Some(highlighted) = &mut highlighted {
+        for (line, tokens) in highlighted.iter_mut().enumerate() {
+            let Some(ends) = ends.get(line) else { continue };
+            let mut offset = 0;
+            *tokens = tokens
+                .iter()
+                .flat_map(|&(text, color, matched, bracket)| {
+                    let parts = ascii_token_parts(text, offset, ends);
+                    offset += text.len();
+                    parts
+                        .into_iter()
+                        .map(move |part| (part, color, matched, bracket))
+                })
+                .collect();
+        }
+    } else {
+        for (line, tokens) in lines.iter_mut().enumerate() {
+            let Some(ends) = ends.get(line) else { continue };
+            let mut offset = 0;
+            *tokens = tokens
+                .iter()
+                .flat_map(|&(text, color)| {
+                    let parts = ascii_token_parts(text, offset, ends);
+                    offset += text.len();
+                    parts.into_iter().map(move |part| (part, color))
+                })
+                .collect();
+        }
+    }
     let root_width = editor_width() + 76;
     let find_layout = if root_width <= 328 {
         "reduced narrow collapsed"

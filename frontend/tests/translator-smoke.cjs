@@ -86,6 +86,27 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
+    if (process.env.TRANSLATOR_WRAP_TOKENS_ONLY === "1") {
+      const text = `{\n  "message": "${"x".repeat(200)}",\n  "count": 42\n}`;
+      if (reference) { await page.evaluate(text => window.monaco.editor.getEditors()[0].setValue(text), text); await settleReferenceJson(); }
+      else await editor().fill(text);
+      for (const width of [1440, 390]) {
+        await page.setViewportSize({ width, height: 900 });
+        await page.waitForFunction(reference => {
+          const spans = [...document.querySelectorAll(reference ? ".monaco-editor .view-lines .view-line span" : "pre > div > span")]
+            .filter(span => !span.children.length && span.textContent.includes("x"));
+          return spans.reduce((count, span) => count + [...span.textContent].filter(ch => ch === "x").length, 0) === 200;
+        }, reference);
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        const pieces = await page.evaluate(reference => [...document.querySelectorAll(reference ? ".monaco-editor .view-lines .view-line span" : "pre > div > span")]
+          .filter(span => !span.children.length && span.textContent.includes("x"))
+          .map(span => ({ text: span.textContent, rows: span.getClientRects().length })), reference);
+        assert.ok(pieces.every(piece => piece.text.length <= 50 && piece.rows === 1), `long ASCII tokens are split within each visual line: ${JSON.stringify(pieces)}`);
+      }
+      assert.deepEqual(errors, []);
+      console.log("synthetic translator wrapped-token smoke passed");
+      return;
+    }
     if (process.env.TRANSLATOR_SCROLL_ONLY === "1") {
       const text = JSON.stringify({ items: Array.from({ length: 80 }, (_, index) => `row${index} needle`) }, null, 2);
       if (reference) await page.evaluate(text => window.monaco.editor.getEditors()[0].setValue(text), text);
