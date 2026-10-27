@@ -118,9 +118,9 @@ async function main() {
       console.log("synthetic translator tab focus smoke passed");
       return;
     }
-    const scopedText = "outside cat\ninside cat and cat\noutside cat";
+    const scopedText = "😺outside cat\ninside cat and cat\noutside cat";
     if (reference) await page.evaluate(text => { const e = window.monaco.editor.getEditors()[0]; e.setValue(text); e.setSelection(new window.monaco.Selection(2, 1, 2, 19)); e.focus(); }, scopedText);
-    else { await editor().fill(scopedText); await editor().evaluate(input => input.setSelectionRange(12, 30)); }
+    else { await editor().fill(scopedText); await editor().evaluate(input => input.setSelectionRange(14, 32)); }
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await page.keyboard.press("Control+h");
     const scopedDialog = page.getByRole("dialog", { name: "Find / Replace" });
@@ -133,9 +133,21 @@ async function main() {
     await scopedDialog.getByRole("checkbox", { name: "Use Regular Expression (Alt+R)" }).click();
     await scopedDialog.getByLabel("Find", { exact: true }).fill("cat");
     await scopedDialog.getByText("1 of 2", { exact: true }).waitFor();
+    const highlights = () => reference ? page.locator(".monaco-editor .view-overlays .findMatch, .monaco-editor .view-overlays .currentFindMatch") : page.locator(".find-match");
+    await page.waitForFunction(({ reference, count }) => { const elements = [...document.querySelectorAll(reference ? ".monaco-editor .view-overlays .findMatch, .monaco-editor .view-overlays .currentFindMatch" : ".find-match")]; return reference ? elements.length === count : elements.map(element => element.textContent).join("") === "cat".repeat(count); }, { reference, count: 2 });
+    assert.deepEqual((await highlights().evaluateAll(elements => [...new Set(elements.map(element => getComputedStyle(element).backgroundColor))])).sort(), ["rgb(81, 92, 106)", "rgba(234, 92, 0, 0.33)"], "scoped Find highlights current and other matches");
+    if (!reference) assert.deepEqual(await highlights().evaluateAll(elements => ["rgb(81, 92, 106)", "rgba(234, 92, 0, 0.33)"].map(color => elements.filter(element => getComputedStyle(element).backgroundColor === color).map(element => element.textContent).join(""))), ["cat", "cat"], "the complete matching text is highlighted");
+    await scopedDialog.getByLabel("Find", { exact: true }).press("Enter");
+    await scopedDialog.getByText("2 of 2", { exact: true }).waitFor();
+    await page.waitForFunction(reference => {
+      const elements = [...document.querySelectorAll(reference ? ".monaco-editor .view-overlays .findMatch, .monaco-editor .view-overlays .currentFindMatch" : ".find-match")].sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+      return elements.length >= 2 && getComputedStyle(elements[0]).backgroundColor === "rgba(234, 92, 0, 0.33)" && getComputedStyle(elements.at(-1)).backgroundColor === "rgb(81, 92, 106)";
+    }, reference);
+    await scopedDialog.getByLabel("Find", { exact: true }).press("Shift+Enter");
+    await scopedDialog.getByText("1 of 2", { exact: true }).waitFor();
     await scopedDialog.getByLabel("Replace", { exact: true }).fill("doggo");
     await scopedDialog.getByRole("button", { name: /^Replace All \(/ }).click();
-    assert.equal(await value(), "outside cat\ninside doggo and doggo\noutside cat", "replace all affects only the selected range");
+    assert.equal(await value(), "😺outside cat\ninside doggo and doggo\noutside cat", "replace all affects only the selected range");
     if (reference) await page.evaluate(() => window.monaco.editor.getEditors()[0].focus()); else await editor().focus();
     await page.keyboard.press("Control+z");
     assert.equal(await value(), scopedText, "scoped replacement remains undoable");
@@ -143,9 +155,11 @@ async function main() {
     await scopeButton.click();
     assert.equal(await scopeButton.getAttribute("aria-checked"), "false");
     await scopedDialog.getByText(/^[1-4] of 4$/).waitFor();
+    await page.waitForFunction(({ reference, count }) => { const elements = [...document.querySelectorAll(reference ? ".monaco-editor .view-overlays .findMatch, .monaco-editor .view-overlays .currentFindMatch" : ".find-match")]; return reference ? elements.length === count : elements.map(element => element.textContent).join("") === "cat".repeat(count); }, { reference, count: 4 });
     await scopedDialog.getByRole("button", { name: "Close (Escape)" }).click();
+    await page.waitForFunction(reference => !document.querySelector(reference ? ".monaco-editor .view-overlays .findMatch, .monaco-editor .view-overlays .currentFindMatch" : ".find-match"), reference);
     if (reference) await page.evaluate(() => { const e = window.monaco.editor.getEditors()[0]; e.setSelection(new window.monaco.Selection(1, 1, 2, 19)); e.focus(); });
-    else await editor().evaluate(input => input.setSelectionRange(0, 30));
+    else await editor().evaluate(input => input.setSelectionRange(0, 32));
     await page.keyboard.press("Control+h");
     assert.equal(await scopeButton.getAttribute("aria-checked"), "false", "Find is not automatically scoped to a multi-line selection");
     await scopedDialog.getByLabel("Find", { exact: true }).press("Alt+l");

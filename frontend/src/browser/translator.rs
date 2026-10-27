@@ -1129,6 +1129,49 @@ fn json_guides(token_lines: &[Vec<(&str, &str)>]) -> Vec<Vec<(usize, bool)>> {
     lines
 }
 
+fn highlight_find_matches<'a>(
+    lines: &[Vec<(&'a str, &'static str)>],
+    matches: &[(u32, u32)],
+) -> Vec<Vec<(&'a str, &'static str, Option<usize>)>> {
+    let mut result = Vec::with_capacity(lines.len());
+    let mut offset = 0_u32;
+    let mut match_index = 0;
+    for line in lines {
+        let mut highlighted = Vec::new();
+        for &(text, color) in line {
+            let mut piece_start = 0;
+            let mut piece_match = None;
+            for (byte, ch) in text.char_indices() {
+                while matches
+                    .get(match_index)
+                    .is_some_and(|(_, end)| *end <= offset)
+                {
+                    match_index += 1;
+                }
+                let end = offset + ch.len_utf16() as u32;
+                let next_match = matches
+                    .get(match_index)
+                    .filter(|(start, finish)| *start < end && *finish > offset)
+                    .map(|_| match_index);
+                if next_match != piece_match {
+                    if byte > piece_start {
+                        highlighted.push((&text[piece_start..byte], color, piece_match));
+                    }
+                    piece_start = byte;
+                    piece_match = next_match;
+                }
+                offset = end;
+            }
+            if piece_start < text.len() {
+                highlighted.push((&text[piece_start..], color, piece_match));
+            }
+        }
+        result.push(highlighted);
+        offset += 1;
+    }
+    result
+}
+
 struct EditorSizeObserver {
     observer: web_sys::ResizeObserver,
     _callback: Closure<dyn FnMut(js_sys::Array, web_sys::ResizeObserver)>,
@@ -1574,6 +1617,13 @@ fn Editor(
     } else {
         Vec::new()
     };
+    let current_match = if matches.is_empty() {
+        0
+    } else {
+        match_index() % matches.len()
+    };
+    let highlighted =
+        (find_open() && !matches.is_empty()).then(|| highlight_find_matches(&lines, &matches));
     rsx! {
         div { style: "height:400px;position:relative;background:#1e1e1e;color:#d4d4d4;",
             div { style: "position:relative;overflow:hidden;width:100%;height:400px;",
@@ -1595,7 +1645,15 @@ fn Editor(
                                     }
                                 }
                                 if line == active_line() { div { style: "position:absolute;top:0;left:0;width:{current_line_width}px;height:16px;border:2px solid #282828;" } }
-                                for (index, (text, color)) in segments.iter().enumerate() { span { key: "{index}", style: "color:{color}", "{text}" } }
+                                if let Some(highlighted) = &highlighted {
+                                    for (index, (text, color, matched)) in highlighted[line].iter().enumerate() {
+                                        { let background = match matched { Some(index) if *index == current_match => ";background:#515c6a", Some(_) => ";background:rgba(234,92,0,.33)", None => "" }; rsx! {
+                                            span { key: "{index}", class: if matched.is_some() { "find-match" } else { "" }, style: "color:{color}{background}", "{text}" }
+                                        } }
+                                    }
+                                } else {
+                                    for (index, (text, color)) in segments.iter().enumerate() { span { key: "{index}", style: "color:{color}", "{text}" } }
+                                }
                             }
                         }
                     }
