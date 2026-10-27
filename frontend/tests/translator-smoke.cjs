@@ -86,6 +86,58 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
+    if (process.env.TRANSLATOR_SCROLL_ONLY === "1") {
+      const text = JSON.stringify({ items: Array.from({ length: 80 }, (_, index) => `row${index} needle`) }, null, 2);
+      if (reference) await page.evaluate(text => window.monaco.editor.getEditors()[0].setValue(text), text);
+      else await editor().fill(text);
+      for (const width of [1280, 390]) {
+        await page.setViewportSize({ width, height: 844 });
+        const offset = text.indexOf("row75") + 3;
+        if (reference) await page.evaluate(offset => {
+          const e = window.monaco.editor.getEditors()[0], position = e.getModel().getPositionAt(offset);
+          e.setPosition(position); e.revealPositionInCenter(position, 0); e.focus();
+        }, offset);
+        else {
+          await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+          await editor().evaluate((input, offset) => {
+            input.setSelectionRange(offset, offset);
+            const line = input.value.slice(0, offset).split("\n").length - 1;
+            input.scrollTop = input.parentElement.querySelector("pre").children[line].offsetTop - 150;
+          }, offset);
+        }
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        const rect = await page.evaluate(reference => {
+          const root = reference ? document.querySelector(".monaco-editor .view-lines") : document.querySelector('[aria-label="Translator editor"]').parentElement.querySelector("pre");
+          const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+          let node;
+          while ((node = walker.nextNode())) {
+            const index = node.textContent.indexOf("row75");
+            if (index < 0) continue;
+            const range = document.createRange(); range.setStart(node, index); range.setEnd(node, index + 5);
+            const r = range.getBoundingClientRect();
+            range.setStart(node, index + 3); range.setEnd(node, index + 4);
+            return { x: r.x, y: r.y, width: r.width, height: r.height, caretX: range.getBoundingClientRect().x };
+          }
+          throw new Error("Scrolled row is not rendered");
+        }, reference);
+        assert.ok(rect.y > 0 && rect.y + rect.height < 844, "a late document row remains in the visible editor viewport");
+        const screenshot = await page.screenshot({ clip: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } });
+        assert.ok(await page.evaluate(async base64 => {
+          const image = new Image(); image.src = `data:image/png;base64,${base64}`; await image.decode();
+          const canvas = document.createElement("canvas"); canvas.width = image.width; canvas.height = image.height;
+          const context = canvas.getContext("2d"); context.drawImage(image, 0, 0);
+          const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+          for (let i = 0; i < pixels.length; i += 4) if (Math.max(pixels[i], pixels[i + 1], pixels[i + 2]) > 100) return true;
+          return false;
+        }, screenshot.toString("base64")), "the composited viewport paints text after scrolling, rather than clipping it away");
+        await page.mouse.click(rect.caretX + 1, rect.y + rect.height / 2);
+        const actualOffset = reference ? await page.evaluate(() => { const e = window.monaco.editor.getEditors()[0]; return e.getModel().getOffsetAt(e.getPosition()); }) : await editor().evaluate(input => input.selectionStart);
+        assert.equal(actualOffset, offset, "a click on the scrolled text maps to its document position after resizing");
+      }
+      assert.deepEqual(errors, []);
+      console.log("synthetic translator long-document scroll smoke passed");
+      return;
+    }
     if (process.env.TRANSLATOR_BRACKETS_ONLY === "1") {
       const setText = async (index, text, offset) => {
         if (reference) await page.evaluate(({ index, text, offset }) => {

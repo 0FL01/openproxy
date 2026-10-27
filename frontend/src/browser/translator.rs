@@ -2173,7 +2173,7 @@ fn Editor(
                         } }
                     }
                 }
-                div { style: "position:absolute;overflow:hidden;left:62px;right:0;height:400px;",
+                div { style: "position:absolute;overflow:hidden;left:62px;right:0;height:400px;background:#1e1e1e;transform:translate3d(0,0,0);contain:paint;",
                     pre { aria_hidden: "true", style: "position:absolute;top:{text_top}px;left:0;right:0;margin:0;white-space:pre-wrap;overflow-wrap:anywhere;pointer-events:none;font-family:'Droid Sans Mono',monospace;font-size:12px;line-height:16px;",
                         onmounted: move |event| { if let Some(element) = event.data().downcast::<web_sys::Element>() && let Ok(element) = element.clone().dyn_into::<web_sys::HtmlElement>() { rendered.set(Some(element)); } },
                         for (line, segments) in lines.iter().enumerate() {
