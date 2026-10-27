@@ -86,6 +86,40 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
+    const lines = "alpha\nbeta\ngamma";
+    const lineSelection = () => reference ? page.evaluate(() => { const editor = window.monaco.editor.getEditors()[0]; const s = editor.getSelection(); return [editor.getModel().getOffsetAt(s.getStartPosition()), editor.getModel().getOffsetAt(s.getEndPosition())]; }) : editor().evaluate(input => [input.selectionStart, input.selectionEnd]);
+    if (reference) await page.evaluate(text => { const e = window.monaco.editor.getEditors()[0]; e.setValue(text); e.setPosition({ lineNumber: 2, column: 3 }); e.focus(); }, lines);
+    else { await editor().fill(lines); await editor().evaluate(input => input.setSelectionRange(8, 8)); }
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.keyboard.press("Alt+ArrowDown");
+    assert.equal(await value(), "alpha\ngamma\nbeta", "Alt+Down moves the current line down");
+    assert.deepEqual(await lineSelection(), [14, 14], "moving a line preserves the cursor column");
+    await page.keyboard.press("Control+z");
+    assert.equal(await value(), lines, "moving a line down is undoable");
+    if (reference) await page.evaluate(() => window.monaco.editor.getEditors()[0].setPosition({ lineNumber: 2, column: 3 }));
+    else await editor().evaluate(input => input.setSelectionRange(8, 8));
+    await page.keyboard.press("Alt+ArrowUp");
+    assert.equal(await value(), "beta\nalpha\ngamma", "Alt+Up moves the current line up");
+    assert.deepEqual(await lineSelection(), [2, 2], "moving up preserves the cursor column");
+    await page.keyboard.press("Control+z");
+    assert.equal(await value(), lines, "moving a line up is undoable");
+    if (reference) await page.evaluate(() => { const e = window.monaco.editor.getEditors()[0]; e.setSelection(new window.monaco.Selection(1, 1, 2, 1)); e.focus(); });
+    else await editor().evaluate(input => input.setSelectionRange(0, 6));
+    await page.keyboard.press("Alt+ArrowDown");
+    assert.equal(await value(), "beta\nalpha\ngamma", "a selection ending at the next line moves only the selected line");
+    assert.deepEqual(await lineSelection(), [5, 11], "moving selected lines preserves the selection");
+    await page.keyboard.press("Control+z");
+    assert.equal(await value(), lines, "moving selected lines is undoable");
+    if (reference) await page.evaluate(() => { const e = window.monaco.editor.getEditors()[0]; e.setSelection(new window.monaco.Selection(2, 1, 3, 1)); e.focus(); });
+    else await editor().evaluate(input => input.setSelectionRange(6, 11));
+    await page.keyboard.press("Alt+ArrowDown");
+    assert.equal(await value(), lines, "a selection reaching the last line cannot move down");
+    assert.deepEqual(await lineSelection(), [6, 11], "an unmoved selection is retained");
+    if (process.env.TRANSLATOR_MOVE_LINES_ONLY === "1") {
+      assert.deepEqual(errors, []);
+      console.log("synthetic translator move lines smoke passed");
+      return;
+    }
     const cdp = await context.newCDPSession(page);
     for (const { text, start, end } of [
       { text: '{"text":""}', start: 9, end: 9 },
@@ -159,11 +193,9 @@ async function main() {
       console.log("synthetic translator selection smoke passed");
       return;
     }
-    const lines = "alpha\nbeta\ngamma";
     if (reference) await page.evaluate(text => { const editor = window.monaco.editor.getEditors()[0]; editor.setValue(text); editor.setPosition({ lineNumber: 2, column: 3 }); editor.focus(); }, lines);
     else { await editor().fill(lines); await editor().evaluate(input => input.setSelectionRange(8, 8)); }
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    const lineSelection = () => reference ? page.evaluate(() => { const editor = window.monaco.editor.getEditors()[0]; const s = editor.getSelection(); return [editor.getModel().getOffsetAt(s.getStartPosition()), editor.getModel().getOffsetAt(s.getEndPosition())]; }) : editor().evaluate(input => [input.selectionStart, input.selectionEnd]);
     await page.keyboard.press("Control+l");
     assert.deepEqual(await lineSelection(), [6, 11], "Ctrl+L selects the current logical line including its newline");
     await page.keyboard.press("Control+l");

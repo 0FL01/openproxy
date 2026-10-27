@@ -467,6 +467,81 @@ fn delete_lines(input: &web_sys::HtmlTextAreaElement) {
     }
 }
 
+fn move_lines(input: &web_sys::HtmlTextAreaElement, down: bool) {
+    let start = input.selection_start().ok().flatten().unwrap_or_default() as usize;
+    let end = input.selection_end().ok().flatten().unwrap_or(start as u32) as usize;
+    let direction = input
+        .selection_direction()
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let text: Vec<u16> = input.value().encode_utf16().collect();
+    let newline = b'\n' as u16;
+    let line_start = text[..start]
+        .iter()
+        .rposition(|ch| *ch == newline)
+        .map_or(0, |index| index + 1);
+    let selected_end = if end > start && text[end - 1] == newline {
+        end - 1
+    } else {
+        end
+    };
+    let line_end = text[selected_end..]
+        .iter()
+        .position(|ch| *ch == newline)
+        .map_or(text.len(), |index| selected_end + index);
+    let (replace_start, replace_end, replacement, new_start, new_end) = if down {
+        if !text[end..].contains(&newline) {
+            return;
+        }
+        let next_start = line_end + 1;
+        let next_end = text[next_start..]
+            .iter()
+            .position(|ch| *ch == newline)
+            .map_or(text.len(), |index| next_start + index);
+        let mut replacement = text[next_start..next_end].to_vec();
+        replacement.push(newline);
+        replacement.extend_from_slice(&text[line_start..line_end]);
+        let delta = next_end - next_start + 1;
+        (
+            line_start,
+            next_end,
+            replacement,
+            start + delta,
+            (end + delta).min(text.len()),
+        )
+    } else {
+        if line_start == 0 {
+            return;
+        }
+        let previous_end = line_start - 1;
+        let previous_start = text[..previous_end]
+            .iter()
+            .rposition(|ch| *ch == newline)
+            .map_or(0, |index| index + 1);
+        let mut replacement = text[line_start..line_end].to_vec();
+        replacement.push(newline);
+        replacement.extend_from_slice(&text[previous_start..previous_end]);
+        let delta = line_start - previous_start;
+        (
+            previous_start,
+            line_end,
+            replacement,
+            start - delta,
+            end - delta,
+        )
+    };
+    if insert_text(
+        input,
+        replace_start as u32,
+        replace_end as u32,
+        &String::from_utf16_lossy(&replacement),
+    ) {
+        let _ =
+            input.set_selection_range_with_direction(new_start as u32, new_end as u32, &direction);
+    }
+}
+
 fn toggle_json_line_comments(input: &web_sys::HtmlTextAreaElement) {
     let start = input.selection_start().ok().flatten().unwrap_or_default() as usize;
     let end = input.selection_end().ok().flatten().unwrap_or(start as u32) as usize;
@@ -1273,6 +1348,10 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
                             } else if (event.modifiers().ctrl() || event.modifiers().meta()) && event.modifiers().shift() && !event.modifiers().alt() && key.eq_ignore_ascii_case("k") {
                                 event.prevent_default();
                                 if let Some(input) = textarea.peek().as_ref() { delete_lines(input); }
+                                update_cursor.call(());
+                            } else if event.modifiers().alt() && !event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().shift() && matches!(event.key(), Key::ArrowUp | Key::ArrowDown) {
+                                event.prevent_default();
+                                if let Some(input) = textarea.peek().as_ref() { move_lines(input, event.key() == Key::ArrowDown); }
                                 update_cursor.call(());
                             } else if json && (event.modifiers().ctrl() || event.modifiers().meta()) && !event.modifiers().shift() && !event.modifiers().alt() && key == "/" {
                                 event.prevent_default();
