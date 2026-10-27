@@ -129,6 +129,7 @@ const screens = [
   { section: "logs", name: "trace" },
   { section: "quota", name: "empty" },
   { section: "quota", name: "ready" },
+  { section: "quota", name: "reset-times" },
   { section: "quota", name: "glm-ping" },
   { section: "quota", name: "codex-ready" },
   { section: "quota", name: "codex-confirm" },
@@ -314,7 +315,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 ];
                 let kiloFreeOnly = false;
                 let routerCustom = [];
-                let quotaConnections = screen.name === "ready" ? [{ id: "fixture-github", provider: "github", name: "Fixture account", authType: "oauth", isActive: true }] : screen.name === "glm-ping" ? [{ id: "fixture-glm", provider: "glm", name: "Fixture account", authType: "apikey", isActive: true }] : screen.section === "quota" && screen.name.startsWith("codex-") ? [{ id: "fixture-codex", provider: "codex", name: "Fixture account", authType: "oauth", isActive: true }] : [];
+                let quotaConnections = ["ready", "reset-times"].includes(screen.name) ? [{ id: "fixture-github", provider: "github", name: "Fixture account", authType: "oauth", isActive: true }] : screen.name === "glm-ping" ? [{ id: "fixture-glm", provider: "glm", name: "Fixture account", authType: "apikey", isActive: true }] : screen.section === "quota" && screen.name.startsWith("codex-") ? [{ id: "fixture-codex", provider: "codex", name: "Fixture account", authType: "oauth", isActive: true }] : [];
                 let codexCredits = 1;
                 let creditGetError = false;
                 let creditPostError = false;
@@ -452,7 +453,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     if (screen.name === "pending") await new Promise((resolve) => { releaseXaiForce = resolve; observeXaiForce(); });
                     return route.fulfill({ status: 503, json: { error: "Synthetic discovery failure" } });
                   }
-                  if (screen.section === "quota" && path === "/api/usage/fixture-github") { quotaReads += 1; return route.fulfill({ json: { plan: "pro", quotas: { "Premium Requests": { used: 25, total: 100, resetAt: null } } } }); }
+                  if (screen.section === "quota" && path === "/api/usage/fixture-github") { quotaReads += 1; return route.fulfill({ json: { plan: "pro", quotas: screen.name === "reset-times" ? { "Today": { used: 25, total: 100, resetAt: "2026-10-01T16:30:00Z" }, "Tomorrow": { used: 50, total: 100, resetAt: "2026-10-02T15:00:00Z", recurring: false }, "Expired": { used: 100, total: 100, resetAt: "2026-09-29T09:00:00Z" } } : { "Premium Requests": { used: 25, total: 100, resetAt: null } } } }); }
                   if (screen.section === "quota" && path === "/api/usage/fixture-glm") return route.fulfill({ json: { plan: "pro", quotas: { "Premium Requests": { used: 25, total: 100, resetAt: null } } } });
                   if (screen.section === "quota" && path === "/api/usage/fixture-codex") return route.fulfill({ json: { plan: "pro", resetCredits: { availableCount: codexCredits }, quotas: { "Premium Requests": { used: 25, total: 100, resetAt: null } } } });
                   if (screen.section === "quota" && path === "/api/usage/fixture-codex/codex-reset-credits") {
@@ -770,10 +771,16 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   await page.mouse.move(1, 1);
                   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
                 } else if (screen.section === "quota") {
+                  if (screen.name === "reset-times") {
+                    await page.getByText("Reset in 4h 30m", { exact: true }).waitFor();
+                    assert.equal(await page.getByText("Reset in 4h 30m", { exact: true }).getAttribute("title"), "Today, 4:30 PM");
+                    assert.equal(await page.getByText("Expires in 1d 3h 0m", { exact: true }).getAttribute("title"), "Tomorrow, 3:00 PM");
+                    assert.equal(await page.getByText("Expired", { exact: true }).last().getAttribute("title"), "Sep 29, 9:00 AM");
+                  }
                   if (screen.name === "empty") await page.getByText("Connect to providers with OAuth to track your API quota limits and usage.", { exact: true }).waitFor();
                   else {
                     await page.getByText("Fixture account", { exact: true }).waitFor();
-                    await page.getByText("Premium Requests", { exact: true }).waitFor();
+                    if (screen.name !== "reset-times") await page.getByText("Premium Requests", { exact: true }).waitFor();
                     await page.getByText("75%", { exact: true }).waitFor();
                     if (screen.name === "glm-ping") {
                       const ping = () => page.getByTitle("Toggle auto-ping warmup");
@@ -837,7 +844,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                         await page.getByRole("button", { name: "No Codex reset credits available" }).waitFor();
                         assert(await page.getByRole("button", { name: "No Codex reset credits available" }).isDisabled());
                       };
-                    } else verifyAfterCapture = async () => {
+                    } else if (screen.name === "ready") verifyAfterCapture = async () => {
                       const before = quotaReads;
                       await page.getByTitle("Refresh quota").click();
                       await page.waitForFunction(() => !document.querySelector('[title="Refresh quota"]').disabled);

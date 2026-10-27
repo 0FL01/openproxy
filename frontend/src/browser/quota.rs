@@ -257,6 +257,44 @@ fn reset_label(quota: &Value) -> String {
     )
 }
 
+fn reset_display(quota: &Value) -> String {
+    let Some(reset) = quota["resetAt"].as_str().filter(|value| !value.is_empty()) else {
+        return String::new();
+    };
+    let date = js_sys::Date::new(&reset.into());
+    let now = js_sys::Date::new_0();
+    let today = js_sys::Date::new_with_year_month_day(
+        now.get_full_year(),
+        now.get_month() as i32,
+        now.get_date() as i32,
+    );
+    let tomorrow = js_sys::Date::new(&today.clone().into());
+    tomorrow.set_date(tomorrow.get_date() + 1);
+    let day = if date.get_time() >= today.get_time() && date.get_time() < tomorrow.get_time() {
+        "Today".to_owned()
+    } else if date.get_time() >= tomorrow.get_time()
+        && date.get_time() < tomorrow.get_time() + 86400000.0
+    {
+        "Tomorrow".to_owned()
+    } else {
+        let options = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(&options, &"month".into(), &"short".into());
+        let _ = js_sys::Reflect::set(&options, &"day".into(), &"numeric".into());
+        date.to_locale_date_string("en-US", &options.into())
+            .as_string()
+            .unwrap_or_default()
+    };
+    let options = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&options, &"hour".into(), &"numeric".into());
+    let _ = js_sys::Reflect::set(&options, &"minute".into(), &"2-digit".into());
+    let _ = js_sys::Reflect::set(&options, &"hour12".into(), &true.into());
+    let time = date
+        .to_locale_time_string_with_options("en-US", &options.into())
+        .as_string()
+        .unwrap_or_default();
+    format!("{day}, {time}")
+}
+
 #[component]
 fn QuotaTable(provider: String, data: Value) -> Element {
     let entries = quota_entries(&provider, &data);
@@ -265,12 +303,12 @@ fn QuotaTable(provider: String, data: Value) -> Element {
             for (index, quota) in entries.into_iter().enumerate() {
                 { let remaining = percentage(&quota); let balance = quota["kind"] == "balance"; let unlimited = quota["unlimited"] == true;
                   let (color, bar, light) = if remaining > 70.0 { ("text-green-600 dark:text-green-400", "bg-green-500", "bg-green-500/10") } else if remaining >= 30.0 { ("text-yellow-600 dark:text-yellow-400", "bg-yellow-500", "bg-yellow-500/10") } else { ("text-red-600 dark:text-red-400", "bg-red-500", "bg-red-500/10") };
-                  let used = number(quota["used"].as_f64().unwrap_or_default()); let total = quota["total"].as_f64().unwrap_or_default(); let label = reset_label(&quota);
+                  let used = number(quota["used"].as_f64().unwrap_or_default()); let total = quota["total"].as_f64().unwrap_or_default(); let label = reset_label(&quota); let reset_title = reset_display(&quota);
                   let dot = if balance { "bg-text-muted" } else { bar }; let border = if remaining == 0.0 { "border-black/10 dark:border-white/10" } else { "border-transparent" }; let total_label = if total > 0.0 { number(total) } else { "∞".into() }; let balance_value = quota["remaining"].as_f64().map(number).unwrap_or_else(|| "N/A".into()); let unit = quota["unit"].as_str().unwrap_or("credit value");
                   rsx! { tr { key: "{index}", class: "border-b border-black/5 dark:border-white/5 hover:bg-black/[0.02] dark:hover:bg-white/[0.02] transition-colors",
                     td { class: "py-1 px-1.5 w-[30%]", div { class: "flex items-center gap-1.5 min-w-0", span { class: "w-2 h-2 rounded-full shrink-0 {dot}" } span { class: "text-[11px] font-medium text-text-primary truncate", "{text(&quota, \"name\")}" } } }
                     td { class: "py-1 px-1.5 w-[45%]", if unlimited { div { class: "text-[11px] font-medium text-green-600 dark:text-green-400", "Unlimited" } } else if balance { div { class: "text-[11px] font-medium text-text-primary", "{balance_value} {unit}" } } else { div { class: "space-y-1", div { class: "h-1 rounded-full overflow-hidden border {light} {border}", div { class: "h-full transition-all duration-300 {bar}", style: "width: {remaining.min(100.0)}%" } } div { class: "flex items-center justify-between text-[10px]", span { class: "text-text-muted", "{used} / {total_label}" if let Some(unit) = quota["unit"].as_str().filter(|s| !s.is_empty()) { " {unit}" } } span { class: "font-medium {color}", "{remaining}%" } } } } }
-                    td { class: "py-1 px-1.5 w-[25%]", if balance { div { class: "text-[11px] text-text-muted", "Available" } } else if label == "N/A" { div { class: "text-[11px] text-text-muted italic", "N/A" } } else { div { class: "text-[11px] text-text-primary font-medium truncate", "{label}" } } }
+                    td { class: "py-1 px-1.5 w-[25%]", if balance { div { class: "text-[11px] text-text-muted", "Available" } } else if label == "N/A" { div { class: "text-[11px] text-text-muted italic", "N/A" } } else { div { class: "text-[11px] text-text-primary font-medium truncate", title: "{reset_title}", "{label}" } } }
                   } }
                 }
             }
