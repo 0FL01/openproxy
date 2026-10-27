@@ -329,6 +329,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 const codexResetStarted = new Promise(resolve => { markCodexResetStarted = resolve; });
                 let glmConfig = { enabled: true, connections: { "other-glm": true } };
                 let quotaReads = 0;
+                let quotaStatus = 200;
+                let quotaClaudeUnauthorized = false;
                 const proxyPools = screen.name === "empty" ? [] : [
                   { id: "fixture-one", name: "Fixture Proxy", proxyUrl: "http://fixture.example.invalid:8080/", noProxy: "localhost", isActive: true, testStatus: "active", boundConnectionCount: 2, lastTestedAt: null },
                   { id: "fixture-two", name: "Disabled Proxy", proxyUrl: "http://other.example.invalid:8080/", noProxy: "", isActive: false, testStatus: "unknown", boundConnectionCount: 0, lastTestedAt: null },
@@ -455,12 +457,12 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     if (screen.name === "pending") await new Promise((resolve) => { releaseXaiForce = resolve; observeXaiForce(); });
                     return route.fulfill({ status: 503, json: { error: "Synthetic discovery failure" } });
                   }
-                  if (screen.section === "quota" && path === "/api/usage/fixture-github") { quotaReads += 1; return route.fulfill({ json: { plan: "pro", quotas: screen.name === "reset-times" ? { "Today": { used: 25, total: 100, resetAt: "2026-10-01T16:30:00Z" }, "Tomorrow": { used: 50, total: 100, resetAt: "2026-10-02T15:00:00Z", recurring: false }, "Expired": { used: 100, total: 100, resetAt: "2026-09-29T09:00:00Z" } } : { "Premium Requests": { used: 25, total: 100, resetAt: null } } } }); }
+                  if (screen.section === "quota" && path === "/api/usage/fixture-github") { quotaReads += 1; if (quotaStatus !== 200) return route.fulfill({ status: quotaStatus, json: { error: "Synthetic temporary outage" } }); return route.fulfill({ json: { plan: "pro", quotas: screen.name === "reset-times" ? { "Today": { used: 25, total: 100, resetAt: "2026-10-01T16:30:00Z" }, "Tomorrow": { used: 50, total: 100, resetAt: "2026-10-02T15:00:00Z", recurring: false }, "Expired": { used: 100, total: 100, resetAt: "2026-09-29T09:00:00Z" } } : { "Premium Requests": { used: 25, total: 100, resetAt: null } } } }); }
                   if (screen.section === "quota" && path === "/api/usage/fixture-commandcode") return route.fulfill({ json: { status: "partial", message: "Some Command Code credit fields are unavailable.", quotas: { monthly: { kind: "balance", label: "Monthly remaining", remaining: 1234.5, unit: "credit value" }, weekly: { kind: "window", label: "Weekly", used: 30, total: 100, remaining: 70, remainingPercentage: 70, resetAt: null, unit: "credit value" } } } });
                   if (screen.section === "quota" && path === "/api/usage/fixture-a6") return route.fulfill({ json: { status: "available", message: "", quotas: { "API credits": { used: 0, total: 0, remaining: 0, remainingPercentage: 100, unit: "USD", unlimited: true, recurring: false } } } });
                   if (screen.section === "quota" && path === "/api/usage/fixture-antigravity") return route.fulfill({ json: { plan: "pro", quotas: { "claude-sonnet-4-6": { displayName: "Claude Sonnet", used: 0, total: 100, remainingPercentage: 35, resetAt: "2026-10-02T15:00:00Z" } } } });
                   if (screen.section === "quota" && path === "/api/usage/fixture-kimi") return route.fulfill({ json: { plan: "standard", quotas: { weekly: { used: 40, total: 100, remainingPercentage: 60, resetAt: null, unlimited: false } } } });
-                  if (screen.section === "quota" && path === "/api/usage/fixture-claude") return route.fulfill({ json: { message: "Observed from synthetic traffic", quotas: { session: { used: 10, total: 100, remainingPercentage: 90, resetAt: null } } } });
+                  if (screen.section === "quota" && path === "/api/usage/fixture-claude") return quotaClaudeUnauthorized ? route.fulfill({ status: 401, json: { error: "Synthetic authorization error" } }) : route.fulfill({ json: { message: "Observed from synthetic traffic", quotas: { session: { used: 10, total: 100, remainingPercentage: 90, resetAt: null } } } });
                   if (screen.section === "quota" && path === "/api/usage/fixture-glm") return route.fulfill({ json: { plan: "pro", quotas: { "Premium Requests": { used: 25, total: 100, resetAt: null } } } });
                   if (screen.section === "quota" && path === "/api/usage/fixture-codex") return route.fulfill({ json: { plan: "pro", resetCredits: { availableCount: codexCredits }, quotas: { "Premium Requests": { used: 25, total: 100, resetAt: null } } } });
                   if (screen.section === "quota" && path === "/api/usage/fixture-codex/codex-reset-credits") {
@@ -795,6 +797,13 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     await page.getByText("35%", { exact: true }).waitFor();
                     await page.getByText("Observed from synthetic traffic", { exact: true }).waitFor();
                     await page.getByText("60%", { exact: true }).waitFor();
+                    verifyAfterCapture = async () => {
+                      const card = page.getByText("Fixture Claude", { exact: true }).locator("xpath=ancestor::div[contains(@class, 'rounded-mini-lg')][1]");
+                      quotaClaudeUnauthorized = true;
+                      await card.getByTitle("Refresh quota").click();
+                      await card.getByText("Synthetic authorization error", { exact: true }).waitFor();
+                      assert.equal(await card.getByText("error", { exact: true }).count(), 0, "an auth error is a message, not a fabricated quota row");
+                    };
                   }
                   if (screen.name === "empty") await page.getByText("Connect to providers with OAuth to track your API quota limits and usage.", { exact: true }).waitFor();
                   else {
@@ -876,6 +885,13 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       await page.getByTitle("Enable connection").getByRole("switch").waitFor();
                       await page.getByTitle("Enable connection").getByRole("switch").click();
                       await page.getByTitle("Disable connection").getByRole("switch").waitFor();
+                      quotaStatus = 500;
+                      await page.getByTitle("Refresh quota").click();
+                      await page.getByText("HTTP 500: Synthetic temporary outage", { exact: true }).waitFor();
+                      quotaStatus = 404;
+                      await page.getByTitle("Refresh quota").click();
+                      await page.getByText("Premium Requests", { exact: true }).waitFor();
+                      await page.getByText("75%", { exact: true }).waitFor();
                     };
                   }
                   await page.waitForLoadState("networkidle");

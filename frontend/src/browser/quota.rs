@@ -86,13 +86,17 @@ async fn connections() -> Vec<Value> {
 
 async fn fetch_quota(id: String, mut quotas: Signal<HashMap<String, QuotaResult>>) {
     quotas.write().entry(id.clone()).or_default().loading = true;
+    let previous = quotas.peek().get(&id).and_then(|quota| quota.data.clone());
     let path = format!("/api/usage/{}", encoded(&id));
     let result = match dashboard_request("GET", &path, None).await {
         Ok(response) if response.ok() => QuotaResult {
             data: json_body(&response).await,
             ..Default::default()
         },
-        Ok(response) if response.status() == 404 => QuotaResult::default(),
+        Ok(response) if response.status() == 404 => QuotaResult {
+            data: previous,
+            ..Default::default()
+        },
         Ok(response) => {
             let status = response.status();
             let status_text = response.status_text();
@@ -100,17 +104,19 @@ async fn fetch_quota(id: String, mut quotas: Signal<HashMap<String, QuotaResult>
             let message = body["error"].as_str().unwrap_or(&status_text);
             if status == 401 {
                 QuotaResult {
-                    data: Some(json!({"message": message})),
+                    data: Some(json!({"quotas": {}, "message": message})),
                     ..Default::default()
                 }
             } else {
                 QuotaResult {
+                    data: previous,
                     error: format!("HTTP {status}: {message}"),
                     ..Default::default()
                 }
             }
         }
         Err(_) => QuotaResult {
+            data: previous,
             error: "Failed to fetch".into(),
             ..Default::default()
         },
