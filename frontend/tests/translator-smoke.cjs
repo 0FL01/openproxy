@@ -344,6 +344,25 @@ async function main() {
       return [color(lines.find(line => line.textContent.includes('"nested"')), '"nested"'), color(lines.find(line => line.textContent.trim() === "},"), "}")];
     }, reference);
     assert.deepEqual(colors, ["rgb(96, 139, 78)", "rgb(255, 215, 0)"], "a commented JSON line has comment color and does not change subsequent bracket depth");
+    const blockComment = '{\n  /* { note\n     note */\n  "visible": {}\n}';
+    if (reference) await page.evaluate(text => window.monaco.editor.getEditors()[0].setValue(text), blockComment);
+    else await editor().fill(blockComment);
+    await page.waitForFunction(reference => {
+      const root = reference ? document.querySelector(".monaco-editor .view-lines") : document.querySelector('textarea[aria-label="Translator editor"]')?.parentElement.querySelector("pre");
+      return root?.textContent.includes("visible") && root.textContent.includes("note");
+    }, reference);
+    const blockColors = await page.evaluate(reference => {
+      const lines = reference
+        ? [...document.querySelectorAll(".monaco-editor .view-lines .view-line")]
+        : [...document.querySelector('textarea[aria-label="Translator editor"]').parentElement.querySelector("pre").children];
+      const content = element => element.textContent.replaceAll("\u00a0", " ");
+      const color = (line, value) => {
+        const span = [...line.querySelectorAll("span")].find(el => !el.children.length && content(el).includes(value));
+        return span && getComputedStyle(span).color;
+      };
+      return [color(lines.find(line => content(line).includes("{ note")), "{ note"), color(lines.find(line => content(line).includes("note */")), "note */"), color(lines.find(line => content(line).includes('"visible"')), "{")];
+    }, reference);
+    assert.deepEqual(blockColors, ["rgb(96, 139, 78)", "rgb(96, 139, 78)", "rgb(218, 112, 214)"], "a multiline JSON comment keeps its color and does not change later bracket depth");
     if (process.env.TRANSLATOR_COMMENT_ONLY === "1") {
       assert.deepEqual(errors, []);
       console.log("synthetic translator line comment smoke passed");

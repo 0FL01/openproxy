@@ -807,6 +807,20 @@ fn json_tokens(text: &str) -> Vec<(&str, &'static str)> {
                 }
                 "#608b4e"
             }
+            b'/' if bytes.get(offset + 1) == Some(&b'*') => {
+                offset += 2;
+                while offset + 1 < bytes.len()
+                    && !(bytes[offset] == b'*' && bytes[offset + 1] == b'/')
+                {
+                    offset += 1;
+                }
+                offset = if offset + 1 < bytes.len() {
+                    offset + 2
+                } else {
+                    bytes.len()
+                };
+                "#608b4e"
+            }
             b'"' => {
                 offset += 1;
                 while offset < bytes.len() {
@@ -874,25 +888,33 @@ fn json_tokens(text: &str) -> Vec<(&str, &'static str)> {
     tokens
 }
 
-fn json_guides(text: &str) -> Vec<Vec<(usize, bool)>> {
+fn json_guides(token_lines: &[Vec<(&str, &str)>]) -> Vec<Vec<(usize, bool)>> {
     let mut lines = Vec::new();
     let mut depth = 0_usize;
-    for source in text.split('\n') {
+    for segments in token_lines {
         let mut guides = Vec::new();
-        let leading_closers = source
-            .trim_start()
-            .chars()
-            .take_while(|ch| matches!(ch, '}' | ']'))
-            .count();
+        let mut leading_closers = 0;
+        for (token, color) in segments {
+            if leading_closers == 0 && token.trim().is_empty() {
+                continue;
+            }
+            if matches!(*color, "#ffd700" | "#da70d6" | "#179fff") && matches!(*token, "}" | "]") {
+                leading_closers += 1;
+            } else {
+                break;
+            }
+        }
         for level in 0..depth.saturating_sub(leading_closers) {
             guides.push((level, false));
         }
         let previous = depth;
-        for (token, _) in json_tokens(source) {
-            match token {
-                "{" | "[" => depth += 1,
-                "}" | "]" => depth = depth.saturating_sub(1),
-                _ => {}
+        for (token, color) in segments {
+            if matches!(*color, "#ffd700" | "#da70d6" | "#179fff") {
+                match *token {
+                    "{" | "[" => depth += 1,
+                    "}" | "]" => depth = depth.saturating_sub(1),
+                    _ => {}
+                }
             }
         }
         for level in previous..depth {
@@ -1301,7 +1323,7 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
         .min()
         .unwrap_or(4);
     let guides = if json {
-        json_guides(&value)
+        json_guides(&lines)
     } else {
         Vec::new()
     };
