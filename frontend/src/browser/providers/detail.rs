@@ -1782,6 +1782,30 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
         .collect();
     let disabled: Vec<ModelRow> = rows.iter().filter(|r| r.disabled).cloned().collect();
     let has_free = rows.iter().any(|r| r.free);
+    // The reference shows OpenRouter suggestions in addition to live rows,
+    // excluding catalog IDs, alias targets and visible custom rows.
+    let suggested: Vec<&Value> = if id == "openrouter" {
+        data.live
+            .iter()
+            .filter(|model| {
+                let model_id = text(model, "id");
+                let full_model = format!("{alias}/{model_id}");
+                !data.catalog.iter().any(|row| text(row, "id") == model_id)
+                    && !data.aliases.as_object().is_some_and(|aliases| {
+                        aliases
+                            .values()
+                            .any(|value| value.as_str() == Some(&full_model))
+                    })
+                    && !rows.iter().any(|row| {
+                        !row.disabled
+                            && matches!(row.source, Source::Custom | Source::LegacyAlias)
+                            && row.id == model_id
+                    })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let connection_count = connections().len();
     let selected_ids: Vec<String> = selected()
         .into_iter()
@@ -1881,6 +1905,11 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
                 else { div { class: "flex flex-wrap gap-3",
                     for row in active { ModelChip { key: "{row.id}", row, provider_id: id.clone(), alias: alias.clone(), models: data.clone(), thinking_mode: thinking_mode(), results: results(), copied: copied(), can_test: connection_count > 0 || is_no_auth, action } }
                     if id != "a6api" { button { class: "flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-primary/40 px-3 py-2 text-xs text-primary transition-colors hover:border-primary hover:bg-primary/5 sm:w-auto", onclick: move |_| { model_id.set(String::new()); modal_error.set(String::new()); modal_test_status.set(String::new()); modal_test_error.set(String::new()); modal_test_generation += 1; add.set(true); }, span { class: "material-symbols-outlined text-sm", "add" } "Add Model" } }
+                    if !suggested.is_empty() { div { class: "w-full mt-2", p { class: "text-xs text-text-muted mb-2", "Suggested free models (≥200k context):" } div { class: "flex flex-wrap gap-2", for model in suggested {
+                        { let model_id = text(model, "id").to_owned(); let label = model_id.rsplit('/').next().unwrap_or("").to_owned(); let context = model["contextLength"].as_u64().unwrap_or_default(); let title = format!("{} · {}k ctx", model["name"].as_str().unwrap_or("null"), (context as f64 / 1000.0 + 0.5).floor()); rsx! {
+                            button { key: "{model_id}", title, class: "flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-black/10 dark:border-white/10 text-xs text-text-muted hover:text-primary hover:border-primary/40 hover:bg-primary/5 transition-colors", onclick: move |_| save_model.call(model_id.clone()), span { class: "material-symbols-outlined text-[13px]", "add" } "{label}" }
+                        } }
+                    } } } }
                     if !disabled.is_empty() { div { class: "w-full mt-2", p { class: "text-xs text-text-muted mb-2", "Disabled models (" "{disabled.len()}" "):" } div { class: "flex flex-wrap gap-2", for row in disabled { button { key: "{row.id}", title: "Restore model", class: "flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-dashed border-black/10 dark:border-white/10 text-xs text-text-muted hover:text-primary hover:border-primary/40 hover:bg-primary/5 transition-colors", onclick: { let id = row.id.clone(); move |_| action.call(Action::Restore(id.clone())) }, span { class: "material-symbols-outlined text-[13px]", "add" } "{row.id}" } } } } }
                 } }
             }

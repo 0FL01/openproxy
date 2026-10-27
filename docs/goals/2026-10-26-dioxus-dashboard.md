@@ -72,7 +72,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 ## Current Checkpoint
 
 - Closes: the next R2/R3 slice for remaining provider-detail controls.
-- Smallest next action: port the remaining provider-detail suggested-model chips, preserving the existing model-add behavior.
+- Smallest next action: compare and port the xAI provider-detail catalog force-refresh control.
 - Expected evidence: focused synthetic UI behavior and a comparison with the reference.
 - Stop or replan if: the provider control cannot be preserved within the frozen frontend and API boundaries.
 
@@ -81,8 +81,9 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - Resolved: R1; fixture commit `2fb691fe` is pushed.
 - Last relevant evidence: the Providers-list candidate matched all 88 login, Endpoint and Providers-list screenshots at AE=0; the newer candidate matched all 30 new-provider screenshots and 12 representative shared-shell screenshots. The partial detail candidate matched 32 Kilo Code and 16 representative earlier screenshots at AE=0 and passed the isolated custom-model persistence/discovery test; subsequent OAuth-only changes passed focused synthetic cancellation and HTTP-failure checks. The callback candidate matched all ten callback and 16 representative prior screenshots at AE=0. The latest compatible-node candidate matched 16 screenshots at AE=0 and passed isolated real-backend edit/reload/delete with connection retention. The UUID and legacy model-list tests passed with a local mock and isolated database. The Codex candidate matched eight auto-ping and four Bulk Add dialog screenshots at AE=0; its context change persisted after reload against an isolated backend, and the focused synthetic Codex controls smoke passed.
 - Context controls: the focused synthetic browser check passed for OpenCode Go, GLM and Claude, including settings preservation, reload and catalog refresh; OpenCode Zen remains hidden as in the no-auth reference. A separate isolated backend check verified Codex and GLM settings across page reload. No new screenshot comparison or backend process-restart durability check was run.
+- OpenRouter suggestions: the Astro reference self-repeated and Dioxus matched four synthetic desktop/mobile light/dark screenshots at AE=0 without masks. Both passed catalog/alias filtering, model-add request and page-reload checks on synthetic data; live OpenRouter and backend-restart persistence were not tested.
 - Blocker: none external. Dioxus re-encodes PNG color metadata; `frontend/scripts/build.sh` preserves original provider icons for the served output. The skeleton and theme cannot appear before WASM startup as Astro's synchronous HTML/script did.
-- Next: migrate the suggested-model chips, then continue remaining provider-specific behavior, other routes and the Translator editor. Cline's live query-preservation behavior remains unverified.
+- Next: migrate xAI force-refresh and remaining provider-specific behavior, then other routes and the Translator editor. Cline's live query-preservation behavior remains unverified.
 
 ## Material Decisions
 
@@ -114,6 +115,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-10-27: Codex/GLM auto-ping passed synthetic behavior checks and persisted for an inactive GLM connection across a page reload on an isolated backend. Eight Codex references self-repeated at AE=0; all eight candidate full-page comparisons failed, with previously unmigrated Codex controls visible in the reference. Visual parity remains pending.
 - 2026-10-27: R2/R3 Codex signup, advertised context and Bulk Add were implemented. The updated candidate matched eight auto-ping and four empty Bulk Add dialog screenshots at AE=0; the synthetic controls smoke and isolated real-backend context save/reload passed. Live upstream import and backend-restart durability were not tested.
 - 2026-10-27: R3 advertised-context controls were extended to the other applicable providers. The focused synthetic browser check and an isolated backend settings save/reload check passed; screenshots and backend-restart durability were not checked in this slice.
+- 2026-10-27: R2/R3 OpenRouter suggested-model chips and their add behavior matched four self-repeating synthetic Astro references at AE=0; no live provider was contacted.
 
 ## Completion
 
