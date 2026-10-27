@@ -154,8 +154,6 @@ fn find_regex(
             format!("(?!{WORD_CHARACTER})")
         };
         format!("{left}(?:{pattern}){right}")
-    } else if whole_word {
-        format!("\\b(?:{pattern})\\b")
     } else {
         pattern
     };
@@ -171,15 +169,15 @@ fn find_regex(
     Some(regex.unchecked_into())
 }
 
-fn find_ranges(
+fn find_matches(
     text: &str,
     query: &str,
     match_case: bool,
     whole_word: bool,
     regex: bool,
     scope: Option<(u32, u32)>,
-) -> Vec<(u32, u32)> {
-    let Some(regex) = find_regex(query, match_case, whole_word, regex) else {
+) -> Vec<(u32, u32, js_sys::Array<js_sys::JsString>)> {
+    let Some(pattern) = find_regex(query, match_case, whole_word, regex) else {
         return Vec::new();
     };
     let scoped_text = scope.map(|(start, end)| {
@@ -190,25 +188,132 @@ fn find_ranges(
     });
     let offset = scope.map_or(0, |(start, _)| start);
     let text = scoped_text.as_deref().unwrap_or(text);
+    let js_text = js_sys::JsString::from(text);
     let mut ranges = Vec::new();
     let text_length = text.encode_utf16().count() as u32;
-    while let Some(found) = regex.exec(text) {
-        let end = regex.last_index();
+    while let Some(found) = pattern.exec(text) {
+        let end = pattern.last_index();
         let length = found
             .get(0)
             .as_string()
             .unwrap_or_default()
             .encode_utf16()
             .count() as u32;
-        ranges.push((offset + end - length, offset + end));
+        let start = end - length;
+        let word = |index| {
+            char::from_u32(js_text.char_code_at(index) as u32)
+                .is_none_or(|ch| !"`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/? \t\r\n".contains(ch))
+        };
+        if !whole_word
+            || !regex
+            || ((start == 0 || !word(start - 1) || (length > 0 && !word(start)))
+                && (end == text_length || !word(end) || (length > 0 && !word(end - 1))))
+        {
+            ranges.push((offset + start, offset + end, found));
+        }
         if length == 0 {
             if end >= text_length {
                 break;
             }
-            regex.set_last_index(end + 1);
+            pattern.set_last_index(end + 1);
         }
     }
     ranges
+}
+
+fn find_ranges(
+    text: &str,
+    query: &str,
+    match_case: bool,
+    whole_word: bool,
+    regex: bool,
+    scope: Option<(u32, u32)>,
+) -> Vec<(u32, u32)> {
+    find_matches(text, query, match_case, whole_word, regex, scope)
+        .into_iter()
+        .map(|(start, end, _)| (start, end))
+        .collect()
+}
+
+fn regex_replacement(template: &str, captures: &js_sys::Array<js_sys::JsString>) -> String {
+    let mut result = String::new();
+    let mut chars = template.chars().peekable();
+    let mut case_ops = Vec::new();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            match chars.peek().copied() {
+                Some('\\' | 'n' | 't') => {
+                    result.push(match chars.next().unwrap() {
+                        'n' => '\n',
+                        't' => '\t',
+                        other => other,
+                    });
+                    continue;
+                }
+                Some('u' | 'U' | 'l' | 'L') => {
+                    case_ops.push(chars.next().unwrap());
+                    continue;
+                }
+                _ => {}
+            }
+        } else if ch == '$' {
+            match chars.peek().copied() {
+                Some('$') => {
+                    chars.next();
+                    result.push('$');
+                    continue;
+                }
+                Some('&' | '0'..='9') => {
+                    let marker = chars.next().unwrap();
+                    let mut index = if marker == '&' {
+                        0
+                    } else {
+                        marker.to_digit(10).unwrap()
+                    };
+                    if marker != '&'
+                        && marker != '0'
+                        && chars.peek().is_some_and(char::is_ascii_digit)
+                    {
+                        index = index * 10 + chars.next().unwrap().to_digit(10).unwrap();
+                    }
+                    let mut remainder = String::new();
+                    while index > 0 && index >= captures.length() {
+                        remainder.insert(0, char::from_digit(index % 10, 10).unwrap());
+                        index /= 10;
+                    }
+                    let mut matched = if index == 0 && marker != '0' && marker != '&' {
+                        format!("${remainder}")
+                    } else {
+                        format!(
+                            "{}{remainder}",
+                            captures.get(index).as_string().unwrap_or_default()
+                        )
+                    };
+                    if !case_ops.is_empty() {
+                        let mut transformed = String::new();
+                        let mut op = 0;
+                        for ch in matched.chars() {
+                            match case_ops.get(op) {
+                                Some('u' | 'U') => transformed.extend(ch.to_uppercase()),
+                                Some('l' | 'L') => transformed.extend(ch.to_lowercase()),
+                                _ => transformed.push(ch),
+                            }
+                            if matches!(case_ops.get(op), Some('u' | 'l')) {
+                                op += 1;
+                            }
+                        }
+                        matched = transformed;
+                    }
+                    case_ops.clear();
+                    result.push_str(&matched);
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        result.push(ch);
+    }
+    result
 }
 
 fn adjust_find_scope(before: &str, after: &str, (start, end): (u32, u32)) -> (u32, u32) {
@@ -1487,7 +1592,7 @@ fn Editor(
             return;
         };
         let text = input.value();
-        let ranges = find_ranges(
+        let matches = find_matches(
             &text,
             &query,
             *match_case.peek(),
@@ -1495,17 +1600,43 @@ fn Editor(
             *regex.peek(),
             *find_scope.peek(),
         );
-        if ranges.is_empty() {
+        if matches.is_empty() {
             return;
         }
         let input_text = js_sys::JsString::from(text);
+        let current = *match_index.peek() % matches.len();
         let (start, end) = if all {
             (*find_scope.peek()).unwrap_or((0, input_text.length()))
         } else {
-            ranges[*match_index.peek() % ranges.len()]
+            (matches[current].0, matches[current].1)
         };
         let selected = input_text.slice(start, end);
-        let replacement = if *regex.peek() {
+        let replacement = if *regex.peek() && *whole_word.peek() {
+            let chosen = if all {
+                &matches[..]
+            } else {
+                &matches[current..current + 1]
+            };
+            let mut result = String::new();
+            let mut previous = start;
+            for (match_start, match_end, captures) in chosen {
+                result.push_str(
+                    &input_text
+                        .slice(previous, *match_start)
+                        .as_string()
+                        .unwrap_or_default(),
+                );
+                result.push_str(&regex_replacement(&replacement.peek(), captures));
+                previous = *match_end;
+            }
+            result.push_str(
+                &input_text
+                    .slice(previous, end)
+                    .as_string()
+                    .unwrap_or_default(),
+            );
+            result
+        } else if *regex.peek() {
             selected
                 .replace_by_pattern(&pattern, &replacement.peek())
                 .as_string()
