@@ -227,8 +227,10 @@ unset OPENPROXY_UI_WEB_DIR
 Record mode verifies Astro's component identity; compare mode requires the
 Dioxus loader, so comparing the reference to itself is rejected. Before the
 full migration, select only implemented states with `UI_PARITY_SCREEN`. The
-real-backend test creates a synthetic API key in the disposable database and
-checks that it survives a page reload; it never reads or prints the key value.
+real-backend test creates a synthetic API key and provider connections in the
+disposable database, then checks their state after a page reload. Its auto-ping
+check uses an inactive synthetic GLM connection, so it cannot start the worker
+or contact a provider; it never reads or prints the generated key value.
 
 The provider-model discovery test needs a **fresh** disposable backend. Its
 startup generates a synthetic API key and writes it to stderr, so the test-only

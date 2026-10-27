@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 
 // Run only in the isolated .ui-browser network with the Dioxus build mounted.
-test("Dioxus login, key creation, provider list, and new-provider save work with an isolated backend", {
+test("Dioxus login, provider creation, and auto-ping persistence work with an isolated backend", {
   skip: process.env.RUN_DIOXUS_BACKEND_TEST !== "1",
   timeout: 90_000,
 }, async () => {
@@ -20,8 +20,10 @@ test("Dioxus login, key creation, provider list, and new-provider save work with
       const fixtureProviderName = "Fixture Browser Connection";
       const fixtureProviderKey = "synthetic-provider-fixture-only";
       const newProviderName = "Fixture New Page Connection";
+      const glmProviderName = "Fixture Inactive GLM";
       // Generated in memory, sent only to the disposable backend's tmpfs.
       const newProviderKey = `fixture-${randomUUID()}`;
+      const glmProviderKey = `fixture-${randomUUID()}`;
       const fixturePassword = "synthetic-browser-only";
       let createdFixtureKey = false;
       let fixtureProviderId;
@@ -30,6 +32,8 @@ test("Dioxus login, key creation, provider list, and new-provider save work with
       let providerUpdates = 0;
       let newProviderCreates = 0;
       let detailNavigations = 0;
+      let glmProviderId;
+      let glmPatches = 0;
       let blockedApis = 0;
       let blockedExternal = 0;
       await context.route("**/*", async (route) => {
@@ -60,6 +64,23 @@ test("Dioxus login, key creation, provider list, and new-provider save work with
           newProviderCreates++;
           return route.continue();
         }
+        // An inactive synthetic connection exercises the real settings API
+        // without starting auto-ping or contacting any provider.
+        if (request.method() === "POST" && url.pathname === "/api/providers" && !url.search &&
+            body?.provider === "glm" && body?.name === glmProviderName && body?.apiKey === glmProviderKey &&
+            Object.keys(body).length === 3) {
+          return route.continue();
+        }
+        if (request.method() === "PUT" && glmProviderId && url.pathname === `/api/providers/${encodeURIComponent(glmProviderId)}` &&
+            !url.search && body?.isActive === false && Object.keys(body).length === 1) {
+          return route.continue();
+        }
+        if (request.method() === "PATCH" && url.pathname === "/api/settings" && !url.search && glmProviderId &&
+            Object.keys(body ?? {}).length === 1 && body.glmAutoPing?.enabled === true &&
+            Object.keys(body.glmAutoPing.connections ?? {}).length === 1 && body.glmAutoPing.connections[glmProviderId] === true) {
+          glmPatches++;
+          return route.continue();
+        }
         if (request.method() === "GET" && url.pathname === "/dashboard/providers/deepseek" && !url.search &&
             request.isNavigationRequest() && newProviderCreates === 1) {
           detailNavigations++;
@@ -80,9 +101,11 @@ test("Dioxus login, key creation, provider list, and new-provider save work with
           return route.continue();
         }
         const allowed = (request.method() === "GET" && (
-          (!url.search && ["/login", "/dashboard", "/dashboard/providers", "/dashboard/providers/new", "/favicon.svg"].includes(url.pathname)) ||
+          (!url.search && ["/login", "/dashboard", "/dashboard/providers", "/dashboard/providers/new", "/dashboard/providers/glm", "/favicon.svg"].includes(url.pathname)) ||
           (url.pathname === "/dashboard/providers" && url.search === "?add=openai") ||
-          (!url.search && ["/api/auth/status", "/api/build", "/api/settings", "/api/keys", "/api/providers", "/api/provider-nodes"].includes(url.pathname)) ||
+          (!url.search && ["/api/auth/status", "/api/build", "/api/settings", "/api/keys", "/api/providers", "/api/provider-nodes",
+            "/api/catalog", "/api/models", "/api/models/custom", "/api/models/alias", "/api/models/favorites", "/api/providers/filters"].includes(url.pathname)) ||
+          (url.pathname === "/api/models/disabled" && url.search === "?providerAlias=glm") ||
           (url.pathname === "/api/proxy-pools" && url.search === "?isActive=true") ||
           (!url.search && (/^\/providers\/[a-z0-9_-]+\.png$/.test(url.pathname) ||
             url.pathname.startsWith("/assets/") || url.pathname.startsWith("/_astro/")))
@@ -91,6 +114,7 @@ test("Dioxus login, key creation, provider list, and new-provider save work with
         return allowed ? route.continue() : route.abort("blockedbyclient");
       });
       const page = await context.newPage();
+      page.setDefaultTimeout(5_000);
       await page.goto("https://app:4623/login");
       assert.equal(await page.locator('script[src*="/assets/openproxy-dashboard-"]').count(), 1, "test must run against the Dioxus build");
       const before = await page.evaluate(async () => (await fetch("/api/auth/status")).json());
@@ -244,6 +268,42 @@ test("Dioxus login, key creation, provider list, and new-provider save work with
       assert.equal(persistedNew.hasApiKey, true);
       assert.equal(newProviderCreates, 1);
       assert.equal(validations, 1, "the new-page save must not validate with a provider");
+
+      glmProviderId = await page.evaluate(async ({ name, key }) => {
+        const created = await fetch("/api/providers", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ provider: "glm", name, apiKey: key }),
+        });
+        if (created.status !== 201) throw new Error("Could not create synthetic GLM connection");
+        return (await created.json()).connection.id;
+      }, { name: glmProviderName, key: glmProviderKey });
+      assert.ok(typeof glmProviderId === "string" && glmProviderId.length > 0);
+      await page.evaluate(async (id) => {
+        const response = await fetch(`/api/providers/${encodeURIComponent(id)}`, {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ isActive: false }),
+        });
+        if (!response.ok || (await response.json()).connection?.isActive !== false) {
+          throw new Error("Could not disable synthetic GLM connection");
+        }
+      }, glmProviderId);
+
+      await page.goto("https://app:4623/dashboard/providers/glm");
+      const autoPing = page.getByRole("button", { name: `Enable auto-ping for ${glmProviderName}` });
+      await autoPing.waitFor();
+      assert.equal(await autoPing.getAttribute("aria-pressed"), "false");
+      const [savedSettings] = await Promise.all([
+        page.waitForResponse((response) => response.url() === "https://app:4623/api/settings" && response.request().method() === "PATCH"),
+        autoPing.click(),
+      ]);
+      assert.equal(savedSettings.status(), 200);
+      assert.equal(glmPatches, 1);
+      await page.reload();
+      const enabledAutoPing = page.getByRole("button", { name: `Disable auto-ping for ${glmProviderName}` });
+      await enabledAutoPing.waitFor();
+      assert.equal(await enabledAutoPing.getAttribute("aria-pressed"), "true");
+      const persistedAutoPing = await page.evaluate(async () => (await (await fetch("/api/settings", { cache: "no-store" })).json()).glmAutoPing);
+      assert.deepEqual(persistedAutoPing, { enabled: true, connections: { [glmProviderId]: true } });
       assert.equal(blockedApis, 0, "unexpected API requests must be blocked");
       assert.equal(blockedExternal, 0, "external requests must be blocked");
     } finally {

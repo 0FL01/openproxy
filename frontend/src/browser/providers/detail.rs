@@ -36,6 +36,116 @@ struct Models {
     caps: Vec<Value>,
 }
 
+#[derive(Clone, Default, PartialEq)]
+struct AutoPing {
+    ready: bool,
+    saving: bool,
+    connections: serde_json::Map<String, Value>,
+}
+
+fn auto_ping_key(provider: &str) -> Option<&'static str> {
+    match provider {
+        "codex" => Some("codexAutoPing"),
+        "glm" => Some("glmAutoPing"),
+        _ => None,
+    }
+}
+
+fn auto_ping_eligible(provider: &str, auth: &str) -> bool {
+    match provider {
+        "codex" => auth == "oauth",
+        "glm" => matches!(js_trim(auth).to_lowercase().as_str(), "apikey" | "api_key"),
+        _ => false,
+    }
+}
+
+fn auto_ping_connections(value: &Value) -> (serde_json::Map<String, Value>, bool) {
+    let Some(config) = value.as_object() else {
+        return (Default::default(), false);
+    };
+    let nested = config.get("connections").and_then(Value::as_object);
+    let connections: serde_json::Map<String, Value> = nested
+        .unwrap_or(config)
+        .iter()
+        .filter(|(key, value)| {
+            (nested.is_some() || key.as_str() != "enabled") && value.is_boolean()
+        })
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    let enabled = connections.values().any(|value| value == true);
+    let needs_migration = nested.map_or(!connections.is_empty(), |original| {
+        config.get("enabled") != Some(&json!(enabled)) || original.len() != connections.len()
+    });
+    (connections, needs_migration)
+}
+
+fn auto_ping_request_error(error: wasm_bindgen::JsValue, fallback: &str) -> String {
+    js_sys::Reflect::get(&error, &wasm_bindgen::JsValue::from_str("message"))
+        .ok()
+        .and_then(|value| value.as_string())
+        .filter(|message| !message.is_empty())
+        .unwrap_or_else(|| fallback.to_owned())
+}
+
+async fn load_auto_ping_settings() -> Result<Value, String> {
+    let response = dashboard_get_no_store("/api/settings")
+        .await
+        .map_err(|error| auto_ping_request_error(error, "Failed to load auto-ping settings"))?;
+    if !response.ok() {
+        return Err("Failed to load auto-ping settings".into());
+    }
+    json_body(&response)
+        .await
+        .filter(Value::is_object)
+        .ok_or_else(|| "Failed to load auto-ping settings".to_owned())
+}
+
+async fn save_auto_ping(
+    key: &str,
+    connections: &serde_json::Map<String, Value>,
+) -> Result<(), String> {
+    let enabled = connections.values().any(|value| value == true);
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        key.into(),
+        json!({"enabled":enabled,"connections":connections}),
+    );
+    match dashboard_request("PATCH", "/api/settings", Some(&Value::Object(payload))).await {
+        Ok(response) if !response.ok() => Err(format!(
+            "Failed to update settings: {}",
+            response.status_text()
+        )),
+        Ok(response) if json_body(&response).await.is_some() => Ok(()),
+        Ok(_) => Err("Failed to save auto-ping setting".to_owned()),
+        Err(error) => Err(auto_ping_request_error(
+            error,
+            "Failed to save auto-ping setting",
+        )),
+    }
+}
+
+async fn initialize_auto_ping(key: Option<&str>) -> Result<serde_json::Map<String, Value>, String> {
+    let mut settings = load_auto_ping_settings().await?;
+    for setting in ["codexAutoPing", "glmAutoPing"] {
+        if auto_ping_connections(&settings[setting]).1 {
+            // Avoid migrating a stale snapshot if another writer already
+            // changed this setting while the page was loading.
+            settings = load_auto_ping_settings().await?;
+            let (connections, needs_migration) = auto_ping_connections(&settings[setting]);
+            if needs_migration {
+                save_auto_ping(setting, &connections).await?;
+                settings[setting] = json!({
+                    "enabled": connections.values().any(|value| value == true),
+                    "connections": connections,
+                });
+            }
+        }
+    }
+    Ok(key
+        .map(|key| auto_ping_connections(&settings[key]).0)
+        .unwrap_or_default())
+}
+
 #[derive(Clone, Copy)]
 struct ModelLoad {
     models: Signal<Models>,
@@ -667,6 +777,7 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
     let loading = use_signal(|| true);
     let connection_error = use_signal(|| false);
     let connection_generation = use_signal(|| 0_u64);
+    let mut auto_ping = use_signal(AutoPing::default);
     let mut image_error = use_signal(|| false);
     let mut add = use_signal(|| false);
     let mut model_id = use_signal(String::new);
@@ -687,6 +798,63 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
     let copied = use_signal(String::new);
     let generation = use_signal(|| 0_u32);
     let toasts = use_context::<Signal<Vec<Toast>>>();
+    let ping_key = auto_ping_key(&id);
+    use_future(move || async move {
+        match initialize_auto_ping(ping_key).await {
+            Ok(connections) => auto_ping.set(AutoPing {
+                ready: true,
+                connections,
+                ..Default::default()
+            }),
+            Err(error) if ping_key.is_some() => notify(
+                toasts,
+                &format!("Auto-ping settings unavailable: {error}"),
+                true,
+            ),
+            Err(_) => {}
+        }
+    });
+    let toggle_auto_ping = use_callback(move |(id, enabled): (String, bool)| {
+        let Some(key) = ping_key else { return };
+        if !auto_ping.peek().ready || auto_ping.peek().saving {
+            return;
+        }
+        let previous = auto_ping.peek().connections.clone();
+        {
+            let mut state = auto_ping.write();
+            state.saving = true;
+            state.connections.insert(id.clone(), json!(enabled));
+        }
+        spawn(async move {
+            // Merge changes completed before this read, including an uncertain
+            // previous response. The full-map PATCH cannot prevent other tabs
+            // from writing between this read and the PATCH.
+            let baseline = match load_auto_ping_settings().await {
+                Ok(settings) => auto_ping_connections(&settings[key]).0,
+                Err(error) => {
+                    let mut state = auto_ping.write();
+                    state.connections = previous;
+                    state.saving = false;
+                    drop(state);
+                    notify(toasts, &error, true);
+                    return;
+                }
+            };
+            let mut next = baseline.clone();
+            next.insert(id, json!(enabled));
+            auto_ping.write().connections = next.clone();
+            let result = save_auto_ping(key, &next).await;
+            let mut state = auto_ping.write();
+            if result.is_err() {
+                state.connections = baseline;
+            }
+            state.saving = false;
+            drop(state);
+            if let Err(error) = result {
+                notify(toasts, &error, true);
+            }
+        });
+    });
     let import_models = {
         let alias = alias.clone();
         use_callback(move |()| {
@@ -1667,7 +1835,7 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
                         if tests.total > 0 { div { class: "mb-4 rounded-lg border border-black/10 bg-black/[0.02] px-3 py-2 text-xs text-text-muted dark:border-white/10 dark:bg-white/[0.03]", div { class: "flex flex-wrap items-center gap-3", span { "Total: {tests.total}" } span { "Completed: {tests.completed}" } span { "Passed: {tests.passed}" } span { "Failed: {tests.failed}" } if tests.stopped { span { class: "text-amber-600 dark:text-amber-400", "Stopped" } } if let Some(current) = tests.current.clone() { span { "Running: " "{connections().iter().find(|c| text(c, \"id\") == current).and_then(|c| c[\"name\"].as_str()).unwrap_or(&current)}" } } } } }
                         div { class: "mb-3 flex items-center gap-2 border-b border-black/[0.03] pb-2 dark:border-white/[0.03]", label { class: "flex cursor-pointer items-center gap-1.5 text-xs text-text-muted hover:text-primary", input { r#type: "checkbox", checked: all_selected, class: "h-3.5 w-3.5 rounded border-gray-300 text-primary focus:ring-primary", onchange: move |_| { if all_selected { selected.set(Vec::new()); } else { selected.set(connections().iter().map(|c| text(c, "id").to_owned()).collect()); } } } "Select All" } }
                         div { class: "flex min-w-0 flex-col divide-y divide-black/[0.03] dark:divide-white/[0.03]",
-                            for (index, conn) in connections().into_iter().enumerate() { Connection { key: "{text(&conn, \"id\")}", selected: selected_ids.contains(&text(&conn, "id").to_owned()), index, count: connection_count, is_oauth: has_oauth, delete_connection, edit_connection, selection: selected, pools: pools(), test: tests.results.get(text(&conn, "id")).cloned(), action: connection_action, conn } }
+                            for (index, conn) in connections().into_iter().enumerate() { Connection { key: "{text(&conn, \"id\")}", selected: selected_ids.contains(&text(&conn, "id").to_owned()), index, count: connection_count, is_oauth: has_oauth, delete_connection, edit_connection, selection: selected, pools: pools(), test: tests.results.get(text(&conn, "id")).cloned(), action: connection_action, ping: auto_ping(), toggle_auto_ping, conn } }
                         }
                         if !compatible { AddButtons { provider_id: id.clone(), has_oauth, has_api, compatible, connected: true, add_key, open_oauth } }
                     }
@@ -1806,6 +1974,8 @@ fn Connection(
     pools: Vec<Value>,
     test: Option<(String, String)>,
     action: Callback<ConnectionAction>,
+    ping: AutoPing,
+    toggle_auto_ping: Callback<(String, bool)>,
 ) -> Element {
     let mut proxy_menu = use_signal(|| false);
     let id = text(&conn, "id").to_owned();
@@ -1821,10 +1991,20 @@ fn Connection(
     } else {
         "key"
     };
-    let name = ["name", "email", "displayName", "id"]
+    let ping_provider = text(&conn, "provider");
+    let ping_eligible = auto_ping_eligible(ping_provider, text(&conn, "authType"));
+    let name = ["name", "email", "displayName"]
         .into_iter()
         .map(|key| js_trim(text(&conn, key)))
         .find(|s| !s.is_empty())
+        .or_else(|| {
+            if ping_eligible && auth == "oauth" {
+                Some("OAuth Account".into())
+            } else {
+                let id = js_trim(&id);
+                (!id.is_empty()).then_some(id)
+            }
+        })
         .unwrap_or_else(|| {
             if auth == "oauth" || auth == "device-code" {
                 "OAuth Account".into()
@@ -1928,6 +2108,13 @@ fn Connection(
         .map(|p| text(p, "noProxy"))
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| text(specific, "connectionNoProxy"));
+    let show_ping = ping.ready && ping_eligible;
+    let ping_on = ping.connections.get(&id).is_some_and(|value| value == true);
+    let ping_tooltip = if ping_provider == "codex" {
+        "Auto-starts the next available Codex quota window after reset with a tiny gpt-6-luna request. Consumes a small amount of quota."
+    } else {
+        "Auto-starts the next GLM 5-hour window after reset with a tiny glm-5.3-flash request. Consumes a small amount of Coding Plan quota."
+    };
     rsx! {
         div { class: "flex min-w-0 items-stretch", label { class: "flex shrink-0 items-center px-2", input { r#type: "checkbox", checked: selected, aria_label: "Select connection {checkbox_name}", class: "h-3.5 w-3.5 rounded border-gray-300 text-primary focus:ring-primary", onchange: { let id = id.clone(); move |_| { if selected { selection.write().retain(|value| value != &id); } else { selection.write().push(id.clone()); } } } } }
         div { class: "flex-1 min-w-0",
@@ -1958,6 +2145,10 @@ fn Connection(
                 div { class: "grid flex-1 grid-cols-3 gap-1 sm:flex sm:flex-none",
                 if !pools.is_empty() { div { class: "relative", button { class: if has_proxy { "flex w-full flex-col items-center rounded px-2 py-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 text-primary" } else { "flex w-full flex-col items-center rounded px-2 py-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 text-text-muted hover:text-primary" }, onclick: move |_| proxy_menu.toggle(), span { class: "material-symbols-outlined text-[18px]", "lan" } span { class: "text-[10px] leading-tight", "Proxy" } }
                     if proxy_menu() { div { class: "absolute right-0 top-full z-50 mt-1 max-w-[78vw] min-w-[160px] rounded-lg border border-border bg-bg py-1 shadow-lg", button { class: if bound_pool.is_empty() { "w-full px-3 py-1.5 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5 font-medium text-primary" } else { "w-full px-3 py-1.5 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5 text-text-main" }, onclick: { let id = id.clone(); move |_| { proxy_menu.set(false); action.call(ConnectionAction::SetProxy(id.clone(), None)); } }, "None" } for pool in pools { button { key: "{text(&pool, \"id\")}", class: if text(&pool, "id") == bound_pool { "w-full px-3 py-1.5 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5 font-medium text-primary" } else { "w-full px-3 py-1.5 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5 text-text-main" }, onclick: { let id = id.clone(); let pool = text(&pool, "id").to_owned(); move |_| { proxy_menu.set(false); action.call(ConnectionAction::SetProxy(id.clone(), Some(pool.clone()))); } }, "{text(&pool, \"name\")}" } } } }
+                } }
+                if show_ping { div { class: "relative inline-flex group",
+                    button { disabled: ping.saving, aria_pressed: "{ping_on}", aria_label: if ping_on { format!("Disable auto-ping for {name}") } else { format!("Enable auto-ping for {name}") }, class: if ping_on { "flex w-full flex-col items-center rounded px-2 py-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 text-primary" } else { "flex w-full flex-col items-center rounded px-2 py-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 text-text-muted hover:text-primary" }, onclick: { let id = id.clone(); move |_| toggle_auto_ping.call((id.clone(), !ping_on)) }, span { class: "material-symbols-outlined text-[18px]", "bolt" } span { class: "text-[10px] leading-tight", "Auto-ping" } }
+                    div { class: "pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 z-50 w-max max-w-56 rounded px-2 py-1 text-[11px] leading-snug bg-gray-900 text-white opacity-0 group-hover:opacity-100 transition-opacity duration-150 whitespace-normal", "{ping_tooltip}" }
                 } }
                 button { class: "flex flex-col items-center rounded px-2 py-1 text-text-muted hover:bg-black/5 hover:text-primary dark:hover:bg-white/5", onclick: { let conn = conn.clone(); move |_| edit_connection.set(Some(conn.clone())) }, span { class: "material-symbols-outlined text-[18px]", "edit" } span { class: "text-[10px] leading-tight", "Edit" } }
                 button { class: "flex flex-col items-center rounded px-2 py-1 text-red-500 hover:bg-red-500/10", onclick: { let conn = conn.clone(); move |_| delete_connection.set(Some(conn.clone())) }, span { class: "material-symbols-outlined text-[18px]", "delete" } span { class: "text-[10px] leading-tight", "Delete" } }

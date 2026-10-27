@@ -35,7 +35,26 @@ const server = http.createServer(async (req, res) => {
       state.authStatusRequests = (state.authStatusRequests || 0) + 1;
       return respond(200, state.expired ? { requireLogin: true, authenticated: false } : { requireLogin: true, authenticated: true });
     }
-    if (url.pathname === "/api/settings" || url.pathname === "/api/build") return respond(200, {});
+    if (url.pathname === "/api/settings") {
+      if (req.method === "GET") {
+        if (state.failSettingsRead) return respond(503, { error: "Synthetic settings read failure" });
+        return respond(200, state.settings || {});
+      }
+      if (req.method === "PATCH") {
+        if (state.holdSettingsWrite) {
+          state.holdSettingsWrite = false;
+          await new Promise(resolve => { state.releaseSettingsWrite = resolve; });
+        }
+        if (state.rejectSettingsWrite) {
+          const status = typeof state.rejectSettingsWrite === "number" ? state.rejectSettingsWrite : 503;
+          if (status === 401) state.expired = true;
+          return respond(status, { error: "Synthetic settings write failure" });
+        }
+        Object.assign(state.settings ||= {}, body);
+        return respond(200, state.settings);
+      }
+    }
+    if (url.pathname === "/api/build") return respond(200, {});
     if (url.pathname === "/api/catalog") {
       state.catalogRequests = (state.catalogRequests || 0) + 1;
       const dynamic = provider => {
@@ -296,6 +315,140 @@ async function waitForFixture(predicate) {
     if (Date.now() > deadline) throw new Error("synthetic fixture action timed out");
     await new Promise(resolve => setTimeout(resolve, 10));
   }
+}
+
+async function runAutoPingFixture(page, origin) {
+  state.expired = false;
+  state.writes = [];
+  state.connections = [
+    { id: "codex-one", provider: "codex", name: "Codex One", authType: "oauth", isActive: true },
+    { id: "codex-two", provider: "codex", name: "Codex Two", authType: "oauth", isActive: true },
+    { id: "codex-nameless", provider: "codex", authType: "oauth", isActive: true },
+    { id: "codex-wrong", provider: "codex", name: "Codex Wrong", authType: "OAuth", isActive: true },
+    { id: "codex-missing", provider: "codex", name: "Codex Missing", isActive: true },
+    { id: "glm-one", provider: "glm", name: "GLM One", authType: " API_KEY ", isActive: true },
+    { id: "glm-two", provider: "glm", name: "GLM Two", authType: "ApiKey", isActive: true },
+    { id: "glm-wrong", provider: "glm", name: "GLM Wrong", authType: "oauth", isActive: true },
+    { id: "glm-cn-one", provider: "glm-cn", name: "GLM CN", authType: "apikey", isActive: true },
+  ];
+  state.settings = {
+    codexAutoPing: { enabled: false, "codex-one": true, "codex-two": false, "orphan-codex": true },
+    glmAutoPing: { enabled: true, connections: { "glm-one": false, "glm-two": false, "orphan-glm": false, invalid: "not boolean" } },
+    otherSetting: { untouched: true },
+  };
+  const writes = () => state.writes.filter(w => w.path === "/api/settings" && w.method === "PATCH");
+  const button = (verb, name) => page.getByRole("button", { name: `${verb} auto-ping for ${name}`, exact: true });
+  const allPing = () => page.getByRole("button", { name: /^(Enable|Disable) auto-ping for / });
+  state.holdSettingsWrite = true; state.releaseSettingsWrite = null;
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`${origin}/dashboard/providers/codex`);
+  await page.getByText("Codex One", { exact: true }).waitFor();
+  await waitForFixture(() => typeof state.releaseSettingsWrite === "function");
+  assert.equal(await allPing().count(), 0, "controls wait for both settings migrations");
+  state.releaseSettingsWrite();
+  await button("Disable", "Codex One").waitFor();
+  await button("Enable", "Codex Two").waitFor();
+  await button("Enable", "OAuth Account").waitFor();
+  assert.equal(await allPing().count(), 3, "Codex requires the exact oauth auth type");
+  assert.deepEqual(writes().map(w => w.body), [
+    { codexAutoPing: { enabled: true, connections: { "codex-one": true, "codex-two": false, "orphan-codex": true } } },
+    { glmAutoPing: { enabled: false, connections: { "glm-one": false, "glm-two": false, "orphan-glm": false } } },
+  ]);
+  assert.deepEqual(state.settings.otherSetting, { untouched: true });
+  assert.equal(await button("Disable", "Codex One").getAttribute("aria-pressed"), "true");
+  const tooltip = button("Disable", "Codex One").locator("xpath=..").getByText("Auto-starts the next available Codex quota window after reset with a tiny gpt-6-luna request. Consumes a small amount of quota.", { exact: true });
+  await button("Disable", "Codex One").hover();
+  await tooltip.waitFor();
+  await page.reload();
+  await button("Enable", "Codex Two").waitFor();
+  assert.equal(writes().length, 2, "canonical settings do not migrate again");
+
+  // A completed external change since loading is merged; only one same-provider
+  // toggle may be in flight, even if another DOM click is attempted.
+  state.settings.codexAutoPing.connections.external = true;
+  state.holdSettingsWrite = true; state.releaseSettingsWrite = null;
+  await button("Enable", "Codex Two").click();
+  await waitForFixture(() => typeof state.releaseSettingsWrite === "function");
+  const saving = button("Disable", "Codex Two");
+  assert.equal(await saving.getAttribute("aria-pressed"), "true");
+  assert.equal(await saving.isDisabled(), true);
+  assert.equal(await button("Disable", "Codex One").isDisabled(), true);
+  await button("Disable", "Codex One").evaluate(el => el.click());
+  assert.equal(writes().length, 3);
+  assert.deepEqual(writes().at(-1).body, { codexAutoPing: { enabled: true, connections: { "codex-one": true, "codex-two": true, "orphan-codex": true, external: true } } });
+  state.releaseSettingsWrite();
+  await page.waitForFunction(() => !document.querySelector('button[aria-label="Disable auto-ping for Codex Two"]')?.disabled);
+
+  state.rejectSettingsWrite = true;
+  await button("Disable", "Codex Two").click();
+  await page.getByText("Failed to update settings: Service Unavailable", { exact: true }).waitFor();
+  await button("Disable", "Codex Two").waitFor();
+  assert.equal(await button("Disable", "Codex Two").getAttribute("aria-pressed"), "true", "failed writes roll back");
+  state.rejectSettingsWrite = false;
+  state.failSettingsRead = true;
+  const beforeFailedRead = writes().length;
+  await button("Disable", "Codex Two").click();
+  await page.getByText("Failed to load auto-ping settings", { exact: true }).waitFor();
+  await button("Disable", "Codex Two").waitFor();
+  assert.equal(writes().length, beforeFailedRead, "failed re-read cannot issue a stale PATCH");
+  state.failSettingsRead = false;
+
+  // The backend may commit even when its response is lost. A later toggle
+  // rereads the stored map rather than restoring an older connection value.
+  const lostAck = async route => {
+    if (route.request().method() !== "PATCH") return route.fallback();
+    await route.fetch(); await route.abort("failed");
+  };
+  await page.route("**/api/settings", lostAck);
+  await button("Disable", "Codex Two").click();
+  await page.getByText("Failed to fetch", { exact: true }).waitFor();
+  await button("Disable", "Codex Two").waitFor();
+  assert.equal(state.settings.codexAutoPing.connections["codex-two"], false);
+  await page.unroute("**/api/settings", lostAck);
+  await button("Disable", "Codex One").click();
+  await button("Enable", "Codex One").waitFor();
+  await button("Enable", "Codex Two").waitFor();
+  assert.deepEqual(writes().at(-1).body, { codexAutoPing: { enabled: true, connections: { "codex-one": false, "codex-two": false, "orphan-codex": true, external: true } } });
+
+  await page.goto(`${origin}/dashboard/providers/glm`);
+  await button("Enable", "GLM One").waitFor();
+  assert.equal(await allPing().count(), 2, "GLM accepts trimmed, case-insensitive apikey and api_key only");
+  await button("Enable", "GLM One").locator("xpath=..").getByText("Auto-starts the next GLM 5-hour window after reset with a tiny glm-5.3-flash request. Consumes a small amount of Coding Plan quota.", { exact: true }).waitFor();
+  await button("Enable", "GLM One").focus();
+  await page.keyboard.press("Space");
+  await button("Disable", "GLM One").waitFor();
+  await page.waitForFunction(() => !document.querySelector('button[aria-label="Disable auto-ping for GLM One"]')?.disabled);
+  assert.deepEqual(writes().at(-1).body, { glmAutoPing: { enabled: true, connections: { "glm-one": true, "glm-two": false, "orphan-glm": false } } });
+  await button("Disable", "GLM One").click();
+  await button("Enable", "GLM One").waitFor();
+  await page.waitForFunction(() => !document.querySelector('button[aria-label="Enable auto-ping for GLM One"]')?.disabled);
+  assert.deepEqual(writes().at(-1).body, { glmAutoPing: { enabled: false, connections: { "glm-one": false, "glm-two": false, "orphan-glm": false } } });
+  await page.goto(`${origin}/dashboard/providers/glm-cn`);
+  await page.getByText("GLM CN", { exact: true }).waitFor();
+  assert.equal(await allPing().count(), 0);
+
+  state.settings.glmAutoPing = { "glm-one": true, "orphan-glm": false };
+  state.rejectSettingsWrite = true;
+  await page.goto(`${origin}/dashboard/providers/glm`);
+  await page.getByText("Auto-ping settings unavailable: Failed to update settings: Service Unavailable", { exact: true }).waitFor();
+  assert.equal(await allPing().count(), 0, "failed migration never exposes settings as ready");
+  assert.deepEqual(state.settings.glmAutoPing, { "glm-one": true, "orphan-glm": false });
+  state.rejectSettingsWrite = false;
+  state.failSettingsRead = true;
+  await page.goto(`${origin}/dashboard/providers/codex`);
+  await page.getByText("Auto-ping settings unavailable: Failed to load auto-ping settings", { exact: true }).waitFor();
+  assert.equal(await allPing().count(), 0);
+  state.failSettingsRead = false;
+  state.settings.glmAutoPing = { enabled: false, connections: {} };
+  await page.goto(`${origin}/dashboard/providers/codex`);
+  await button("Enable", "Codex One").waitFor();
+  const beforeUnauthorized = structuredClone(state.settings);
+  state.rejectSettingsWrite = 401;
+  await button("Enable", "Codex One").click();
+  await page.waitForURL(`${origin}/login`);
+  assert.deepEqual(state.settings, beforeUnauthorized, "unauthorized writes do not change settings");
+  state.rejectSettingsWrite = false;
+  assert.ok(state.writes.every(w => w.method === "PATCH" && w.path === "/api/settings"), "fixture never initiates provider actions");
 }
 
 async function runConnectionFixture(page, origin) {
@@ -1590,6 +1743,12 @@ async function main() {
     page.setDefaultTimeout(10000);
     const errors = []; page.on("pageerror", error => errors.push(String(error)));
     await page.context().route("**/*", route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
+    if (process.env.PROVIDER_AUTOPING_ONLY === "1") {
+      await runAutoPingFixture(page, origin);
+      assert.deepEqual(errors, []);
+      console.log("synthetic provider auto-ping smoke passed");
+      return;
+    }
     if (process.env.PROVIDER_POPUP_ONLY === "1") {
       await runPopupFixture(page, origin);
       assert.deepEqual(errors, []);
@@ -2045,10 +2204,11 @@ async function main() {
     state.releaseToggle();
     state.holdToggle = false;
     await page.waitForURL(`${origin}/login`);
+    await runAutoPingFixture(page, origin);
     assert.deepEqual(errors, []);
     console.log("synthetic provider detail smoke passed");
   } finally {
-    for (const key of ["releaseCustom", "releaseDelete", "releaseToggle", "releaseCatalog", "releaseLive", "releaseFavorites", "releaseModelTest", "releaseConnectionTest", "releaseProxy", "releaseStop", "releaseNodeSave", "releaseImport"]) if (typeof state[key] === "function") state[key]();
+    for (const key of ["releaseCustom", "releaseDelete", "releaseToggle", "releaseCatalog", "releaseLive", "releaseFavorites", "releaseModelTest", "releaseConnectionTest", "releaseProxy", "releaseStop", "releaseNodeSave", "releaseImport", "releaseSettingsWrite"]) if (typeof state[key] === "function") state[key]();
     await browser.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
   }
 }

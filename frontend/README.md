@@ -47,6 +47,7 @@ CHROME_BIN=/path/to/chromium node tests/endpoint-smoke.cjs
 CHROME_BIN=/path/to/chromium node tests/providers-smoke.cjs
 CHROME_BIN=/path/to/chromium node tests/providers-new-smoke.cjs
 CHROME_BIN=/path/to/chromium node tests/provider-detail-smoke.cjs
+PROVIDER_AUTOPING_ONLY=1 CHROME_BIN=/path/to/chromium node tests/provider-detail-smoke.cjs
 PROVIDER_NODE_ONLY=1 CHROME_BIN=/path/to/chromium node tests/provider-detail-smoke.cjs
 PROVIDER_IMPORT_ONLY=1 CHROME_BIN=/path/to/chromium node tests/provider-detail-smoke.cjs
 PROVIDER_CALLBACK_ONLY=1 CHROME_BIN=/path/to/chromium node tests/provider-detail-smoke.cjs
@@ -121,6 +122,9 @@ checks and confirmed deletion using the existing node APIs. Deleting a node
 does not delete its connections or custom models.
 Connection add/edit, status, priority ordering, selection, bulk deletion, proxy
 assignment and paced one-by-one testing use the existing connection APIs.
+Codex OAuth and GLM API-key connections also support the persisted auto-ping
+setting. The existing full-map settings API cannot prevent simultaneous writes
+from different tabs from overwriting one another.
 Editing never pre-populates a stored API key; a blank replacement leaves it
 unchanged. Device-code OAuth and manual authorization-code exchange use the
 existing OAuth endpoints. The synchronized thinking selectors only append a
@@ -153,7 +157,7 @@ page renders only after WASM starts; it cannot reproduce Astro's pre-WASM first
 paint.
 
 Detail is **not reference-complete or pixel-perfect**: some OAuth modal details
-(including copy buttons), auto-ping, advertised
+(including copy buttons), advertised
 context, suggested-model chips, and xAI-specific
 force-refresh and diagnostic states remain to migrate. Local OAuth proxy ownership is coordinated
 within this browser application only: the backend stop endpoint is
