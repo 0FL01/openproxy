@@ -154,3 +154,45 @@ This slice does not cover real backend persistence or `/v1/models`, adding or
 testing connections, OAuth, custom-model test/delete, confirming Disable All,
 Active All, alias/favorite changes, errors, other providers, or localization.
 The screenshots are Astro references, not a claim of Dioxus detail parity.
+
+## OAuth callback slice
+
+`UI_PARITY_SECTION=callback` records ten captures of the standalone Astro
+`/callback` page: five scenarios at both desktop and mobile sizes. Astro uses
+the same hard-coded dark styling for both OS color schemes, so the stored PNGs
+use the `-light` suffix only. For each scenario the harness also captures a
+fresh dark-scheme context and compares it to the same complete reference at
+AE=0; it does not create a duplicate dark PNG or mask pixels.
+
+| Scenario | Query and state captured |
+|---|---|
+| `callback-code` | `code=fixture-code&state=fixture-state`: authentication complete and the close-window message. |
+| `callback-error` | `error=fixture-error`, `error_description=Fixture authorization denied` and `state=fixture-state`: authentication failed with the description. |
+| `callback-no-auth-data` | No query: the missing-data message and Callback URL instructions. |
+| `callback-manual-copy` | The synthetic code/state query with no relay or opener: the full fixture URL and Copy URL button. |
+| `callback-manual-copied` | The same fallback after clicking Copy URL: the temporary “Copied!” button state. |
+
+The normal cases run with native BroadcastChannel and localStorage in an
+isolated context but no opener; they have no real OAuth session or recipient.
+For the manual cases an initialization script makes BroadcastChannel and
+localStorage unavailable, with `window.opener` still null. The copied case
+replaces the clipboard with an in-memory stub and asserts it receives exactly
+`https://app:4623/callback?code=fixture-code&state=fixture-state`; it never
+touches the system clipboard. These values are synthetic, including those
+visible in the fallback PNG.
+
+The Astro page has no island or dashboard font assets. Record mode requires its
+standalone markup **and** the pre-pinned SHA-256 of the served HTML in
+`reference/source.json`; other Astro island checks remain unchanged. Compare
+mode still requires the Dioxus loader. The pinned browser image's system
+Liberation Sans is verified for rendered callback text via Chrome DevTools;
+no dashboard-font substitution is introduced. Record mode allows only the
+exact same-origin `/callback` GET for the selected synthetic query. Compare
+mode additionally allows queryless same-origin dashboard bundle/font assets;
+all API requests, writes, external requests and WebSockets are blocked.
+
+No real provider request or code exchange is made. These visuals do not test
+message delivery to an opener or another tab, the auto-close timer, storage
+cleanup, clipboard failure/legacy copy, the reset of “Copied!”, mixed
+code/error parameters, or relay failures combined with the other results.
+They are Astro references, not evidence of Dioxus callback parity.

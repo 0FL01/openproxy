@@ -18,6 +18,8 @@ const referenceDir = resolve(process.env.UI_REFERENCE_DIR || "tests/ui/reference
 const artifactDir = resolve(process.env.UI_ARTIFACT_DIR || ".ui-browser/artifacts");
 const appUrl = "https://app:4623";
 const fixtureCommit = "0123456789abcdef0123456789abcdef01234567";
+const callbackCodeQuery = "?code=fixture-code&state=fixture-state";
+const callbackErrorQuery = "?error=fixture-error&error_description=Fixture+authorization+denied&state=fixture-state";
 
 const screens = [
   { section: "login", name: "ready", hasPassword: true },
@@ -60,6 +62,11 @@ const screens = [
   { section: "provider-kilocode", name: "add-model-dialog", action: "add-model-dialog" },
   { section: "provider-kilocode", name: "add-model-saved", action: "add-model-saved" },
   { section: "provider-kilocode", name: "disable-all-dialog", action: "disable-all-dialog" },
+  { section: "callback", name: "code", query: callbackCodeQuery, colorScheme: "light" },
+  { section: "callback", name: "error", query: callbackErrorQuery, colorScheme: "light" },
+  { section: "callback", name: "no-auth-data", query: "", colorScheme: "light" },
+  { section: "callback", name: "manual-copy", query: callbackCodeQuery, manual: true, colorScheme: "light" },
+  { section: "callback", name: "manual-copied", query: callbackCodeQuery, manual: true, action: "copied", colorScheme: "light" },
 ];
 const viewports = [
   { name: "desktop", width: 1440, height: 900 },
@@ -104,11 +111,11 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
           const name = `${screen.section}-${screen.name}-${viewport.name}-${theme}`;
           await t.test(name, async () => {
             assert(mode !== "record" || process.env.UI_PARITY_REPLACE === "1" || !existsSync(join(referenceDir, `${name}.png`)), "reference already exists; set UI_PARITY_REPLACE=1 deliberately to replace it");
-            const capture = async () => {
+            const capture = async (colorScheme = theme) => {
               const context = await browser.newContext({
                 viewport: { width: viewport.width, height: viewport.height },
                 deviceScaleFactor: 1,
-                colorScheme: theme,
+                colorScheme,
                 locale: "en-US",
                 timezoneId: "UTC",
                 serviceWorkers: "block",
@@ -134,6 +141,20 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 if (screen.storedTheme) {
                   await page.addInitScript((theme) => localStorage.setItem("theme", JSON.stringify({ state: { theme }, version: 0 })), screen.storedTheme);
                 }
+                if (screen.manual) {
+                  await page.addInitScript((copy) => {
+                    // Model a popup with no working relay or opener, without real credentials.
+                    Object.defineProperty(window, "BroadcastChannel", { configurable: true, value: undefined });
+                    Object.defineProperty(window, "localStorage", {
+                      configurable: true,
+                      get() { throw new DOMException("Fixture storage unavailable", "SecurityError"); },
+                    });
+                    if (copy) Object.defineProperty(navigator, "clipboard", {
+                      configurable: true,
+                      value: { writeText: async (value) => { window.__fixtureCopied = value; } },
+                    });
+                  }, screen.action === "copied");
+                }
                 let created = false;
                 let authenticated = screen.section !== "login";
                 let kiloDisabled = ["fixture-custom-disabled", "fixture-disabled"];
@@ -144,12 +165,18 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 let kiloFreeOnly = false;
                 page.on("pageerror", (error) => errors.push(error.message));
                 await page.clock.setFixedTime(new Date("2026-10-01T12:00:00Z"));
+                if (screen.section === "callback") await context.routeWebSocket("**/*", (socket) => {
+                  unexpected.push("WebSocket blocked");
+                  socket.close();
+                });
                 await context.route("**/*", async (route) => {
                   const request = route.request();
                   const url = new URL(request.url());
                   const path = url.pathname;
                   const method = request.method();
-                  const assets = (!["providers-new", "provider-kilocode"].includes(screen.section) && (path === "/login" || path === "/dashboard/endpoint")) || path === "/favicon.svg" || path.startsWith("/_astro/") || path.startsWith("/assets/") || path.startsWith("/i18n/") ||
+                  const assets = screen.section === "callback"
+                    ? ((path === "/callback" && url.search === screen.query) || (mode === "compare" && !url.search && (path === "/favicon.svg" || path.startsWith("/_astro/") || path.startsWith("/assets/"))))
+                    : (!["providers-new", "provider-kilocode"].includes(screen.section) && (path === "/login" || path === "/dashboard/endpoint")) || path === "/favicon.svg" || path.startsWith("/_astro/") || path.startsWith("/assets/") || path.startsWith("/i18n/") ||
                     (screen.section === "providers" && (path === "/dashboard/providers" || /^\/providers\/[a-z0-9_-]+\.png$/.test(path))) ||
                     (screen.section === "providers-new" && !url.search && ["/dashboard/providers/new", "/providers/codex.png", "/providers/opencode-zen.png", "/providers/openai.png"].includes(path)) ||
                     (screen.section === "provider-kilocode" && !url.search && ["/dashboard/providers/kilocode", "/providers/kilocode.png"].includes(path));
@@ -167,7 +194,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   );
                   const kiloMutation = screen.section === "provider-kilocode" && method !== "GET" &&
                     expectedWrites.some((write) => write.method === method && write.path === `${path}${url.search}`);
-                  const valid = url.origin === appUrl && (providerGet || providerNewGet || kiloGet || kiloMutation || (!["providers", "providers-new", "provider-kilocode"].includes(screen.section) && (
+                  const valid = url.origin === appUrl && (providerGet || providerNewGet || kiloGet || kiloMutation || (!["providers", "providers-new", "provider-kilocode", "callback"].includes(screen.section) && (
                     (method === "GET" && ["/api/auth/status", "/api/settings", "/api/keys", "/api/build", "/api/catalog"].includes(path)) ||
                     (method === "POST" && path === "/api/auth/login" && !!screen.login) ||
                     (method === "POST" && path === "/api/keys" && screen.action === "created")
@@ -267,13 +294,20 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   await route.fulfill({ status, headers, json: body });
                 });
 
-                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : screen.section === "providers-new" ? "/dashboard/providers/new" : screen.section === "provider-kilocode" ? "/dashboard/providers/kilocode" : "/dashboard/endpoint";
-                const response = await page.goto(`${appUrl}${path}`, { waitUntil: "domcontentloaded" });
+                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : screen.section === "providers-new" ? "/dashboard/providers/new" : screen.section === "provider-kilocode" ? "/dashboard/providers/kilocode" : screen.section === "callback" ? "/callback" : "/dashboard/endpoint";
+                const response = await page.goto(`${appUrl}${path}${screen.query || ""}`, { waitUntil: "domcontentloaded" });
                 assert(response?.ok(), `failed to load ${path}`);
                 if (mode === "record") {
-                  const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : screen.section === "providers-new" ? "ProvidersNewPageClient." : screen.section === "provider-kilocode" ? "ProviderDetailPageClient." : "EndpointPageClient.";
                   const html = await response.body();
-                  assert(html.includes(`component-url="/_astro/${component}`), "record mode requires the Astro reference");
+                  if (screen.section === "callback") {
+                    assert(source.routes[path], "standalone Astro callback hash must be pinned before recording");
+                    for (const marker of ["<title>OpenProxy — OAuth Callback</title>", 'id="card"', 'id="spinner"', 'id="title"', 'id="message"', "new URLSearchParams(window.location.search)", "oauth_callback", "No Auth Data Found"]) {
+                      assert(html.includes(marker), "record mode requires the standalone Astro callback markup");
+                    }
+                  } else {
+                    const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : screen.section === "providers-new" ? "ProvidersNewPageClient." : screen.section === "provider-kilocode" ? "ProviderDetailPageClient." : "EndpointPageClient.";
+                    assert(html.includes(`component-url="/_astro/${component}`), "record mode requires the Astro reference");
+                  }
                   const hash = createHash("sha256").update(html).digest("hex");
                   assert(!source.routes[path] || source.routes[path] === hash, `Astro reference changed for ${path}`);
                   source.routes[path] = hash;
@@ -286,20 +320,39 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 else if (screen.section === "providers") await page.getByRole("heading", { name: "Custom Providers (OpenAI/Anthropic Compatible)" }).waitFor();
                 else if (screen.section === "providers-new") await page.getByRole("heading", { name: "Add New Provider" }).waitFor();
                 else if (screen.section === "provider-kilocode") await page.getByRole("checkbox", { name: "Select connection Fixture connection" }).waitFor();
+                else if (screen.section === "callback") await page.getByRole("heading", { name: screen.name === "error" ? "Authentication Failed" : screen.name === "no-auth-data" ? "No Auth Data Found" : "Authentication Complete", exact: true }).waitFor();
                 else await page.getByText("Fixture key", { exact: true }).waitFor();
                 await page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}" });
-                const missingFonts = await page.evaluate(async () => {
-                  await document.fonts.ready;
-                  const fonts = [
-                    ...[400, 500, 600, 700].map((weight) => `${weight} 14px Inter`),
-                    '400 14px "Instrument Serif"',
-                    ...[400, 500, 600].map((weight) => `${weight} 14px "JetBrains Mono"`),
-                    '400 14px "Material Symbols Outlined"',
-                  ];
-                  const loaded = await Promise.all(fonts.map((font) => document.fonts.load(font, "OpenProxy")));
-                  return fonts.filter((_, index) => !loaded[index].length || loaded[index].some((font) => font.status !== "loaded"));
-                });
-                assert.deepEqual(missingFonts, [], "reference fonts must be loaded, not silently substituted");
+                if (screen.section === "callback") {
+                  await page.evaluate(async () => { await document.fonts.ready; });
+                  const cdp = await context.newCDPSession(page);
+                  try {
+                    await cdp.send("DOM.enable");
+                    await cdp.send("CSS.enable");
+                    const { root } = await cdp.send("DOM.getDocument");
+                    for (const selector of ["h1", "p", ...(screen.manual ? ["button"] : [])]) {
+                      const { nodeId } = await cdp.send("DOM.querySelector", { nodeId: root.nodeId, selector });
+                      assert(nodeId, `callback ${selector} must exist for font verification`);
+                      const { fonts } = await cdp.send("CSS.getPlatformFontsForNode", { nodeId });
+                      assert(fonts.length > 0 && fonts.every((font) => font.familyName === "Liberation Sans" && !font.isCustomFont && font.glyphCount > 0), `callback ${selector} must use the pinned system font`);
+                    }
+                  } finally {
+                    await cdp.detach();
+                  }
+                } else {
+                  const missingFonts = await page.evaluate(async () => {
+                    await document.fonts.ready;
+                    const fonts = [
+                      ...[400, 500, 600, 700].map((weight) => `${weight} 14px Inter`),
+                      '400 14px "Instrument Serif"',
+                      ...[400, 500, 600].map((weight) => `${weight} 14px "JetBrains Mono"`),
+                      '400 14px "Material Symbols Outlined"',
+                    ];
+                    const loaded = await Promise.all(fonts.map((font) => document.fonts.load(font, "OpenProxy")));
+                    return fonts.filter((_, index) => !loaded[index].length || loaded[index].some((font) => font.status !== "loaded"));
+                  });
+                  assert.deepEqual(missingFonts, [], "reference fonts must be loaded, not silently substituted");
+                }
                 if (screen.section === "login") {
                   if (screen.login) {
                     await page.getByPlaceholder("Enter your password").fill("fixture-password");
@@ -310,6 +363,36 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   } else if (!screen.hasPassword) {
                     await page.getByText("Security risk: no password set.", { exact: false }).waitFor();
                   }
+                } else if (screen.section === "callback") {
+                  assert.equal(await page.evaluate(() => window.opener), null, "callback fixture must have no opener");
+                  if (screen.name === "error") {
+                    await page.getByText("Fixture authorization denied", { exact: true }).waitFor();
+                  } else if (screen.name === "no-auth-data") {
+                    await page.getByText("The URL did not contain OAuth parameters.", { exact: false }).waitFor();
+                    await page.getByText("Callback URL", { exact: true }).waitFor();
+                  } else {
+                    await page.getByText("You can close this window and return to the dashboard.", { exact: true }).waitFor();
+                  }
+                  if (screen.manual) {
+                    assert(await page.evaluate(() => {
+                      try { void window.localStorage; return false; }
+                      catch { return typeof window.BroadcastChannel === "undefined"; }
+                    }), "manual fallback requires both relay methods to be unavailable");
+                    const fullUrl = `${appUrl}/callback${screen.query}`;
+                    await page.getByText(`Full URL: ${fullUrl}`, { exact: true }).waitFor();
+                    const copy = page.getByRole("button", { name: "Copy URL", exact: true });
+                    await copy.waitFor();
+                    if (screen.action === "copied") {
+                      await copy.click();
+                      await page.getByRole("button", { name: "Copied!", exact: true }).waitFor();
+                      assert.equal(await page.evaluate(() => window.__fixtureCopied), fullUrl);
+                    }
+                  } else {
+                    assert(await page.evaluate(() => typeof window.BroadcastChannel === "function" && typeof window.localStorage.setItem === "function"), "normal callback relays must be available");
+                    assert.equal(await page.getByRole("button", { name: "Copy URL", exact: true }).count(), 0);
+                  }
+                  await page.mouse.move(1, 1);
+                  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
                 } else if (screen.section === "provider-kilocode") {
                   const modelCode = (id) => page.locator("code").filter({ hasText: new RegExp(`^kc/${id}$`) });
                   const modelRow = (id) => page.locator("div.group").filter({ has: modelCode(id) });
@@ -663,6 +746,22 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
               await writeFile(join(artifactDir, `${name}-second.png`), other);
             }
             assert.equal(differingPixels, 0, `${name}: differing pixels; see ${diff}`);
+            if (screen.section === "callback") {
+              // Astro's standalone callback is always dark. Verify both OS color
+              // schemes against the same unmasked reference, not duplicate PNGs.
+              const dark = await capture("dark");
+              assert.deepEqual([dark.readUInt32BE(16), dark.readUInt32BE(20)], [other.readUInt32BE(16), other.readUInt32BE(20)], "dark callback dimensions differ");
+              const darkPath = join(scratch, `${name}-dark.png`);
+              const darkDiff = join(artifactDir, `${name}-dark-diff.png`);
+              await writeFile(darkPath, dark);
+              const darkComparison = spawnSync("compare", ["-metric", "AE", darkPath, second, darkDiff], { encoding: "utf8" });
+              if (darkComparison.error) throw darkComparison.error;
+              assert(darkComparison.status === 0 || darkComparison.status === 1, `ImageMagick compare failed: ${darkComparison.stderr}`);
+              const darkPixels = Number(darkComparison.stderr.trim());
+              if (darkPixels !== 0) await writeFile(join(artifactDir, `${name}-dark-actual.png`), dark);
+              assert.equal(darkPixels, 0, `${name}: dark color scheme differs; see ${darkDiff}`);
+              await rm(darkDiff, { force: true });
+            }
             if (mode === "record") {
               await rm(diff, { force: true });
               await writeFile(join(referenceDir, `${name}.png`), image);
