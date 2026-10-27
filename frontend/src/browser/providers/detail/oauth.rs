@@ -331,6 +331,7 @@ pub(super) fn OAuthFlow(
     provider: String,
     name: String,
     attempt: u64,
+    success: bool,
     on_close: EventHandler<()>,
     on_request: Callback<OwnedRequest>,
 ) -> Element {
@@ -702,7 +703,17 @@ pub(super) fn OAuthFlow(
     };
     rsx! { Modal { title, large: true, on_close,
         div { class: "flex flex-col gap-4",
-            if !error().is_empty() {
+            if success {
+                div { class: "text-center py-6",
+                    div { class: "size-16 mx-auto mb-4 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center",
+                        span { aria_hidden: "true", class: "material-symbols-outlined text-3xl text-green-600", "check_circle" }
+                    }
+                    h3 { class: "text-lg font-semibold mb-2", "Connected Successfully!" }
+                    p { class: "text-sm text-text-muted mb-4", "Your {name} account has been connected." }
+                    Button { label: "Done".to_owned(), full_width: true, onclick: move |_| on_close.call(()) }
+                }
+            }
+            else if !error().is_empty() {
                 div { class: "text-center py-6",
                     div { class: "size-16 mx-auto mb-4 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center",
                         span { aria_hidden: "true", class: "material-symbols-outlined text-3xl text-red-600", "error" }

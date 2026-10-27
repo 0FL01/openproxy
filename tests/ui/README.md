@@ -105,7 +105,7 @@ are not covered. These are Astro references, not Dioxus parity evidence.
 
 ## Kilo Code provider detail slice
 
-`UI_PARITY_SECTION=provider-kilocode` selects 44 captures for
+`UI_PARITY_SECTION=provider-kilocode` selects 48 captures for
 `/dashboard/providers/kilocode`: each scenario runs at both viewports and in
 both themes. The model scenarios scroll the page's main container to the
 Available Models card; the initial state stays at the top.
@@ -123,6 +123,7 @@ Available Models card; the initial state stays at the top.
 | `provider-kilocode-device-oauth` | Open the device-code waiting dialog with synthetic URLs and code; `window.open` is stubbed and no provider is contacted. |
 | `provider-kilocode-device-oauth-loading` | Hold the initial synthetic device-code response; check keyboard close and the candidate's nonvisual status. |
 | `provider-kilocode-device-oauth-error` | Show a synthetic device-code failure; after capture, retry and cancel with the keyboard without contacting a provider. |
+| `provider-kilocode-device-oauth-success` | Complete synthetic device polling while connection and node reads are held; show success and dismiss it with Done. |
 
 Each fresh browser context receives synthetic, credential-free data:
 
@@ -156,9 +157,10 @@ with the stripped ID. Responses and subsequent reads use state held **only in
 that browser context's fixture**; it is reset before the second capture. After
 each mutation screenshot the test reloads and verifies the UI against those
 in-memory responses, not SQLite persistence.
-The device-dialog cases allow only synthetic device-code responses; the Open
-button is checked against a stub, the loading case holds the response and checks
-close, and the error case checks retry and cancel.
+The device-dialog cases allow only synthetic device-code and, for the success
+case, poll responses; the Open button is checked against a stub, the loading
+case holds the response and checks close, and the error case checks retry and
+cancel.
 All other requests and mutations—including
 `/api/models/test`, real OAuth/provider traffic and external origins—are
 blocked and fail the test.

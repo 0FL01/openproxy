@@ -88,6 +88,10 @@ const server = http.createServer(async (req, res) => {
         state.holdConnectionsOnce = false;
         const captured = structuredClone(state.connections);
         await new Promise(resolve => { state.releaseConnections = resolve; });
+        if (state.heldConnectionsStatus) {
+          if (state.heldConnectionsStatus === 401) state.expired = true;
+          return respond(state.heldConnectionsStatus, { error: "Synthetic connection read failure" });
+        }
         return respond(200, { connections: captured });
       }
       return respond(200, { connections: state.connections });
@@ -199,6 +203,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === "/api/provider-nodes") {
       state.nodeReads = (state.nodeReads || 0) + 1;
+      if (state.holdOAuthAuxOnce) { state.holdOAuthAuxOnce = false; await new Promise(resolve => { state.releaseOAuthAux = resolve; }); }
       if (state.holdXaiNodeOnce) { state.holdXaiNodeOnce = false; await new Promise(resolve => { state.releaseXaiNode = resolve; }); }
       if (state.holdNodeRead) await new Promise(resolve => { state.releaseNodeRead = resolve; });
       if (state.nodeReadMode === "fail") return respond(503, { error: "Synthetic node read failure" });
@@ -1088,6 +1093,157 @@ async function runOAuthCopyFixture(page, origin) {
   await closeDevice(dialog);
   await page.waitForTimeout(2100); // Copy feedback must not outlive a closed modal.
   assert.deepEqual(state.writes, [], "copying does not submit or modify any OAuth data");
+}
+
+async function runOAuthSuccessFixture(page, origin) {
+  state.authOnly = true;
+  state.connections = [];
+  state.pools = [];
+  state.writes = [];
+  const assertSuccess = async (dialog, name) => {
+    await dialog.getByRole("heading", { name: "Connected Successfully!", exact: true }).waitFor();
+    await dialog.getByText(`Your ${name} account has been connected.`, { exact: true }).waitFor();
+    assert.equal(await dialog.getByRole("button", { name: "Done", exact: true }).isEnabled(), true);
+    assert.equal(await dialog.getByLabel("Callback URL").count(), 0, "success cannot submit a second exchange");
+  };
+  const holdConnections = () => { state.holdConnectionsOnce = true; state.releaseConnections = null; };
+  const closeSuccess = async dialog => {
+    await dialog.getByRole("button", { name: "Done", exact: true }).click();
+    await dialog.waitFor({ state: "detached" });
+  };
+  const openClaude = async () => {
+    await page.getByRole("button", { name: /^add Add(?: Connection)?$/ }).click();
+    const dialog = page.getByRole("dialog", { name: "Connect Claude" });
+    await waitForOAuthReady(dialog);
+    return dialog;
+  };
+
+  // A successful exchange displays confirmation while the canonical read is
+  // held. Done dismisses it without cancelling reconciliation or letting the
+  // old completion dismiss a new attempt.
+  await page.goto(`${origin}/dashboard/providers/claude`);
+  await page.getByText("No connections yet").waitFor();
+  let dialog = await openClaude();
+  state.pools = [{ id: "fixture-pool", name: "Fixture pool", isActive: true }];
+  holdConnections();
+  await dialog.getByLabel("Callback URL").fill("first-fixture-code");
+  await dialog.getByRole("button", { name: "Connect", exact: true }).click();
+  await waitForFixture(() => typeof state.releaseConnections === "function");
+  await assertSuccess(dialog, "Claude Code");
+  await closeSuccess(dialog);
+  dialog = await openClaude();
+  state.releaseConnections();
+  await page.getByText("Claude fixture 1", { exact: true }).waitFor();
+  await page.getByRole("button", { name: /Apply Proxy/ }).waitFor();
+  await waitForOAuthReady(dialog);
+
+  // Without an early Done, completion of the read automatically closes the
+  // same attempt, including when the read returns a failure.
+  holdConnections();
+  state.holdOAuthAuxOnce = true; state.releaseOAuthAux = null;
+  await dialog.getByLabel("Callback URL").fill("second-fixture-code");
+  await dialog.getByRole("button", { name: "Connect", exact: true }).click();
+  await waitForFixture(() => typeof state.releaseConnections === "function" && typeof state.releaseOAuthAux === "function");
+  await assertSuccess(dialog, "Claude Code");
+  const connectionResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/providers");
+  state.releaseConnections();
+  await connectionResponse;
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await assertSuccess(dialog, "Claude Code");
+  state.releaseOAuthAux();
+  await dialog.waitFor({ state: "detached" });
+  await page.getByText("Claude fixture 2", { exact: true }).waitFor();
+  dialog = await openClaude();
+  holdConnections();
+  state.heldConnectionsStatus = 503;
+  await dialog.getByLabel("Callback URL").fill("third-fixture-code");
+  await dialog.getByRole("button", { name: "Connect", exact: true }).click();
+  await waitForFixture(() => typeof state.releaseConnections === "function");
+  await assertSuccess(dialog, "Claude Code");
+  state.releaseConnections();
+  await dialog.waitFor({ state: "detached" });
+  state.heldConnectionsStatus = 0;
+
+  // The same success state is reachable through device-code polling.
+  await page.goto(`${origin}/dashboard/providers/kilocode`);
+  await page.getByText("No connections yet").waitFor();
+  state.completeDevice = true;
+  holdConnections();
+  await page.getByRole("button", { name: /lock OAuth$/ }).click();
+  dialog = page.getByRole("dialog", { name: "Connect Kilo Code" });
+  await waitForFixture(() => typeof state.releaseConnections === "function");
+  await assertSuccess(dialog, "Kilo Code");
+  state.completeDevice = false;
+  await closeSuccess(dialog);
+  state.releaseConnections();
+  await page.getByText("Device account", { exact: true }).waitFor();
+
+  // Server-side proxy completion waits for the connection read and then its
+  // catalog reload. Neither gate may prematurely close the confirmation.
+  await page.goto(`${origin}/dashboard/providers/xai`);
+  await page.getByText("No connections yet").waitFor();
+  state.proxyServerSide = true; state.holdStatusOnce = true; state.releaseStatus = null;
+  await page.getByRole("button", { name: /Grok Build OAuth/ }).click();
+  dialog = page.getByRole("dialog", { name: "Connect Grok Build OAuth" });
+  await waitForOAuthReady(dialog);
+  await waitForFixture(() => typeof state.releaseStatus === "function");
+  holdConnections();
+  state.holdCatalogOnce = true; state.releaseCatalog = null;
+  state.releaseStatus();
+  await waitForFixture(() => typeof state.releaseConnections === "function");
+  await assertSuccess(dialog, "xAI (Grok)");
+  const exchangesBeforeLateCallback = state.writes.filter(write => write.path === "/api/oauth/xai/exchange").length;
+  await page.evaluate(() => window.postMessage({ type: "oauth_callback", data: { code: "late-fixture-code", state: "fixture-state", provider: "xai" } }, window.location.origin));
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(state.writes.filter(write => write.path === "/api/oauth/xai/exchange").length, exchangesBeforeLateCallback, "completed status claims the attempt while reconciliation is pending");
+  state.releaseConnections();
+  await waitForFixture(() => typeof state.releaseCatalog === "function");
+  await assertSuccess(dialog, "xAI (Grok)");
+  state.releaseCatalog();
+  await dialog.waitFor({ state: "detached" });
+  await page.getByText("Status account", { exact: true }).waitFor();
+  state.proxyServerSide = false;
+
+  // Manual xAI success may be dismissed during reconciliation. Its eventual
+  // completion cannot close a new proxy lease or its dialog.
+  holdConnections();
+  await page.getByRole("button", { name: /Grok Build OAuth/ }).click();
+  dialog = page.getByRole("dialog", { name: "Connect Grok Build OAuth" });
+  await waitForOAuthReady(dialog);
+  await dialog.getByLabel("Callback URL").fill("fixture-xai-code");
+  await dialog.getByRole("button", { name: "Connect", exact: true }).click();
+  await waitForFixture(() => typeof state.releaseConnections === "function");
+  await assertSuccess(dialog, "xAI (Grok)");
+  const stopsBeforeDone = state.proxyStops;
+  await closeSuccess(dialog);
+  await waitForFixture(() => state.proxyStops > stopsBeforeDone && !state.proxyLive);
+  await page.getByRole("button", { name: /Grok Build OAuth/ }).click();
+  dialog = page.getByRole("dialog", { name: "Connect Grok Build OAuth" });
+  await waitForOAuthReady(dialog);
+  const stopsForNewAttempt = state.proxyStops;
+  state.releaseConnections();
+  await page.getByText("xAI fixture 1", { exact: true }).waitFor();
+  await waitForOAuthReady(dialog);
+  assert.equal(state.proxyLive, true);
+  assert.equal(state.proxyStops, stopsForNewAttempt, "old reconciliation cannot stop the new proxy lease");
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await dialog.waitFor({ state: "detached" });
+
+  // A 401 received after a successful exchange still rechecks the dashboard
+  // session, even though the success dialog is waiting on that response.
+  await page.goto(`${origin}/dashboard/providers/claude`);
+  await page.getByText("Claude fixture 3", { exact: true }).waitFor();
+  dialog = await openClaude();
+  holdConnections();
+  state.heldConnectionsStatus = 401;
+  const authChecks = state.authStatusRequests;
+  await dialog.getByLabel("Callback URL").fill("fourth-fixture-code");
+  await dialog.getByRole("button", { name: "Connect", exact: true }).click();
+  await waitForFixture(() => typeof state.releaseConnections === "function");
+  await assertSuccess(dialog, "Claude Code");
+  state.releaseConnections();
+  await page.waitForURL(`${origin}/login`);
+  assert.ok(state.authStatusRequests > authChecks, "401 during reconciliation rechecks the session");
 }
 
 async function runAuthFixture(page, origin) {
@@ -2397,6 +2553,12 @@ async function main() {
       console.log("synthetic provider authorization smoke passed");
       return;
     }
+    if (process.env.PROVIDER_OAUTH_SUCCESS_ONLY === "1") {
+      await runOAuthSuccessFixture(page, origin);
+      assert.deepEqual(errors, []);
+      console.log("synthetic delayed OAuth success smoke passed");
+      return;
+    }
     if (process.env.PROVIDER_CONNECTION_ONLY === "1") {
       await runConnectionFixture(page, origin);
       assert.deepEqual(errors, []);
@@ -2822,7 +2984,7 @@ async function main() {
     assert.deepEqual(errors, []);
     console.log("synthetic provider detail smoke passed");
   } finally {
-    for (const key of ["releaseCustom", "releaseDelete", "releaseToggle", "releaseCatalog", "releaseLive", "releaseFavorites", "releaseModelTest", "releaseConnectionTest", "releaseProxy", "releaseStop", "releaseNodeSave", "releaseImport", "releaseSettingsWrite", "releaseXaiNode", "releaseXaiForce"]) if (typeof state[key] === "function") state[key]();
+    for (const key of ["releaseConnections", "releaseOAuthAux", "releaseStatus", "releaseCustom", "releaseDelete", "releaseToggle", "releaseCatalog", "releaseLive", "releaseFavorites", "releaseModelTest", "releaseConnectionTest", "releaseProxy", "releaseStop", "releaseNodeSave", "releaseImport", "releaseSettingsWrite", "releaseXaiNode", "releaseXaiForce"]) if (typeof state[key] === "function") state[key]();
     await browser.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
   }
 }

@@ -152,7 +152,9 @@ unchanged. Device-code OAuth and manual authorization-code exchange use the
 existing OAuth endpoints. Their dialogs can copy the authorization URL, device
 login URL and user code; the device waiting dialog also offers a safe Open
 control. Manual authorization displays the callback instructions and a popup
-status. The synchronized thinking selectors only append a
+status. A successful connection shows confirmation while the page refreshes;
+Done dismisses it without cancelling the refresh or closing a later attempt.
+The synchronized thinking selectors only append a
 supported suffix to display/copy; they do not alter model mutation IDs. Failed
 bulk deletes remain visible and selected. Free-tier, notice and auth-mode
 metadata are checked snapshots of the reference provider registry. Required model reads that fail do

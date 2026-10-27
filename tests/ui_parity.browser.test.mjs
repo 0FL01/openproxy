@@ -99,6 +99,7 @@ const screens = [
   { section: "provider-kilocode", name: "device-oauth", action: "device-oauth" },
   { section: "provider-kilocode", name: "device-oauth-loading", action: "device-oauth-loading" },
   { section: "provider-kilocode", name: "device-oauth-error", action: "device-oauth-error" },
+  { section: "provider-kilocode", name: "device-oauth-success", action: "device-oauth-success" },
   { section: "provider-compatible", name: "ready" },
   { section: "provider-compatible", name: "edit-dialog", action: "edit-dialog" },
   { section: "provider-compatible", name: "edit-dialog-scroll-bottom", action: "edit-dialog-scroll-bottom" },
@@ -217,7 +218,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
           const isCodexDetail = ["provider-codex-autoping", "provider-codex-bulk-add", "provider-codex-oauth"].includes(screen.section);
           const isKiloOAuthError = screen.action === "device-oauth-error";
           const isKiloOAuthLoading = screen.action === "device-oauth-loading";
-          const isKiloOAuthStrict = isKiloOAuthError || isKiloOAuthLoading;
+          const isKiloOAuthSuccess = screen.action === "device-oauth-success";
+          const isKiloOAuthStrict = isKiloOAuthError || isKiloOAuthLoading || isKiloOAuthSuccess;
           const isOpenRouter = screen.section === "provider-openrouter";
           const isXaiDetail = screen.section === "provider-xai";
           await t.test(name, async () => {
@@ -246,6 +248,13 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
               let releaseDeviceAuth;
               let observeDeviceAuth;
               const deviceAuthStarted = new Promise((resolve) => { observeDeviceAuth = resolve; });
+              let devicePollSucceeded = false;
+              let releaseOAuthConnections;
+              let observeOAuthConnections;
+              const oauthConnectionsStarted = new Promise((resolve) => { observeOAuthConnections = resolve; });
+              let releaseOAuthNodes;
+              let observeOAuthNodes;
+              const oauthNodesStarted = new Promise((resolve) => { observeOAuthNodes = resolve; });
               let releaseAuthorize;
               let observeAuthorize;
               const authorizeStarted = new Promise((resolve) => { observeAuthorize = resolve; });
@@ -260,6 +269,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 "restore-model": [{ method: "DELETE", path: "/api/models/disabled?providerAlias=kc&id=fixture-custom-disabled", body: null }],
                 "free-only": [{ method: "PUT", path: "/api/providers/filters", body: { alias: "kc", freeOnly: true } }],
                 "add-model-saved": [{ method: "POST", path: "/api/models/custom", body: { providerAlias: "kc", id: "fixture-new-model", type: "llm" } }],
+                "device-oauth-success": [{ method: "POST", path: "/api/oauth/kilocode/poll", body: { deviceCode: "fixture-device", codeVerifier: "fixture-verifier", extraData: null } }],
               };
               const codexWrites = screen.name === "on" ? [true, false].map((on) => ({
                 method: "PATCH", path: "/api/settings", body: { codexAutoPing: codexConfig(on) },
@@ -524,6 +534,19 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     deviceAuthAttempts += 1;
                     await new Promise((resolve) => { releaseDeviceAuth = resolve; observeDeviceAuth(); });
                     return route.fulfill({ status: 503, json: { error: "Synthetic cancelled request" } });
+                  }
+                  if (isKiloOAuthSuccess && path === "/api/oauth/kilocode/device-code") return route.fulfill({ json: {
+                    device_code: "fixture-device", user_code: "ABCD-EFGH", codeVerifier: "fixture-verifier", verification_uri: "https://fixture.example.invalid/login", interval: 0.02, expires_in: 30,
+                  } });
+                  if (isKiloOAuthSuccess && path === "/api/oauth/kilocode/poll") {
+                    devicePollSucceeded = true;
+                    return route.fulfill({ json: { success: true } });
+                  }
+                  if (isKiloOAuthSuccess && path === "/api/providers" && devicePollSucceeded) {
+                    await new Promise((resolve) => { releaseOAuthConnections = resolve; observeOAuthConnections(); });
+                  }
+                  if (isKiloOAuthSuccess && path === "/api/provider-nodes" && devicePollSucceeded) {
+                    await new Promise((resolve) => { releaseOAuthNodes = resolve; observeOAuthNodes(); });
                   }
                   if (screen.action === "device-oauth" && path === "/api/oauth/kilocode/device-code") return route.fulfill({ json: {
                     device_code: "fixture-device", user_code: "ABCD-EFGH", verification_uri: "https://fixture.example.invalid/login",
@@ -1671,6 +1694,32 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       await modal.getByRole("button", { name: /Open/ }).click();
                       assert.equal((await page.evaluate(() => window.__fixtureOpened))[0], "https://fixture.example.invalid/login?user_code=ABCD-EFGH");
                     };
+                  } else if (isKiloOAuthSuccess) {
+                    await page.getByRole("button", { name: /OAuth/ }).click();
+                    const heading = page.getByRole("heading", { name: "Connect Kilo Code", exact: true });
+                    await heading.waitFor();
+                    await oauthConnectionsStarted;
+                    const modal = heading.locator("../../..");
+                    await modal.getByRole("heading", { name: "Connected Successfully!", exact: true }).waitFor();
+                    await modal.getByText("Your Kilo Code account has been connected.", { exact: true }).waitFor();
+                    assert(await modal.getByRole("button", { name: "Done", exact: true }).isEnabled());
+                    assert.deepEqual(writes, expectedWrites, "only one successful device poll is sent");
+                    verifyAfterCapture = async () => {
+                      // fetchConnections also waits for its auxiliary reads.
+                      // Release the canonical read first and hold nodes separately.
+                      const connectionResponse = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/providers");
+                      releaseOAuthConnections();
+                      await connectionResponse;
+                      let timer;
+                      try {
+                        await Promise.race([oauthNodesStarted, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("OAuth auxiliary read did not start")), 5000); })]);
+                      } finally { clearTimeout(timer); }
+                      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+                      await modal.getByRole("heading", { name: "Connected Successfully!", exact: true }).waitFor();
+                      await modal.getByRole("button", { name: "Done", exact: true }).click();
+                      await heading.waitFor({ state: "detached" });
+                      releaseOAuthNodes();
+                    };
                   } else if (isKiloOAuthLoading) {
                     await page.getByRole("button", { name: /OAuth/ }).click();
                     const heading = page.getByRole("heading", { name: "Connect Kilo Code", exact: true });
@@ -2003,6 +2052,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
               } finally {
                 if (releaseXaiForce) releaseXaiForce();
                 if (releaseDeviceAuth) releaseDeviceAuth();
+                if (releaseOAuthConnections) releaseOAuthConnections();
+                if (releaseOAuthNodes) releaseOAuthNodes();
                 if (releaseAuthorize) releaseAuthorize();
                 await context.close();
                 assert.deepEqual(unexpected, [], "unexpected network requests were blocked");

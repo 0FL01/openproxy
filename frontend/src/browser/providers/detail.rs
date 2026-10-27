@@ -738,6 +738,23 @@ async fn load_connections(
     result
 }
 
+async fn oauth_auxiliary_reads() -> Option<Vec<Value>> {
+    // Astro's fetchConnections waits for these alongside /api/providers,
+    // including their JSON bodies, before it closes a successful OAuth modal.
+    let (nodes, pools, settings) = futures_util::try_join!(
+        dashboard_get_no_store("/api/provider-nodes"),
+        dashboard_get_no_store("/api/proxy-pools?isActive=true"),
+        dashboard_get_no_store("/api/settings"),
+    )
+    .ok()?;
+    json_body(&nodes).await?;
+    let data = json_body(&pools).await?;
+    if settings.ok() {
+        json_body(&settings).await?;
+    }
+    (pools.ok() && data["proxyPools"].is_array()).then(|| array(&data, "proxyPools"))
+}
+
 fn force_xai_catalog(
     load: ModelLoad,
     connections: Signal<Vec<Value>>,
@@ -1012,6 +1029,7 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
     let edit_connection = use_signal(|| None::<Value>);
     let mut add_key = use_signal(|| None::<String>);
     let mut oauth_open = use_signal(|| None::<u64>);
+    let mut oauth_success = use_signal(|| None::<u64>);
     let mut oauth_generation = use_signal(|| 0_u64);
     let mut deleting = use_signal(|| false);
     let mut results = use_signal(HashMap::<String, ModelTest>::new);
@@ -1291,9 +1309,12 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
     let open_oauth = use_callback(move |()| {
         let next = (*oauth_generation.peek()).wrapping_add(1);
         oauth_generation.set(next);
+        oauth_success.set(None);
         oauth_open.set(Some(next));
     });
+    let oauth_provider = id.clone();
     let oauth_request = use_callback(move |work: oauth::OwnedRequest| {
+        let id = oauth_provider.clone();
         spawn(async move {
             let response = dashboard_request(work.method, &work.path, work.body.as_ref()).await;
             let result = match response {
@@ -1316,19 +1337,59 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
                 oauth::Completion::DevicePoll => data["success"] == true,
                 oauth::Completion::ProxyStatus => data["status"] == "done",
             });
-            if success {
-                refresh_after_connection.call(());
-                if let Some(popup) = work.popup {
-                    popup.after_success();
+            if !success {
+                let _ = work.reply.send(result);
+                return;
+            }
+            // A server-side status must not claim a dialog already processing
+            // its callback. A late success still reconciles the page below.
+            let show_success = *oauth_open.peek() == Some(work.attempt)
+                && !(matches!(work.completion, oauth::Completion::ProxyStatus)
+                    && work.claimed.as_ref().is_some_and(|claimed| claimed.get()));
+            if show_success {
+                if let Some(claimed) = &work.claimed {
+                    claimed.set(true);
                 }
-                if *oauth_open.peek() == Some(work.attempt)
-                    && !(matches!(work.completion, oauth::Completion::ProxyStatus)
-                        && work.claimed.as_ref().is_some_and(|claimed| claimed.get()))
-                {
-                    oauth_open.set(None);
+                oauth_success.set(Some(work.attempt));
+            }
+            if let Some(popup) = work.popup {
+                popup.after_success();
+            }
+            // Reply before reconciliation so the dialog's poll/exchange ends;
+            // this page-owned task continues even after Done or dismissal.
+            let _ = work.reply.send(result);
+            let current = (*connection_generation.peek()).wrapping_add(1);
+            let (_, auxiliary) = futures_util::join!(
+                load_connections(
+                    &id,
+                    connections,
+                    loading,
+                    connection_error,
+                    connection_generation,
+                ),
+                oauth_auxiliary_reads(),
+            );
+            if *connection_generation.peek() == current
+                && let Some(updated) = auxiliary
+            {
+                pools.set(updated);
+            }
+            if matches!(id.as_str(), "codex" | "commandcode" | "a6api" | "xai") {
+                if id == "xai" {
+                    let version = begin_xai_refresh(load.xai_refresh);
+                    let _ = queue_xai_catalog(load).await;
+                    finish_xai_refresh(load.xai_refresh, version, String::new());
+                } else {
+                    let version = next_catalog_version(load);
+                    fetch_catalog(&id, load, version).await;
                 }
             }
-            let _ = work.reply.send(result);
+            if show_success
+                && *oauth_open.peek() == Some(work.attempt)
+                && *oauth_success.peek() == Some(work.attempt)
+            {
+                oauth_open.set(None);
+            }
         });
     });
     // These callbacks own their tasks in the detail page, not a removable
@@ -2167,7 +2228,7 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
         if proxy_open() { ApplyProxyModal { pools: pools(), count: connection_count, busy: proxy_busy(), open: proxy_open, action: connection_action } }
         KeyModal { provider: add_key, pools, connections, provider_name: Some(name.clone()), on_refresh: refresh_after_connection, compatible }
         edit::EditConnection { provider_id: id.clone(), selected: edit_connection, pools, on_saved: refresh_after_connection, compatible }
-        if let Some(attempt) = oauth_open() { oauth::OAuthFlow { key: "{attempt}", provider: id.clone(), name: name.clone(), attempt, on_close: move |_| { if *oauth_open.peek() == Some(attempt) { oauth_open.set(None); } }, on_request: oauth_request } }
+        if let Some(attempt) = oauth_open() { oauth::OAuthFlow { key: "{attempt}", provider: id.clone(), name: name.clone(), attempt, success: oauth_success() == Some(attempt), on_close: move |_| { if *oauth_open.peek() == Some(attempt) { oauth_open.set(None); } }, on_request: oauth_request } }
         if codex_import_open() { codex_import::BulkImportCodex { on_close: move |_| codex_import_open.set(false), on_success: move |_| { codex_import_open.set(false); refresh_after_connection.call(()); } } }
     }
 }
