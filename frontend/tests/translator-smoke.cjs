@@ -86,6 +86,63 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
+    if (process.env.TRANSLATOR_INSERT_LINE_ONLY === "1") {
+      const text = '{\n  "text": "😺",\n  "other": []\n}';
+      const offset = text.indexOf("😺") + 2;
+      const cursor = () => reference ? page.evaluate(() => { const e = window.monaco.editor.getEditors()[0]; return e.getModel().getOffsetAt(e.getPosition()); }) : editor().evaluate(input => input.selectionStart);
+      if (reference) {
+        await page.evaluate(({ text, offset }) => { const e = window.monaco.editor.getEditors()[0]; e.setValue(text); e.setPosition(e.getModel().getPositionAt(offset)); e.focus(); }, { text, offset });
+        await settleReferenceJson();
+      } else { await editor().fill(text); await editor().evaluate((input, offset) => { input.setSelectionRange(offset, offset); input.focus(); }, offset); }
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.keyboard.press("Control+Enter");
+      const below = '{\n  "text": "😺",\n  \n  "other": []\n}';
+      assert.equal(await value(), below, "Insert Line Below retains the current JSON indentation");
+      assert.equal(await cursor(), below.indexOf("\n  \n") + 3);
+      await page.keyboard.press("Control+z");
+      assert.equal(await value(), text);
+      assert.equal(await cursor(), offset, "Undo restores the original cursor, not the line-end insertion point");
+      await page.keyboard.press("Control+Shift+z");
+      assert.equal(await value(), below);
+      assert.equal(await cursor(), below.indexOf("\n  \n") + 3);
+      await page.keyboard.press("Control+z");
+      await page.keyboard.press("Control+Shift+Enter");
+      assert.equal(await value(), '{\n    \n  "text": "😺",\n  "other": []\n}', "Insert Line Above uses the preceding JSON opener's indentation");
+      assert.equal(await cursor(), 6);
+      await page.keyboard.press("Control+z");
+      assert.equal(await value(), text);
+      assert.equal(await cursor(), offset);
+      await page.keyboard.press("Control+Home");
+      await page.keyboard.press("ArrowRight");
+      await page.keyboard.press("Control+Shift+Enter");
+      assert.equal(await value(), "\n" + text);
+      assert.equal(await cursor(), 0, "inserting above the first line leaves the cursor on the new empty first line");
+      if (reference) await settleReferenceJson();
+      await page.getByRole("button", { name: /Client Request/ }).click();
+      await page.getByRole("button", { name: /Provider Response/ }).click();
+      const plain = "  {\n    beta\nlast";
+      const range = [2, plain.indexOf("beta") + 3];
+      if (reference) {
+        await page.locator(".monaco-editor .view-lines").waitFor();
+        await page.evaluate(({ text, range }) => {
+          const e = window.monaco.editor.getEditors()[0]; e.setValue(text); const model = e.getModel();
+          const a = model.getPositionAt(range[0]); const b = model.getPositionAt(range[1]);
+          e.setSelection(new window.monaco.Selection(b.lineNumber, b.column, a.lineNumber, a.column)); e.focus();
+        }, { text: plain, range });
+      } else { await editor().fill(plain); await editor().evaluate((input, range) => { input.setSelectionRange(...range, "backward"); input.focus(); }, range); }
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.keyboard.press("Control+Enter");
+      assert.equal(await value(), "  {\n    \n    beta\nlast", "plaintext applies its default bracket indentation at the active end of a backward selection");
+      assert.equal(await cursor(), 8);
+      await page.keyboard.press("Control+z");
+      assert.equal(await value(), plain);
+      assert.equal(await cursor(), 2);
+      const restored = reference ? await page.evaluate(() => { const e = window.monaco.editor.getEditors()[0]; const s = e.getSelection(); return [e.getModel().getOffsetAt(s.getStartPosition()), e.getModel().getOffsetAt(s.getEndPosition())]; }) : await editor().evaluate(input => [input.selectionStart, input.selectionEnd]);
+      assert.deepEqual(restored, range, "Undo restores the original selected range");
+      assert.deepEqual(errors, []);
+      console.log("synthetic translator insert-line smoke passed");
+      return;
+    }
     if (process.env.TRANSLATOR_FORMAT_ONLY === "1") {
       const initial = '{"a":1e3,"a":-0.0,"text":"\\u0061","nested":[1,2]}';
       const expected = '{\n    "a": 1e3,\n    "a": -0.0,\n    "text": "\\u0061",\n    "nested": [\n        1,\n        2\n    ]\n}';
@@ -105,6 +162,12 @@ async function main() {
       await page.keyboard.press("Control+Shift+z");
       assert.equal(await value(), expected);
       assert.equal(await cursor(), expected.indexOf("1e3") + 1);
+      await page.keyboard.press("Control+Enter");
+      await page.keyboard.press("Control+z");
+      assert.equal(await value(), expected);
+      await page.keyboard.press("Control+z");
+      assert.equal(await value(), initial, "undoing a line insertion must retain the preceding formatting undo");
+      assert.equal(await cursor(), offset, "the earlier format's original cursor is still restored");
 
       const comments = '{\n// note {\n"one":[true,null],\n"two":2\n}';
       const formatted = '{\n    // note {\n    "one": [\n        true,\n        null\n    ],\n    "two": 2\n}';

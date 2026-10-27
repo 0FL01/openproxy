@@ -611,6 +611,90 @@ fn indent_json_newline(input: &web_sys::HtmlTextAreaElement) -> bool {
     !indentation.is_empty() && insert_text(input, start, end, &format!("\n{indentation}"))
 }
 
+fn insert_line(
+    input: &web_sys::HtmlTextAreaElement,
+    above: bool,
+    json: bool,
+) -> Option<NativeUndo> {
+    let before = input.value();
+    let start = input.selection_start().ok().flatten().unwrap_or_default();
+    let end = input.selection_end().ok().flatten().unwrap_or(start);
+    let direction = input
+        .selection_direction()
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let cursor = if direction == "backward" { start } else { end } as usize;
+    let units: Vec<_> = before.encode_utf16().collect();
+    let line_start = units[..cursor]
+        .iter()
+        .rposition(|ch| *ch == 10)
+        .map_or(0, |index| index + 1);
+    let position = if above {
+        line_start.saturating_sub(1)
+    } else {
+        cursor
+            + units[cursor..]
+                .iter()
+                .position(|ch| *ch == 10)
+                .unwrap_or(units.len() - cursor)
+    };
+    let prefix = String::from_utf16_lossy(&units[..position]);
+    let line = prefix.rsplit('\n').next().unwrap_or("");
+    let mut columns = line
+        .chars()
+        .take_while(|ch| matches!(ch, ' ' | '\t'))
+        .fold(0, |column, ch| {
+            column + if ch == '\t' { 4 - column % 4 } else { 1 }
+        });
+    if json {
+        let line_start = prefix.len() - line.len();
+        let mut offset = 0;
+        let mut last = None;
+        for (part, _) in json_tokens(&prefix) {
+            offset += part.len();
+            if offset > line_start
+                && !part.trim().is_empty()
+                && !part.starts_with("//")
+                && !part.starts_with("/*")
+            {
+                last = Some(part);
+            }
+        }
+        if matches!(last, Some("{" | "[")) {
+            columns += 4 - columns % 4;
+        }
+    } else if line.trim_end().ends_with(['{', '[', '(']) {
+        columns += 4 - columns % 4;
+    }
+    let at_start = above && line_start == 0;
+    let text = if at_start {
+        "\n".to_owned()
+    } else {
+        format!("\n{}", " ".repeat(columns))
+    };
+    if !insert_text(input, position as u32, position as u32, &text) {
+        return None;
+    }
+    let after_cursor = if at_start {
+        0
+    } else {
+        (position + text.len()) as u32
+    };
+    let _ = input.set_selection_range(after_cursor, after_cursor);
+    let after = input.value();
+    let edit = CompositionEdit::new(&before, &after);
+    Some(NativeUndo {
+        before,
+        after,
+        start,
+        end,
+        direction,
+        after_selection: Some((after_cursor, after_cursor, "none".into())),
+        edits: vec![edit],
+    })
+}
+
 fn character_top(line: &web_sys::HtmlElement, mut index: usize) -> Option<f64> {
     let children = line.child_nodes();
     for child in 0..children.length() {
@@ -1587,6 +1671,7 @@ fn Editor(
     let mut composition_start = use_signal(|| None::<NativeUndo>);
     let mut composition_undo = use_signal(|| None::<NativeUndo>);
     let mut format_undo = use_signal(|| None::<NativeUndo>);
+    let mut line_undo = use_signal(|| None::<NativeUndo>);
     let mut composition_extendable = use_signal(|| false);
     let mut composition_cursor = use_signal(|| None::<(u32, u32)>);
     let mut adjusting_history = use_signal(|| false);
@@ -2326,6 +2411,15 @@ fn Editor(
                                 format_chord.set(true);
                                 return;
                             }
+                            if control && !modifiers.alt() && event.key() == Key::Enter {
+                                event.prevent_default();
+                                if let Some(input) = textarea.peek().as_ref() && let Some(undo) = insert_line(input, modifiers.shift(), json) {
+                                    line_undo.set(Some(undo));
+                                    composition_extendable.set(false);
+                                    update_cursor.call(());
+                                }
+                                return;
+                            }
                             if json && !event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().alt() && let Some(input) = textarea.peek().clone() {
                                 let before = input.value();
                                 update_auto_pairs(&pair_text.peek(), &before, &mut auto_pairs.write());
@@ -2492,10 +2586,13 @@ fn Editor(
                             if input_type != "insertCompositionText" && value != *last_input.peek() { composition_extendable.set(false); }
                             let undo = input_type == "historyUndo";
                             let redo = input_type == "historyRedo";
-                            if (undo || redo) && let Some(group) = format_undo.peek().as_ref().filter(|group| {
+                            if (undo || redo) && let Some(group) = line_undo.peek().as_ref().filter(|group| {
                                 if undo { *last_input.peek() == group.after && value == group.before }
                                 else { *last_input.peek() == group.before && value == group.after }
-                            }).cloned().or_else(|| composition_undo.peek().clone())
+                            }).cloned().or_else(|| format_undo.peek().as_ref().filter(|group| {
+                                if undo { *last_input.peek() == group.after && value == group.before }
+                                else { *last_input.peek() == group.before && value == group.after }
+                            }).cloned()).or_else(|| composition_undo.peek().clone())
                                 && let Some(input) = textarea.peek().clone() {
                                 let edits: Vec<_> = if undo { group.edits.iter().rev().collect() } else { group.edits.iter().collect() };
                                 let initial = if undo { &group.after } else { &group.before };
