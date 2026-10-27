@@ -86,6 +86,70 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
+    if (process.env.TRANSLATOR_BRACKETS_ONLY === "1") {
+      const setText = async (index, text, offset) => {
+        if (reference) await page.evaluate(({ index, text, offset }) => {
+          const e = window.monaco.editor.getEditors()[index];
+          e.setValue(text); e.setPosition(e.getModel().getPositionAt(offset)); e.focus();
+        }, { index, text, offset });
+        else {
+          await editor().nth(index).fill(text);
+          await editor().nth(index).evaluate((input, offset) => {
+            input.setSelectionRange(offset, offset); input.dispatchEvent(new Event("select", { bubbles: true }));
+          }, offset);
+        }
+      };
+      const move = async (index, start, end = start) => {
+        if (reference) await page.evaluate(({ index, start, end }) => {
+          const e = window.monaco.editor.getEditors()[index], m = e.getModel();
+          e.setSelection(window.monaco.Range.fromPositions(m.getPositionAt(start), m.getPositionAt(end)));
+        }, { index, start, end });
+        else await editor().nth(index).evaluate((input, { start, end }) => {
+          input.setSelectionRange(start, end); input.dispatchEvent(new Event("select", { bubbles: true }));
+        }, { start, end });
+      };
+      const expectBrackets = (index, expected) => page.waitForFunction(({ reference, index, expected }) => {
+        if (reference) {
+          const model = window.monaco.editor.getEditors()[index]?.getModel();
+          return model && model.getAllDecorations().filter(d => d.options.description?.startsWith("bracket-match"))
+            .map(d => model.getValueInRange(d.range)).join("") === expected;
+        }
+        const input = document.querySelectorAll('[aria-label="Translator editor"]')[index];
+        return input && Array.from(input.parentElement.querySelectorAll("span.bracket-match"), span => span.textContent).join("") === expected;
+      }, { reference, index, expected });
+
+      const json = '{"a":[1,2],"str":"😺{x}"}';
+      await setText(0, json, json.indexOf("1") + 1);
+      await expectBrackets(0, "[]");
+      await move(0, json.indexOf("x"));
+      await expectBrackets(0, "{}"); // braces inside JSON strings are not structural
+      await move(0, json.indexOf("1"), json.indexOf("1") + 1);
+      await expectBrackets(0, "");
+      await move(0, json.indexOf("1") + 1);
+      await page.keyboard.press("Control+f");
+      const find = page.getByRole("dialog", { name: "Find / Replace" }).getByLabel("Find", { exact: true });
+      await find.waitFor();
+      await expectBrackets(0, "[]"); // Find is part of the same focused editor widget
+      await find.fill("2");
+      await expectBrackets(0, ""); // selecting a Find result removes the bracket decoration
+      await page.waitForFunction(reference => reference || Array.from(document.querySelectorAll("pre span"), span => getComputedStyle(span).boxShadow).every(shadow => shadow === "none"), reference);
+      await page.keyboard.press("Escape");
+      await page.getByRole("button", { name: /folder_open Load/ }).first().focus();
+      await expectBrackets(0, "");
+
+      if (reference) await settleReferenceJson();
+      await page.getByRole("button", { name: /Provider Response/ }).click();
+      if (reference) await page.locator(".monaco-editor .view-lines").nth(1).waitFor();
+      else await editor().nth(1).waitFor();
+      const plain = "x { [a] } (y)";
+      await setText(1, plain, plain.indexOf("a"));
+      await expectBrackets(1, "[]");
+      await move(1, plain.indexOf("y"));
+      await expectBrackets(1, "()");
+      assert.deepEqual(errors, []);
+      console.log("synthetic translator brackets smoke passed");
+      return;
+    }
     if (process.env.TRANSLATOR_PRESERVE_CASE_ONLY === "1") {
       const initial = '{"one":"cat CAT Cat cAt"}';
       if (reference) await page.evaluate(text => { const e = window.monaco.editor.getEditors()[0]; e.setValue(text); e.setPosition({ lineNumber: 1, column: 1 }); e.focus(); }, initial);

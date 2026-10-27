@@ -1318,18 +1318,72 @@ fn json_guides(token_lines: &[Vec<(&str, &str)>]) -> Vec<Vec<(usize, bool)>> {
     lines
 }
 
+fn matching_brackets(tokens: &[(&str, &str)], cursor: u32, json: bool) -> Vec<(u32, u32)> {
+    let mut stack = Vec::<(char, u32)>::new();
+    let mut pairs = Vec::new();
+    let mut offset = 0_u32;
+    for &(text, color) in tokens {
+        let structural = !json || matches!(color, "#ffd700" | "#da70d6" | "#179fff");
+        for ch in text.chars() {
+            if structural {
+                match ch {
+                    '{' | '[' | '(' if !json || ch != '(' => stack.push((ch, offset)),
+                    '}' | ']' | ')' if !json || ch != ')' => {
+                        let opening = match ch {
+                            '}' => '{',
+                            ']' => '[',
+                            _ => '(',
+                        };
+                        if let Some(index) = stack.iter().rposition(|(ch, _)| *ch == opening) {
+                            pairs.push((stack[index].1, offset));
+                            stack.truncate(index);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            offset += ch.len_utf16() as u32;
+        }
+    }
+    let near = pairs
+        .iter()
+        .filter_map(|&(open, close)| {
+            [open, close]
+                .into_iter()
+                .filter(|position| *position == cursor || *position + 1 == cursor)
+                .max()
+                .map(|position| (position, open, close))
+        })
+        .max_by_key(|(position, _, _)| *position)
+        .map(|(_, open, close)| (open, close));
+    let pair = near.or_else(|| {
+        pairs
+            .into_iter()
+            .filter(|(open, close)| *open < cursor && cursor <= *close)
+            .max_by_key(|(open, _)| *open)
+    });
+    pair.map_or_else(Vec::new, |(open, close)| {
+        vec![(open, open + 1), (close, close + 1)]
+    })
+}
+
+type HighlightedToken<'a> = (&'a str, &'static str, Option<usize>, bool);
+
 fn highlight_find_matches<'a>(
     lines: &[Vec<(&'a str, &'static str)>],
     matches: &[(u32, u32)],
-) -> Vec<Vec<(&'a str, &'static str, Option<usize>)>> {
+    brackets: &[(u32, u32)],
+) -> Vec<Vec<HighlightedToken<'a>>> {
     let mut result = Vec::with_capacity(lines.len());
     let mut offset = 0_u32;
     let mut match_index = 0;
+    let mut bracket_index = 0;
     for line in lines {
         let mut highlighted = Vec::new();
         for &(text, color) in line {
             let mut piece_start = 0;
             let mut piece_match = None;
+            let mut piece_bracket = false;
             for (byte, ch) in text.char_indices() {
                 while matches
                     .get(match_index)
@@ -1342,17 +1396,32 @@ fn highlight_find_matches<'a>(
                     .get(match_index)
                     .filter(|(start, finish)| *start < end && *finish > offset)
                     .map(|_| match_index);
-                if next_match != piece_match {
+                while brackets
+                    .get(bracket_index)
+                    .is_some_and(|(_, finish)| *finish <= offset)
+                {
+                    bracket_index += 1;
+                }
+                let next_bracket = brackets
+                    .get(bracket_index)
+                    .is_some_and(|(start, finish)| *start < end && *finish > offset);
+                if next_match != piece_match || next_bracket != piece_bracket {
                     if byte > piece_start {
-                        highlighted.push((&text[piece_start..byte], color, piece_match));
+                        highlighted.push((
+                            &text[piece_start..byte],
+                            color,
+                            piece_match,
+                            piece_bracket,
+                        ));
                     }
                     piece_start = byte;
                     piece_match = next_match;
+                    piece_bracket = next_bracket;
                 }
                 offset = end;
             }
             if piece_start < text.len() {
-                highlighted.push((&text[piece_start..], color, piece_match));
+                highlighted.push((&text[piece_start..], color, piece_match, piece_bracket));
             }
         }
         result.push(highlighted);
@@ -1489,6 +1558,8 @@ fn Editor(
     let mut active_line = use_signal(|| 0_usize);
     let mut active_visual_top = use_signal(|| 0_i32);
     let mut has_selection = use_signal(|| false);
+    let mut cursor = use_signal(|| 0_u32);
+    let mut widget_focused = use_signal(|| false);
     let mut scroll_top = use_signal(|| 0_i32);
     let mut applied_find_padding = use_signal(|| 0_i32);
     let find_padding = if find_open() {
@@ -1668,15 +1739,16 @@ fn Editor(
             {
                 composition_extendable.set(false);
             }
-            let cursor =
+            let position =
                 if input.selection_direction().ok().flatten().as_deref() == Some("backward") {
                     start
                 } else {
                     end
                 };
+            cursor.set(position);
             let value = input.value();
             let before = js_sys::JsString::from(value.as_str())
-                .slice(0, cursor)
+                .slice(0, position)
                 .as_string()
                 .unwrap_or_default();
             let line_number = before.bytes().filter(|byte| *byte == b'\n').count();
@@ -1768,6 +1840,7 @@ fn Editor(
                 let (start, end) = ranges[index];
                 let _ = input.set_selection_range(start, end);
                 current_find.set(Some((start, end)));
+                update_cursor.call(());
             }
         }
     });
@@ -1788,6 +1861,7 @@ fn Editor(
         {
             let _ = input.set_selection_range(start, end);
             current_find.set(Some((start, end)));
+            update_cursor.call(());
         }
     });
     let toggle_option = use_callback(move |option: u8| {
@@ -1934,6 +2008,7 @@ fn Editor(
             match_index.set(index);
             let _ = input.set_selection_range(ranges[index].0, ranges[index].1);
             current_find.set(Some(ranges[index]));
+            update_cursor.call(());
         } else {
             current_find.set(None);
         }
@@ -1951,6 +2026,11 @@ fn Editor(
         json_tokens(&value)
     } else {
         vec![(value.as_str(), "#d4d4d4")]
+    };
+    let brackets = if widget_focused() && !has_selection() {
+        matching_brackets(&tokens, cursor(), json)
+    } else {
+        Vec::new()
     };
     let mut lines = vec![Vec::new()];
     for (text, color) in tokens {
@@ -2051,8 +2131,9 @@ fn Editor(
     } else {
         None
     };
-    let highlighted =
-        (find_open() && !matches.is_empty()).then(|| highlight_find_matches(&lines, &matches));
+    let find_matches = if find_open() { matches.as_slice() } else { &[] };
+    let highlighted = (!find_matches.is_empty() || !brackets.is_empty())
+        .then(|| highlight_find_matches(&lines, find_matches, &brackets));
     let root_width = editor_width() + 76;
     let find_layout = if root_width <= 328 {
         "reduced narrow collapsed"
@@ -2066,6 +2147,8 @@ fn Editor(
     let replacing = if replace_open() { "replacing" } else { "" };
     rsx! {
         div { style: "height:400px;position:relative;background:#1e1e1e;color:#d4d4d4;",
+            onfocusin: move |_| { widget_focused.set(true); update_cursor.call(()); },
+            onfocusout: move |_| widget_focused.set(false),
             div { style: "position:relative;overflow:hidden;width:100%;height:400px;",
                 div { aria_hidden: "true", style: "position:absolute;transform:translate3d(0,0,0);contain:strict;top:0;height:400px;width:62px;background:#1e1e1e;font-family:'Droid Sans Mono',monospace;font-size:12px;line-height:16px;",
                     for line in 0..lines.len() {
@@ -2088,13 +2171,13 @@ fn Editor(
                                 }
                                 if line == active_line() && !has_selection() { div { style: "position:absolute;top:{active_visual_top}px;left:0;width:{current_line_width}px;height:16px;border:2px solid #282828;" } }
                                 if let Some(highlighted) = &highlighted {
-                                    for (index, (text, color, matched)) in highlighted[line].iter().enumerate() {
-                                        { let background = match matched { Some(index) if selected_match && *index == current_match => ";background:#515c6a;padding:1px 0", Some(_) => ";background:rgba(234,92,0,.33);padding:1px 0", None => "" }; rsx! {
-                                            span { key: "{index}", class: if matched.is_some() { "find-match" } else { "" }, style: "color:{color}{background}", "{text}" }
+                                    for (index, (text, color, matched, bracket)) in highlighted[line].iter().enumerate() {
+                                        { let background = match (matched, bracket) { (Some(index), true) if selected_match && *index == current_match => "linear-gradient(rgba(0,100,0,.1),rgba(0,100,0,.1)),#515c6a", (Some(_), true) => "linear-gradient(rgba(0,100,0,.1),rgba(0,100,0,.1)),rgba(234,92,0,.33)", (None, true) => "rgba(0,100,0,.1)", (Some(index), false) if selected_match && *index == current_match => "#515c6a", (Some(_), false) => "rgba(234,92,0,.33)", (None, false) => "transparent" }; let padding = if *bracket || matched.is_some() { "1px 0" } else { "0" }; let border = if *bracket { "inset 0 0 0 1px #888" } else { "none" }; let layer = if *bracket { "relative;z-index:1" } else { "static;z-index:auto" }; rsx! {
+                                            span { key: "{index}", class: if *bracket && matched.is_some() { "find-match bracket-match" } else if *bracket { "bracket-match" } else if matched.is_some() { "find-match" } else { "" }, style: "color:{color};background:{background};padding:{padding};box-shadow:{border};position:{layer}", "{text}" }
                                         } }
                                     }
                                 } else {
-                                    for (index, (text, color)) in segments.iter().enumerate() { span { key: "{index}", style: "color:{color}", "{text}" } }
+                                    for (index, (text, color)) in segments.iter().enumerate() { span { key: "{index}", class: "", style: "color:{color};background:transparent;padding:0;box-shadow:none;position:static;z-index:auto", "{text}" } }
                                 }
                             }
                             } }
