@@ -2008,7 +2008,7 @@ fn Editor(
                                 if line == active_line() && !has_selection() { div { style: "position:absolute;top:{active_visual_top}px;left:0;width:{current_line_width}px;height:16px;border:2px solid #282828;" } }
                                 if let Some(highlighted) = &highlighted {
                                     for (index, (text, color, matched)) in highlighted[line].iter().enumerate() {
-                                        { let background = match matched { Some(index) if selected_match && *index == current_match => ";background:#515c6a", Some(_) => ";background:rgba(234,92,0,.33)", None => "" }; rsx! {
+                                        { let background = match matched { Some(index) if selected_match && *index == current_match => ";background:#515c6a;padding:1px 0", Some(_) => ";background:rgba(234,92,0,.33);padding:1px 0", None => "" }; rsx! {
                                             span { key: "{index}", class: if matched.is_some() { "find-match" } else { "" }, style: "color:{color}{background}", "{text}" }
                                         } }
                                     }

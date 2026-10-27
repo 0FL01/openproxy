@@ -193,6 +193,12 @@ async function main() {
         const line = document.querySelector(reference ? ".monaco-editor .view-overlays .rangeHighlight" : ".find-range-highlight");
         return line && getComputedStyle(line).backgroundColor === "rgba(255, 255, 255, 0.04)";
       }, reference);
+      assert.equal(await page.evaluate(reference => {
+        const root = reference ? document.querySelector(".monaco-editor") : document.querySelector('textarea[aria-label="Translator editor"]').parentElement;
+        const line = root.querySelector(reference ? ".view-lines .view-line" : "pre > div").getBoundingClientRect();
+        const matches = [...root.querySelectorAll(reference ? ".view-overlays .findMatch, .view-overlays .currentFindMatch" : ".find-match")];
+        return matches.length === 2 && matches.every(element => { const rect = element.getBoundingClientRect(); return rect.top === line.top && rect.bottom === line.bottom; });
+      }, reference), true, "Find match backgrounds fill the visual line height");
       assert.deepEqual(await dialog.evaluate(element => [element.offsetWidth, element.offsetHeight]), [419, 33], "desktop Find panel matches the reference dimensions");
       assert.equal(await dialog.getByLabel("Find", { exact: true }).evaluate(element => element.offsetWidth), 167);
       const lineTop = ({ reference, expected }) => {
