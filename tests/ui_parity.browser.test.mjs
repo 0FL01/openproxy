@@ -231,7 +231,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
               tls.setDefaultCACertificates([...tls.getCACertificates("default"), await readFile("/opt/ui-browser/tls/ca.crt", "utf8")]);
               fixtureCaTrusted = true;
             }
-            const capture = async (colorScheme = theme) => {
+            const capture = async (colorScheme = theme, blockedPopup = false) => {
               const context = await browser.newContext({
                 viewport: { width: viewport.width, height: viewport.height },
                 deviceScaleFactor: 1,
@@ -329,14 +329,19 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 if (screen.action === "device-oauth" || isKiloOAuthStrict) await page.addInitScript(() => {
                   window.open = (...args) => { window.__fixtureOpened = args; return null; };
                 });
-                if (isManualOAuth) await page.addInitScript(() => {
-                  // Model an open popup without allowing navigation or network access.
+                if (isManualOAuth) await page.addInitScript((blocked) => {
+                  // Model open and blocked popups without navigation or network access.
                   window.open = (...args) => {
                     window.__fixtureOpened = args;
+                    if (blocked) return null;
                     window.__fixturePopup = { opener: null, closed: false, location: { href: "", origin: "https://fixture.invalid", pathname: "/authorize", search: "" }, close() { this.closed = true; } };
                     return window.__fixturePopup;
                   };
-                });
+                  Object.defineProperty(navigator.clipboard, "writeText", {
+                    configurable: true,
+                    value: async (value) => { window.__fixtureCopied = value; },
+                  });
+                }, blockedPopup);
                 if (screen.section === "quota") await page.addInitScript(() => localStorage.setItem("quotaAutoRefresh", "false"));
                 if (screen.storedTheme) {
                   await page.addInitScript((theme) => localStorage.setItem("theme", JSON.stringify({ state: { theme }, version: 0 })), screen.storedTheme);
@@ -1564,9 +1569,20 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       };
                     } else {
                       assert.equal(await page.evaluate(() => window.__fixtureOpened[0]), mode === "record" ? "https://fixture.invalid/authorize?client=synthetic" : "about:blank");
-                      if (mode === "compare") {
+                      if (mode === "compare" && !blockedPopup) {
                         assert.equal(await page.evaluate(() => window.__fixturePopup.location.href), "https://fixture.invalid/authorize?client=synthetic");
                         assert.equal(await page.evaluate(() => window.__fixturePopup.opener), null);
+                      }
+                      if (blockedPopup) {
+                        assert.equal(await page.evaluate(() => window.__fixturePopup), undefined);
+                        verifyAfterCapture = async () => {
+                          await modal.getByRole("button", { name: /Copy/ }).click();
+                          await page.waitForFunction(() => window.__fixtureCopied === "https://fixture.invalid/authorize?client=synthetic");
+                          await inputs.nth(1).fill(`${appUrl}/callback?code=fixture-manual&state=fixture-state`);
+                          assert(await modal.getByRole("button", { name: "Connect", exact: true }).isEnabled(), "manual completion remains available after popup blocking");
+                          await modal.getByRole("button", { name: "Cancel", exact: true }).press("Enter");
+                          await heading.waitFor({ state: "detached" });
+                        };
                       }
                       await page.waitForLoadState("networkidle");
                     }
@@ -2082,6 +2098,19 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
               await writeFile(join(artifactDir, `${name}-second.png`), other);
             }
             assert.equal(differingPixels, 0, `${name}: differing pixels; see ${diff}`);
+            if (isManualOAuth && !isOAuthLoading) {
+              // Popup blocking does not change Astro's manual form. Verify it
+              // against the same reference rather than duplicate four PNGs.
+              const blocked = await capture(theme, true);
+              const blockedPath = join(scratch, `${name}-blocked.png`);
+              const blockedDiff = join(artifactDir, `${name}-blocked-diff.png`);
+              await writeFile(blockedPath, blocked);
+              const comparison = spawnSync("compare", ["-metric", "AE", blockedPath, second, blockedDiff], { encoding: "utf8" });
+              if (comparison.error) throw comparison.error;
+              assert(comparison.status === 0 || comparison.status === 1, `ImageMagick compare failed: ${comparison.stderr}`);
+              await writeFile(join(artifactDir, `${name}-blocked-actual.png`), blocked);
+              assert.equal(Number(comparison.stderr.trim()), 0, `${name}: blocked popup differs; see ${blockedDiff}`);
+            }
             if (screen.section === "callback") {
               // Astro's standalone callback is always dark. Verify both OS color
               // schemes against the same unmasked reference, not duplicate PNGs.

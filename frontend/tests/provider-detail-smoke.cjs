@@ -1035,7 +1035,6 @@ async function runOAuthCopyFixture(page, origin) {
   await page.getByRole("button", { name: /Add Connection/ }).click();
   dialog = page.getByRole("dialog", { name: "Connect Claude" });
   await waitForOAuthReady(dialog);
-  await dialog.getByRole("button", { name: "Open Authorization" }).click();
   assert.equal(await page.evaluate(() => window.fixtureOpenCalls.length), previousOpens, "unsafe authorization URLs are never opened");
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await dialog.waitFor({ state: "detached" });
@@ -1955,12 +1954,14 @@ async function runPopupFixture(page, origin) {
     await page.getByRole("button", { name: /^add Add(?: Connection)?$/ }).click();
     modal = page.getByRole("dialog", { name: "Connect Claude" });
     await waitForOAuthReady(modal);
-    const openButton = modal.getByRole("button", { name: "Open Authorization" });
-    await openButton.waitFor();
+    assert.equal(await modal.getByRole("button", { name: /Copy$/ }).isEnabled(), true, "blocked popups retain the reference's manual URL copy fallback");
+    await modal.getByRole("button", { name: "Cancel", exact: true }).click();
+    await modal.waitFor({ state: "detached" });
     const blockedEvent = page.waitForEvent("popup");
-    await openButton.click();
+    await page.getByRole("button", { name: /^add Add(?: Connection)?$/ }).click();
     popup = await blockedEvent;
     await popup.waitForURL(`${providerOrigin}/authorize`);
+    await waitForOAuthReady(modal);
     assert.equal(await popup.evaluate(() => window.opener), null);
     auth = state.popupAuthorizations.at(-1);
     const before = exchanges("claude").length;

@@ -778,7 +778,6 @@ pub(super) fn OAuthFlow(
                             }
                             Button { label: "Copy".to_owned(), variant: "secondary", icon: if copied() == "auth_url" { "check".to_owned() } else { "content_copy".to_owned() }, disabled: text(&state(), "authUrl").is_empty(), onclick: move |_| copy_text(text(&state(), "authUrl").to_owned(), "auth_url".into(), copied, generation) }
                         }
-                        if !state().is_null() && popup().is_none() { Button { label: "Open Authorization".to_owned(), variant: "secondary", onclick: move |_| popup.set(open_auth_popup(text(&state(), "authUrl"))) } }
                     }
                     div {
                         p { class: "text-sm font-medium mb-2",
