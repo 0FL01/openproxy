@@ -325,6 +325,15 @@ initial empty dialog, not parsing, validation, import, results, OAuth, persisten
 or real-backend behavior. These are Astro references, not a claim of Dioxus
 parity.
 
+## Codex manual OAuth dialog slice
+
+`UI_PARITY_SECTION=provider-codex-oauth` selects four desktop/mobile,
+light/dark captures of the manual authorization dialog. The authorize and proxy
+responses are synthetic; a stub popup remains open without navigating or
+contacting a provider. The test checks the instructions, disabled Connect
+button, callback placeholder and popup target. A blocked popup and the remaining
+OAuth states are not visualized by this scenario.
+
 ## OAuth callback slice
 
 `UI_PARITY_SECTION=callback` records ten captures of the standalone Astro

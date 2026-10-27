@@ -140,7 +140,7 @@ const server = http.createServer(async (req, res) => {
     if (/^\/api\/oauth\/(claude|cline|xai|codex)\/authorize$/.test(url.pathname)) {
       const oauthState = state.callbackOnly ? `fixture-state-${state.callbackAuthCounter = (state.callbackAuthCounter || 0) + 1}` : "fixture-state";
       if (state.popupOnly) state.popupAuthorizations.push({ provider: url.pathname.split("/")[3], redirectUri: url.searchParams.get("redirect_uri"), state: oauthState });
-      return respond(200, { authUrl: state.popupOnly ? `${state.popupProviderOrigin}/authorize` : `http://127.0.0.1:${server.address().port}/fixture-authorize`, codeVerifier: "fixture-verifier", state: oauthState });
+      return respond(200, { authUrl: state.popupOnly ? `${state.popupProviderOrigin}/authorize` : (state.manualAuthUrl ?? `http://127.0.0.1:${server.address().port}/fixture-authorize`), codeVerifier: "fixture-verifier", state: oauthState });
     }
     if (/^\/api\/oauth\/(xai|codex)\/start-proxy$/.test(url.pathname)) {
       state.proxyStarts = (state.proxyStarts || 0) + 1;
@@ -999,6 +999,9 @@ async function runOAuthCopyFixture(page, origin) {
   await page.getByRole("button", { name: /Add Connection/ }).click();
   let dialog = page.getByRole("dialog", { name: "Connect Claude" });
   await dialog.getByLabel("Authorization URL").waitFor();
+  await dialog.getByRole("status").getByText("Waiting for popup authorization…", { exact: true }).waitFor();
+  await dialog.getByText("Step 1: Open this URL in your browser", { exact: true }).waitFor();
+  await dialog.getByText("Step 2: Paste the callback URL here", { exact: true }).waitFor();
   const authUrl = `${origin}/fixture-authorize`;
   assert.equal(await dialog.getByLabel("Authorization URL").inputValue(), authUrl);
   let copy = dialog.getByRole("button", { name: /Copy$/ });
@@ -1007,10 +1010,22 @@ async function runOAuthCopyFixture(page, origin) {
   await icon(copy, "check").waitFor();
   await page.waitForFunction(value => navigator.clipboard.readText().then(text => text === value), authUrl);
   assert.equal(await dialog.getByLabel("Callback URL").inputValue(), "");
+  assert.equal(await dialog.getByLabel("Callback URL").getAttribute("placeholder"), `${origin}/callback?code=...`);
   assert.equal(await dialog.getByRole("button", { name: "Connect", exact: true }).isDisabled(), true);
   await icon(copy, "content_copy").waitFor({ timeout: 5000 });
-  await dialog.getByRole("button", { name: "Close" }).click();
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await dialog.waitFor({ state: "detached" });
+
+  state.manualAuthUrl = "javascript:fixture";
+  const previousOpens = await page.evaluate(() => window.fixtureOpenCalls.length);
+  await page.getByRole("button", { name: /Add Connection/ }).click();
+  dialog = page.getByRole("dialog", { name: "Connect Claude" });
+  await dialog.getByLabel("Authorization URL").waitFor();
+  await dialog.getByRole("button", { name: "Open Authorization" }).click();
+  assert.equal(await page.evaluate(() => window.fixtureOpenCalls.length), previousOpens, "unsafe authorization URLs are never opened");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await dialog.waitFor({ state: "detached" });
+  delete state.manualAuthUrl;
 
   const base = `${origin}/fixture-verify`;
   const complete = `${base}?user_code=FIXTURE-123`;

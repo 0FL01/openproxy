@@ -692,6 +692,14 @@ pub(super) fn OAuthFlow(
             .unwrap_or_else(|| text(&data, "verification_uri"))
             .to_owned()
     };
+    let manual_placeholder = if provider == "xai" {
+        "http://127.0.0.1:56121/callback?code=... or copied code".to_owned()
+    } else {
+        web_sys::window()
+            .and_then(|window| window.location().origin().ok())
+            .map(|origin| format!("{origin}/callback?code=..."))
+            .unwrap_or_else(|| "/callback?code=...".to_owned())
+    };
     rsx! { Modal { title, large: true, on_close,
         div { class: "flex flex-col gap-4",
             if !error().is_empty() { div { role: "alert", class: "text-sm text-red-500", "{error}" } Button { label: "Retry".to_owned(), variant: "secondary", onclick: move |_| flow.restart() } }
@@ -727,14 +735,44 @@ pub(super) fn OAuthFlow(
                 }
             } else if state().is_null() { p { class: "text-sm text-text-muted", "Starting authorization..." } }
             else {
-                p { class: "text-sm", "Open this URL in your browser, then paste the callback URL below." }
-                div { class: "flex gap-2",
-                    input { r#type: "text", readonly: true, aria_label: "Authorization URL", value: "{text(&state(), \"authUrl\")}", class: "{INPUT_CLASS} min-w-0" }
-                    Button { label: "Copy".to_owned(), variant: "secondary", icon: if copied() == "auth_url" { "check".to_owned() } else { "content_copy".to_owned() }, disabled: text(&state(), "authUrl").is_empty(), onclick: move |_| copy_text(text(&state(), "authUrl").to_owned(), "auth_url".into(), copied, generation) }
+                div { class: "flex items-center gap-2 px-3 py-2 border border-border rounded-lg bg-sidebar/50", role: "status",
+                    span { aria_hidden: "true", class: "material-symbols-outlined text-base text-primary animate-spin", "progress_activity" }
+                    span { class: "text-sm", if provider == "xai" { "Waiting for Grok Build OAuth…" } else { "Waiting for popup authorization…" } }
                 }
-                if popup().is_none() { Button { label: "Open Authorization".to_owned(), variant: "secondary", onclick: move |_| popup.set(open_auth_popup(text(&state(), "authUrl"))) } }
-                input { r#type: "text", aria_label: "Callback URL", placeholder: if provider == "xai" { "http://127.0.0.1:56121/callback?code=... or copied code" } else { "http://localhost/callback?code=..." }, value: "{callback}", class: INPUT_CLASS, oninput: move |e| callback.set(e.value()) }
-                Button { label: if submitting() { "Connecting...".to_owned() } else { "Connect".to_owned() }, disabled: submitting() || state().is_null() || js_trim(&callback()).is_empty(), onclick: { let provider = provider.clone(); let claimed = claimed.clone(); move |_| {
+                div { class: "flex items-center gap-3 my-1",
+                    div { class: "flex-1 h-px bg-border" }
+                    span { class: "text-xs text-text-muted uppercase tracking-wider", "Or paste callback URL manually" }
+                    div { class: "flex-1 h-px bg-border" }
+                }
+                div { class: "space-y-4",
+                    div {
+                        p { class: "text-sm font-medium mb-2", if provider == "xai" { "Step 1: Open this Grok Build OAuth URL in your browser" } else { "Step 1: Open this URL in your browser" } }
+                        div { class: "flex gap-2",
+                            div { class: "flex flex-col gap-1.5 flex-1 font-mono text-xs",
+                                div { class: "relative",
+                                    input { r#type: "text", readonly: true, aria_label: "Authorization URL", value: "{text(&state(), \"authUrl\")}", class: INPUT_CLASS }
+                                }
+                            }
+                            Button { label: "Copy".to_owned(), variant: "secondary", icon: if copied() == "auth_url" { "check".to_owned() } else { "content_copy".to_owned() }, disabled: text(&state(), "authUrl").is_empty(), onclick: move |_| copy_text(text(&state(), "authUrl").to_owned(), "auth_url".into(), copied, generation) }
+                        }
+                        if popup().is_none() { Button { label: "Open Authorization".to_owned(), variant: "secondary", onclick: move |_| popup.set(open_auth_popup(text(&state(), "authUrl"))) } }
+                    }
+                    div {
+                        p { class: "text-sm font-medium mb-2",
+                            "Step 2: Paste the "
+                            if provider == "xai" { "callback URL or copied code" } else { "callback URL" }
+                            " here"
+                        }
+                        p { class: "text-xs text-text-muted mb-2", if provider == "xai" { "If xAI shows a code instead of redirecting, paste that code here." } else { "After authorization, copy the full URL from your browser." } }
+                        div { class: "flex flex-col gap-1.5 font-mono text-xs",
+                            div { class: "relative",
+                                input { r#type: "text", aria_label: "Callback URL", placeholder: "{manual_placeholder}", value: "{callback}", class: INPUT_CLASS, oninput: move |e| callback.set(e.value()) }
+                            }
+                        }
+                    }
+                }
+                div { class: "flex gap-2",
+                Button { label: if submitting() { "Connecting...".to_owned() } else { "Connect".to_owned() }, full_width: true, disabled: submitting() || state().is_null() || js_trim(&callback()).is_empty(), onclick: { let provider = provider.clone(); let claimed = claimed.clone(); move |_| {
                     if submitting() || claimed.get() { return; }
                     let input = js_trim(&callback()); let auth = state(); let provider = provider.clone();
                     let raw = input.starts_with("eyJ") && input.contains('.') || provider == "claude" && !input.contains("://");
@@ -753,8 +791,10 @@ pub(super) fn OAuthFlow(
                         submitting.set(false);
                     });
                 } } }
+                Button { label: "Cancel".to_owned(), variant: "ghost", full_width: true, onclick: move |_| on_close.call(()) }
+                }
             }
-            if !device || state().is_null() || !error().is_empty() { Button { label: "Cancel".to_owned(), variant: "ghost", onclick: move |_| on_close.call(()) } }
+            if state().is_null() || !error().is_empty() { Button { label: "Cancel".to_owned(), variant: "ghost", onclick: move |_| on_close.call(()) } }
         }
     } }
 }

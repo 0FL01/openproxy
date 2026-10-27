@@ -102,6 +102,7 @@ const screens = [
   { section: "provider-codex-autoping", name: "off" },
   { section: "provider-codex-autoping", name: "on" },
   { section: "provider-codex-bulk-add", name: "dialog" },
+  { section: "provider-codex-oauth", name: "manual" },
   { section: "provider-openrouter", name: "suggested" },
   { section: "provider-xai", name: "ready" },
   { section: "provider-xai", name: "pending" },
@@ -202,7 +203,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
           if (screen.desktopOnly && viewport.name !== "desktop") continue;
           if (screen.colorScheme && screen.colorScheme !== theme) continue;
           const name = `${screen.section}-${screen.name}-${viewport.name}-${theme}`;
-          const isCodexDetail = ["provider-codex-autoping", "provider-codex-bulk-add"].includes(screen.section);
+          const isManualOAuth = screen.section === "provider-codex-oauth";
+          const isCodexDetail = ["provider-codex-autoping", "provider-codex-bulk-add", "provider-codex-oauth"].includes(screen.section);
           const isOpenRouter = screen.section === "provider-openrouter";
           const isXaiDetail = screen.section === "provider-xai";
           await t.test(name, async () => {
@@ -295,6 +297,14 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 }
                 if (screen.action === "device-oauth") await page.addInitScript(() => {
                   window.open = (...args) => { window.__fixtureOpened = args; return null; };
+                });
+                if (isManualOAuth) await page.addInitScript(() => {
+                  // Model an open popup without allowing navigation or network access.
+                  window.open = (...args) => {
+                    window.__fixtureOpened = args;
+                    window.__fixturePopup = { opener: null, closed: false, location: { href: "", origin: "https://fixture.invalid", pathname: "/authorize", search: "" }, close() { this.closed = true; } };
+                    return window.__fixturePopup;
+                  };
                 });
                 if (screen.section === "quota") await page.addInitScript(() => localStorage.setItem("quotaAutoRefresh", "false"));
                 if (screen.storedTheme) {
@@ -413,7 +423,9 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   const codexGet = isCodexDetail && method === "GET" && (
                     (!url.search && ["/api/auth/status", "/api/settings", "/api/build", "/api/catalog", "/api/providers", "/api/provider-nodes", "/api/providers/filters", "/api/models", "/api/models/custom", "/api/models/alias", "/api/models/favorites", "/api/oauth/codex/stop-proxy"].includes(path)) ||
                     (path === "/api/proxy-pools" && url.search === "?isActive=true") ||
-                    (path === "/api/models/disabled" && ["?providerAlias=", "?providerAlias=cx"].includes(url.search))
+                    (path === "/api/models/disabled" && ["?providerAlias=", "?providerAlias=cx"].includes(url.search)) ||
+                    (isManualOAuth && path === "/api/oauth/codex/authorize" && [...url.searchParams].length === 1 && url.searchParams.get("redirect_uri") === "http://localhost:1455/auth/callback") ||
+                    (isManualOAuth && path === "/api/oauth/codex/start-proxy" && [...url.searchParams].length === 4 && url.searchParams.get("app_port") === "4623" && url.searchParams.get("state") === "fixture-state" && url.searchParams.get("code_verifier") === "fixture-verifier" && url.searchParams.get("redirect_uri") === "http://localhost:1455/auth/callback")
                   );
                   const routerGet = isOpenRouter && method === "GET" && (
                     (!url.search && ["/api/auth/status", "/api/settings", "/api/build", "/api/catalog", "/api/providers", "/api/provider-nodes", "/api/providers/filters", "/api/models", "/api/models/custom", "/api/models/alias", "/api/models/favorites"].includes(path)) ||
@@ -474,6 +486,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   let body = {};
                   const headers = {};
                   if (translatorRequest) return route.fulfill({ json: { success: false, error: "Synthetic detection failure" } });
+                  if (isManualOAuth && path === "/api/oauth/codex/authorize") return route.fulfill({ json: { authUrl: "https://fixture.invalid/authorize?client=synthetic", state: "fixture-state", codeVerifier: "fixture-verifier" } });
+                  if (isManualOAuth && path === "/api/oauth/codex/start-proxy") return route.fulfill({ json: { success: true, serverSide: false } });
                   if (screen.action === "device-oauth" && path === "/api/oauth/kilocode/device-code") return route.fulfill({ json: {
                     device_code: "fixture-device", user_code: "ABCD-EFGH", verification_uri: "https://fixture.example.invalid/login",
                     verification_uri_complete: "https://fixture.example.invalid/login?user_code=ABCD-EFGH", interval: 300, expires_in: 1200,
@@ -1363,6 +1377,30 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     assert.match(await input.getAttribute("placeholder"), /"auth_mode": "chatgpt"/, "expected the built-in example placeholder");
                     assert(await page.getByRole("button", { name: "Import All", exact: true }).isDisabled());
                     assert(await page.getByRole("button", { name: "Close", exact: true }).filter({ hasText: /^Close$/ }).isEnabled());
+                    await page.waitForLoadState("networkidle");
+                  }
+                  if (isManualOAuth) {
+                    await page.getByRole("button", { name: /^add Add$/ }).click();
+                    const heading = page.getByRole("heading", { name: "Connect OpenAI Codex", exact: true });
+                    await heading.waitFor();
+                    const modal = heading.locator("../../..");
+                    await modal.getByText("Waiting for popup authorization…", { exact: true }).waitFor();
+                    await modal.getByText("Step 1: Open this URL in your browser", { exact: true }).waitFor();
+                    await modal.getByText("Step 2: Paste the callback URL here", { exact: true }).waitFor();
+                    const inputs = modal.locator("input");
+                    assert.equal(await inputs.count(), 2);
+                    assert.equal(await inputs.nth(0).inputValue(), "https://fixture.invalid/authorize?client=synthetic");
+                    assert.equal(await inputs.nth(0).evaluate((input) => input.readOnly), true);
+                    assert.equal(await inputs.nth(1).getAttribute("placeholder"), `${appUrl}/callback?code=...`);
+                    assert.equal(await inputs.nth(1).inputValue(), "");
+                    assert(await modal.getByRole("button", { name: "Connect", exact: true }).isDisabled());
+                    assert(await modal.getByRole("button", { name: "Cancel", exact: true }).isEnabled());
+                    assert.equal(await modal.getByRole("button", { name: "Open Authorization", exact: true }).count(), 0, "the synthetic popup remains open");
+                    assert.equal(await page.evaluate(() => window.__fixtureOpened[0]), mode === "record" ? "https://fixture.invalid/authorize?client=synthetic" : "about:blank");
+                    if (mode === "compare") {
+                      assert.equal(await page.evaluate(() => window.__fixturePopup.location.href), "https://fixture.invalid/authorize?client=synthetic");
+                      assert.equal(await page.evaluate(() => window.__fixturePopup.opener), null);
+                    }
                     await page.waitForLoadState("networkidle");
                   }
                   await page.mouse.move(1, 1);
