@@ -4,7 +4,7 @@ use super::{
     Button, Modal, QuotaResult, Toast, Value,
 };
 use dioxus::prelude::*;
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 
 #[derive(Clone, Default, PartialEq)]
 pub(super) struct State {
@@ -181,6 +181,7 @@ pub(super) fn Buttons(
 pub(super) fn Dialogs(
     mut state: Signal<State>,
     mut quotas: Signal<HashMap<String, QuotaResult>>,
+    catalog: Signal<Rc<Value>>,
 ) -> Element {
     let toasts = use_context::<Signal<Vec<Toast>>>();
     let current = state();
@@ -201,7 +202,7 @@ pub(super) fn Dialogs(
                                 Err(_) => Err("Failed to fetch".to_owned()),
                             };
                             match result {
-                                Ok(data) => { notify(toasts, if data["localOnly"] == true { "Local Codex rate-limit state cleared" } else { "Codex rate-limit reset credit used" }, false); fetch_quota(id, quotas).await; }
+                                Ok(data) => { notify(toasts, if data["localOnly"] == true { "Local Codex rate-limit state cleared" } else { "Codex rate-limit reset credit used" }, false); fetch_quota(id, quotas, catalog).await; }
                                 Err(error) => { quotas.write().entry(id).or_default().error = error.clone(); notify(toasts, &error, true); }
                             }
                             let mut current = state.write(); current.resetting = None; current.confirmation = None;

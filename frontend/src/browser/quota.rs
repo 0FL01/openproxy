@@ -15,7 +15,7 @@ use super::{
 use dioxus::prelude::*;
 use gloo_timers::future::TimeoutFuture;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 
 const SUPPORTED: &[&str] = &[
     "claude",
@@ -64,6 +64,7 @@ fn encoded(value: &str) -> String {
 struct QuotaResult {
     loading: bool,
     data: Option<Value>,
+    catalog: Rc<Value>,
     error: String,
 }
 
@@ -84,18 +85,25 @@ async fn connections() -> Vec<Value> {
     }
 }
 
-async fn fetch_quota(id: String, mut quotas: Signal<HashMap<String, QuotaResult>>) {
+async fn fetch_quota(
+    id: String,
+    mut quotas: Signal<HashMap<String, QuotaResult>>,
+    catalog: Signal<Rc<Value>>,
+) {
     quotas.write().entry(id.clone()).or_default().loading = true;
-    let previous = quotas.peek().get(&id).and_then(|quota| quota.data.clone());
+    let previous = quotas.peek().get(&id).cloned().unwrap_or_default();
     let path = format!("/api/usage/{}", encoded(&id));
     let result = match dashboard_request("GET", &path, None).await {
         Ok(response) if response.ok() => QuotaResult {
             data: json_body(&response).await,
+            // Astro parses each quota response against the catalog available at that moment.
+            catalog: catalog.peek().clone(),
             ..Default::default()
         },
         Ok(response) if response.status() == 404 => QuotaResult {
-            data: previous,
-            ..Default::default()
+            loading: false,
+            error: String::new(),
+            ..previous
         },
         Ok(response) => {
             let status = response.status();
@@ -109,16 +117,16 @@ async fn fetch_quota(id: String, mut quotas: Signal<HashMap<String, QuotaResult>
                 }
             } else {
                 QuotaResult {
-                    data: previous,
+                    loading: false,
                     error: format!("HTTP {status}: {message}"),
-                    ..Default::default()
+                    ..previous
                 }
             }
         }
         Err(_) => QuotaResult {
-            data: previous,
+            loading: false,
             error: "Failed to fetch".into(),
-            ..Default::default()
+            ..previous
         },
     };
     quotas.write().insert(id, result);
@@ -129,6 +137,7 @@ async fn refresh_all(
     mut quotas: Signal<HashMap<String, QuotaResult>>,
     mut loading: Signal<bool>,
     mut refreshing: Signal<bool>,
+    catalog: Signal<Rc<Value>>,
 ) {
     if *refreshing.peek() {
         return;
@@ -148,11 +157,12 @@ async fn refresh_all(
     }
     rows.set(current);
     loading.set(false);
-    futures_util::future::join_all(ids.into_iter().map(|id| fetch_quota(id, quotas))).await;
+    futures_util::future::join_all(ids.into_iter().map(|id| fetch_quota(id, quotas, catalog)))
+        .await;
     refreshing.set(false);
 }
 
-fn quota_entries(provider: &str, data: &Value) -> Vec<Value> {
+fn quota_entries(provider: &str, data: &Value, catalog: &Value) -> Vec<Value> {
     let Some(entries) = data["quotas"].as_object() else {
         return if provider == "claude" && data["message"].is_string() {
             vec![json!({"name":"error","used":0,"total":0})]
@@ -160,8 +170,34 @@ fn quota_entries(provider: &str, data: &Value) -> Vec<Value> {
             Vec::new()
         };
     };
+    let alias = catalog["providerIdToAlias"][provider]
+        .as_str()
+        .unwrap_or(provider);
+    let models = catalog["providerModels"].as_array().and_then(|providers| {
+        providers
+            .iter()
+            .find(|entry| text(entry, "alias") == alias)
+            .and_then(|entry| entry["models"].as_array())
+    });
+    let mut entries: Vec<_> = entries.iter().collect();
+    if let Some(models) = models.filter(|models| !models.is_empty()) {
+        entries.sort_by_key(|(name, value)| {
+            let key = if provider == "commandcode" {
+                value["label"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(name)
+            } else {
+                name
+            };
+            models
+                .iter()
+                .position(|model| text(model, "id") == key)
+                .unwrap_or(999)
+        });
+    }
     entries
-        .iter()
+        .into_iter()
         .filter_map(|(name, value)| {
             let mut quota = value.as_object()?.clone();
             if provider == "commandcode" {
@@ -302,8 +338,8 @@ fn reset_display(quota: &Value) -> String {
 }
 
 #[component]
-fn QuotaTable(provider: String, data: Value) -> Element {
-    let entries = quota_entries(&provider, &data);
+fn QuotaTable(provider: String, data: Value, catalog: Rc<Value>) -> Element {
+    let entries = quota_entries(&provider, &data, &catalog);
     rsx! {
         if !entries.is_empty() { div { class: "overflow-x-auto", table { class: "w-full table-fixed text-left", tbody {
             for (index, quota) in entries.into_iter().enumerate() {
@@ -356,7 +392,7 @@ fn QuotaCard(
         provider.chars().take(2).collect::<String>().to_uppercase()
     };
     let data = quota.data.unwrap_or_default();
-    let entries = quota_entries(&provider, &data);
+    let entries = quota_entries(&provider, &data, &quota.catalog);
     let opacity = if connection["isActive"] == false {
         "opacity-60"
     } else {
@@ -398,7 +434,7 @@ fn QuotaCard(
                     div { class: "inline-flex items-center pl-0.5", title: if active { "Disable connection" } else { "Enable connection" }, Toggle { checked: active, small: true, disabled: busy, label: if active { "Disable connection".to_owned() } else { "Enable connection".to_owned() }, onchange: { let id = id.clone(); move |next| toggle.call((id.clone(), next)) } } }
                 }
             } }
-            div { class: "px-2 py-1.5", if quota.loading { div { class: "text-center py-5 text-text-muted", span { class: "material-symbols-outlined text-[28px] animate-spin", "progress_activity" } } } else if !quota.error.is_empty() { div { class: "text-center py-5", span { class: "material-symbols-outlined text-[28px] text-red-500", "error" } p { class: "mt-1.5 text-xs text-text-muted", "{quota.error}" } } } else if let Some(message) = data["message"].as_str().filter(|m| !m.is_empty() && entries.is_empty()) { div { class: "text-center py-5", p { class: "text-xs text-text-muted", "{message}" } } } else { div { class: "space-y-2", if let Some(message) = data["message"].as_str().filter(|m| !m.is_empty()) { p { class: "text-[11px] text-text-muted", "{message}" } } QuotaTable { provider: provider.clone(), data } } } }
+            div { class: "px-2 py-1.5", if quota.loading { div { class: "text-center py-5 text-text-muted", span { class: "material-symbols-outlined text-[28px] animate-spin", "progress_activity" } } } else if !quota.error.is_empty() { div { class: "text-center py-5", span { class: "material-symbols-outlined text-[28px] text-red-500", "error" } p { class: "mt-1.5 text-xs text-text-muted", "{quota.error}" } } } else if let Some(message) = data["message"].as_str().filter(|m| !m.is_empty() && entries.is_empty()) { div { class: "text-center py-5", p { class: "text-xs text-text-muted", "{message}" } } } else { div { class: "space-y-2", if let Some(message) = data["message"].as_str().filter(|m| !m.is_empty()) { p { class: "text-[11px] text-text-muted", "{message}" } } QuotaTable { provider: provider.clone(), data, catalog: quota.catalog.clone() } } } }
         }
     }
 }
@@ -407,6 +443,7 @@ fn QuotaCard(
 pub(super) fn QuotaPage() -> Element {
     let mut rows = use_signal(Vec::<Value>::new);
     let mut quotas = use_signal(HashMap::<String, QuotaResult>::new);
+    let mut catalog = use_signal(|| Rc::new(Value::Null));
     let loading = use_signal(|| true);
     let refreshing = use_signal(|| false);
     let mut auto_refresh = use_signal(|| {
@@ -428,6 +465,14 @@ pub(super) fn QuotaPage() -> Element {
     let mut ping = use_signal(AutoPing::default);
     let codex = use_signal(codex::State::default);
     let toasts = use_context::<Signal<Vec<Toast>>>();
+    use_future(move || async move {
+        if let Ok(response) = dashboard_get_no_store("/api/catalog").await
+            && response.ok()
+            && let Some(data) = json_body(&response).await
+        {
+            catalog.set(Rc::new(data));
+        }
+    });
     use_future(move || async move {
         let result = async {
             let codex = initialize_auto_ping(Some("codexAutoPing")).await?;
@@ -461,7 +506,7 @@ pub(super) fn QuotaPage() -> Element {
         }
     });
     use_future(move || async move {
-        refresh_all(rows, quotas, loading, refreshing).await;
+        refresh_all(rows, quotas, loading, refreshing, catalog).await;
     });
     use_effect(move || {
         if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
@@ -483,7 +528,7 @@ pub(super) fn QuotaPage() -> Element {
                 if left <= 1 {
                     countdown.set(60);
                     spawn(async move {
-                        refresh_all(rows, quotas, loading, refreshing).await;
+                        refresh_all(rows, quotas, loading, refreshing, catalog).await;
                     });
                 } else {
                     countdown.set(left - 1);
@@ -513,8 +558,11 @@ pub(super) fn QuotaPage() -> Element {
         let expiry = |row: &Value| {
             quota_values
                 .get(text(row, "id"))
-                .and_then(|q| q.data.as_ref())
-                .map(|data| quota_entries(text(row, "provider"), data))
+                .and_then(|q| {
+                    q.data
+                        .as_ref()
+                        .map(|data| quota_entries(text(row, "provider"), data, &q.catalog))
+                })
                 .unwrap_or_default()
                 .iter()
                 .filter_map(|entry| entry["resetAt"].as_str())
@@ -549,7 +597,7 @@ pub(super) fn QuotaPage() -> Element {
                         .any(|row| text(row, "id") == id && eligible(row));
                 rows.set(updated);
                 if should_refresh {
-                    fetch_quota(id.clone(), quotas).await;
+                    fetch_quota(id.clone(), quotas, catalog).await;
                 }
             }
             pending.set(None);
@@ -617,13 +665,13 @@ pub(super) fn QuotaPage() -> Element {
                 if menu() { button { r#type: "button", class: "fixed inset-0 z-30 bg-transparent", aria_label: "Close provider filter", onclick: move |_| menu.set(false) } div { class: "absolute left-0 z-40 mt-2 w-64 overflow-hidden rounded-2xl border border-black/10 bg-surface/95 p-1.5 shadow-xl shadow-black/10 backdrop-blur dark:border-white/10 dark:bg-surface/95 sm:w-72", button { r#type: "button", class: if filter() == "all" { "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors bg-primary/10 text-primary" } else { "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors text-text-primary hover:bg-black/5 dark:hover:bg-white/10" }, onclick: move |_| { filter.set("all".into()); menu.set(false); }, span { class: "material-symbols-outlined text-[22px]", "apps" } span { class: "font-medium", "All providers" } if filter() == "all" { span { class: "material-symbols-outlined ml-auto text-[20px]", "check" } } } div { class: "my-1 h-px bg-black/10 dark:bg-white/10" } div { class: "max-h-72 overflow-y-auto pr-1", for provider in providers { button { key: "{provider}", r#type: "button", class: if filter() == provider { "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors bg-primary/10 text-primary" } else { "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors text-text-primary hover:bg-black/5 dark:hover:bg-white/10" }, onclick: { let provider = provider.clone(); move |_| { filter.set(provider.clone()); menu.set(false); } }, img { src: "/providers/{provider}.png", alt: "{provider}", width: "24", height: "24", class: "size-6 rounded-md object-contain" } span { class: "font-medium capitalize", "{provider}" } if filter() == provider { span { class: "material-symbols-outlined ml-auto text-[20px]", "check" } } } } } } }
             }
             button { r#type: "button", title: "Sort accounts by earliest quota reset time", class: if expiring() { "flex h-8 shrink-0 items-center gap-1 rounded-lg border px-2 text-xs transition-colors border-amber-500/40 bg-amber-500/10 text-amber-500" } else { "flex h-8 shrink-0 items-center gap-1 rounded-lg border px-2 text-xs transition-colors border-black/10 text-text-primary hover:bg-black/5 dark:border-white/10 dark:hover:bg-white/5" }, onclick: move |_| expiring.set(!expiring()), span { class: "material-symbols-outlined text-[14px]", "hourglass_top" } span { class: "hidden sm:inline", "Expiring first" } }
-            for target in [false, true] { button { key: "{target}", r#type: "button", disabled: bulk(), title: if target { "Enable connections that still have quota (within current filter)" } else { "Disable connections with depleted quota (within current filter)" }, class: if target { "flex h-8 shrink-0 items-center gap-1 rounded-lg border border-emerald-500/30 px-2 text-xs text-emerald-500 transition-colors hover:bg-emerald-500/10 disabled:opacity-50" } else { "flex h-8 shrink-0 items-center gap-1 rounded-lg border border-red-500/30 px-2 text-xs text-red-500 transition-colors hover:bg-red-500/10 disabled:opacity-50" }, onclick: { let ids: Vec<String> = current.iter().filter(|row| { let depleted = quota_values.get(text(row, "id")).and_then(|q| q.data.as_ref()).map(|data| quota_entries(text(row, "provider"), data)).unwrap_or_default().iter().any(|q| q["total"].as_f64().is_some_and(|total| total > 0.0 && percentage(&json!({"used":q["used"], "total":total})) <= 5.0)); if target { row["isActive"] == false && !depleted } else { row["isActive"] != false && depleted } }).map(|row| text(row, "id").to_owned()).collect(); move |_| { if ids.is_empty() || bulk() { return; } bulk.set(true); let ids = ids.clone(); spawn(async move { let results = futures_util::future::join_all(ids.iter().map(|id| async move { let path = format!("/api/providers/{}", encoded(id)); (id.clone(), dashboard_request("PUT", &path, Some(&json!({"isActive":target}))).await.is_ok_and(|r| r.ok())) })).await; for (id, ok) in results { if ok { for row in rows.write().iter_mut().filter(|row| text(row, "id") == id) { row["isActive"] = json!(target); } } } bulk.set(false); }); } }, span { class: "material-symbols-outlined text-[14px]", if target { "check_circle" } else { "block" } } span { class: "hidden sm:inline", if target { "Turn on Available" } else { "Turn off Empty" } } } }
+            for target in [false, true] { button { key: "{target}", r#type: "button", disabled: bulk(), title: if target { "Enable connections that still have quota (within current filter)" } else { "Disable connections with depleted quota (within current filter)" }, class: if target { "flex h-8 shrink-0 items-center gap-1 rounded-lg border border-emerald-500/30 px-2 text-xs text-emerald-500 transition-colors hover:bg-emerald-500/10 disabled:opacity-50" } else { "flex h-8 shrink-0 items-center gap-1 rounded-lg border border-red-500/30 px-2 text-xs text-red-500 transition-colors hover:bg-red-500/10 disabled:opacity-50" }, onclick: { let ids: Vec<String> = current.iter().filter(|row| { let depleted = quota_values.get(text(row, "id")).and_then(|q| q.data.as_ref().map(|data| quota_entries(text(row, "provider"), data, &q.catalog))).unwrap_or_default().iter().any(|q| q["total"].as_f64().is_some_and(|total| total > 0.0 && percentage(&json!({"used":q["used"], "total":total})) <= 5.0)); if target { row["isActive"] == false && !depleted } else { row["isActive"] != false && depleted } }).map(|row| text(row, "id").to_owned()).collect(); move |_| { if ids.is_empty() || bulk() { return; } bulk.set(true); let ids = ids.clone(); spawn(async move { let results = futures_util::future::join_all(ids.iter().map(|id| async move { let path = format!("/api/providers/{}", encoded(id)); (id.clone(), dashboard_request("PUT", &path, Some(&json!({"isActive":target}))).await.is_ok_and(|r| r.ok())) })).await; for (id, ok) in results { if ok { for row in rows.write().iter_mut().filter(|row| text(row, "id") == id) { row["isActive"] = json!(target); } } } bulk.set(false); }); } }, span { class: "material-symbols-outlined text-[14px]", if target { "check_circle" } else { "block" } } span { class: "hidden sm:inline", if target { "Turn on Available" } else { "Turn off Empty" } } } }
             button { onclick: move |_| auto_refresh.set(!auto_refresh()), title: if auto_refresh() { "Disable auto-refresh" } else { "Enable auto-refresh" }, class: "flex h-8 shrink-0 items-center gap-1 rounded-lg border border-black/10 px-2 text-xs transition-colors hover:bg-black/5 dark:border-white/10 dark:hover:bg-white/5", span { class: "material-symbols-outlined text-[14px] {auto_color}", if auto_refresh() { "toggle_on" } else { "toggle_off" } } span { class: "hidden text-text-primary sm:inline", "Auto-refresh" } if auto_refresh() { span { class: "text-[10px] text-text-muted tabular-nums", "({countdown}s)" } } }
-            button { r#type: "button", title: "Refresh all", disabled: refreshing(), class: "flex h-8 shrink-0 items-center gap-1 rounded-lg border border-black/10 px-2 text-xs text-text-primary transition-colors hover:bg-black/5 dark:border-white/10 dark:hover:bg-white/5 disabled:opacity-50", onclick: move |_| { countdown.set(60); spawn(async move { refresh_all(rows, quotas, loading, refreshing).await; }); }, span { class: "material-symbols-outlined text-[14px] {spin}", "refresh" } }
+            button { r#type: "button", title: "Refresh all", disabled: refreshing(), class: "flex h-8 shrink-0 items-center gap-1 rounded-lg border border-black/10 px-2 text-xs text-text-primary transition-colors hover:bg-black/5 dark:border-white/10 dark:hover:bg-white/5 disabled:opacity-50", onclick: move |_| { countdown.set(60); spawn(async move { refresh_all(rows, quotas, loading, refreshing, catalog).await; }); }, span { class: "material-symbols-outlined text-[14px] {spin}", "refresh" } }
         } }
-        div { class: "grid grid-cols-1 md:grid-cols-2 gap-3", for row in current { { let id = text(&row, "id").to_owned(); let quota = quota_values.get(&id).cloned().unwrap_or_default(); let busy = pending().as_deref() == Some(id.as_str()) || codex().busy(&id); rsx! { QuotaCard { key: "{id}", connection: row, quota, busy, ping: ping(), codex, toggle_ping, refresh: move |id| { spawn(async move { fetch_quota(id, quotas).await; }); }, edit: move |row: Value| { editing_id.set(text(&row, "id").to_owned()); editing.set(Some(row)); }, delete: move |id| delete_id.set(Some(id)), toggle } } } } }
-        codex::Dialogs { state: codex, quotas }
-        if let Some(row) = editing() { EditConnection { provider_id: text(&row, "provider").to_owned(), selected: editing, pools, on_saved: move |_| { let id = editing_id(); spawn(async move { rows.set(connections().await); fetch_quota(id, quotas).await; }); } } }
+        div { class: "grid grid-cols-1 md:grid-cols-2 gap-3", for row in current { { let id = text(&row, "id").to_owned(); let quota = quota_values.get(&id).cloned().unwrap_or_default(); let busy = pending().as_deref() == Some(id.as_str()) || codex().busy(&id); rsx! { QuotaCard { key: "{id}", connection: row, quota, busy, ping: ping(), codex, toggle_ping, refresh: move |id| { spawn(async move { fetch_quota(id, quotas, catalog).await; }); }, edit: move |row: Value| { editing_id.set(text(&row, "id").to_owned()); editing.set(Some(row)); }, delete: move |id| delete_id.set(Some(id)), toggle } } } } }
+        codex::Dialogs { state: codex, quotas, catalog }
+        if let Some(row) = editing() { EditConnection { provider_id: text(&row, "provider").to_owned(), selected: editing, pools, on_saved: move |_| { let id = editing_id(); spawn(async move { rows.set(connections().await); fetch_quota(id, quotas, catalog).await; }); } } }
         if let Some(id) = delete_id() { Modal { title: "Delete connection".to_owned(), small: true, on_close: move |_| { if pending().is_none() { delete_id.set(None); } }, footer: rsx! { Button { label: "Cancel".to_owned(), variant: "ghost", disabled: pending().is_some(), onclick: move |_| delete_id.set(None) } Button { label: "Delete".to_owned(), variant: "danger", loading: pending().is_some(), onclick: { let id = id.clone(); move |_| { if pending().is_some() { return; } pending.set(Some(id.clone())); let id = id.clone(); spawn(async move { let path = format!("/api/providers/{}", encoded(&id)); if dashboard_request("DELETE", &path, None).await.is_ok_and(|r| r.ok()) { quotas.write().remove(&id); rows.set(connections().await); } pending.set(None); delete_id.set(None); }); } } } }, p { class: "text-text-muted", "Are you sure you want to delete this connection? This action cannot be undone." } } }
         } }
     }

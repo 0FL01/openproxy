@@ -338,6 +338,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 let quotaReads = 0;
                 let quotaStatus = 200;
                 let quotaClaudeUnauthorized = false;
+                let quotaAntigravityOrder = false;
                 const proxyPools = screen.name === "empty" ? [] : [
                   { id: "fixture-one", name: "Fixture Proxy", proxyUrl: "http://fixture.example.invalid:8080/", noProxy: "localhost", isActive: true, testStatus: "active", boundConnectionCount: 2, lastTestedAt: null },
                   { id: "fixture-two", name: "Disabled Proxy", proxyUrl: "http://other.example.invalid:8080/", noProxy: "", isActive: false, testStatus: "unknown", boundConnectionCount: 0, lastTestedAt: null },
@@ -475,7 +476,10 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   if (screen.section === "quota" && path === "/api/usage/fixture-github") { quotaReads += 1; if (quotaStatus !== 200) return route.fulfill({ status: quotaStatus, json: { error: "Synthetic temporary outage" } }); return route.fulfill({ json: { plan: "pro", quotas: screen.name === "reset-times" ? { "Today": { used: 25, total: 100, resetAt: "2026-10-01T16:30:00Z" }, "Tomorrow": { used: 50, total: 100, resetAt: "2026-10-02T15:00:00Z", recurring: false }, "Expired": { used: 100, total: 100, resetAt: "2026-09-29T09:00:00Z" } } : { "Premium Requests": { used: 25, total: 100, resetAt: null } } } }); }
                   if (screen.section === "quota" && path === "/api/usage/fixture-commandcode") return route.fulfill({ json: { status: "partial", message: "Some Command Code credit fields are unavailable.", quotas: { monthly: { kind: "balance", label: "Monthly remaining", remaining: 1234.5, unit: "credit value" }, weekly: { kind: "window", label: "Weekly", used: 30, total: 100, remaining: 70, remainingPercentage: 70, resetAt: null, unit: "credit value" } } } });
                   if (screen.section === "quota" && path === "/api/usage/fixture-a6") return route.fulfill({ json: { status: "available", message: "", quotas: { "API credits": { used: 0, total: 0, remaining: 0, remainingPercentage: 100, unit: "USD", unlimited: true, recurring: false } } } });
-                  if (screen.section === "quota" && path === "/api/usage/fixture-antigravity") return route.fulfill({ json: { plan: "pro", quotas: { "claude-sonnet-4-6": { displayName: "Claude Sonnet", used: 0, total: 100, remainingPercentage: 35, resetAt: "2026-10-02T15:00:00Z" } } } });
+                  if (screen.section === "quota" && path === "/api/usage/fixture-antigravity") return route.fulfill({ json: { plan: "pro", quotas: quotaAntigravityOrder ? {
+                    "claude-sonnet-4-6": { displayName: "Alpha", used: 25, total: 100, remainingPercentage: 75 },
+                    "gemini-3.7-flash-high": { displayName: "Zulu", used: 60, total: 100, remainingPercentage: 40 },
+                  } : { "claude-sonnet-4-6": { displayName: "Claude Sonnet", used: 0, total: 100, remainingPercentage: 35, resetAt: "2026-10-02T15:00:00Z" } } } });
                   if (screen.section === "quota" && path === "/api/usage/fixture-kimi") return route.fulfill({ json: { plan: "standard", quotas: { weekly: { used: 40, total: 100, remainingPercentage: 60, resetAt: null, unlimited: false } } } });
                   if (screen.section === "quota" && path === "/api/usage/fixture-claude") return quotaClaudeUnauthorized ? route.fulfill({ status: 401, json: { error: "Synthetic authorization error" } }) : route.fulfill({ json: { message: "Observed from synthetic traffic", quotas: { session: { used: 10, total: 100, remainingPercentage: 90, resetAt: null } } } });
                   if (screen.section === "quota" && path === "/api/usage/fixture-glm") return route.fulfill({ json: { plan: "pro", quotas: { "Premium Requests": { used: 25, total: 100, resetAt: null } } } });
@@ -583,6 +587,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       ] }] }
                       : isXaiDetail ? { providerIdToAlias: { xai: "xai" }, providerModels: [{ alias: "xai", models: ["empty", "unavailable", "no-connection"].includes(screen.name) ? [{ id: "fixture-image", name: "Fixture Image", kind: "image" }] : [{ id: "fixture-model", name: "Fixture Model", kind: "llm" }] }], ...(screen.name === "no-connection" ? {} : { xaiCatalog: screen.name === "stale" ? { status: "stale", warning: "Synthetic stale catalog warning" } : screen.name === "unavailable" ? { status: "unavailable", warning: "Synthetic unavailable catalog warning" } : { status: "ready" } }) }
                       : isOpenRouter ? { providerIdToAlias: { openrouter: "openrouter" }, providerModels: [{ alias: "openrouter", models: [{ id: "sample/catalog", name: "Catalog model", kind: "llm" }] }], xaiCatalog: { status: "ready" } }
+                      : screen.section === "quota" && screen.name === "provider-windows" ? { providerIdToAlias: { antigravity: "ag" }, providerModels: [{ alias: "ag", models: [{ id: "gemini-3.7-flash-high" }, { id: "claude-sonnet-4-6" }] }] }
                       : isCodexDetail ? { providerIdToAlias: { codex: "cx" }, providerModels: [{ alias: "cx", models: [
                         { id: "fixture-model", name: "Fixture Model", kind: "llm" },
                       ] }], xaiCatalog: { status: "ready" } }
@@ -834,6 +839,11 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       await card.getByTitle("Refresh quota").click();
                       await card.getByText("Synthetic authorization error", { exact: true }).waitFor();
                       assert.equal(await card.getByText("error", { exact: true }).count(), 0, "an auth error is a message, not a fabricated quota row");
+                      const antigravity = page.getByText("Fixture account", { exact: true }).locator("xpath=ancestor::div[contains(@class, 'rounded-mini-lg')][1]");
+                      quotaAntigravityOrder = true;
+                      await antigravity.getByTitle("Refresh quota").click();
+                      await antigravity.getByText("Zulu", { exact: true }).waitFor();
+                      assert.deepEqual(await antigravity.locator("tbody tr td:first-child").allTextContents(), ["Zulu", "Alpha"], "quota rows follow catalog model IDs, not display names or response order");
                     };
                   }
                   if (screen.name === "empty") await page.getByText("Connect to providers with OAuth to track your API quota limits and usage.", { exact: true }).waitFor();
