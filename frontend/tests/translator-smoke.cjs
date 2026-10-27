@@ -255,7 +255,7 @@ async function main() {
       console.log("synthetic translator preserve-case smoke passed");
       return;
     }
-    if (process.env.TRANSLATOR_FIND_VIEWZONE_ONLY === "1") {
+    if (process.env.TRANSLATOR_FIND_VIEWZONE_ONLY === "1" || process.env.TRANSLATOR_FIND_PAINT_ONLY === "1") {
       const text = '{"message":"needle needle"}';
       const offset = text.indexOf("needle");
       if (reference) await page.evaluate(({ text, offset }) => { const e = window.monaco.editor.getEditors()[0]; e.setValue(text); e.setPosition(e.getModel().getPositionAt(offset)); e.focus(); }, { text, offset });
@@ -269,6 +269,23 @@ async function main() {
         const matches = [...document.querySelectorAll(reference ? ".monaco-editor .view-overlays .findMatch, .monaco-editor .view-overlays .currentFindMatch" : ".find-match")];
         return matches.length === 2 && matches.every(element => getComputedStyle(element).backgroundColor === "rgba(234, 92, 0, 0.33)");
       }, reference);
+      if (process.env.TRANSLATOR_FIND_PAINT_ONLY === "1") {
+        const matchPoint = await page.evaluate(reference => {
+          const match = document.querySelector(reference ? ".monaco-editor .view-overlays .findMatch" : ".find-match").getBoundingClientRect();
+          return { x: Math.floor(match.left + 2), y: Math.floor(match.top + 1) };
+        }, reference);
+        const matchPixel = await page.screenshot({ animations: "disabled" });
+        const matchColor = await page.evaluate(async ({ base64, point }) => {
+          const image = new Image(); image.src = `data:image/png;base64,${base64}`; await image.decode();
+          const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
+          const context = canvas.getContext("2d"); context.drawImage(image, point.x, point.y, 1, 1, 0, 0, 1, 1);
+          return [...context.getImageData(0, 0, 1, 1).data].slice(0, 3);
+        }, { base64: matchPixel.toString("base64"), point: matchPoint });
+        assert.ok(matchColor[0] > matchColor[1] + 15 && matchColor[1] > matchColor[2] + 15, "the current-line border does not cover the Find match");
+        assert.deepEqual(errors, []);
+        console.log("synthetic translator Find paint smoke passed");
+        return;
+      }
       await dialog.getByLabel("Find", { exact: true }).press("Enter");
       await dialog.getByText("1 of 2", { exact: true }).waitFor();
       await page.waitForFunction(reference => {
