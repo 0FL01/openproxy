@@ -1407,30 +1407,9 @@ fn Editor(
     let mut regex = use_signal(|| false);
     let mut find_scope = use_signal(|| None::<(u32, u32)>);
     let mut active_line = use_signal(|| 0_usize);
+    let mut active_visual_top = use_signal(|| 0_i32);
+    let mut has_selection = use_signal(|| false);
     let mut scroll_top = use_signal(|| 0_i32);
-    use_effect(use_reactive((&value,), move |_| {
-        let _ = editor_width();
-        let Some(element) = rendered() else { return };
-        spawn(async move {
-            let frame = js_sys::Promise::new(&mut |resolve, _| {
-                if let Some(window) = web_sys::window() {
-                    let _ = window.request_animation_frame(&resolve);
-                }
-            });
-            let _ = JsFuture::from(frame).await;
-            let children = element.child_nodes();
-            let tops = (0..children.length())
-                .filter_map(|index| {
-                    children
-                        .item(index)?
-                        .dyn_into::<web_sys::HtmlElement>()
-                        .ok()
-                })
-                .map(|line| line.offset_top())
-                .collect();
-            line_tops.set(tops);
-        });
-    }));
     use_effect(use_reactive((&value,), move |(value,)| {
         if !value.is_empty() && !*has_changed.peek() {
             has_changed.set(true);
@@ -1455,7 +1434,9 @@ fn Editor(
             .max(400) as f64;
         let cursor_height = (2.0 * scale) as u32;
         let half = cursor_height / 2;
-        let y = ((active_line() as f64 * 16.0 * height as f64 / document_height) as u32)
+        let line = active_line();
+        let top = line_tops().get(line).copied().unwrap_or(line as i32 * 16) + active_visual_top();
+        let y = ((top.max(0) as f64 * height as f64 / document_height) as u32)
             .clamp(half, height - half)
             - half;
         context.set_fill_style_str(if has_changed() {
@@ -1480,22 +1461,80 @@ fn Editor(
     }));
     let update_cursor = use_callback(move |_| {
         if let Some(input) = textarea.peek().as_ref() {
-            let cursor = input.selection_start().ok().flatten().unwrap_or_default();
-            let end = input.selection_end().ok().flatten().unwrap_or(cursor);
+            let start = input.selection_start().ok().flatten().unwrap_or_default();
+            let end = input.selection_end().ok().flatten().unwrap_or(start);
             if *composition_extendable.peek()
                 && composition_start.peek().is_none()
                 && !*adjusting_history.peek()
-                && *composition_cursor.peek() != Some((cursor, end))
+                && *composition_cursor.peek() != Some((start, end))
             {
                 composition_extendable.set(false);
             }
-            let before = js_sys::JsString::from(input.value())
+            let cursor =
+                if input.selection_direction().ok().flatten().as_deref() == Some("backward") {
+                    start
+                } else {
+                    end
+                };
+            let value = input.value();
+            let before = js_sys::JsString::from(value.as_str())
                 .slice(0, cursor)
                 .as_string()
                 .unwrap_or_default();
-            active_line.set(before.bytes().filter(|byte| *byte == b'\n').count());
+            let line_number = before.bytes().filter(|byte| *byte == b'\n').count();
+            active_line.set(line_number);
+            has_selection.set(start != end);
+            let column =
+                js_sys::JsString::from(before.rsplit('\n').next().unwrap_or("")).length() as usize;
+            let line_text = value.split('\n').nth(line_number).unwrap_or("");
+            let top = rendered
+                .peek()
+                .as_ref()
+                .and_then(|element| {
+                    let line = element
+                        .child_nodes()
+                        .item(line_number as u32)?
+                        .dyn_into::<web_sys::HtmlElement>()
+                        .ok()?;
+                    if line.text_content().as_deref() != Some(line_text) {
+                        return None;
+                    }
+                    let length = js_sys::JsString::from(line_text).length() as usize;
+                    if length == 0 {
+                        return Some(0);
+                    }
+                    let first = character_top(&line, 0)?;
+                    let current = character_top(&line, column.min(length - 1))?;
+                    Some((current - first).round().max(0.0) as i32)
+                })
+                .unwrap_or(0);
+            active_visual_top.set(top);
         }
     });
+    use_effect(use_reactive((&value,), move |_| {
+        let _ = editor_width();
+        let Some(element) = rendered() else { return };
+        spawn(async move {
+            let frame = js_sys::Promise::new(&mut |resolve, _| {
+                if let Some(window) = web_sys::window() {
+                    let _ = window.request_animation_frame(&resolve);
+                }
+            });
+            let _ = JsFuture::from(frame).await;
+            let children = element.child_nodes();
+            let tops = (0..children.length())
+                .filter_map(|index| {
+                    children
+                        .item(index)?
+                        .dyn_into::<web_sys::HtmlElement>()
+                        .ok()
+                })
+                .map(|line| line.offset_top())
+                .collect();
+            line_tops.set(tops);
+            update_cursor.call(());
+        });
+    }));
     let select_match = use_callback(move |next: bool| {
         if let Some(input) = textarea.peek().as_ref() {
             let ranges = find_ranges(
@@ -1782,10 +1821,10 @@ fn Editor(
                             div { key: "{line}", style: "position:relative;width:{wrapping_width};min-height:16px;padding-left:{wrapping_indent}px;text-indent:-{wrapping_indent}px;",
                                 if let Some(line_guides) = guides.get(line) {
                                     for (index, (level, start)) in line_guides.iter().enumerate() {
-                                        { let vertical = if *start { "bottom:0;height:2px" } else { "top:0;height:100%" }; rsx! { div { key: "{index}", style: "position:absolute;left:{*level as f64 * indent as f64 * 7.2246}px;{vertical};width:1px;background:#707070;" } } }
+                                        { let vertical = if *start { "bottom:0;height:2px" } else { "top:0;height:100%;z-index:1" }; rsx! { div { key: "{index}", style: "position:absolute;left:{*level as f64 * indent as f64 * 7.2246}px;{vertical};width:1px;background:#707070;" } } }
                                     }
                                 }
-                                if line == active_line() { div { style: "position:absolute;top:0;left:0;width:{current_line_width}px;height:16px;border:2px solid #282828;" } }
+                                if line == active_line() && !has_selection() { div { style: "position:absolute;top:{active_visual_top}px;left:0;width:{current_line_width}px;height:16px;border:2px solid #282828;" } }
                                 if let Some(highlighted) = &highlighted {
                                     for (index, (text, color, matched)) in highlighted[line].iter().enumerate() {
                                         { let background = match matched { Some(index) if *index == current_match => ";background:#515c6a", Some(_) => ";background:rgba(234,92,0,.33)", None => "" }; rsx! {

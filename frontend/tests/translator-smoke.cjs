@@ -86,6 +86,54 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
+    if (process.env.TRANSLATOR_CURRENT_LINE_ONLY === "1") {
+      await page.setViewportSize({ width: 390, height: 844 });
+      const wrapped = `{"message":"${"x".repeat(200)}"}`;
+      if (reference) await page.evaluate(text => { const e = window.monaco.editor.getEditors()[0]; e.setValue(text); e.setPosition(e.getModel().getPositionAt(70)); e.focus(); }, wrapped);
+      else { await editor().fill(wrapped); await editor().evaluate(input => input.setSelectionRange(70, 70)); }
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.keyboard.press("ArrowRight");
+      const currentLineTop = ({ reference, expected }) => {
+        const input = document.querySelector('textarea[aria-label="Translator editor"]');
+        const root = reference ? document.querySelector(".monaco-editor") : input?.parentElement;
+        const base = reference ? root?.querySelector(".view-lines .view-line") : root?.querySelector("pre > div");
+        const current = reference ? root?.querySelector(".view-overlays .current-line-exact")
+          : [...(base?.children || [])].find(child => child.tagName === "DIV" && getComputedStyle(child).borderTopWidth === "2px");
+        if (expected === null) return !current;
+        return current && base && Math.abs(current.getBoundingClientRect().top - base.getBoundingClientRect().top - expected) < 1;
+      };
+      await page.waitForFunction(currentLineTop, { reference, expected: 48 });
+      await page.setViewportSize({ width: 600, height: 844 });
+      await page.waitForFunction(currentLineTop, { reference, expected: 16 });
+      await page.keyboard.press("Control+Home");
+      await page.waitForFunction(currentLineTop, { reference, expected: 0 });
+      await page.keyboard.press("Shift+ArrowRight");
+      await page.waitForFunction(currentLineTop, { reference, expected: null });
+      await page.setViewportSize({ width: 390, height: 844 });
+      const withGuide = `{\n  "message": "${"x".repeat(200)}",\n  "count": 42\n}`;
+      if (reference) await page.evaluate(text => { const e = window.monaco.editor.getEditors()[0]; e.setValue(text); e.setPosition(e.getModel().getPositionAt(71)); e.focus(); }, withGuide);
+      else { await editor().fill(withGuide); await editor().evaluate(input => { input.setSelectionRange(71, 71); input.dispatchEvent(new Event("select", { bubbles: true })); }); }
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      const guidePoint = await (await page.waitForFunction(reference => {
+        const input = document.querySelector('textarea[aria-label="Translator editor"]');
+        const root = reference ? document.querySelector(".monaco-editor") : input?.parentElement;
+        const text = reference ? root?.querySelector(".view-lines") : root?.querySelector("pre");
+        const current = reference ? root?.querySelector(".view-overlays .current-line-exact")
+          : [...(text?.querySelectorAll("div > div") || [])].find(child => getComputedStyle(child).borderTopWidth === "2px");
+        return text && current && { x: Math.ceil(text.getBoundingClientRect().left), y: Math.floor(current.getBoundingClientRect().top + 8) };
+      }, reference)).jsonValue();
+      const png = await page.screenshot({ animations: "disabled" });
+      const color = await page.evaluate(async ({ base64, point }) => {
+        const image = new Image(); image.src = `data:image/png;base64,${base64}`; await image.decode();
+        const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
+        const context = canvas.getContext("2d"); context.drawImage(image, point.x, point.y, 1, 1, 0, 0, 1, 1);
+        return [...context.getImageData(0, 0, 1, 1).data].slice(0, 3);
+      }, { base64: png.toString("base64"), point: guidePoint });
+      assert.ok(color.every(channel => channel > 70), "the indentation guide remains visible over the current-line border");
+      assert.deepEqual(errors, []);
+      console.log("synthetic translator current-line smoke passed");
+      return;
+    }
     if (reference) await page.evaluate(() => { const e = window.monaco.editor.getEditors()[0]; e.setValue("ab"); e.setPosition({ lineNumber: 1, column: 3 }); e.focus(); });
     else await editor().fill("ab");
     await page.keyboard.press("Control+m");
