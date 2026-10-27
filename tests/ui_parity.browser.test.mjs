@@ -96,6 +96,7 @@ const screens = [
   { section: "provider-compatible", name: "delete-dialog", action: "delete-dialog" },
   { section: "provider-codex-autoping", name: "off" },
   { section: "provider-codex-autoping", name: "on" },
+  { section: "provider-codex-bulk-add", name: "dialog" },
   { section: "callback", name: "code", query: callbackCodeQuery, colorScheme: "light" },
   { section: "callback", name: "error", query: callbackErrorQuery, colorScheme: "light" },
   { section: "callback", name: "no-auth-data", query: "", colorScheme: "light" },
@@ -140,6 +141,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
     assert.equal(source.frontend, "astro", "reference source must be Astro");
     assert.deepEqual(source.browser, browserIdentity, "reference browser or raster settings differ; record a new reference");
     if (mode === "compare") assert(existsSync(sourcePath), "Astro reference metadata is missing");
+    let fixtureCaTrusted = false;
     for (const viewport of viewports) {
       for (const theme of ["light", "dark"]) {
         for (const screen of screens) {
@@ -149,8 +151,16 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
           if (screen.desktopOnly && viewport.name !== "desktop") continue;
           if (screen.colorScheme && screen.colorScheme !== theme) continue;
           const name = `${screen.section}-${screen.name}-${viewport.name}-${theme}`;
+          const isCodexDetail = ["provider-codex-autoping", "provider-codex-bulk-add"].includes(screen.section);
           await t.test(name, async () => {
             assert(mode !== "record" || process.env.UI_PARITY_REPLACE === "1" || !existsSync(join(referenceDir, `${name}.png`)), "reference already exists; set UI_PARITY_REPLACE=1 deliberately to replace it");
+            if (isCodexDetail && !fixtureCaTrusted) {
+              // route.fetch below must validate the fixture's DNS-constrained CA.
+              // Chrome already trusts it via the fixture's disposable NSS profile.
+              const tls = await import("node:tls");
+              tls.setDefaultCACertificates([...tls.getCACertificates("default"), await readFile("/opt/ui-browser/tls/ca.crt", "utf8")]);
+              fixtureCaTrusted = true;
+            }
             const capture = async (colorScheme = theme) => {
               const context = await browser.newContext({
                 viewport: { width: viewport.width, height: viewport.height },
@@ -163,6 +173,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
               const errors = [];
               const writes = [];
               const unexpected = [];
+              let interceptedCodexStop = 0;
               let scenarioReady = false;
               let verifyAfterCapture = null;
               const kiloWrites = {
@@ -211,7 +222,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 let currentCodexConfig = codexConfig(false, screen.name === "off");
                 page.on("pageerror", (error) => errors.push(error.message));
                 await page.clock.setFixedTime(new Date("2026-10-01T12:00:00Z"));
-                if (["callback", "provider-compatible", "provider-codex-autoping"].includes(screen.section)) await context.routeWebSocket("**/*", (socket) => {
+                if (["callback", "provider-compatible"].includes(screen.section) || isCodexDetail) await context.routeWebSocket("**/*", (socket) => {
                   unexpected.push("WebSocket blocked");
                   socket.close();
                 });
@@ -222,13 +233,23 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   const method = request.method();
                   const assets = screen.section === "callback"
                     ? ((path === "/callback" && url.search === screen.query) || (mode === "compare" && !url.search && (path === "/favicon.svg" || path.startsWith("/_astro/") || path.startsWith("/assets/"))))
-                    : ["provider-compatible", "provider-codex-autoping"].includes(screen.section)
+                    : screen.section === "provider-compatible" || isCodexDetail
                     ? (!url.search && (path === (screen.section === "provider-compatible" ? compatiblePath : codexPath) || path === (screen.section === "provider-compatible" ? "/providers/oai-cc.png" : "/providers/codex.png") || detailAstroAssets.has(path) || (mode === "compare" && detailCandidateAssets.includes(path))))
                     : (!["providers-new", "provider-kilocode"].includes(screen.section) && (path === "/login" || path === "/dashboard/endpoint")) || path === "/favicon.svg" || path.startsWith("/_astro/") || path.startsWith("/assets/") || path.startsWith("/i18n/") ||
                     (screen.section === "providers" && (path === "/dashboard/providers" || /^\/providers\/[a-z0-9_-]+\.png$/.test(path))) ||
                     (screen.section === "providers-new" && !url.search && ["/dashboard/providers/new", "/providers/codex.png", "/providers/opencode-zen.png", "/providers/openai.png"].includes(path)) ||
                     (screen.section === "provider-kilocode" && !url.search && ["/dashboard/providers/kilocode", "/providers/kilocode.png"].includes(path));
-                  if (url.origin === appUrl && method === "GET" && assets) return route.continue();
+                  if (url.origin === appUrl && method === "GET" && assets) {
+                    if (!isCodexDetail) return route.continue();
+                    // Do not let even an allowed asset redirect around the
+                    // network allowlist (especially to a side-effecting GET).
+                    const response = await route.fetch({ maxRedirects: 0 });
+                    if (response.status() >= 300 && response.status() < 400) {
+                      unexpected.push(`blocked asset redirect ${method} ${url.origin}${path}${url.search}`);
+                      return route.abort("blockedbyclient");
+                    }
+                    return route.fulfill({ response });
+                  }
                   const providerGet = screen.section === "providers" && method === "GET" && (
                     (!url.search && ["/api/auth/status", "/api/settings", "/api/build", "/api/catalog", "/api/providers", "/api/provider-nodes"].includes(path)) ||
                     (path === "/api/proxy-pools" && url.search === "?isActive=true")
@@ -245,7 +266,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     (path === "/api/proxy-pools" && url.search === "?isActive=true") ||
                     (path === "/api/models/disabled" && ["?providerAlias=", `?providerAlias=${encodeURIComponent(compatibleId)}`].includes(url.search))
                   );
-                  const codexGet = screen.section === "provider-codex-autoping" && method === "GET" && (
+                  const codexGet = isCodexDetail && method === "GET" && (
                     (!url.search && ["/api/auth/status", "/api/settings", "/api/build", "/api/catalog", "/api/providers", "/api/provider-nodes", "/api/providers/filters", "/api/models", "/api/models/custom", "/api/models/alias", "/api/models/favorites", "/api/oauth/codex/stop-proxy"].includes(path)) ||
                     (path === "/api/proxy-pools" && url.search === "?isActive=true") ||
                     (path === "/api/models/disabled" && ["?providerAlias=", "?providerAlias=cx"].includes(url.search))
@@ -254,7 +275,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     expectedWrites.some((write) => write.method === method && write.path === `${path}${url.search}`);
                   const codexMutation = screen.section === "provider-codex-autoping" && method !== "GET" &&
                     expectedWrites.some((write) => write.method === method && write.path === `${path}${url.search}`);
-                  const valid = url.origin === appUrl && (providerGet || providerNewGet || kiloGet || kiloMutation || compatibleGet || codexGet || codexMutation || (!["providers", "providers-new", "provider-kilocode", "provider-compatible", "provider-codex-autoping", "callback"].includes(screen.section) && (
+                  const valid = url.origin === appUrl && (providerGet || providerNewGet || kiloGet || kiloMutation || compatibleGet || codexGet || codexMutation || (!isCodexDetail && !["providers", "providers-new", "provider-kilocode", "provider-compatible", "callback"].includes(screen.section) && (
                     (method === "GET" && ["/api/auth/status", "/api/settings", "/api/keys", "/api/build", "/api/catalog"].includes(path)) ||
                     (method === "POST" && path === "/api/auth/login" && !!screen.login) ||
                     (method === "POST" && path === "/api/keys" && screen.action === "created")
@@ -297,9 +318,9 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   } else if (path === "/api/settings") {
                     if (screen.section === "provider-codex-autoping" && method === "PATCH") currentCodexConfig = request.postDataJSON().codexAutoPing;
                     body = { requireLogin: true, requireApiKey: !screen.insecure, hasPassword: true,
-                      ...(screen.section === "provider-codex-autoping" ? { codexAutoPing: currentCodexConfig, glmAutoPing: { enabled: false, connections: {} } } : {}) };
+                      ...(isCodexDetail ? { codexAutoPing: currentCodexConfig, glmAutoPing: { enabled: false, connections: {} } } : {}) };
                   } else if (path === "/api/build") {
-                    body = { commit: ["provider-kilocode", "provider-compatible", "provider-codex-autoping"].includes(screen.section) ? null : fixtureCommit };
+                    body = { commit: ["provider-kilocode", "provider-compatible"].includes(screen.section) || isCodexDetail ? null : fixtureCommit };
                   } else if (path === "/api/catalog") {
                     body = screen.section === "provider-kilocode"
                       ? { providerIdToAlias: { kilocode: "kc" }, providerModels: [{ alias: "kc", models: [
@@ -307,14 +328,14 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                         { id: "fixture-vision", name: "Fixture Vision", kind: "llm", contextWindow: 256000 },
                         { id: "fixture-disabled", name: "Fixture Disabled", kind: "llm" },
                       ] }] }
-                      : screen.section === "provider-codex-autoping" ? { providerIdToAlias: { codex: "cx" }, providerModels: [{ alias: "cx", models: [
+                      : isCodexDetail ? { providerIdToAlias: { codex: "cx" }, providerModels: [{ alias: "cx", models: [
                         { id: "fixture-model", name: "Fixture Model", kind: "llm" },
                       ] }], xaiCatalog: { status: "ready" } }
                       : { providerIdToAlias: {}, providerModels: [], xaiCatalog: { status: "ready" } };
                   } else if (path === "/api/providers") {
                     body = screen.section === "provider-compatible" ? { connections: [] } : screen.section === "provider-kilocode" ? { connections: [
                       { id: "fixture-kilo-connection", provider: "kilocode", name: "Fixture connection", authType: "oauth", testStatus: "active", isActive: true, priority: 1 },
-                    ] } : screen.section === "provider-codex-autoping" ? { connections: [
+                    ] } : isCodexDetail ? { connections: [
                       { id: codexConnection, provider: "codex", name: "Fixture Codex", authType: "oauth", testStatus: "success", isActive: true, priority: 1 },
                     ] } : { connections: [
                       { id: "fixture-compatible-connection", provider: "openai-compatible-fixture", authType: "apikey", testStatus: "active", isActive: true },
@@ -325,7 +346,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     body = screen.section === "provider-compatible" ? { nodes: [{
                       id: compatibleId, type: "openai-compatible", name: "Fixture Compatible", prefix: compatiblePrefix,
                       apiType: "chat", baseUrl: compatibleBaseUrl, createdAt: "2026-10-01T12:00:00Z", updatedAt: "2026-10-01T12:00:00Z",
-                    }] } : ["provider-kilocode", "provider-codex-autoping"].includes(screen.section) ? { nodes: [] } : { nodes: [
+                    }] } : screen.section === "provider-kilocode" || isCodexDetail ? { nodes: [] } : { nodes: [
                       { id: "openai-compatible-fixture", type: "openai-compatible", name: "Fixture Connected", apiType: "chat" },
                       { id: "anthropic-compatible-fixture", type: "anthropic-compatible", name: "Fixture Disconnected" },
                     ] };
@@ -342,7 +363,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       kiloFreeOnly = request.postDataJSON().freeOnly;
                       return route.fulfill({ status: 204 });
                     }
-                    body = ["provider-compatible", "provider-codex-autoping"].includes(screen.section) ? { filters: {} } : { filters: { kc: { freeOnly: kiloFreeOnly } } };
+                    body = screen.section === "provider-compatible" || isCodexDetail ? { filters: {} } : { filters: { kc: { freeOnly: kiloFreeOnly } } };
                   } else if (path === "/api/models/disabled") {
                     if (method === "POST") kiloDisabled = [...new Set([...kiloDisabled, ...request.postDataJSON().ids])].sort();
                     else if (method === "DELETE") kiloDisabled = kiloDisabled.filter((id) => id !== url.searchParams.get("id"));
@@ -350,14 +371,14 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   } else if (path === "/api/models/custom") {
                     if (method === "POST") kiloCustom = [...kiloCustom, request.postDataJSON()];
                     body = screen.section === "provider-compatible" ? { models: [{ providerAlias: compatibleId, id: "fixture-model", type: "llm" }] }
-                      : screen.section === "provider-codex-autoping" ? { models: [] }
+                      : isCodexDetail ? { models: [] }
                       : method === "GET" ? { models: kiloCustom } : { success: true, added: true };
                   } else if (path === "/api/models/alias") {
                     body = { aliases: {} };
                   } else if (path === "/api/models/favorites") {
-                    body = ["provider-compatible", "provider-codex-autoping"].includes(screen.section) ? { favorites: {} } : { favorites: { kc: ["fixture-standard"] } };
+                    body = screen.section === "provider-compatible" || isCodexDetail ? { favorites: {} } : { favorites: { kc: ["fixture-standard"] } };
                   } else if (path === "/api/models") {
-                    body = ["provider-compatible", "provider-codex-autoping"].includes(screen.section) ? { models: [] }
+                    body = screen.section === "provider-compatible" || isCodexDetail ? { models: [] }
                       : { models: [{ provider: "kilocode", model: "fixture-vision", fullModel: "kilocode/fixture-vision", caps: { vision: true, reasoning: true } }] };
                   } else if (path === "/api/keys") {
                     if (request.method() === "POST") {
@@ -375,9 +396,10 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     }
                   }
                   await route.fulfill({ status, headers, json: body });
+                  if (path === "/api/oauth/codex/stop-proxy") interceptedCodexStop += 1;
                 });
 
-                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : screen.section === "providers-new" ? "/dashboard/providers/new" : screen.section === "provider-kilocode" ? "/dashboard/providers/kilocode" : screen.section === "provider-compatible" ? compatiblePath : screen.section === "provider-codex-autoping" ? codexPath : screen.section === "callback" ? "/callback" : "/dashboard/endpoint";
+                const path = screen.section === "login" ? "/login" : screen.section === "providers" ? "/dashboard/providers" : screen.section === "providers-new" ? "/dashboard/providers/new" : screen.section === "provider-kilocode" ? "/dashboard/providers/kilocode" : screen.section === "provider-compatible" ? compatiblePath : isCodexDetail ? codexPath : screen.section === "callback" ? "/callback" : "/dashboard/endpoint";
                 const sourceRoute = screen.section === "provider-compatible" ? compatibleTemplate : path;
                 const response = await page.goto(`${appUrl}${path}${screen.query || ""}`, { waitUntil: "domcontentloaded" });
                 assert(response?.ok(), `failed to load ${path}`);
@@ -389,15 +411,17 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       assert(html.includes(marker), "record mode requires the standalone Astro callback markup");
                     }
                   } else {
-                    const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : screen.section === "providers-new" ? "ProvidersNewPageClient." : ["provider-kilocode", "provider-compatible", "provider-codex-autoping"].includes(screen.section) ? "ProviderDetailPageClient." : "EndpointPageClient.";
+                    const component = screen.section === "login" ? "LoginPageClient." : screen.section === "providers" ? "ProvidersPageClient." : screen.section === "providers-new" ? "ProvidersNewPageClient." : ["provider-kilocode", "provider-compatible"].includes(screen.section) || isCodexDetail ? "ProviderDetailPageClient." : "EndpointPageClient.";
                     assert(html.includes(`component-url="/_astro/${component}`), "record mode requires the Astro reference");
                     if (screen.section === "provider-compatible") assert(source.routes[sourceRoute], "dynamic Astro provider template hash must be pinned before recording");
-                    if (screen.section === "provider-codex-autoping") assert(source.routes[sourceRoute], "Astro Codex route hash must be pinned before recording");
+                    if (isCodexDetail) assert(source.routes[sourceRoute], "Astro Codex route hash must be pinned before recording");
                   }
                   const hash = createHash("sha256").update(html).digest("hex");
                   assert(!source.routes[sourceRoute] || source.routes[sourceRoute] === hash, `Astro reference changed for ${sourceRoute}`);
-                  source.routes[sourceRoute] = hash;
-                  await writeFile(sourcePath, JSON.stringify(source, null, 2) + "\n");
+                  if (!source.routes[sourceRoute]) {
+                    source.routes[sourceRoute] = hash;
+                    await writeFile(sourcePath, JSON.stringify(source, null, 2) + "\n");
+                  }
                 } else {
                   assert(source.routes[sourceRoute], `missing Astro reference identity for ${sourceRoute}`);
                   assert.equal(await page.locator('script[src*="/assets/openproxy-dashboard-"]').count(), 1, "compare mode requires the Dioxus candidate");
@@ -407,7 +431,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 else if (screen.section === "providers-new") await page.getByRole("heading", { name: "Add New Provider" }).waitFor();
                 else if (screen.section === "provider-kilocode") await page.getByRole("checkbox", { name: "Select connection Fixture connection" }).waitFor();
                 else if (screen.section === "provider-compatible") await page.getByRole("heading", { name: "OpenAI Compatible Details", exact: true }).waitFor();
-                else if (screen.section === "provider-codex-autoping") await page.getByRole("checkbox", { name: "Select connection Fixture Codex" }).waitFor();
+                else if (isCodexDetail) await page.getByRole("checkbox", { name: "Select connection Fixture Codex" }).waitFor();
                 else if (screen.section === "callback") await page.getByRole("heading", { name: screen.name === "error" ? "Authentication Failed" : screen.name === "no-auth-data" ? "No Auth Data Found" : "Authentication Complete", exact: true }).waitFor();
                 else await page.getByText("Fixture key", { exact: true }).waitFor();
                 const disableMotion = () => page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}" });
@@ -485,7 +509,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   }
                   await page.mouse.move(1, 1);
                   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-                } else if (screen.section === "provider-codex-autoping") {
+                } else if (isCodexDetail) {
                   const tooltip = "Auto-starts the next available Codex quota window after reset with a tiny gpt-6-luna request. Consumes a small amount of quota.";
                   const waitState = async (on) => {
                     await page.locator("main .overflow-y-auto").getByRole("heading", { name: "OpenAI Codex", exact: true }).waitFor();
@@ -540,6 +564,19 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   await icon.waitFor();
                   assert(await icon.evaluate((element) => element.complete && element.naturalWidth > 0), "Codex icon must load");
                   if (viewport.name === "desktop") await page.getByLabel("Build commit unavailable").first().waitFor();
+                  if (screen.section === "provider-codex-bulk-add") {
+                    await page.getByRole("button", { name: /Bulk Add/ }).click();
+                    await page.getByRole("heading", { name: "Bulk Add Codex Accounts", exact: true }).waitFor();
+                    await page.getByText("Paste a Codex auth.json object or an array of accounts. Terminal prompts after the JSON are ignored.", { exact: true }).waitFor();
+                    const input = page.locator("textarea");
+                    assert.equal(await input.count(), 1, "exactly one bulk input must be present");
+                    assert(await input.isVisible());
+                    assert.equal(await input.inputValue(), "", "no credentials or JSON are entered");
+                    assert.match(await input.getAttribute("placeholder"), /"auth_mode": "chatgpt"/, "expected the built-in example placeholder");
+                    assert(await page.getByRole("button", { name: "Import All", exact: true }).isDisabled());
+                    assert(await page.getByRole("button", { name: "Close", exact: true }).isEnabled());
+                    await page.waitForLoadState("networkidle");
+                  }
                   await page.mouse.move(1, 1);
                   await page.waitForFunction(() => Array.from(document.images).every((image) => image.complete));
                   await page.evaluate(async () => {
@@ -930,6 +967,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 await context.close();
                 assert.deepEqual(unexpected, [], "unexpected network requests were blocked");
                 if (scenarioReady) assert.deepEqual(writes, expectedWrites, "unexpected API mutation");
+                if (scenarioReady && mode === "record" && screen.section === "provider-codex-bulk-add") assert(interceptedCodexStop > 0, "Astro's side-effecting stop-proxy GET must be intercepted");
                 assert.deepEqual(errors, [], "page must not throw");
               }
             };

@@ -264,7 +264,7 @@ fulfills it with `{ "success": true }` and **never forwards it**. The build
 commit is null, as for the other detail fixtures. The test pins the Codex Astro
 HTML hash and island marker, permits only its exact detail page, local Codex
 icon and enumerated same-origin Astro bundles and fonts, and blocks all other
-requests, external origins, WebSockets and mutations. For a Dioxus comparison,
+requests, external origins, WebSockets and other mutations. For a Dioxus comparison,
 `UI_PARITY_DETAIL_ASSETS` supplies only the candidate's exact static paths as
 described above; it does not relax the API allowlist.
 
@@ -273,6 +273,44 @@ used. Saving failures, migration of legacy settings, the saving/loading state,
 multiple visible accounts, GLM/API-key eligibility, tooltip hover, OAuth,
 scheduler behavior and real-backend persistence are outside this slice. These
 are Astro references, not evidence of Dioxus parity.
+
+## Codex Bulk Add dialog slice
+
+`UI_PARITY_SECTION=provider-codex-bulk-add` or
+`UI_PARITY_SCREEN=provider-codex-bulk-add-dialog` selects four captures of the
+open dialog on `/dashboard/providers/codex`, at desktop/mobile sizes in light
+and dark. Each recording compares two fresh contexts at AE=0, without masking.
+
+| Scenario | State captured |
+|---|---|
+| `provider-codex-bulk-add-dialog` | Click Bulk Add for the existing `Fixture Codex` connection. The text area is empty, `Import All` is disabled, and `Close` is enabled; neither is clicked. |
+
+This reuses the Codex auto-ping fixture and its exact API/asset allowlists above,
+with both synthetic connection IDs off. The only apparent JSON is Astro's
+built-in **placeholder**: its ellipses and example token strings are not real
+credentials, and nothing is pasted or typed. The test does not submit an import,
+open OAuth, or close the dialog. In the mobile reference the placeholder wraps
+within the textarea as in Astro.
+
+Every API response, including the side-effecting
+`GET /api/oauth/codex/stop-proxy`, is fulfilled in the browser rather than sent
+to the backend. Recording asserts that Astro's mount-time stop request was
+intercepted in each fresh context. This scenario accepts **no API mutations**;
+an import, another OAuth request, an external request, a WebSocket or any
+unlisted request is blocked and fails the test. Service workers are blocked.
+Only the enumerated queryless same-origin page and static assets reach the
+fixture server, and their redirects are rejected before Chrome can follow them.
+For these Codex assets Playwright verifies the fixture's DNS-constrained CA;
+Chrome uses the fixture's separate disposable trust profile. The internal
+Compose network has no external gateway, and no production data or credentials
+are mounted. The fixture is not a security boundary against a hostile host or
+Docker administrator.
+
+Record mode requires the existing pinned Astro Codex HTML hash and island marker;
+it does not change an already pinned source hash. This slice covers only the
+initial empty dialog, not parsing, validation, import, results, OAuth, persistence,
+or real-backend behavior. These are Astro references, not a claim of Dioxus
+parity.
 
 ## OAuth callback slice
 
