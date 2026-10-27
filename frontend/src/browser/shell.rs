@@ -3,8 +3,8 @@ use super::{
     endpoint::EndpointPage,
     i18n::I18n,
     json_body, navigate,
-    providers::{NewProviderPage, ProvidersPage},
-    request, theme_is_dark,
+    providers::{NewProviderPage, ProviderDetailPage, ProvidersPage},
+    request, request_with_cache, theme_is_dark,
     ui::Button,
     ui::Modal,
     AbortOnDrop,
@@ -33,6 +33,14 @@ pub async fn dashboard_request(
     dashboard_request_with_signal(method, path, body, None).await
 }
 
+pub async fn dashboard_get_no_store(path: &str) -> Result<Response, JsValue> {
+    let response = request_with_cache("GET", path, None, None, true).await?;
+    if response.status() == 401 && path.starts_with("/api/") && path != "/api/auth/status" {
+        recheck_session();
+    }
+    Ok(response)
+}
+
 async fn dashboard_request_with_signal(
     method: &str,
     path: &str,
@@ -47,13 +55,24 @@ async fn dashboard_request_with_signal(
 }
 
 fn recheck_session() {
-    if let Some(SessionRecheck(callback)) = dioxus::core::try_consume_context::<SessionRecheck>() {
-        callback.call(());
+    if let Some(recheck) = dioxus::core::try_consume_context::<SessionRecheck>() {
+        recheck.call();
     }
 }
 
-#[derive(Clone, Copy)]
-struct SessionRecheck(Callback<()>);
+#[derive(Clone)]
+pub(in crate::browser) struct SessionRecheck {
+    callback: Callback<()>,
+    alive: std::rc::Weak<()>,
+}
+
+impl SessionRecheck {
+    pub(in crate::browser) fn call(&self) {
+        if self.alive.upgrade().is_some() {
+            self.callback.call(());
+        }
+    }
+}
 
 // Called in the Dashboard callback's scope, so its task outlives key rows
 // but is still canceled (and its request aborted) when the dashboard unmounts.
@@ -167,7 +186,11 @@ pub fn Dashboard() -> Element {
     let toasts = use_signal(Vec::<Toast>::new);
     use_context_provider(|| toasts);
     let recheck = use_callback(move |()| start_session_recheck());
-    use_context_provider(|| SessionRecheck(recheck));
+    let alive = use_hook(|| Rc::new(()));
+    use_context_provider(|| SessionRecheck {
+        callback: recheck,
+        alive: Rc::downgrade(&alive),
+    });
     let i18n = use_context::<I18n>();
     use_future(move || {
         let i18n = i18n.clone();
@@ -248,6 +271,11 @@ fn DashboardContent() -> Element {
         .unwrap_or_default();
     let is_providers = pathname == "/dashboard/providers";
     let is_providers_new = pathname == "/dashboard/providers/new";
+    let provider_id = pathname
+        .strip_prefix("/dashboard/providers/")
+        .filter(|id| !id.is_empty() && !id.contains('/') && *id != "new")
+        .map(str::to_owned);
+    let is_provider_detail = provider_id.is_some();
     rsx! {
         div { class: "flex h-screen w-full overflow-hidden bg-canvas",
             div { class: "fixed top-4 right-4 z-[80] flex w-[min(92vw,380px)] flex-col gap-2",
@@ -268,10 +296,10 @@ fn DashboardContent() -> Element {
             }
             main { class: "flex flex-col flex-1 h-full min-w-0 relative transition-colors duration-300 isolate",
                 div { class: "landing-grid absolute inset-0 pointer-events-none -z-10", aria_hidden: "true" }
-                Header { on_menu: move |_| sidebar_open.set(true), search, is_providers, is_providers_new }
+                Header { on_menu: move |_| sidebar_open.set(true), search, is_providers, is_providers_new: is_providers_new || is_provider_detail, provider_id: provider_id.clone() }
                 div { class: "flex-1 overflow-y-auto custom-scrollbar p-6 lg:p-10",
                     div { class: "max-w-7xl mx-auto",
-                        if is_providers { ProvidersPage { search } } else if is_providers_new { NewProviderPage {} } else { EndpointPage {} }
+                        if is_providers { ProvidersPage { search } } else if is_providers_new { NewProviderPage {} } else if let Some(id) = provider_id { ProviderDetailPage { id } } else { EndpointPage {} }
                     }
                 }
             }
@@ -557,6 +585,7 @@ fn Header(
     mut search: Signal<String>,
     is_providers: bool,
     is_providers_new: bool,
+    provider_id: Option<String>,
 ) -> Element {
     let mut menu = use_signal(|| false);
     let mut lang_open = use_signal(|| false);
@@ -589,6 +618,17 @@ fn Header(
     } else {
         ("Endpoint", "API endpoint configuration", "api")
     };
+    let breadcrumb = provider_id.and_then(|id| {
+        let registry: Value = serde_json::from_str(include_str!("provider_data.json")).ok()?;
+        ["oauth", "apiKey"].into_iter().find_map(|category| {
+            registry[category]
+                .as_array()?
+                .iter()
+                .find(|p| p["id"].as_str() == Some(&id))
+                .and_then(|p| p["name"].as_str())
+                .map(|name| (id.clone(), name.to_owned()))
+        })
+    });
     let (name, flag) = LOCALES
         .iter()
         .find(|(id, _, _)| *id == locale())
@@ -612,7 +652,14 @@ fn Header(
                 button { class: "text-ink hover:opacity-70 transition-opacity", aria_label: "Open navigation", onclick: move |_| on_menu.call(()), span { class: "material-symbols-outlined", "menu" } }
             }
             div { class: "flex flex-col min-w-0 flex-1",
-                if show_title {
+                if let Some((id, name)) = breadcrumb {
+                    div { class: "flex items-center gap-2",
+                        div { class: "flex items-center gap-2", a { href: "/dashboard/providers", class: "text-muted hover:text-ink transition-colors text-[13px] font-medium", "Providers" } }
+                        div { class: "flex items-center gap-2", span { class: "material-symbols-outlined text-text-muted text-base", "chevron_right" }
+                            div { class: "flex items-center gap-2", HeaderProviderIcon { id, name: name.clone() } h1 { class: "font-serif font-normal text-[20px] lg:text-[30px] tracking-[-0.02em] text-ink truncate leading-tight", "{name}" } }
+                        }
+                    }
+                } else if show_title {
                     div {
                         div { class: "flex items-center gap-2.5",
                             span { class: "material-symbols-outlined text-brand-coral text-xl lg:text-2xl", "{page_icon}" }
@@ -689,5 +736,17 @@ fn Header(
                 }
             }
         }
+    }
+}
+
+#[component]
+fn HeaderProviderIcon(id: String, name: String) -> Element {
+    let mut failed = use_signal(|| false);
+    let class = "object-contain rounded max-w-[28px] max-h-[28px]";
+    if failed() {
+        let fallback = name.chars().take(2).collect::<String>().to_uppercase();
+        rsx! { span { class: "inline-flex items-center justify-center font-bold rounded-lg {class}", style: "width: 28px; height: 28px; font-size: 10px", "{fallback}" } }
+    } else {
+        rsx! { img { src: "/providers/{id}.png", alt: "{name}", width: "28", height: "28", class, onerror: move |_| failed.set(true) } }
     }
 }

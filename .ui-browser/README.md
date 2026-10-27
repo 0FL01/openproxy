@@ -229,3 +229,26 @@ Dioxus loader, so comparing the reference to itself is rejected. Before the
 full migration, select only implemented states with `UI_PARITY_SCREEN`. The
 real-backend test creates a synthetic API key in the disposable database and
 checks that it survives a page reload; it never reads or prints the key value.
+
+The provider-model discovery test needs a **fresh** disposable backend. Its
+startup generates a synthetic API key and writes it to stderr, so the test-only
+override redirects backend output and disables Docker logging. From the repo
+root, with a Dioxus candidate built using `frontend/scripts/build.sh`:
+
+```sh
+export OPENPROXY_UI_WEB_DIR="$PWD/frontend/target/dx/openproxy-dashboard/release/web/public"
+project="openproxy-ui-models-$(date +%s)-$$"
+docker compose --env-file /dev/null --project-name "$project" --project-directory .ui-browser -f .ui-browser/compose.yaml -f .ui-browser/tests/silent-backend.compose.yaml up -d --no-deps --pull never backend app
+docker compose --env-file /dev/null --project-name "$project" --project-directory .ui-browser -f .ui-browser/compose.yaml -f .ui-browser/tests/silent-backend.compose.yaml run --rm --no-deps --pull never -T \
+  -v "$PWD/tests/dioxus_provider_models_backend.browser.test.mjs:/test/dioxus_provider_models_backend.browser.test.mjs:ro" \
+  -e RUN_DIOXUS_BACKEND_TEST=1 -e DIOXUS_BACKEND_OUTPUT_SUPPRESSED=1 \
+  -e DASHBOARD_PLAYWRIGHT_MODULE=/opt/ui-browser/node_modules/playwright/index.mjs \
+  -e DASHBOARD_CHROMIUM_EXECUTABLE=/opt/chrome-linux64/chrome \
+  browser node --test /test/dioxus_provider_models_backend.browser.test.mjs
+docker compose --env-file /dev/null --project-name "$project" --project-directory .ui-browser -f .ui-browser/compose.yaml -f .ui-browser/tests/silent-backend.compose.yaml down
+unset OPENPROXY_UI_WEB_DIR project
+```
+
+The test creates, disables, reloads and restores a synthetic custom model,
+checking `/v1/models` at each step. It does not contact a provider or verify
+database durability across backend restarts; Compose `down` removes the tmpfs.

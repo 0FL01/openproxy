@@ -42,7 +42,12 @@ async fn fetch_keys(mut keys: Signal<Vec<Value>>, mut loading: Signal<bool>) {
     loading.set(false);
 }
 
-fn copy_text(value: String, id: String, mut copied: Signal<String>, mut generation: Signal<u32>) {
+pub(super) fn copy_text(
+    value: String,
+    id: String,
+    mut copied: Signal<String>,
+    mut generation: Signal<u32>,
+) {
     if let Some(window) = web_sys::window() {
         let navigator = window.navigator();
         let clipboard = js_sys::Reflect::get(navigator.as_ref(), &JsValue::from_str("clipboard"))

@@ -1,0 +1,7 @@
+services:
+  backend:
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - 'exec /runtime/openproxy --host 0.0.0.0 --port 4623 --data-dir /tmp/openproxy-data --web-dir /ui --no-open >/dev/null 2>&1'
+    logging:
+      driver: none

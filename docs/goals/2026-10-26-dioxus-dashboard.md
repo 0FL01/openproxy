@@ -2,7 +2,7 @@
 
 Status: active
 Source: user request 2026-10-26 and approved RECON plan; user selected full Monaco parity without a third-party JavaScript editor; latest request: "итеративно реализовать и коммит пуш, в прод - не деплоить".
-Last updated: 2026-10-26
+Last updated: 2026-10-27
 
 ## Objective
 
@@ -27,13 +27,13 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Acceptance: synthetic fixtures, fixed browser/fonts/time/viewport/theme, reproducible self-comparison, and reference PNGs; candidate screenshots match at zero differing pixels apart from specifically documented unavoidable masks with independent content checks.
   - Primary evidence: repeatable browser parity scenarios for desktop and mobile, all sections and meaningful states.
   - Status: in_progress
-  - Evidence: the harness pins Chrome and disables its nondeterministic partial rasterization. The Providers-list candidate matched 22 login, 38 Endpoint and 28 Providers-list synthetic reference screenshots at AE=0; the scrolling cases use overflowing fixtures. The newer Providers-new candidate matches all 30 new-page references and 12 representative prior shared-shell screenshots at AE=0. Thirty-two new synthetic Kilo Code detail references self-repeated at AE=0; comparison with the partial Dioxus detail implementation is in progress. References and comparisons for other sections remain pending.
+  - Evidence: the harness pins Chrome and disables its nondeterministic partial rasterization. The Providers-list candidate matched 22 login, 38 Endpoint and 28 Providers-list synthetic reference screenshots at AE=0; the scrolling cases use overflowing fixtures. The newer Providers-new candidate matched all 30 new-page references and 12 representative prior shared-shell screenshots. The partial detail candidate matched all 32 Kilo Code references and 16 representative earlier shared-shell screenshots at AE=0 before subsequent OAuth-only cleanup changes. References and comparisons for other sections remain pending.
 - R3: Full Dioxus/Rust frontend preserves all current routes, layout, visual states, interactions, localization and API behavior.
   - Source: user request "фронтенд фулл на расте" and approved RECON plan.
   - Acceptance: all current routes and interactions match the reference, including authentication, OAuth callback, persisted model customizations and `/v1/models` discovery; browser application logic is Rust/WASM, with Dioxus-generated JS bridge and CSS allowed.
   - Primary evidence: R2 visual scenarios and existing focused frontend/API regression tests adapted to the new frontend.
   - Status: in_progress
-  - Evidence: the Dioxus login/shell/Endpoint slice matches all 60 R2 screenshots at AE=0 and passed an isolated real-backend session test including HttpOnly, Secure and SameSite=Lax cookie attributes, synthetic key creation and persistence after reload. The Providers list matches its 28 reference screenshots; synthetic behavior checks passed after correcting deep-link retention on session-check failure, supported large priorities, JavaScript search trimming, failed-load ordering and image color metadata in the documented build path. A real isolated backend test created and disabled a synthetic provider connection and verified persistence after reload; external validation was mocked and no provider was contacted. The Providers-new candidate matches 30 references; synthetic navigation/save tests passed, and its direct creation persisted after reload against the isolated backend. The 34 reference locale catalogs are bundled; Russian dashboard and Chinese login behavior were exercised synthetically. Other routes remain pending.
+  - Evidence: the Dioxus login/shell/Endpoint slice matches all 60 R2 screenshots at AE=0 and passed an isolated real-backend session test including HttpOnly, Secure and SameSite=Lax cookie attributes, synthetic key creation and persistence after reload. The Providers list matches its 28 reference screenshots; synthetic behavior checks passed after correcting deep-link retention on session-check failure, supported large priorities, JavaScript search trimming, failed-load ordering and image color metadata in the documented build path. A real isolated backend test created and disabled a synthetic provider connection and verified persistence after reload; external validation was mocked and no provider was contacted. The Providers-new candidate matches 30 references; synthetic navigation/save tests passed, and its direct creation persisted after reload against the isolated backend. The partial detail candidate includes connection and model controls; an isolated real-backend test passed UI custom-model add, disable, reload and restore, including exclusion and reinclusion in `/v1/models`. Reproduced OAuth cancellation, unbounded wait and HTTP 504 fence regressions passed focused synthetic checks after fixes. Backend proxy stops remain provider-wide, so cross-tab and delayed in-flight cleanup cannot be guaranteed by this client alone. Detail parity remains incomplete, including popup callback integration and provider-specific controls. The 34 reference locale catalogs are bundled; Russian dashboard and Chinese login behavior were exercised synthetically. Other routes remain pending.
 - R4: Translator retains full actually available Monaco editor behavior and appearance without any third-party JavaScript editor.
   - Source: user selected "Полный паритет" after being informed that this excludes a third-party JS editor.
   - Acceptance: feature and visual parity against the configured existing Monaco across its available actions, JSON/plaintext and all seven Translator stages; no third-party JS editor ships.
@@ -51,7 +51,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Acceptance: intended commits are present on the remote working branch; no production service, data, configuration or deployment is changed.
   - Primary evidence: git commit and remote branch SHA; isolated test deployment only.
   - Status: in_progress
-  - Evidence: goal commit `269d55fa`, login slice `27c38be6`, checkpoint `da01a7b0`, isolated-browser fixture `2fb691fe`, visual references `e2514d20`, overflow-scenario correction `d8e98d88`, shell/Endpoint slice `c36f3e6f`, Providers-list references `7f34767e`, Providers-new references `eaf309c6`, Providers-list slice `b4bc66b8` and Providers-new slice `9ef2e9ac` were pushed to `origin/feat/dioxus-dashboard`; production was not deployed or modified.
+  - Evidence: goal commit `269d55fa`, login slice `27c38be6`, checkpoint `da01a7b0`, isolated-browser fixture `2fb691fe`, visual references `e2514d20`, overflow-scenario correction `d8e98d88`, shell/Endpoint slice `c36f3e6f`, Providers-list references `7f34767e`, Providers-new references `eaf309c6`, Providers-list slice `b4bc66b8`, Providers-new slice `9ef2e9ac` and detail references `5050018a` were pushed to `origin/feat/dioxus-dashboard`; production was not deployed or modified.
 
 ### Constraints and Non-goals
 
@@ -71,16 +71,16 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 ## Current Checkpoint
 
 - Closes: the next R2/R3 slice for Providers and model customization.
-- Smallest next action: capture synthetic reference states for the provider workflow and port the matching list, creation and detail interactions to the Rust frontend.
+- Smallest next action: commit the verified partial detail slice, then migrate popup callback handling and remaining provider-detail interactions.
 - Expected evidence: exact pinned-browser visual comparisons and focused isolated-backend tests for model customization, persistence and discovery.
 - Stop or replan if: the provider workflow cannot be preserved within the frozen frontend and API boundaries.
 
 ## Current State
 
 - Resolved: R1; fixture commit `2fb691fe` is pushed.
-- Last relevant evidence: the Providers-list candidate matched all 88 login, Endpoint and Providers-list screenshots at AE=0; the newer candidate matched all 30 new-provider screenshots and 12 representative shared-shell screenshots at AE=0. Isolated backend tests verified login, key and provider-connection persistence via the list and new-provider page with synthetic data; provider validation was mocked for the list. Existing backend/provider/plugin baseline tests passed as recorded above.
+- Last relevant evidence: the Providers-list candidate matched all 88 login, Endpoint and Providers-list screenshots at AE=0; the newer candidate matched all 30 new-provider screenshots and 12 representative shared-shell screenshots. The partial detail candidate matched 32 Kilo Code and 16 representative earlier screenshots at AE=0 and passed the isolated custom-model persistence/discovery test; subsequent OAuth-only changes passed focused synthetic cancellation and HTTP-failure checks.
 - Blocker: none external. Dioxus re-encodes PNG color metadata; `frontend/scripts/build.sh` preserves original provider icons for the served output. The skeleton and theme cannot appear before WASM startup as Astro's synchronous HTML/script did.
-- Next: migrate provider detail and model customization, followed by the remaining routes and Translator editor.
+- Next: commit/push the verified partial detail slice, then implement remaining callback and provider-specific detail behavior before the other routes and Translator editor.
 
 ## Material Decisions
 
@@ -99,7 +99,12 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-10-26: R2/R3 login and Endpoint slices matched all 60 synthetic references at AE=0 after restoring the reference skeleton. Real isolated login/key persistence and frontend browser checks passed; the slice was pushed in `c36f3e6f`. Providers is the next checkpoint.
 - 2026-10-26: R2/R3 Providers-list candidate matched 28 synthetic reference screenshots at AE=0 and retained all 60 earlier matches. Synthetic provider creation and disabling persisted against the isolated backend with mocked upstream validation; the slice was pushed in `b4bc66b8`. Thirty new-provider reference screenshots self-repeated at AE=0; their Dioxus implementation is pending.
 - 2026-10-26: R2/R3 Providers-new candidate matched 30 new-page and 12 representative shared-shell screenshots at AE=0. Independent synthetic behavior review and the real isolated-backend save/persistence test passed; the slice was pushed in `9ef2e9ac`. Provider detail and model customization remain the next slice.
-- 2026-10-26: R2 Kilo Code detail reference recorded 32 synthetic screenshots for connections and model customization; two independent recordings self-repeated at AE=0. The Dioxus detail implementation is partial and its visual and real-backend comparisons are in progress.
+- 2026-10-26: R3 partial detail candidate passed a real isolated-backend custom-model add, Disable All, page reload, `/v1/models` exclusion and UI restore/discovery regression. The synthetic backend had stdout/stderr redirected and Docker logging disabled; the disposable project was removed. Detail regressions and visual parity remain unresolved.
+- 2026-10-26: R2 Kilo Code detail reference recorded 32 synthetic screenshots for connections and model customization; two independent recordings self-repeated at AE=0 and were pushed in `5050018a`. The partial Dioxus detail candidate timed out before capture on its missing connection-selection control; its real-backend test is in progress.
+- 2026-10-27: R3 partial detail fixed the four reproduced behavioral regressions and added connection selection. Its real isolated-backend model-persistence/discovery test passed after allowing the new exact proxy-pool read; four ready-state screenshots still differ, with missing reference controls and header. The slice remains uncommitted and incomplete.
+- 2026-10-27: R2/R3 updated partial detail matched all 32 Kilo Code and 16 representative earlier synthetic screenshots at AE=0; the isolated custom-model add, disable, reload, restore and `/v1/models` discovery regression passed after connection and OAuth fixes. Independent OAuth verification remains pending.
+- 2026-10-27: Independent synthetic OAuth verification passed the earlier five fixes and the active-pool case, but reproduced delayed listener cleanup after final cancellation and an unbounded stop wait. Both remain within the current partial detail checkpoint.
+- 2026-10-27: Focused OAuth smoke passed after fixing final-cancellation cleanup, bounding the stop wait and fencing non-success HTTP stops. The provider-wide backend listener cannot provide cross-tab or delayed-start guarantees; this is documented without changing its API.
 
 ## Completion
 

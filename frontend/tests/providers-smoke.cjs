@@ -231,7 +231,14 @@ async function main() {
     const bulk = page.getByRole("dialog", { name: "Add DeepSeek API Key" });
     await bulk.waitFor();
     await bulk.getByRole("button", { name: "Bulk Add" }).click();
-    await bulk.locator("textarea").fill("prod|fixture-bulk-a\nfixture-bulk-b");
+    await bulk.locator("textarea").fill("\uFEFF");
+    assert.equal(await bulk.getByRole("button", { name: "Add All Keys" }).isDisabled(), true);
+    const bulkInput = "\uFEFFprod\uFEFF|\uFEFFfixture-bulk-a\uFEFF\n\uFEFFfixture-bulk-b\uFEFF\n\uFEFF";
+    await bulk.locator("textarea").fill(bulkInput);
+    assert.equal(await bulk.locator("textarea").inputValue(), bulkInput);
+    await bulk.getByRole("button", { name: "Single", exact: true }).click();
+    await bulk.getByRole("button", { name: "Bulk Add" }).click();
+    assert.equal(await bulk.locator("textarea").inputValue(), bulkInput, "switching tabs preserves the exact draft");
     await bulk.getByRole("button", { name: "Add All Keys" }).click();
     await bulk.getByText("Added 2").waitFor();
     assert.deepEqual(state.requests.filter(request => request.path === "/api/providers" && request.method === "POST").slice(-2).map(request => request.body), [
@@ -240,6 +247,14 @@ async function main() {
     ]);
     await bulk.getByRole("button", { name: "Close", exact: true }).last().click();
     await page.locator('a[href="/dashboard/providers/deepseek"]').getByText("2 Added").waitFor();
+    await page.goto(`${origin}/dashboard/providers?add=cloudflare-ai`);
+    const cloudflareBulk = page.getByRole("dialog", { name: "Add Cloudflare API Key" });
+    await cloudflareBulk.getByRole("button", { name: "Bulk Add" }).click();
+    await cloudflareBulk.locator("textarea").fill("\uFEFFcloud\uFEFF | \uFEFFfixture|pipe\uFEFF | \uFEFFfixture-account\uFEFF");
+    await cloudflareBulk.getByRole("button", { name: "Add All Keys" }).click();
+    await cloudflareBulk.getByText("Added 1").waitFor();
+    assert.deepEqual(state.requests.filter(request => request.path === "/api/providers" && request.method === "POST").at(-1).body, { provider: "cloudflare-ai", name: "cloud 1", apiKey: "fixture|pipe", priority: 1, testStatus: "unknown", providerSpecificData: { accountId: "fixture-account" } });
+    await cloudflareBulk.getByRole("button", { name: "Close", exact: true }).last().click();
 
     await page.goto(`${origin}/dashboard/providers?add=codex`);
     await page.waitForURL(`${origin}/dashboard/providers/codex`);

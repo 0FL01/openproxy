@@ -36,10 +36,9 @@ thread_local! {
 pub fn start() {
     if let Some(window) = web_sys::window() {
         let location = window.location();
-        if location
-            .pathname()
-            .is_ok_and(|path| path == "/dashboard/providers" || path == "/dashboard/providers/new")
-        {
+        if location.pathname().is_ok_and(|path| {
+            path == "/dashboard/providers" || path.starts_with("/dashboard/providers/")
+        }) {
             PROVIDER_INITIAL_LOCATION.with(|initial| {
                 *initial.borrow_mut() = Some((
                     location.search().unwrap_or_default(),
@@ -110,6 +109,8 @@ enum Route {
     Providers {},
     #[route("/dashboard/providers/new")]
     ProvidersNew {},
+    #[route("/dashboard/providers/:id")]
+    ProviderDetail { id: String },
     #[route("/login")]
     Login {},
 }
@@ -140,6 +141,17 @@ fn Providers() -> Element {
 #[component]
 fn ProvidersNew() -> Element {
     use_effect(|| restore_provider_location("/dashboard/providers/new"));
+    rsx! { shell::Dashboard {} }
+}
+
+#[component]
+fn ProviderDetail(id: String) -> Element {
+    let _ = id;
+    use_effect(|| {
+        if let Some(path) = web_sys::window().and_then(|w| w.location().pathname().ok()) {
+            restore_provider_location(&path);
+        }
+    });
     rsx! { shell::Dashboard {} }
 }
 
@@ -178,10 +190,20 @@ async fn request(
     body: Option<&Value>,
     signal: Option<&AbortSignal>,
 ) -> Result<Response, JsValue> {
+    request_with_cache(method, path, body, signal, false).await
+}
+
+async fn request_with_cache(
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+    signal: Option<&AbortSignal>,
+    no_store: bool,
+) -> Result<Response, JsValue> {
     let init = RequestInit::new();
     init.set_method(method);
     init.set_credentials(RequestCredentials::SameOrigin);
-    if path == "/api/auth/status" || path == "/api/build" {
+    if no_store || path == "/api/auth/status" || path == "/api/build" {
         init.set_cache(web_sys::RequestCache::NoStore);
     }
     if let Some(body) = body {

@@ -2,12 +2,13 @@
 
 This is a separate, browser-only Rust/WASM application. It implements `/login`,
 the shared dashboard shell and Endpoint page at `/`, `/dashboard`, and
-`/dashboard/endpoint`, and the list and chooser at `/dashboard/providers` and
-`/dashboard/providers/new` against the existing same-origin APIs. It does not
-replace the Astro frontend or alter how OpenProxy is packaged or served.
-Provider detail and other dashboard pages are not implemented in this slice;
-their links remain ordinary browser navigations, not substitute pages. Login
-and logout use full browser redirects, as the current frontend does.
+`/dashboard/endpoint`, the list and chooser at `/dashboard/providers` and
+`/dashboard/providers/new`, and a partial `/dashboard/providers/:id` detail
+page against the existing same-origin APIs. It does not replace the Astro
+frontend or alter how OpenProxy is packaged or served. Other dashboard pages
+are not implemented; their links remain ordinary browser navigations, not
+substitute pages. Login and logout use full browser redirects, as the current
+frontend does.
 
 ## Build and test
 
@@ -44,6 +45,7 @@ CHROME_BIN=/path/to/chromium node tests/login-smoke.cjs
 CHROME_BIN=/path/to/chromium node tests/endpoint-smoke.cjs
 CHROME_BIN=/path/to/chromium node tests/providers-smoke.cjs
 CHROME_BIN=/path/to/chromium node tests/providers-new-smoke.cjs
+CHROME_BIN=/path/to/chromium node tests/provider-detail-smoke.cjs
 
 # Optional snapshot drift check, with the repository's web dependencies installed:
 node tests/provider-metadata.cjs
@@ -97,6 +99,48 @@ by the translator because none of the current catalogs translates its literal
 text runs. Refresh the snapshots deliberately when the reference registry,
 icons, or these catalog entries change; the standalone build does not depend on
 TypeScript or the Astro application.
+
+`src/browser/provider_aliases.json` contains the reference registry's
+non-identity storage aliases (for example `kilocode` → `kc`); identity aliases
+fall back to the provider ID. The drift check compares every registry alias.
+The detail page reads the existing catalog, connections, custom models,
+legacy aliases and disabled IDs. Standard providers support model copy,
+favorites, test, add/remove, individual disable/restore, disable/activate all,
+and the persisted free-only filter. Compatible nodes support manual add/remove,
+copy and test using the node ID for storage and the node prefix for display.
+Connection add/edit, status, priority ordering, selection, bulk deletion, proxy
+assignment and paced one-by-one testing use the existing connection APIs.
+Editing never pre-populates a stored API key; a blank replacement leaves it
+unchanged. Device-code OAuth and manual authorization-code exchange use the
+existing OAuth endpoints. The synchronized thinking selectors only append a
+supported suffix to display/copy; they do not alter model mutation IDs. Failed
+bulk deletes remain visible and selected. Free-tier, notice and auth-mode
+metadata are checked snapshots of the reference provider registry. Required model reads that fail do
+not become an empty saved configuration or expose bulk mutation controls; the
+user can retry. Optional live discovery is merged when available and cannot
+block those saved rows.
+
+Detail is **not reference-complete or pixel-perfect**: popup callback routes,
+postMessage/BroadcastChannel/storage OAuth callback handling, some OAuth modal
+details (including copy buttons), auto-ping, compatible-node edit/delete and
+model import, advertised context, suggested-model chips, and xAI-specific
+force-refresh and diagnostic states remain to migrate. Manual callback entry
+and the supported local-proxy polling paths are available; popup callback
+completion must not be assumed. Local OAuth proxy ownership is coordinated
+within this browser application only: the backend stop endpoint is
+provider-wide, so other tabs/processes and an unconfirmed stop after a
+transport failure cannot be isolated by this client alone. A pending stop
+produces a retryable error after three seconds without releasing the start
+fence. If the stop transport fails or returns a non-success response without
+acknowledgement, that page stays fenced; starting again after a page reload
+cannot be guaranteed safe from a delayed provider-wide stop. A start already
+in flight can also take effect after all dialogs have closed and revive the
+listener; the client sends another best-effort stop when that request settles,
+but cannot guarantee the listener stays stopped before then or if the response
+never arrives. Some proxy, capability, error, loading and
+confirmation states differ. Manual compatible model layout is partial. The model controls deliberately
+wait for the required catalog/custom/alias/disabled reads rather than rendering
+partial mutable state. No new backend model or discovery contract was added.
 
 The current reference cookie-provider registry is empty; that section would
 require implementation if it is populated.

@@ -1,0 +1,548 @@
+use super::{dashboard_request, encoded, js_trim, json, json_body, text, Value};
+use crate::browser::{
+    request,
+    shell::SessionRecheck,
+    ui::{Button, Modal, INPUT_CLASS},
+};
+use dioxus::prelude::*;
+use futures_util::future::{select, Either};
+use gloo_timers::future::TimeoutFuture;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::rc::Rc;
+
+#[derive(Default)]
+struct ProxySlot {
+    generation: u64,
+    owner: Option<u64>,
+    stopping: bool,
+    needs_stop: bool,
+    waiters: Vec<futures_channel::oneshot::Sender<()>>,
+}
+
+const STOP_WAIT_TIMEOUT_MS: u32 = 3_000;
+const STOP_PENDING_MESSAGE: &str =
+    "Previous proxy cleanup has not completed. Retry after it finishes.";
+
+thread_local! {
+    // The backend listener is provider-wide, not tied to an OAuth state. Keep
+    // ownership across modal instances and serialize an in-flight stop before
+    // a later start in this browser application.
+    static PROXY_SLOTS: RefCell<HashMap<String, ProxySlot>> = RefCell::new(HashMap::new());
+}
+
+struct ProxyLease {
+    provider: String,
+    generation: u64,
+    closed: Cell<bool>,
+}
+
+struct StopProxy(Option<Rc<ProxyLease>>);
+
+impl StopProxy {
+    fn new(provider: &str) -> Self {
+        if !matches!(provider, "codex" | "xai") {
+            return Self(None);
+        }
+        let generation = PROXY_SLOTS.with(|slots| {
+            let mut slots = slots.borrow_mut();
+            let slot = slots.entry(provider.to_owned()).or_default();
+            slot.generation = slot.generation.wrapping_add(1);
+            slot.owner = Some(slot.generation);
+            slot.generation
+        });
+        Self(Some(Rc::new(ProxyLease {
+            provider: provider.to_owned(),
+            generation,
+            closed: Cell::new(false),
+        })))
+    }
+}
+
+impl Drop for StopProxy {
+    fn drop(&mut self) {
+        if let Some(lease) = &self.0 {
+            lease.closed.set(true);
+            PROXY_SLOTS.with(|slots| {
+                if let Some(slot) = slots.borrow_mut().get_mut(&lease.provider)
+                    && slot.owner == Some(lease.generation)
+                {
+                    slot.owner = None;
+                }
+            });
+            stop_if_idle(&lease.provider);
+        }
+    }
+}
+
+fn stop_if_idle(provider: &str) {
+    let should_stop = PROXY_SLOTS.with(|slots| {
+        let mut slots = slots.borrow_mut();
+        let Some(slot) = slots.get_mut(provider) else {
+            return false;
+        };
+        if slot.owner.is_some() || slot.stopping || !slot.needs_stop {
+            return false;
+        }
+        slot.stopping = true;
+        slot.needs_stop = false;
+        true
+    });
+    if !should_stop {
+        return;
+    }
+    let provider = provider.to_owned();
+    wasm_bindgen_futures::spawn_local(async move {
+        // A newer attempt waits for this response before it can start a proxy.
+        let response = request(
+            "GET",
+            &format!("/api/oauth/{provider}/stop-proxy"),
+            None,
+            None,
+        )
+        .await;
+        if !response.is_ok_and(|response| response.ok()) {
+            // Neither a failed transport nor a non-success HTTP response proves
+            // the provider-wide stop will not still run. Keep the fence closed.
+            return;
+        }
+        let waiters = PROXY_SLOTS.with(|slots| {
+            let mut slots = slots.borrow_mut();
+            let Some(slot) = slots.get_mut(&provider) else {
+                return Vec::new();
+            };
+            slot.stopping = false;
+            std::mem::take(&mut slot.waiters)
+        });
+        for waiter in waiters {
+            let _ = waiter.send(());
+        }
+        // A start that was already on the wire may have completed after this
+        // stop took effect. Its completion marks a second cleanup as needed.
+        stop_if_idle(&provider);
+    });
+}
+
+fn wait_for_stop(provider: &str) -> Option<futures_channel::oneshot::Receiver<()>> {
+    PROXY_SLOTS.with(|slots| {
+        let mut slots = slots.borrow_mut();
+        let slot = slots.get_mut(provider)?;
+        if !slot.stopping {
+            return None;
+        }
+        slot.waiters.retain(|waiter| !waiter.is_canceled());
+        let (tx, rx) = futures_channel::oneshot::channel();
+        slot.waiters.push(tx);
+        Some(rx)
+    })
+}
+
+enum ProxyStartError {
+    Cancelled,
+    CleanupPending,
+    Request(String),
+}
+
+fn owns_proxy(lease: &ProxyLease) -> bool {
+    !lease.closed.get()
+        && PROXY_SLOTS.with(|slots| {
+            slots
+                .borrow()
+                .get(&lease.provider)
+                .is_some_and(|slot| slot.owner == Some(lease.generation))
+        })
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum Completion {
+    Exchange,
+    DevicePoll,
+    ProxyStatus,
+}
+
+pub(super) struct OwnedRequest {
+    pub attempt: u64,
+    pub method: &'static str,
+    pub path: String,
+    pub body: Option<Value>,
+    pub completion: Completion,
+    pub reply: futures_channel::oneshot::Sender<Result<Value, String>>,
+}
+
+async fn owned_request(
+    callback: Callback<OwnedRequest>,
+    attempt: u64,
+    method: &'static str,
+    path: String,
+    body: Option<Value>,
+    completion: Completion,
+) -> Result<Value, String> {
+    let (reply, response) = futures_channel::oneshot::channel();
+    callback.call(OwnedRequest {
+        attempt,
+        method,
+        path,
+        body,
+        completion,
+        reply,
+    });
+    response
+        .await
+        .unwrap_or_else(|_| Err("Authentication cancelled".into()))
+}
+
+fn safe_url(url: &str) -> bool {
+    // Do not let a compromised response open a javascript:, file:, or other
+    // unexpected scheme. Plain HTTP is allowed only for loopback development.
+    let Ok(parsed) = web_sys::Url::new(url) else {
+        return false;
+    };
+    parsed.protocol() == "https:"
+        || parsed.protocol() == "http:"
+            && matches!(
+                parsed.hostname().as_str(),
+                "localhost" | "127.0.0.1" | "[::1]"
+            )
+}
+
+fn open_url(url: &str) {
+    if safe_url(url)
+        && let Some(window) = web_sys::window()
+    {
+        let _ = window.open_with_url_and_target_and_features(url, "_blank", "noopener,noreferrer");
+    }
+}
+
+async fn call(method: &str, path: &str, body: Option<&Value>) -> Result<Value, String> {
+    let response = dashboard_request(method, path, body)
+        .await
+        .map_err(|_| "Network error".to_owned())?;
+    let data = json_body(&response).await.unwrap_or_default();
+    if response.ok() {
+        Ok(data)
+    } else {
+        Err(data["error"]
+            .as_str()
+            .unwrap_or("Authentication failed")
+            .to_owned())
+    }
+}
+
+async fn start_proxy(
+    path: String,
+    lease: Rc<ProxyLease>,
+    recheck: SessionRecheck,
+) -> Result<Value, ProxyStartError> {
+    let (tx, rx) = futures_channel::oneshot::channel();
+    // Starting a local proxy can finish after its modal is dismissed. Keep the
+    // request alive, but never let an old completion stop a newer owner.
+    wasm_bindgen_futures::spawn_local(async move {
+        if let Some(stop) = wait_for_stop(&lease.provider)
+            && !matches!(
+                select(stop, TimeoutFuture::new(STOP_WAIT_TIMEOUT_MS)).await,
+                Either::Left((Ok(()), _))
+            )
+        {
+            let _ = tx.send(Err(ProxyStartError::CleanupPending));
+            return;
+        }
+        if !owns_proxy(&lease) {
+            let _ = tx.send(Err(ProxyStartError::Cancelled));
+            return;
+        }
+        PROXY_SLOTS.with(|slots| {
+            let mut slots = slots.borrow_mut();
+            let slot = slots.entry(lease.provider.clone()).or_default();
+            slot.needs_stop = true;
+        });
+        let result = match request("GET", &path, None, None).await {
+            Ok(response) => {
+                if response.status() == 401 {
+                    recheck.call();
+                }
+                let ok = response.ok();
+                let data = json_body(&response).await.unwrap_or_default();
+                if ok {
+                    Ok(data)
+                } else {
+                    Err(ProxyStartError::Request(
+                        data["error"]
+                            .as_str()
+                            .unwrap_or("Authentication failed")
+                            .to_owned(),
+                    ))
+                }
+            }
+            Err(_) => Err(ProxyStartError::Request("Network error".into())),
+        };
+        // Even a transport error can occur after the backend started a listener.
+        PROXY_SLOTS.with(|slots| {
+            if let Some(slot) = slots.borrow_mut().get_mut(&lease.provider) {
+                slot.needs_stop = true;
+            }
+        });
+        stop_if_idle(&lease.provider);
+        let _ = tx.send(result);
+    });
+    rx.await.unwrap_or(Err(ProxyStartError::Cancelled))
+}
+
+#[component]
+pub(super) fn OAuthFlow(
+    provider: String,
+    name: String,
+    attempt: u64,
+    on_close: EventHandler<()>,
+    on_request: Callback<OwnedRequest>,
+) -> Element {
+    let proxy_owner = use_hook({
+        let provider = provider.clone();
+        move || Rc::new(StopProxy::new(&provider))
+    });
+    let mut state = use_signal(Value::default);
+    let mut error = use_signal(String::new);
+    let mut callback = use_signal(String::new);
+    let mut submitting = use_signal(|| false);
+    let recheck = use_context::<SessionRecheck>();
+    let device = matches!(
+        provider.as_str(),
+        "github" | "kimi" | "kimi-coding" | "kilocode" | "codebuddy" | "codebuddy-cn" | "kimchi"
+    );
+    let mut flow = {
+        let provider = provider.clone();
+        use_future(move || {
+            let provider = provider.clone();
+            let recheck = recheck.clone();
+            let proxy_owner = proxy_owner.0.clone();
+            async move {
+                error.set(String::new());
+                state.set(Value::Null);
+                if device {
+                    let data = match call(
+                        "GET",
+                        &format!("/api/oauth/{}/device-code", encoded(&provider)),
+                        None,
+                    )
+                    .await
+                    {
+                        Ok(data) => data,
+                        Err(e) => {
+                            error.set(e);
+                            return;
+                        }
+                    };
+                    let code = text(&data, "device_code").to_owned();
+                    let verifier = text(&data, "codeVerifier").to_owned();
+                    if code.is_empty() {
+                        error.set("No device code returned".into());
+                        return;
+                    }
+                    let url = data["verification_uri_complete"]
+                        .as_str()
+                        .filter(|v| !v.is_empty())
+                        .unwrap_or_else(|| text(&data, "verification_uri"));
+                    if !url.is_empty() {
+                        open_url(url);
+                    }
+                    let mut interval = data["interval"]
+                        .as_f64()
+                        .filter(|n| n.is_finite() && *n > 0.0)
+                        .unwrap_or(5.0);
+                    let expires = data["expires_in"]
+                        .as_f64()
+                        .filter(|n| n.is_finite() && *n > 0.0)
+                        .unwrap_or(120.0);
+                    state.set(data);
+                    let deadline = js_sys::Date::now() + expires * 1000.0;
+                    while js_sys::Date::now() < deadline {
+                        TimeoutFuture::new((interval * 1000.0).clamp(1.0, u32::MAX as f64) as u32)
+                            .await;
+                        let path = format!("/api/oauth/{}/poll", encoded(&provider));
+                        // Poll returns meaningful OAuth error JSON even when HTTP is non-2xx.
+                        let data = match owned_request(on_request, attempt, "POST", path, Some(json!({"deviceCode":code,"codeVerifier":verifier,"extraData":Value::Null})), Completion::DevicePoll).await { Ok(data) => data, Err(e) => { error.set(e); return; } };
+                        if data["success"] == true {
+                            return;
+                        }
+                        match text(&data, "error") {
+                            "expired_token" | "access_denied" => {
+                                error.set(
+                                    data["errorDescription"]
+                                        .as_str()
+                                        .unwrap_or_else(|| text(&data, "error"))
+                                        .into(),
+                                );
+                                return;
+                            }
+                            "slow_down" => interval = (interval + 5.0).min(30.0),
+                            _ => {}
+                        }
+                    }
+                    error.set("Authorization timeout".into());
+                    return;
+                }
+                let Some(window) = web_sys::window() else {
+                    error.set("Browser unavailable".into());
+                    return;
+                };
+                let location = window.location();
+                let port = location
+                    .port()
+                    .ok()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| {
+                        if location.protocol().ok().as_deref() == Some("https:") {
+                            "443".into()
+                        } else {
+                            "80".into()
+                        }
+                    });
+                let redirect = match provider.as_str() {
+                    "codex" => "http://localhost:1455/auth/callback".to_owned(),
+                    "xai" => "http://127.0.0.1:56121/callback".to_owned(),
+                    _ => format!("http://localhost:{port}/callback"),
+                };
+                let path = format!(
+                    "/api/oauth/{}/authorize?redirect_uri={}",
+                    encoded(&provider),
+                    encoded(&redirect)
+                );
+                let mut data = match call("GET", &path, None).await {
+                    Ok(data) => data,
+                    Err(e) => {
+                        error.set(e);
+                        return;
+                    }
+                };
+                data["redirectUri"] = json!(redirect);
+                if text(&data, "authUrl").is_empty() {
+                    error.set("No authorization URL returned from OAuth provider".into());
+                    return;
+                }
+                if matches!(provider.as_str(), "codex" | "xai")
+                    && let Ok(params) = web_sys::UrlSearchParams::new()
+                {
+                    params.append("app_port", &port);
+                    params.append("state", text(&data, "state"));
+                    params.append("code_verifier", text(&data, "codeVerifier"));
+                    params.append("redirect_uri", text(&data, "redirectUri"));
+                    let query: String = params.to_string().into();
+                    let Some(proxy_owner) = proxy_owner else {
+                        return;
+                    };
+                    match start_proxy(
+                        format!("/api/oauth/{}/start-proxy?{query}", encoded(&provider)),
+                        proxy_owner,
+                        recheck,
+                    )
+                    .await
+                    {
+                        Ok(proxy) => {
+                            if provider == "xai"
+                                && proxy["success"] != true
+                                && proxy["reason"] == "port_busy"
+                            {
+                                error.set(
+                                    "Port 56121 in use; close the conflicting process and retry"
+                                        .into(),
+                                );
+                                return;
+                            }
+                            data["serverSide"] = json!(proxy["serverSide"] == true);
+                        }
+                        Err(ProxyStartError::CleanupPending) => {
+                            error.set(STOP_PENDING_MESSAGE.into());
+                            return;
+                        }
+                        Err(ProxyStartError::Cancelled) => return,
+                        Err(ProxyStartError::Request(e)) if provider == "xai" => {
+                            error.set(e);
+                            return;
+                        }
+                        Err(ProxyStartError::Request(_)) => {}
+                    }
+                }
+                open_url(text(&data, "authUrl"));
+                let server_side = data["serverSide"] == true;
+                let saved_state = text(&data, "state").to_owned();
+                state.set(data);
+                if server_side && !saved_state.is_empty() {
+                    for _ in 0..200 {
+                        TimeoutFuture::new(1500).await;
+                        if let Ok(status) = owned_request(
+                            on_request,
+                            attempt,
+                            "GET",
+                            format!(
+                                "/api/oauth/{}/poll-status?state={}",
+                                encoded(&provider),
+                                encoded(&saved_state)
+                            ),
+                            None,
+                            Completion::ProxyStatus,
+                        )
+                        .await
+                        {
+                            match text(&status, "status") {
+                                "done" => {
+                                    return;
+                                }
+                                "error" => {
+                                    error.set(
+                                        status["error"]
+                                            .as_str()
+                                            .unwrap_or("Authentication failed")
+                                            .into(),
+                                    );
+                                    return;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    error.set("Authentication timeout".into());
+                }
+            }
+        })
+    };
+    let title = if provider == "xai" {
+        "Connect Grok Build OAuth".to_owned()
+    } else {
+        format!("Connect {name}")
+    };
+    rsx! { Modal { title, on_close,
+        div { class: "flex flex-col gap-4",
+            if !error().is_empty() { div { role: "alert", class: "text-sm text-red-500", "{error}" } Button { label: "Retry".to_owned(), variant: "secondary", onclick: move |_| flow.restart() } }
+            else if device {
+                if state().is_null() { p { class: "text-sm text-text-muted", "Starting authorization..." } }
+                else { p { class: "text-sm", "Open the verification page and enter this code:" } code { class: "text-lg font-mono font-bold select-all", "{text(&state(), \"user_code\")}" }
+                    if safe_url(text(&state(), "verification_uri")) { a { href: "{text(&state(), \"verification_uri\")}", target: "_blank", rel: "noopener noreferrer", class: "text-primary underline break-all", "{text(&state(), \"verification_uri\")}" } }
+                    p { class: "text-sm text-text-muted", "Waiting for authorization..." }
+                }
+            } else if state().is_null() { p { class: "text-sm text-text-muted", "Starting authorization..." } }
+            else {
+                p { class: "text-sm", "Open this URL in your browser, then paste the callback URL below." }
+                input { r#type: "text", readonly: true, aria_label: "Authorization URL", value: "{text(&state(), \"authUrl\")}", class: INPUT_CLASS }
+                input { r#type: "text", aria_label: "Callback URL", placeholder: if provider == "xai" { "http://127.0.0.1:56121/callback?code=... or copied code" } else { "http://localhost/callback?code=..." }, value: "{callback}", class: INPUT_CLASS, oninput: move |e| callback.set(e.value()) }
+                Button { label: if submitting() { "Connecting...".to_owned() } else { "Connect".to_owned() }, disabled: submitting() || state().is_null() || js_trim(&callback()).is_empty(), onclick: { let provider = provider.clone(); move |_| {
+                    if submitting() { return; }
+                    let input = js_trim(&callback()); let auth = state(); let provider = provider.clone();
+                    let raw = input.starts_with("eyJ") && input.contains('.') || provider == "claude" && !input.contains("://");
+                    let xai_raw = provider == "xai" && !input.contains("://") && !input.contains('?') && !input.contains("code=");
+                    let parsed = if raw || xai_raw { Some((input, Value::Null)) } else if let Ok(url) = web_sys::Url::new(&input) {
+                        let params = url.search_params();
+                        if let Some(err) = params.get("error") { error.set(params.get("error_description").unwrap_or(err)); None }
+                        else { params.get("token").or_else(|| params.get("code")).map(|code| (code, json!(params.get("state").unwrap_or_default()))) }
+                    } else { None };
+                    let Some((code, callback_state)) = parsed else { if error().is_empty() { error.set("No authorization code found in URL".into()); } return; };
+                    submitting.set(true);
+                    spawn(async move {
+                        let (path, body) = if xai_raw { ("/api/oauth/xai/manual-code".to_owned(), json!({"code":code,"state":auth["state"]})) } else { (format!("/api/oauth/{}/exchange", encoded(&provider)), json!({"code":code,"redirectUri":auth["redirectUri"],"codeVerifier":auth["codeVerifier"],"state":callback_state})) };
+                        if let Err(e) = owned_request(on_request, attempt, "POST", path, Some(body), Completion::Exchange).await { error.set(e); }
+                        submitting.set(false);
+                    });
+                } } }
+            }
+            Button { label: "Cancel".to_owned(), variant: "ghost", onclick: move |_| on_close.call(()) }
+        }
+    } }
+}

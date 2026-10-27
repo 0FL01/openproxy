@@ -11,9 +11,11 @@ use std::cmp::Ordering;
 use wasm_bindgen::JsValue;
 
 mod compatible;
+mod detail;
 mod key_modal;
 mod new;
 use compatible::CompatibleModal;
+pub(super) use detail::ProviderDetailPage;
 use key_modal::KeyModal;
 pub(super) use new::NewProviderPage;
 

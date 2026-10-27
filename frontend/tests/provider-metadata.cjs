@@ -14,6 +14,9 @@ const reference = {};
 vm.runInNewContext(js, { exports: reference, require }, { filename: source });
 const snapshot = JSON.parse(fs.readFileSync(path.join(root, "frontend/src/browser/provider_data.json")));
 const sites = JSON.parse(fs.readFileSync(path.join(root, "frontend/src/browser/provider_sites.json")));
+const aliases = JSON.parse(fs.readFileSync(path.join(root, "frontend/src/browser/provider_aliases.json")));
+const detailMetadata = JSON.parse(fs.readFileSync(path.join(root, "frontend/src/browser/provider_detail_metadata.json")));
+const authModes = JSON.parse(fs.readFileSync(path.join(root, "frontend/src/browser/provider_auth_modes.json")));
 const builtIcons = path.join(root, "frontend/target/dx/openproxy-dashboard/release/web/public/providers");
 const groups = { oauth: reference.OAUTH_PROVIDERS, free: reference.FREE_PROVIDERS, freeTier: reference.FREE_TIER_PROVIDERS, apiKey: reference.APIKEY_PROVIDERS };
 const normalize = p => ({ id: p.id, name: p.name, color: p.color, textIcon: p.textIcon || "", priority: p.priority ?? 999, noAuth: !!p.noAuth, freeTier: !!p.freeTier, rateLimit: p.rateLimit || "" });
@@ -42,6 +45,16 @@ for (const [group, providers] of Object.entries(groups)) {
 }
 assert.equal(Object.keys(reference.WEB_COOKIE_PROVIDERS).length, 0, "cookie providers require list support");
 assert.deepEqual(sites, expectedSites, "new-provider links");
+const expectedAliases = Object.fromEntries(Object.entries(reference.AI_PROVIDERS).filter(([id, provider]) => provider.alias && provider.alias !== id).map(([id, provider]) => [id, provider.alias]));
+assert.deepEqual(aliases, expectedAliases, "detail storage aliases");
+assert.deepEqual(authModes, JSON.parse(JSON.stringify(Object.fromEntries(Object.entries(reference.AI_PROVIDERS).filter(([, provider]) => provider.authModes).map(([id, provider]) => [id, provider.authModes])))), "detail auth modes");
+const expectedDetailMetadata = {};
+for (const [id, provider] of Object.entries(reference.AI_PROVIDERS)) {
+  const detail = reference.OAUTH_PROVIDERS[id] || reference.APIKEY_PROVIDERS[id] || reference.FREE_PROVIDERS[id] || reference.FREE_TIER_PROVIDERS[id];
+  const entry = JSON.parse(JSON.stringify({ freeTierInfo: provider.freeTierInfo, noticeText: detail.notice?.text, noticeUrl: detail.notice?.apiKeyUrl }));
+  if (entry.freeTierInfo || entry.noticeText) expectedDetailMetadata[id] = entry;
+}
+assert.deepEqual(detailMetadata, expectedDetailMetadata, "detail free-tier/notice metadata");
 // The changing search count is deliberately excluded from the DOM translator;
 // none of today's catalogs translates either of its two literal text runs.
 const catalogs = path.join(root, "frontend/public/i18n/literals");
