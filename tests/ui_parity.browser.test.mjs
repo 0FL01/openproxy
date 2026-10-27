@@ -368,6 +368,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 let quotaStatus = 200;
                 let quotaClaudeUnauthorized = false;
                 let quotaAntigravityOrder = false;
+                let quotaCodexWindows = false;
                 const proxyPools = screen.name === "empty" ? [] : [
                   { id: "fixture-one", name: "Fixture Proxy", proxyUrl: "http://fixture.example.invalid:8080/", noProxy: "localhost", isActive: true, testStatus: "active", boundConnectionCount: 2, lastTestedAt: null },
                   { id: "fixture-two", name: "Disabled Proxy", proxyUrl: "http://other.example.invalid:8080/", noProxy: "", isActive: false, testStatus: "unknown", boundConnectionCount: 0, lastTestedAt: null },
@@ -531,7 +532,11 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   // Mirrors fetch_deepseek_usage and the API-key /api/usage envelope.
                   if (screen.section === "quota" && path === "/api/usage/fixture-deepseek") return route.fulfill({ json: { connectionId: "fixture-deepseek", message: "", quotas: { "Balance (CNY)": { used: 0, total: 0, remainingPercentage: 0, resetAt: null, unlimited: false }, "Balance (USD)": { used: 0, total: 12.5, remainingPercentage: 100, resetAt: null, unlimited: true } } } });
                   if (screen.section === "quota" && path === "/api/usage/fixture-glm") return route.fulfill({ json: { plan: "pro", quotas: { "Premium Requests": { used: 25, total: 100, resetAt: null } } } });
-                  if (screen.section === "quota" && path === "/api/usage/fixture-codex") return route.fulfill({ json: { plan: "pro", resetCredits: { availableCount: codexCredits }, quotas: { "Premium Requests": { used: 25, total: 100, resetAt: null } } } });
+                  if (screen.section === "quota" && path === "/api/usage/fixture-codex") return route.fulfill({ json: { plan: "pro", resetCredits: { availableCount: codexCredits }, quotas: quotaCodexWindows ? {
+                    // format_codex_window -> build_quota_entry_with_meta forwards unlimited from the provider.
+                    session: { used: 25, total: 100, remaining: 75, remainingPercentage: 75, resetAt: null, unlimited: true, windowMinutes: 300 },
+                    weekly: { used: 60, total: 100, remaining: 40, remainingPercentage: 40, resetAt: null, unlimited: false, windowMinutes: 10080 },
+                  } : { "Premium Requests": { used: 25, total: 100, resetAt: null } } } });
                   if (screen.section === "quota" && path === "/api/usage/fixture-codex/codex-reset-credits") {
                     if (method === "POST") { if (creditPostError) return route.fulfill({ status: 429, json: { error: "Synthetic reset error" } }); markCodexResetStarted(); await new Promise(resolve => { releaseCodexReset = resolve; }); codexCredits = 0; return route.fulfill({ json: { reset: true } }); }
                     if (creditGetError) { markCreditLookupStarted(); await new Promise(resolve => { releaseCreditLookup = resolve; }); return route.fulfill({ status: 503, json: { error: "Synthetic credit error" } }); }
@@ -1005,6 +1010,20 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                         releaseCodexReset();
                         await page.getByRole("button", { name: "No Codex reset credits available" }).waitFor();
                         assert(await page.getByRole("button", { name: "No Codex reset credits available" }).isDisabled());
+                        quotaCodexWindows = true;
+                        await Promise.all([
+                          page.waitForResponse((response) => response.url() === `${appUrl}/api/usage/fixture-codex`),
+                          page.getByTitle("Refresh quota").click(),
+                        ]);
+                        const session = page.getByRole("row").filter({ hasText: "session" });
+                        const weekly = page.getByRole("row").filter({ hasText: "weekly" });
+                        await session.waitFor();
+                        await weekly.waitFor();
+                        assert.equal(await session.getByText("25 / 100", { exact: true }).count(), 1, `Codex normalization displays the numeric session even when the raw window is marked unlimited; got ${JSON.stringify(await session.innerText())}`);
+                        assert.equal(await session.getByText("75%", { exact: true }).count(), 1);
+                        assert.equal(await session.getByText("Unlimited", { exact: true }).count(), 0);
+                        assert.equal(await weekly.getByText("60 / 100", { exact: true }).count(), 1);
+                        assert.equal(await weekly.getByText("40%", { exact: true }).count(), 1);
                       };
                     } else if (screen.name === "ready") verifyAfterCapture = async () => {
                       const before = quotaReads;

@@ -231,6 +231,10 @@ fn quota_entries(provider: &str, data: &Value, catalog: &Value) -> Vec<Value> {
                 // The backend marks positive balances as unlimited; Astro shows the amount instead.
                 quota.remove("unlimited");
             }
+            if provider == "codex" {
+                // Astro normalizes Codex windows without the raw unlimited flag.
+                quota.remove("unlimited");
+            }
             if provider == "a6api" {
                 quota.insert("recurring".into(), json!(false));
             }
