@@ -21,6 +21,7 @@ const fixtureCommit = "0123456789abcdef0123456789abcdef01234567";
 const translatorFixtures = {
   populated: '{\n  "model": "fixture",\n  "count": 42,\n  "enabled": true\n}',
   wrapped: `{\n  "message": "${"x".repeat(200)}",\n  "count": 42\n}`,
+  find: '{"message":"needle needle"}',
 };
 const callbackCodeQuery = "?code=fixture-code&state=fixture-state";
 const callbackErrorQuery = "?error=fixture-error&error_description=Fixture+authorization+denied&state=fixture-state";
@@ -153,6 +154,7 @@ const screens = [
   { section: "translator", name: "ready" },
   { section: "translator", name: "populated" },
   { section: "translator", name: "wrapped" },
+  { section: "translator", name: "find" },
   { section: "callback", name: "code", query: callbackCodeQuery, colorScheme: "light" },
   { section: "callback", name: "error", query: callbackErrorQuery, colorScheme: "light" },
   { section: "callback", name: "no-auth-data", query: "", colorScheme: "light" },
@@ -844,6 +846,19 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       await editor.evaluate(element => { element.setSelectionRange(0, 0); element.dispatchEvent(new Event("select", { bubbles: true })); element.blur(); });
                     }
                     await detection;
+                  }
+                  if (screen.name === "find") {
+                    if (mode === "record") {
+                      await page.evaluate(() => { const editor = window.monaco.editor.getEditors()[0]; editor.setPosition(editor.getModel().getPositionAt(editor.getValue().indexOf("needle"))); editor.focus(); });
+                    } else {
+                      const editor = page.getByLabel("Translator editor");
+                      await editor.focus();
+                      await editor.evaluate(element => { const offset = element.value.indexOf("needle"); element.setSelectionRange(offset, offset); });
+                    }
+                    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+                    await page.keyboard.press("Control+f");
+                    await page.getByRole("dialog", { name: "Find / Replace" }).getByLabel("Find", { exact: true }).waitFor();
+                    await page.getByText("1 of 2", { exact: true }).waitFor({ state: "attached" });
                   }
                   await page.waitForLoadState("networkidle");
                   await page.mouse.move(1, 1);

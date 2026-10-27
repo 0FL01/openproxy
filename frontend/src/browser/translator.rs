@@ -1410,6 +1410,26 @@ fn Editor(
     let mut active_visual_top = use_signal(|| 0_i32);
     let mut has_selection = use_signal(|| false);
     let mut scroll_top = use_signal(|| 0_i32);
+    let mut applied_find_padding = use_signal(|| 0_i32);
+    let find_padding = if find_open() {
+        if replace_open() {
+            62
+        } else {
+            33
+        }
+    } else {
+        0
+    };
+    use_effect(use_reactive((&find_padding,), move |(padding,)| {
+        if let Some(input) = textarea() {
+            let previous = *applied_find_padding.peek();
+            if padding != previous {
+                input.set_scroll_top((*scroll_top.peek() + padding - previous).max(0));
+                scroll_top.set(input.scroll_top());
+                applied_find_padding.set(padding);
+            }
+        }
+    }));
     use_effect(use_reactive((&value,), move |(value,)| {
         if !value.is_empty() && !*has_changed.peek() {
             has_changed.set(true);
@@ -1435,7 +1455,18 @@ fn Editor(
         let cursor_height = (2.0 * scale) as u32;
         let half = cursor_height / 2;
         let line = active_line();
-        let top = line_tops().get(line).copied().unwrap_or(line as i32 * 16) + active_visual_top();
+        let padding = if find_open() {
+            if replace_open() {
+                62
+            } else {
+                33
+            }
+        } else {
+            0
+        };
+        let top = line_tops().get(line).copied().unwrap_or(line as i32 * 16)
+            + active_visual_top()
+            + padding;
         let y = ((top.max(0) as f64 * height as f64 / document_height) as u32)
             .clamp(half, height - half)
             - half;
@@ -1738,6 +1769,7 @@ fn Editor(
         }
     }
     let scroll = scroll_top();
+    let text_top = find_padding - scroll;
     let mut wrapping_indent = None::<f64>;
     let mut wrapping_width = editor_width() as f64;
     if let Some(context) = ruler()
@@ -1809,13 +1841,13 @@ fn Editor(
             div { style: "position:relative;overflow:hidden;width:100%;height:400px;",
                 div { aria_hidden: "true", style: "position:absolute;transform:translate3d(0,0,0);contain:strict;top:0;height:400px;width:62px;background:#1e1e1e;font-family:'Droid Sans Mono',monospace;font-size:12px;line-height:16px;",
                     for line in 0..lines.len() {
-                        { let top = line_tops().get(line).copied().unwrap_or(line as i32 * 16) - scroll; let color = if value.is_empty() { "rgba(133,133,133,.4)" } else if line == active_line() { "#c6c6c6" } else { "#858585" }; rsx! {
+                        { let top = line_tops().get(line).copied().unwrap_or(line as i32 * 16) + find_padding - scroll; let color = if value.is_empty() { "rgba(133,133,133,.4)" } else if line == active_line() { "#c6c6c6" } else { "#858585" }; rsx! {
                             div { key: "{line}", style: "position:absolute;top:{top}px;left:0;width:36px;text-align:right;color:{color};pointer-events:none;", "{line + 1}" }
                         } }
                     }
                 }
                 div { style: "position:absolute;overflow:hidden;left:62px;right:0;height:400px;",
-                    pre { aria_hidden: "true", style: "position:absolute;top:-{scroll}px;left:0;right:0;margin:0;white-space:pre-wrap;overflow-wrap:anywhere;pointer-events:none;font-family:'Droid Sans Mono',monospace;font-size:12px;line-height:16px;",
+                    pre { aria_hidden: "true", style: "position:absolute;top:{text_top}px;left:0;right:0;margin:0;white-space:pre-wrap;overflow-wrap:anywhere;pointer-events:none;font-family:'Droid Sans Mono',monospace;font-size:12px;line-height:16px;",
                         onmounted: move |event| { if let Some(element) = event.data().downcast::<web_sys::Element>() && let Ok(element) = element.clone().dyn_into::<web_sys::HtmlElement>() { rendered.set(Some(element)); } },
                         for (line, segments) in lines.iter().enumerate() {
                             div { key: "{line}", style: "position:relative;width:{wrapping_width};min-height:16px;padding-left:{wrapping_indent}px;text-indent:-{wrapping_indent}px;",
@@ -1838,7 +1870,7 @@ fn Editor(
                         }
                     }
                     textarea { aria_label: "Translator editor", spellcheck: "false", value: "{value}",
-                        style: "position:absolute;inset:0 14px 0 0;width:calc(100% - 14px);height:100%;resize:none;border:0;outline:0;padding:0 {right_padding}px 0 {wrapping_indent}px;text-indent:-{wrapping_indent}px each-line;background:transparent;color:transparent;caret-color:white;font-family:'Droid Sans Mono',monospace;font-size:12px;line-height:16px;white-space:pre-wrap;overflow-wrap:anywhere;",
+                        style: "position:absolute;inset:0 14px 0 0;width:calc(100% - 14px);height:100%;resize:none;border:0;outline:0;padding:{find_padding}px {right_padding}px 0 {wrapping_indent}px;text-indent:-{wrapping_indent}px each-line;background:transparent;color:transparent;caret-color:white;font-family:'Droid Sans Mono',monospace;font-size:12px;line-height:16px;white-space:pre-wrap;overflow-wrap:anywhere;",
                         onmounted: move |event| {
                             if let Some(element) = event.data().downcast::<web_sys::Element>() && let Ok(input) = element.clone().dyn_into::<web_sys::HtmlTextAreaElement>() && let Some(container) = input.parent_element() {
                                 editor_width.set(container.client_width().saturating_sub(14));

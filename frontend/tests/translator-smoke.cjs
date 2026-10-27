@@ -86,6 +86,58 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
+    if (process.env.TRANSLATOR_FIND_VIEWZONE_ONLY === "1") {
+      const text = '{"message":"needle needle"}';
+      const offset = text.indexOf("needle");
+      if (reference) await page.evaluate(({ text, offset }) => { const e = window.monaco.editor.getEditors()[0]; e.setValue(text); e.setPosition(e.getModel().getPositionAt(offset)); e.focus(); }, { text, offset });
+      else { await editor().fill(text); await editor().evaluate((input, offset) => input.setSelectionRange(offset, offset), offset); }
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.keyboard.press("Control+f");
+      const dialog = page.getByRole("dialog", { name: "Find / Replace" });
+      await dialog.getByLabel("Find", { exact: true }).waitFor();
+      const lineTop = ({ reference, expected }) => {
+        const input = document.querySelector('textarea[aria-label="Translator editor"]');
+        const root = reference ? document.querySelector(".monaco-editor") : input?.parentElement;
+        const line = reference ? root?.querySelector(".view-lines .view-line") : root?.querySelector("pre > div");
+        return root && line && Math.abs(line.getBoundingClientRect().top - root.getBoundingClientRect().top - expected) < 1;
+      };
+      await page.waitForFunction(lineTop, { reference, expected: 33 }, { timeout: 5000 });
+      await dialog.getByRole("button", { name: "Toggle Replace" }).click();
+      await page.waitForFunction(lineTop, { reference, expected: 62 }, { timeout: 5000 });
+      await dialog.getByLabel("Find", { exact: true }).press("Escape");
+      await page.waitForFunction(lineTop, { reference, expected: 0 }, { timeout: 5000 });
+
+      const longText = JSON.stringify({ items: Array.from({ length: 80 }, (_, index) => `row${index} needle`) }, null, 2);
+      const longOffset = longText.indexOf("needle", longText.indexOf("row40"));
+      const longLine = longText.slice(0, longOffset).split("\n").length;
+      if (reference) await page.evaluate(({ text, offset }) => { const e = window.monaco.editor.getEditors()[0]; e.setValue(text); const p = e.getModel().getPositionAt(offset); e.setPosition(p); e.revealPositionInCenter(p, 0); e.focus(); }, { text: longText, offset: longOffset });
+      else {
+        await editor().fill(longText);
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        await editor().evaluate((input, { offset, line }) => { input.setSelectionRange(offset, offset); input.scrollTop = input.parentElement.querySelector("pre").children[line - 1].offsetTop - 150; }, { offset: longOffset, line: longLine });
+      }
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      const rowTop = ({ reference, offset, line }) => {
+        if (reference) {
+          const e = window.monaco.editor.getEditors()[0];
+          return e.getScrolledVisiblePosition(e.getModel().getPositionAt(offset))?.top;
+        }
+        const input = document.querySelector('textarea[aria-label="Translator editor"]');
+        return input.parentElement.querySelector("pre").children[line - 1].getBoundingClientRect().top - input.getBoundingClientRect().top;
+      };
+      const before = await page.evaluate(rowTop, { reference, offset: longOffset, line: longLine });
+      assert.ok(before > 60 && before < 340, "the selected line starts within the scroll viewport");
+      await page.keyboard.press("Control+f");
+      await dialog.getByLabel("Find", { exact: true }).waitFor();
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.ok(Math.abs(await page.evaluate(rowTop, { reference, offset: longOffset, line: longLine }) - before) < 1, "opening Find preserves the scrolled position");
+      await dialog.getByLabel("Find", { exact: true }).press("Escape");
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.ok(Math.abs(await page.evaluate(rowTop, { reference, offset: longOffset, line: longLine }) - before) < 1, "closing Find preserves the scrolled position");
+      assert.deepEqual(errors, []);
+      console.log("synthetic translator Find view-zone smoke passed");
+      return;
+    }
     if (process.env.TRANSLATOR_CURRENT_LINE_ONLY === "1") {
       await page.setViewportSize({ width: 390, height: 844 });
       const wrapped = `{"message":"${"x".repeat(200)}"}`;

@@ -18,7 +18,7 @@ section or screen when testing a partially migrated dashboard.
 
 ## Translator reference (work in progress)
 
-`UI_PARITY_SECTION=translator` includes empty, populated and wrapped editor states.
+`UI_PARITY_SECTION=translator` includes empty, populated, wrapped and Find editor states.
 Recording the Astro reference requires the locally installed Monaco 0.55.1
 `min/vs` directory mounted read-only at `/monaco-vs` (or set
 `UI_MONACO_VS_DIR`); the test fulfills its CDN URLs from those local files and
