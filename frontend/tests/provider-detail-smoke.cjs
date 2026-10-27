@@ -1160,7 +1160,7 @@ async function runAuthFixture(page, origin) {
     state.holdStop = false; state.releaseStop();
     await page.waitForTimeout(100);
     assert.equal(state.proxyStarts, starts, "a timed-out attempt requires explicit retry");
-    await waiting.getByRole("button", { name: "Retry" }).click();
+    await waiting.getByRole("button", { name: "Try Again" }).click();
     await waiting.getByLabel("Authorization URL").waitFor();
     assert.equal(state.proxyStarts, starts + 1);
     const lastStops = state.proxyStops;
@@ -1187,7 +1187,7 @@ async function runAuthFixture(page, origin) {
   await gatewayFenced.getByRole("alert").getByText("Previous proxy cleanup has not completed. Retry after it finishes.").waitFor();
   state.releaseGatewayStop();
   assert.equal(state.gatewayStopApplied && !state.proxyLive, true);
-  await gatewayFenced.getByRole("button", { name: "Retry" }).click();
+  await gatewayFenced.getByRole("button", { name: "Try Again" }).click();
   await gatewayFenced.getByRole("alert").waitFor({ state: "detached" });
   await gatewayFenced.getByRole("alert").getByText("Previous proxy cleanup has not completed. Retry after it finishes.").waitFor({ timeout: 10000 });
   assert.equal(state.proxyStarts, startsAfterGatewayTimeout, "retry cannot bypass an unconfirmed 504 stop");
@@ -1207,7 +1207,7 @@ async function runAuthFixture(page, origin) {
   const fenced = await openProxy("xai");
   await fenced.getByRole("alert").getByText("Previous proxy cleanup has not completed. Retry after it finishes.").waitFor({ timeout: 10000 });
   assert.equal(state.proxyStarts, startsAfterFailure);
-  await fenced.getByRole("button", { name: "Retry" }).click();
+  await fenced.getByRole("button", { name: "Try Again" }).click();
   await fenced.getByRole("alert").waitFor({ state: "detached" });
   await fenced.getByRole("alert").getByText("Previous proxy cleanup has not completed. Retry after it finishes.").waitFor({ timeout: 10000 });
   assert.equal(state.proxyStarts, startsAfterFailure, "retry cannot bypass an unconfirmed stop");
@@ -1284,10 +1284,10 @@ async function runAuthFixture(page, origin) {
   assert.equal(await current.getByLabel("Callback URL").count(), 0, "xAI cannot accept bare codes without a registered proxy session");
   await page.unroute("**/api/oauth/xai/start-proxy?*", failStart);
   state.rejectProxyStart = true;
-  await current.getByRole("button", { name: "Retry" }).click();
+  await current.getByRole("button", { name: "Try Again" }).click();
   await current.getByRole("alert").getByText("Synthetic proxy failure").waitFor();
   state.rejectProxyStart = false;
-  await current.getByRole("button", { name: "Retry" }).click();
+  await current.getByRole("button", { name: "Try Again" }).click();
   await current.getByLabel("Callback URL").waitFor();
   stops = state.proxyStops;
   await closeProxy(current);
@@ -1805,7 +1805,7 @@ async function runPopupFixture(page, origin) {
     assert.equal(popup.isClosed(), false, "failed exchange leaves callback URL available");
     assert.match(popup.url(), /failing-code/);
     const retryPopupEvent = page.waitForEvent("popup");
-    await modal.getByRole("button", { name: "Retry" }).click();
+    await modal.getByRole("button", { name: "Try Again" }).click();
     const oldFailedPopup = popup;
     popup = await retryPopupEvent;
     await popup.waitForURL(`${providerOrigin}/authorize`);
@@ -2496,7 +2496,7 @@ async function main() {
     let oauth = page.getByRole("dialog", { name: "Connect Kilo Code" });
     await oauth.getByRole("alert").getByText("Synthetic device failure").waitFor();
     state.deviceFailure = false;
-    await oauth.getByRole("button", { name: "Retry" }).click();
+    await oauth.getByRole("button", { name: "Try Again" }).click();
     await oauth.getByText("FIXTURE-123").waitFor();
     await waitForFixture(() => state.oauthPolls > 0);
     assert.deepEqual(state.writes.find(w => w.path === "/api/oauth/kilocode/poll").body, { deviceCode: "fixture-device-code", codeVerifier: "fixture-verifier", extraData: null });

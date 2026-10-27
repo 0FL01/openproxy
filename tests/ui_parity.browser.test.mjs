@@ -95,6 +95,7 @@ const screens = [
   { section: "provider-kilocode", name: "add-model-saved", action: "add-model-saved" },
   { section: "provider-kilocode", name: "disable-all-dialog", action: "disable-all-dialog" },
   { section: "provider-kilocode", name: "device-oauth", action: "device-oauth" },
+  { section: "provider-kilocode", name: "device-oauth-error", action: "device-oauth-error" },
   { section: "provider-compatible", name: "ready" },
   { section: "provider-compatible", name: "edit-dialog", action: "edit-dialog" },
   { section: "provider-compatible", name: "edit-dialog-scroll-bottom", action: "edit-dialog-scroll-bottom" },
@@ -205,11 +206,12 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
           const name = `${screen.section}-${screen.name}-${viewport.name}-${theme}`;
           const isManualOAuth = screen.section === "provider-codex-oauth";
           const isCodexDetail = ["provider-codex-autoping", "provider-codex-bulk-add", "provider-codex-oauth"].includes(screen.section);
+          const isKiloOAuthError = screen.action === "device-oauth-error";
           const isOpenRouter = screen.section === "provider-openrouter";
           const isXaiDetail = screen.section === "provider-xai";
           await t.test(name, async () => {
             assert(mode !== "record" || process.env.UI_PARITY_REPLACE === "1" || !existsSync(join(referenceDir, `${name}.png`)), "reference already exists; set UI_PARITY_REPLACE=1 deliberately to replace it");
-            if (isCodexDetail && !fixtureCaTrusted) {
+            if ((isCodexDetail || isKiloOAuthError) && !fixtureCaTrusted) {
               // route.fetch below must validate the fixture's DNS-constrained CA.
               // Chrome already trusts it via the fixture's disposable NSS profile.
               const tls = await import("node:tls");
@@ -229,6 +231,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
               const writes = [];
               const unexpected = [];
               let interceptedCodexStop = 0;
+              let deviceAuthAttempts = 0;
               let releaseXaiForce;
               let observeXaiForce;
               const xaiForceStarted = new Promise((resolve) => { observeXaiForce = resolve; });
@@ -295,7 +298,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     };
                   });
                 }
-                if (screen.action === "device-oauth") await page.addInitScript(() => {
+                if (screen.action === "device-oauth" || isKiloOAuthError) await page.addInitScript(() => {
                   window.open = (...args) => { window.__fixtureOpened = args; return null; };
                 });
                 if (isManualOAuth) await page.addInitScript(() => {
@@ -362,7 +365,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                 let currentCodexConfig = codexConfig(false, screen.name === "off");
                 page.on("pageerror", (error) => errors.push(error.message));
                 await page.clock.setFixedTime(new Date("2026-10-01T12:00:00Z"));
-                if (["callback", "provider-compatible", "logs"].includes(screen.section) || isCodexDetail || isOpenRouter || isXaiDetail) await context.routeWebSocket("**/*", (socket) => {
+                if (["callback", "provider-compatible", "logs"].includes(screen.section) || isCodexDetail || isKiloOAuthError || isOpenRouter || isXaiDetail) await context.routeWebSocket("**/*", (socket) => {
                   unexpected.push("WebSocket blocked");
                   socket.close();
                 });
@@ -378,8 +381,8 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   }
                   const assets = screen.section === "callback"
                     ? ((path === "/callback" && url.search === screen.query) || (mode === "compare" && !url.search && (path === "/favicon.svg" || path.startsWith("/_astro/") || path.startsWith("/assets/"))))
-                    : screen.section === "provider-compatible" || isCodexDetail || isOpenRouter || isXaiDetail
-                    ? (!url.search && (path === (screen.section === "provider-compatible" ? compatiblePath : isOpenRouter ? "/dashboard/providers/openrouter" : isXaiDetail ? "/dashboard/providers/xai" : codexPath) || path === (screen.section === "provider-compatible" ? "/providers/oai-cc.png" : isOpenRouter ? "/providers/openrouter.png" : isXaiDetail ? "/providers/xai.png" : "/providers/codex.png") || detailAstroAssets.has(path) || (mode === "compare" && detailCandidateAssets.includes(path))))
+                    : screen.section === "provider-compatible" || isCodexDetail || isKiloOAuthError || isOpenRouter || isXaiDetail
+                    ? (!url.search && (path === (screen.section === "provider-compatible" ? compatiblePath : isKiloOAuthError ? "/dashboard/providers/kilocode" : isOpenRouter ? "/dashboard/providers/openrouter" : isXaiDetail ? "/dashboard/providers/xai" : codexPath) || path === (screen.section === "provider-compatible" ? "/providers/oai-cc.png" : isKiloOAuthError ? "/providers/kilocode.png" : isOpenRouter ? "/providers/openrouter.png" : isXaiDetail ? "/providers/xai.png" : "/providers/codex.png") || detailAstroAssets.has(path) || (mode === "compare" && detailCandidateAssets.includes(path))))
                     : (!["providers-new", "provider-kilocode"].includes(screen.section) && (path === "/login" || path === "/dashboard/endpoint")) || path === "/favicon.svg" || path.startsWith("/_astro/") || path.startsWith("/assets/") || path.startsWith("/i18n/") ||
                     (screen.section === "providers" && (path === "/dashboard/providers" || /^\/providers\/[a-z0-9_-]+\.png$/.test(path))) ||
                     (screen.section === "providers-new" && !url.search && ["/dashboard/providers/new", "/providers/codex.png", "/providers/opencode-zen.png", "/providers/openai.png"].includes(path)) ||
@@ -393,7 +396,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     (screen.section === "proxy-pools" && !url.search && path === "/dashboard/proxy-pools") ||
                     (screen.section === "translator" && !url.search && path === "/dashboard/translator");
                   if (url.origin === appUrl && method === "GET" && assets) {
-                    if (!isCodexDetail) return route.continue();
+                    if (!isCodexDetail && !isKiloOAuthError) return route.continue();
                     // Do not let even an allowed asset redirect around the
                     // network allowlist (especially to a side-effecting GET).
                     const response = await route.fetch({ maxRedirects: 0 });
@@ -411,7 +414,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     ["/api/auth/status", "/api/settings", "/api/build", "/api/catalog"].includes(path);
                   const kiloGet = screen.section === "provider-kilocode" && method === "GET" && (
                     (!url.search && ["/api/auth/status", "/api/settings", "/api/build", "/api/catalog", "/api/providers", "/api/provider-nodes", "/api/providers/kilo/free-models", "/api/providers/filters", "/api/models", "/api/models/custom", "/api/models/alias", "/api/models/favorites"].includes(path)) ||
-                    (screen.action === "device-oauth" && !url.search && path === "/api/oauth/kilocode/device-code") ||
+                    ((screen.action === "device-oauth" || isKiloOAuthError) && !url.search && path === "/api/oauth/kilocode/device-code") ||
                     (path === "/api/proxy-pools" && url.search === "?isActive=true") ||
                     (path === "/api/models/disabled" && ["?providerAlias=", "?providerAlias=kc"].includes(url.search))
                   );
@@ -488,6 +491,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   if (translatorRequest) return route.fulfill({ json: { success: false, error: "Synthetic detection failure" } });
                   if (isManualOAuth && path === "/api/oauth/codex/authorize") return route.fulfill({ json: { authUrl: "https://fixture.invalid/authorize?client=synthetic", state: "fixture-state", codeVerifier: "fixture-verifier" } });
                   if (isManualOAuth && path === "/api/oauth/codex/start-proxy") return route.fulfill({ json: { success: true, serverSide: false } });
+                  if (isKiloOAuthError && path === "/api/oauth/kilocode/device-code") return route.fulfill({ status: 503, json: { error: ++deviceAuthAttempts === 1 ? "Synthetic device failure" : "Synthetic retry failure" } });
                   if (screen.action === "device-oauth" && path === "/api/oauth/kilocode/device-code") return route.fulfill({ json: {
                     device_code: "fixture-device", user_code: "ABCD-EFGH", verification_uri: "https://fixture.example.invalid/login",
                     verification_uri_complete: "https://fixture.example.invalid/login?user_code=ABCD-EFGH", interval: 300, expires_in: 1200,
@@ -1515,7 +1519,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   await restored("fixture-disabled").waitFor();
                   await restored("fixture-custom-disabled").waitFor();
                   await page.getByTitle("Show only free models").waitFor();
-                  if (screen.action && screen.action !== "device-oauth") await scrollModels();
+                  if (screen.action && screen.action !== "device-oauth" && !isKiloOAuthError) await scrollModels();
                   if (screen.action === "device-oauth") {
                     await page.getByRole("button", { name: /OAuth/ }).click();
                     await page.getByRole("heading", { name: "Connect Kilo Code" }).waitFor();
@@ -1525,6 +1529,30 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                       const modal = page.getByRole("heading", { name: "Connect Kilo Code" }).locator("../../..");
                       await modal.getByRole("button", { name: /Open/ }).click();
                       assert.equal((await page.evaluate(() => window.__fixtureOpened))[0], "https://fixture.example.invalid/login?user_code=ABCD-EFGH");
+                    };
+                  } else if (isKiloOAuthError) {
+                    await page.getByRole("button", { name: /OAuth/ }).click();
+                    const heading = page.getByRole("heading", { name: "Connect Kilo Code", exact: true });
+                    await heading.waitFor();
+                    const modal = heading.locator("../../..");
+                    await modal.getByRole("heading", { name: "Connection Failed", exact: true }).waitFor();
+                    await modal.getByText("Synthetic device failure", { exact: true }).waitFor();
+                    if (mode === "compare") {
+                      await modal.getByRole("alert").getByText("Synthetic device failure", { exact: true }).waitFor();
+                      assert.equal(await modal.getByText("error", { exact: true }).getAttribute("aria-hidden"), "true");
+                    }
+                    assert.equal(deviceAuthAttempts, 1);
+                    assert.equal(await modal.getByRole("button", { name: "Try Again", exact: true }).count(), 1);
+                    assert.equal(await modal.getByRole("button", { name: "Cancel", exact: true }).count(), 1);
+                    assert.equal(await page.evaluate(() => window.__fixtureOpened), undefined, "failed authorization cannot open a popup");
+                    verifyAfterCapture = async () => {
+                      await modal.getByRole("button", { name: "Try Again", exact: true }).press("Enter");
+                      await modal.getByText("Synthetic retry failure", { exact: true }).waitFor();
+                      assert.equal(deviceAuthAttempts, 2, "retry sends exactly one new device-code request");
+                      await modal.getByRole("button", { name: "Cancel", exact: true }).press("Enter");
+                      await heading.waitFor({ state: "detached" });
+                      assert.equal(deviceAuthAttempts, 2, "cancel cannot restart authorization");
+                      assert.equal(await page.evaluate(() => window.__fixtureOpened), undefined);
                     };
                   } else if (screen.action === "disable-model") {
                     const response = waitWrite("POST", "/api/models/disabled");

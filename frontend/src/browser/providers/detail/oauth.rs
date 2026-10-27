@@ -702,7 +702,19 @@ pub(super) fn OAuthFlow(
     };
     rsx! { Modal { title, large: true, on_close,
         div { class: "flex flex-col gap-4",
-            if !error().is_empty() { div { role: "alert", class: "text-sm text-red-500", "{error}" } Button { label: "Retry".to_owned(), variant: "secondary", onclick: move |_| flow.restart() } }
+            if !error().is_empty() {
+                div { class: "text-center py-6",
+                    div { class: "size-16 mx-auto mb-4 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center",
+                        span { aria_hidden: "true", class: "material-symbols-outlined text-3xl text-red-600", "error" }
+                    }
+                    h3 { class: "text-lg font-semibold mb-2", "Connection Failed" }
+                    p { role: "alert", class: "text-sm text-red-600 mb-4", span { "{error}" } }
+                    div { class: "flex gap-2",
+                        Button { label: "Try Again".to_owned(), variant: "secondary", full_width: true, onclick: move |_| flow.restart() }
+                        Button { label: "Cancel".to_owned(), variant: "ghost", full_width: true, onclick: move |_| on_close.call(()) }
+                    }
+                }
+            }
             else if device {
                 if state().is_null() { p { class: "text-sm text-text-muted", "Starting authorization..." } }
                 else {
@@ -794,7 +806,7 @@ pub(super) fn OAuthFlow(
                 Button { label: "Cancel".to_owned(), variant: "ghost", full_width: true, onclick: move |_| on_close.call(()) }
                 }
             }
-            if state().is_null() || !error().is_empty() { Button { label: "Cancel".to_owned(), variant: "ghost", onclick: move |_| on_close.call(()) } }
+            if state().is_null() && error().is_empty() { Button { label: "Cancel".to_owned(), variant: "ghost", onclick: move |_| on_close.call(()) } }
         }
     } }
 }
