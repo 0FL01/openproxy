@@ -162,10 +162,19 @@ fn find_ranges(
     match_case: bool,
     whole_word: bool,
     regex: bool,
+    scope: Option<(u32, u32)>,
 ) -> Vec<(u32, u32)> {
     let Some(regex) = find_regex(query, match_case, whole_word, regex) else {
         return Vec::new();
     };
+    let scoped_text = scope.map(|(start, end)| {
+        js_sys::JsString::from(text)
+            .slice(start, end)
+            .as_string()
+            .unwrap_or_default()
+    });
+    let offset = scope.map_or(0, |(start, _)| start);
+    let text = scoped_text.as_deref().unwrap_or(text);
     let mut ranges = Vec::new();
     let text_length = text.encode_utf16().count() as u32;
     while let Some(found) = regex.exec(text) {
@@ -176,7 +185,7 @@ fn find_ranges(
             .unwrap_or_default()
             .encode_utf16()
             .count() as u32;
-        ranges.push((end - length, end));
+        ranges.push((offset + end - length, offset + end));
         if length == 0 {
             if end >= text_length {
                 break;
@@ -185,6 +194,29 @@ fn find_ranges(
         }
     }
     ranges
+}
+
+fn adjust_find_scope(before: &str, after: &str, (start, end): (u32, u32)) -> (u32, u32) {
+    let edit = CompositionEdit::new(before, after);
+    let changed_at = before[..edit.start].encode_utf16().count() as u32;
+    let old_end = changed_at + edit.removed.encode_utf16().count() as u32;
+    let new_end = changed_at + edit.inserted.encode_utf16().count() as u32;
+    let shift = |position: u32| position - old_end + new_end;
+    let start = if start <= changed_at {
+        start
+    } else if start >= old_end {
+        shift(start)
+    } else {
+        changed_at
+    };
+    let end = if end < changed_at {
+        end
+    } else if end >= old_end {
+        shift(end)
+    } else {
+        new_end
+    };
+    (start, end)
 }
 
 fn find_seed(input: &web_sys::HtmlTextAreaElement) -> String {
@@ -1204,6 +1236,7 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
     let mut match_case = use_signal(|| false);
     let mut whole_word = use_signal(|| false);
     let mut regex = use_signal(|| false);
+    let mut find_scope = use_signal(|| None::<(u32, u32)>);
     let mut active_line = use_signal(|| 0_usize);
     let mut scroll_top = use_signal(|| 0_i32);
     use_effect(use_reactive((&value,), move |_| {
@@ -1302,6 +1335,7 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
                 *match_case.peek(),
                 *whole_word.peek(),
                 *regex.peek(),
+                *find_scope.peek(),
             );
             if !ranges.is_empty() {
                 let current = *match_index.peek();
@@ -1325,6 +1359,7 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
                 *match_case.peek(),
                 *whole_word.peek(),
                 *regex.peek(),
+                *find_scope.peek(),
             )
             .first()
             .copied()
@@ -1349,6 +1384,31 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
         }
         reset_match.call(());
     });
+    let toggle_scope = use_callback(move |_| {
+        let current = *find_scope.peek();
+        let scope = if current.is_some() {
+            None
+        } else {
+            textarea.peek().as_ref().and_then(|input| {
+                let start = input.selection_start().ok().flatten()?;
+                let mut end = input.selection_end().ok().flatten()?;
+                let text = js_sys::JsString::from(input.value());
+                if end > start && text.slice(end - 1, end).as_string().as_deref() == Some("\n") {
+                    end -= 1;
+                }
+                (start < end).then_some((start, end))
+            })
+        };
+        find_scope.set(scope);
+        reset_match.call(());
+    });
+    let close_find = use_callback(move |_| {
+        find_open.set(false);
+        find_scope.set(None);
+        if let Some(input) = textarea.peek().as_ref() {
+            let _ = input.focus();
+        }
+    });
     let replace_matches = use_callback(move |all: bool| {
         let Some(input) = textarea.peek().as_ref().cloned() else {
             return;
@@ -1369,13 +1429,14 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
             *match_case.peek(),
             *whole_word.peek(),
             *regex.peek(),
+            *find_scope.peek(),
         );
         if ranges.is_empty() {
             return;
         }
         let input_text = js_sys::JsString::from(text);
         let (start, end) = if all {
-            (0, input_text.length())
+            (*find_scope.peek()).unwrap_or((0, input_text.length()))
         } else {
             ranges[*match_index.peek() % ranges.len()]
         };
@@ -1403,6 +1464,7 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
             *match_case.peek(),
             *whole_word.peek(),
             *regex.peek(),
+            *find_scope.peek(),
         );
         if let Some(index) = ranges
             .iter()
@@ -1413,7 +1475,14 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
             let _ = input.set_selection_range(ranges[index].0, ranges[index].1);
         }
     });
-    let matches = find_ranges(&value, &query(), match_case(), whole_word(), regex());
+    let matches = find_ranges(
+        &value,
+        &query(),
+        match_case(),
+        whole_word(),
+        regex(),
+        find_scope(),
+    );
     let count = if matches.is_empty() {
         "No results".to_owned()
     } else {
@@ -1629,7 +1698,7 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
                                 if let Some(input) = textarea.peek().as_ref() {
                                     let seed = find_seed(input);
                                     let cursor = input.selection_start().ok().flatten().unwrap_or_default();
-                                    let ranges = find_ranges(&input.value(), &seed, *match_case.peek(), *whole_word.peek(), *regex.peek());
+                                    let ranges = find_ranges(&input.value(), &seed, *match_case.peek(), *whole_word.peek(), *regex.peek(), *find_scope.peek());
                                     let index = ranges.iter().position(|(start, end)| *start <= cursor && cursor <= *end)
                                         .or_else(|| ranges.iter().position(|(start, _)| *start >= cursor)).unwrap_or(0);
                                     query.set(seed);
@@ -1685,6 +1754,11 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
                         oninput: move |event| {
                             if *adjusting_history.peek() { return; }
                             let mut value = event.value();
+                            let previous = last_input.peek().clone();
+                            let scope = *find_scope.peek();
+                            if let Some(scope) = scope && previous != value {
+                                find_scope.set(Some(adjust_find_scope(&previous, &value, scope)));
+                            }
                             let input_type = event.data().downcast::<web_sys::Event>()
                                 .and_then(|event| event.dyn_ref::<web_sys::InputEvent>())
                                 .map(|event| event.input_type()).unwrap_or_default();
@@ -1700,6 +1774,7 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
                                     if value != *final_value {
                                         // Additional native history events must run after this handler returns.
                                         spawn(async move {
+                                            let first_value = value.clone();
                                             adjusting_history.set(true);
                                             let edits: Vec<_> = if undo { group.edits.iter().rev().collect() } else { group.edits.iter().collect() };
                                             let final_value = if undo { &group.before } else { &group.after };
@@ -1715,6 +1790,10 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
                                                 }
                                             }
                                             adjusting_history.set(false);
+                                            let scope = *find_scope.peek();
+                                            if let Some(scope) = scope && first_value != value {
+                                                find_scope.set(Some(adjust_find_scope(&first_value, &value, scope)));
+                                            }
                                             if undo && value == group.before {
                                                 let _ = input.set_selection_range_with_direction(group.start, group.end, &group.direction);
                                             }
@@ -1745,7 +1824,7 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
                     input { aria_label: "Find", placeholder: "Find", value: "{query}", spellcheck: "false", style: "min-width:0;flex:1;height:24px;padding:3px 6px;background:#3c3c3c;color:#cccccc;border:1px solid #007fd4;outline:none;",
                         onmounted: move |event| async move { let _ = event.set_focus(true).await; },
                         oninput: move |event| { query.set(event.value()); reset_match.call(()); },
-                        onkeydown: move |event| { if event.key() == Key::Enter { event.prevent_default(); select_match.call(!event.modifiers().shift()); } else if event.key() == Key::Escape { event.prevent_default(); find_open.set(false); if let Some(input) = textarea.peek().as_ref() { let _ = input.focus(); } } else if event.modifiers().alt() { let option = match event.key().to_string().to_lowercase().as_str() { "c" => Some(0), "w" => Some(1), "r" => Some(2), _ => None }; if let Some(option) = option { event.prevent_default(); toggle_option.call(option); } } }
+                        onkeydown: move |event| { if event.key() == Key::Enter { event.prevent_default(); select_match.call(!event.modifiers().shift()); } else if event.key() == Key::Escape { event.prevent_default(); close_find.call(()); } else if event.modifiers().alt() { let option = match event.key().to_string().to_lowercase().as_str() { "c" => Some(0), "w" => Some(1), "r" => Some(2), _ => None }; if let Some(option) = option { event.prevent_default(); toggle_option.call(option); } else if event.key().to_string().eq_ignore_ascii_case("l") { event.prevent_default(); toggle_scope.call(()); } } }
                     }
                     button { r#type: "button", role: "checkbox", aria_label: "Match Case (Alt+C)", aria_checked: "{match_case}", style: if match_case() { "background:#004a77;color:#fff;" } else { "color:#ccc;" }, onclick: move |_| toggle_option.call(0), "Aa" }
                     button { r#type: "button", role: "checkbox", aria_label: "Match Whole Word (Alt+W)", aria_checked: "{whole_word}", style: if whole_word() { "background:#004a77;color:#fff;" } else { "color:#ccc;" }, onclick: move |_| toggle_option.call(1), "ab" }
@@ -1753,10 +1832,11 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
                     span { style: "min-width:55px;text-align:center;", "{count}" }
                     button { r#type: "button", aria_label: "Previous Match (Shift+Enter)", onclick: move |_| select_match.call(false), "↑" }
                     button { r#type: "button", aria_label: "Next Match (Enter)", onclick: move |_| select_match.call(true), "↓" }
-                    button { r#type: "button", aria_label: "Close (Escape)", onclick: move |_| { find_open.set(false); if let Some(input) = textarea.peek().as_ref() { let _ = input.focus(); } }, "×" }
+                    button { r#type: "button", role: "checkbox", aria_label: "Find in Selection (Alt+L)", aria_checked: "{find_scope().is_some()}", style: if find_scope().is_some() { "background:#004a77;color:#fff;" } else { "color:#ccc;" }, onclick: move |_| toggle_scope.call(()), "☷" }
+                    button { r#type: "button", aria_label: "Close (Escape)", onclick: move |_| close_find.call(()), "×" }
                     }
                     if replace_open() { div { style: "display:flex;align-items:center;gap:4px;height:25px;margin-left:14px;",
-                        input { aria_label: "Replace", placeholder: "Replace", value: "{replacement}", spellcheck: "false", style: "min-width:0;flex:1;height:24px;padding:3px 6px;background:#3c3c3c;color:#cccccc;border:1px solid #3c3c3c;outline:none;", oninput: move |event| replacement.set(event.value()), onkeydown: move |event| { if event.key() == Key::Enter { event.prevent_default(); replace_matches.call(false); } else if event.key() == Key::Escape { event.prevent_default(); find_open.set(false); if let Some(input) = textarea.peek().as_ref() { let _ = input.focus(); } } } }
+                        input { aria_label: "Replace", placeholder: "Replace", value: "{replacement}", spellcheck: "false", style: "min-width:0;flex:1;height:24px;padding:3px 6px;background:#3c3c3c;color:#cccccc;border:1px solid #3c3c3c;outline:none;", oninput: move |event| replacement.set(event.value()), onkeydown: move |event| { if event.key() == Key::Enter { event.prevent_default(); replace_matches.call(false); } else if event.key() == Key::Escape { event.prevent_default(); close_find.call(()); } else if event.modifiers().alt() && event.key().to_string().eq_ignore_ascii_case("l") { event.prevent_default(); toggle_scope.call(()); } } }
                         button { r#type: "button", aria_label: "Replace (Ctrl+Shift+1)", onclick: move |_| replace_matches.call(false), "Replace" }
                         button { r#type: "button", aria_label: "Replace All (Ctrl+Alt+Enter)", onclick: move |_| replace_matches.call(true), "Replace All" }
                     } }

@@ -86,6 +86,46 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
+    const scopedText = "outside cat\ninside cat and cat\noutside cat";
+    if (reference) await page.evaluate(text => { const e = window.monaco.editor.getEditors()[0]; e.setValue(text); e.setSelection(new window.monaco.Selection(2, 1, 2, 19)); e.focus(); }, scopedText);
+    else { await editor().fill(scopedText); await editor().evaluate(input => input.setSelectionRange(12, 30)); }
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.keyboard.press("Control+h");
+    const scopedDialog = page.getByRole("dialog", { name: "Find / Replace" });
+    const scopeButton = scopedDialog.getByRole("checkbox", { name: "Find in Selection (Alt+L)" });
+    await scopeButton.click();
+    assert.equal(await scopeButton.getAttribute("aria-checked"), "true");
+    await scopedDialog.getByLabel("Find", { exact: true }).fill("^inside");
+    await scopedDialog.getByRole("checkbox", { name: "Use Regular Expression (Alt+R)" }).click();
+    await scopedDialog.getByText("1 of 1", { exact: true }).waitFor();
+    await scopedDialog.getByRole("checkbox", { name: "Use Regular Expression (Alt+R)" }).click();
+    await scopedDialog.getByLabel("Find", { exact: true }).fill("cat");
+    await scopedDialog.getByText("1 of 2", { exact: true }).waitFor();
+    await scopedDialog.getByLabel("Replace", { exact: true }).fill("doggo");
+    await scopedDialog.getByRole("button", { name: /^Replace All \(/ }).click();
+    assert.equal(await value(), "outside cat\ninside doggo and doggo\noutside cat", "replace all affects only the selected range");
+    if (reference) await page.evaluate(() => window.monaco.editor.getEditors()[0].focus()); else await editor().focus();
+    await page.keyboard.press("Control+z");
+    assert.equal(await value(), scopedText, "scoped replacement remains undoable");
+    await scopedDialog.getByText("1 of 2", { exact: true }).waitFor();
+    await scopeButton.click();
+    assert.equal(await scopeButton.getAttribute("aria-checked"), "false");
+    await scopedDialog.getByText(/^[1-4] of 4$/).waitFor();
+    await scopedDialog.getByRole("button", { name: "Close (Escape)" }).click();
+    if (reference) await page.evaluate(() => { const e = window.monaco.editor.getEditors()[0]; e.setSelection(new window.monaco.Selection(1, 1, 2, 19)); e.focus(); });
+    else await editor().evaluate(input => input.setSelectionRange(0, 30));
+    await page.keyboard.press("Control+h");
+    assert.equal(await scopeButton.getAttribute("aria-checked"), "false", "Find is not automatically scoped to a multi-line selection");
+    await scopedDialog.getByLabel("Find", { exact: true }).press("Alt+l");
+    assert.equal(await scopeButton.getAttribute("aria-checked"), "true");
+    await scopedDialog.getByLabel("Find", { exact: true }).fill("cat");
+    await scopedDialog.getByText(/^[1-3] of 3$/).waitFor();
+    if (process.env.TRANSLATOR_FIND_SELECTION_ONLY === "1") {
+      assert.deepEqual(errors, []);
+      console.log("synthetic translator scoped find smoke passed");
+      return;
+    }
+    await scopedDialog.getByRole("button", { name: "Close (Escape)" }).click();
     const lines = "alpha\nbeta\ngamma";
     const lineSelection = () => reference ? page.evaluate(() => { const editor = window.monaco.editor.getEditors()[0]; const s = editor.getSelection(); return [editor.getModel().getOffsetAt(s.getStartPosition()), editor.getModel().getOffsetAt(s.getEndPosition())]; }) : editor().evaluate(input => [input.selectionStart, input.selectionEnd]);
     const indentedLine = "alpha\n    beta\ngamma";
