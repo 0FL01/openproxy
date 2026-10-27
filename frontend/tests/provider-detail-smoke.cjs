@@ -31,6 +31,9 @@ const server = http.createServer(async (req, res) => {
     let raw = ""; for await (const chunk of req) raw += chunk;
     const body = raw ? JSON.parse(raw) : null;
     if (req.method !== "GET") state.writes.push({ method: req.method, path: `${url.pathname}${url.search}`, body, at: Date.now() });
+    if (state.xaiForceOnly && req.method === "GET" && ["/api/settings", "/api/provider-nodes", "/api/proxy-pools"].includes(url.pathname)) {
+      (state.xaiAuxReads ||= []).push({ path: `${url.pathname}${url.search}`, cache: req.headers["cache-control"] });
+    }
     if (url.pathname === "/api/auth/status") {
       state.authStatusRequests = (state.authStatusRequests || 0) + 1;
       return respond(200, state.expired ? { requireLogin: true, authenticated: false } : { requireLogin: true, authenticated: true });
@@ -64,13 +67,19 @@ const server = http.createServer(async (req, res) => {
       const data = { providerIdToAlias: { kilocode: "kc", codex: "cx" }, providerModels: [
         { alias: "kc", models: [{ id: "fixture-standard", name: "Official Name", kind: "llm", contextWindow: 128000 }, { id: "fixture-disabled", name: "Disabled", kind: "llm" }, { id: "image-only", kind: "image" }] },
         { alias: "cx", models: [{ id: "codex-base", name: "Codex Base", kind: "llm" }, { id: dynamic("codex") }] },
-        ...["commandcode", "a6api", "xai"].map(id => ({ alias: id, models: [{ id: dynamic(id) }] })),
+        ...["commandcode", "a6api", "xai"].map(id => ({ alias: id, models: id === "xai" && state.xaiForceOnly ? structuredClone(state.xaiCatalogRows) : [{ id: dynamic(id) }] })),
         { alias: "openrouter", models: [{ id: "openrouter-base", kind: "llm" }] },
       ] };
       if (state.holdCatalogOnce) { state.holdCatalogOnce = false; await new Promise(resolve => { state.releaseCatalog = resolve; }); }
       return respond(state.failCatalog ? 500 : 200, data);
     }
     if (url.pathname === "/api/providers" && req.method === "GET") {
+      if (state.xaiForceOnly) {
+        state.xaiConnectionReads = (state.xaiConnectionReads || 0) + 1;
+        (state.xaiConnectionHeaders ||= []).push(req.headers["cache-control"]);
+        if (state.xaiConnectionStatus) return respond(state.xaiConnectionStatus, { error: "Synthetic connection read failure" });
+        if (state.xaiMalformedConnections) return respond(200, { connections: {} });
+      }
       if (state.holdConnectionsOnce) {
         state.holdConnectionsOnce = false;
         const captured = structuredClone(state.connections);
@@ -186,6 +195,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === "/api/provider-nodes") {
       state.nodeReads = (state.nodeReads || 0) + 1;
+      if (state.holdXaiNodeOnce) { state.holdXaiNodeOnce = false; await new Promise(resolve => { state.releaseXaiNode = resolve; }); }
       if (state.holdNodeRead) await new Promise(resolve => { state.releaseNodeRead = resolve; });
       if (state.nodeReadMode === "fail") return respond(503, { error: "Synthetic node read failure" });
       if (state.nodeReadMode === "unauthorized") { state.expired = true; return respond(401, { error: "expired" }); }
@@ -291,6 +301,15 @@ const server = http.createServer(async (req, res) => {
     if (/^\/api\/providers\/[^/]+\/models$/.test(url.pathname) && req.method === "GET") {
       state.importGets ||= [];
       state.importGets.push(url.pathname);
+      if (state.xaiForceOnly) {
+        state.xaiForceHeaders ||= [];
+        state.xaiForceHeaders.push(req.headers);
+        if (state.holdXaiForce) await new Promise(resolve => { state.releaseXaiForce = resolve; });
+        const status = state.xaiForceStatus || 200;
+        if (status === 401) state.expired = true;
+        if (status === 200 && state.xaiNextCatalogRows) state.xaiCatalogRows = structuredClone(state.xaiNextCatalogRows);
+        return respond(status, { models: [{ id: "must-not-auto-import", kind: "llm" }] });
+      }
       const status = state.importStatus || 200;
       const data = structuredClone(state.importData || { models: [] });
       if (state.holdImport) await new Promise(resolve => { state.releaseImport = resolve; });
@@ -338,6 +357,203 @@ async function waitForFixture(predicate) {
     if (Date.now() > deadline) throw new Error("synthetic fixture action timed out");
     await new Promise(resolve => setTimeout(resolve, 10));
   }
+}
+
+async function runXaiForceFixture(page, origin) {
+  state.xaiForceOnly = true;
+  state.expired = false;
+  state.connections = [
+    { id: "inactive", provider: "xai", name: "Inactive", isActive: false, priority: -100 },
+    { id: "canonical /?", provider: "xai", name: "Canonical first", authType: "apikey", priority: 90 },
+    { id: "priority-first", provider: "xai", name: "Priority first", authType: "apikey", isActive: true, priority: 0 },
+    { id: "other-provider", provider: "codex", name: "Other provider", isActive: true },
+  ];
+  state.custom = [
+    { providerAlias: "xai", id: "saved-custom", name: "Saved custom", type: "llm", opencode: { limit: { context: 123456 } } },
+    { providerAlias: "xai", id: "saved-disabled", name: "Saved disabled", type: "llm" },
+    { providerAlias: "cx", id: "other-custom", type: "llm" },
+  ];
+  state.aliases = { personal: "xai/saved-custom", other: "cx/other-custom" };
+  state.disabled = { xai: ["saved-disabled"], cx: ["other-disabled"] };
+  state.favorites = { xai: ["saved-custom"], cx: ["other-custom"] };
+  state.pools = [];
+  state.xaiCatalogRows = [{ id: "grok-old", kind: "llm" }, { id: "saved-disabled", kind: "llm" }];
+  state.xaiNextCatalogRows = [{ id: "grok-new", kind: "llm" }, { id: "saved-disabled", kind: "llm" }];
+  state.writes = [];
+  state.importGets = [];
+  state.xaiAuxReads = [];
+  state.releaseCatalog = null;
+  state.holdCatalogOnce = true;
+  const code = id => page.locator("code").filter({ hasText: new RegExp(`^xai/${id}$`) });
+  const refresh = () => page.getByRole("button", { name: "Refresh models", exact: true });
+  const pending = () => page.getByRole("button", { name: "Refreshing models...", exact: true });
+  const alert = message => page.getByRole("alert").filter({ hasText: message });
+  const saved = () => ({ custom: structuredClone(state.custom), aliases: structuredClone(state.aliases), disabled: structuredClone(state.disabled), favorites: structuredClone(state.favorites) });
+  const initialSaved = saved();
+
+  await page.goto(`${origin}/dashboard/providers/xai`);
+  await waitForFixture(() => typeof state.releaseCatalog === "function");
+  await pending().waitFor();
+  assert.equal(await pending().isDisabled(), true, "initial catalog loading disables force refresh");
+  await page.getByRole("status").filter({ hasText: "Loading xAI model catalog..." }).waitFor();
+  assert.deepEqual(state.importGets, [], "page entry does not force a connection");
+  state.releaseCatalog();
+  await refresh().waitFor();
+  await code("grok-old").waitFor();
+  await page.getByText("Saved custom", { exact: true }).waitFor();
+
+  // Keep the force in flight while a separate connection edit triggers an old
+  // catalog snapshot. The later post-force projection must beat that snapshot.
+  state.holdXaiForce = true; state.releaseXaiForce = null;
+  state.holdXaiNodeOnce = true; state.releaseXaiNode = null;
+  state.pools = [{ id: "fixture-pool", name: "Fixture pool", isActive: true }];
+  const readsBefore = state.xaiConnectionReads;
+  const auxiliaryBefore = state.xaiAuxReads.length;
+  await refresh().click();
+  await waitForFixture(() => typeof state.releaseXaiNode === "function");
+  assert.deepEqual(state.importGets, [], "force waits for the connection refresh's auxiliary reads");
+  await pending().waitFor();
+  state.releaseXaiNode();
+  await waitForFixture(() => typeof state.releaseXaiForce === "function");
+  await pending().waitFor();
+  assert.equal(await pending().isDisabled(), true);
+  await pending().evaluate(button => button.click());
+  assert.equal(state.xaiConnectionReads, readsBefore + 1, "force reads canonical connections again");
+  assert.match(state.xaiConnectionHeaders.at(-1) || "", /no-cache/, "canonical read bypasses cache");
+  assert.deepEqual(state.importGets, ["/api/providers/canonical%20%2F%3F/models"], "first active canonical source wins over priority; ID is encoded");
+  assert.match(state.xaiForceHeaders[0]["cache-control"] || "", /no-cache/, "force discovery bypasses cache");
+  const auxiliary = state.xaiAuxReads.slice(auxiliaryBefore);
+  assert.deepEqual(auxiliary.map(read => read.path).sort(), ["/api/provider-nodes", "/api/proxy-pools?isActive=true", "/api/settings"]);
+  assert.ok(auxiliary.every(read => /no-cache/.test(read.cache || "")), "connection refresh auxiliary reads bypass cache");
+  await page.getByRole("button", { name: /Apply Proxy/ }).waitFor();
+  assert.deepEqual(state.writes, [], "discovery performs no user-data writes");
+
+  await page.getByRole("button", { name: /Add Model/ }).click();
+  const dialog = page.getByRole("dialog", { name: "Add Custom Model" });
+  await dialog.getByPlaceholder("e.g. claude-opus-4-5").fill("concurrent-custom");
+  await dialog.getByRole("button", { name: "Add Model" }).click();
+  await dialog.waitFor({ state: "detached" });
+  await code("concurrent-custom").waitFor();
+  const afterConcurrentEdit = saved();
+  assert.deepEqual(afterConcurrentEdit.custom.slice(0, initialSaved.custom.length), initialSaved.custom);
+  assert.deepEqual(afterConcurrentEdit.aliases, initialSaved.aliases);
+  assert.deepEqual(afterConcurrentEdit.disabled, initialSaved.disabled);
+  assert.deepEqual(afterConcurrentEdit.favorites, initialSaved.favorites);
+
+  state.holdCatalogOnce = true; state.releaseCatalog = null;
+  const priorityRow = page.getByRole("checkbox", { name: "Select connection Priority first" }).locator("xpath=../..");
+  await priorityRow.getByRole("switch", { name: "Disable connection" }).click();
+  await waitForFixture(() => typeof state.releaseCatalog === "function");
+  const heldCatalogs = state.catalogRequests;
+  const forceResponse = page.waitForResponse(response => response.url().includes("/api/providers/canonical%20%2F%3F/models"));
+  state.releaseXaiForce(); state.holdXaiForce = false;
+  await forceResponse;
+  await page.waitForTimeout(100);
+  assert.equal(state.catalogRequests, heldCatalogs, "post-force reload waits behind the older catalog read");
+  assert.equal(await pending().isDisabled(), true, "all reload waiters include the queued follow-up");
+  state.releaseCatalog();
+  await code("grok-new").waitFor();
+  await refresh().waitFor();
+  await page.waitForTimeout(100);
+  assert.equal(state.catalogRequests, heldCatalogs + 1, "post-force invalidation coalesces to one follow-up");
+  assert.equal(await code("grok-old").count(), 0, "late older catalog cannot replace post-force catalog");
+  assert.equal(await code("must-not-auto-import").count(), 0, "force response is not imported");
+  await code("concurrent-custom").waitFor();
+  await page.getByTitle("Restore model").filter({ hasText: "saved-disabled" }).waitFor();
+  assert.deepEqual(saved(), afterConcurrentEdit, "catalog projection preserves concurrent and pre-existing overlays");
+
+  state.xaiForceStatus = 503;
+  const failedCatalogs = state.catalogRequests;
+  await refresh().click();
+  await alert("xAI model refresh failed (503). Showing the last available catalog.").waitFor();
+  await refresh().waitFor();
+  assert.ok(state.catalogRequests > failedCatalogs, "failed force still reloads catalog");
+  await code("grok-new").waitFor();
+  assert.deepEqual(saved(), afterConcurrentEdit);
+
+  state.xaiForceStatus = 0; state.failCatalog = true;
+  await refresh().click();
+  await alert("Failed to load model catalog (500)").waitFor();
+  await refresh().waitFor();
+  await code("grok-new").waitFor();
+  assert.deepEqual(saved(), afterConcurrentEdit, "a failed catalog read retains last-good rows and saved data");
+  state.failCatalog = false;
+  await refresh().click();
+  await refresh().waitFor();
+  assert.equal(await alert("Failed to load model catalog").count(), 0, "a later catalog success clears its error");
+
+  const malformedCatalog = route => route.fulfill({ status: 200, contentType: "application/json", body: "not-json" });
+  const parseMessage = await page.evaluate(() => { try { JSON.parse("not-json"); } catch (error) { return error.message; } });
+  await page.route("**/api/catalog", malformedCatalog);
+  await refresh().click();
+  await alert(parseMessage).waitFor();
+  await refresh().waitFor();
+  await code("grok-new").waitFor();
+  assert.deepEqual(saved(), afterConcurrentEdit, "malformed catalog preserves the last-good projection and saved models");
+  await page.unroute("**/api/catalog", malformedCatalog);
+  await refresh().click();
+  await refresh().waitFor();
+  assert.equal(await alert(parseMessage).count(), 0);
+
+  const sourcePattern = /\/api\/providers\/canonical%20%2F%3F\/models$/;
+  const failNetwork = route => route.abort("failed");
+  await page.route(sourcePattern, failNetwork);
+  const networkCatalogs = state.catalogRequests;
+  await refresh().click();
+  await alert("Failed to fetch").waitFor();
+  await refresh().waitFor();
+  assert.ok(state.catalogRequests > networkCatalogs, "network failure still reloads catalog");
+  await page.unroute(sourcePattern, failNetwork);
+  state.xaiForceStatus = 0;
+  await refresh().click();
+  await refresh().waitFor();
+  assert.equal(await alert("xAI model refresh failed").count(), 0, "success clears the force warning");
+
+  // A later connection operation supersedes a held canonical read. The stale
+  // force must not discover from the captured old connection vector.
+  state.holdConnectionsOnce = true; state.releaseConnections = null;
+  await refresh().click();
+  await waitForFixture(() => typeof state.releaseConnections === "function");
+  const canonicalRow = page.getByRole("checkbox", { name: "Select connection Canonical first" }).locator("xpath=../..");
+  await canonicalRow.getByRole("switch", { name: "Disable connection" }).click();
+  await refresh().waitFor();
+  const supersededSources = state.importGets.length;
+  const supersededCatalogs = state.catalogRequests;
+  state.releaseConnections();
+  await waitForFixture(() => state.catalogRequests > supersededCatalogs);
+  await page.waitForTimeout(100);
+  assert.equal(state.importGets.length, supersededSources, "superseded canonical read cannot force its stale source");
+  assert.equal(await alert("Could not load xAI connections").count(), 0, "superseded failure does not replace the latest state");
+
+  state.connections.filter(c => c.provider === "xai").forEach(c => { c.isActive = false; });
+  const beforeNoActive = state.importGets.length;
+  const noActiveCatalogs = state.catalogRequests;
+  await refresh().click();
+  await alert("No active xAI connection. Add or enable a connection to discover models.").waitFor();
+  assert.equal(state.importGets.length, beforeNoActive, "no fallback source is forced");
+  assert.ok(state.catalogRequests > noActiveCatalogs);
+  await code("concurrent-custom").waitFor();
+  assert.deepEqual(saved(), afterConcurrentEdit);
+
+  for (const failure of ["status", "malformed"]) {
+    state.xaiConnectionStatus = failure === "status" ? 503 : 0;
+    state.xaiMalformedConnections = failure === "malformed";
+    const beforeCatalogs = state.catalogRequests;
+    await refresh().click();
+    await alert("Could not load xAI connections. Try refreshing again.").waitFor();
+    await refresh().waitFor();
+    assert.ok(state.catalogRequests > beforeCatalogs, "connection read failure still reloads catalog");
+    assert.equal(state.importGets.length, beforeNoActive, "failed canonical reads never force a source");
+    assert.deepEqual(saved(), afterConcurrentEdit);
+  }
+  state.xaiConnectionStatus = 0; state.xaiMalformedConnections = false;
+  state.connections.find(c => c.id === "canonical /?").isActive = true;
+  state.xaiForceStatus = 401;
+  const authRequests = state.authStatusRequests;
+  await refresh().click();
+  await page.waitForURL(`${origin}/login`);
+  assert.ok(state.authStatusRequests > authRequests, "401 force rechecks the session");
+  assert.deepEqual(saved(), afterConcurrentEdit);
 }
 
 async function runContextFixture(page, origin) {
@@ -1967,6 +2183,12 @@ async function main() {
     page.setDefaultTimeout(10000);
     const errors = []; page.on("pageerror", error => errors.push(String(error)));
     await page.context().route("**/*", route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
+    if (process.env.PROVIDER_XAI_FORCE_ONLY === "1") {
+      await runXaiForceFixture(page, origin);
+      assert.deepEqual(errors, []);
+      console.log("synthetic xAI catalog force-refresh smoke passed");
+      return;
+    }
     if (process.env.PROVIDER_CONTEXT_ONLY === "1") {
       await runContextFixture(page, origin);
       assert.deepEqual(errors, []);
@@ -2441,10 +2663,11 @@ async function main() {
     state.holdToggle = false;
     await page.waitForURL(`${origin}/login`);
     await runAutoPingFixture(page, origin);
+    await runXaiForceFixture(page, origin);
     assert.deepEqual(errors, []);
     console.log("synthetic provider detail smoke passed");
   } finally {
-    for (const key of ["releaseCustom", "releaseDelete", "releaseToggle", "releaseCatalog", "releaseLive", "releaseFavorites", "releaseModelTest", "releaseConnectionTest", "releaseProxy", "releaseStop", "releaseNodeSave", "releaseImport", "releaseSettingsWrite"]) if (typeof state[key] === "function") state[key]();
+    for (const key of ["releaseCustom", "releaseDelete", "releaseToggle", "releaseCatalog", "releaseLive", "releaseFavorites", "releaseModelTest", "releaseConnectionTest", "releaseProxy", "releaseStop", "releaseNodeSave", "releaseImport", "releaseSettingsWrite", "releaseXaiNode", "releaseXaiForce"]) if (typeof state[key] === "function") state[key]();
     await browser.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
   }
 }

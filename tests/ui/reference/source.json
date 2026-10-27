@@ -18,6 +18,7 @@
     "/callback": "30e8b2405c0e93f5e096972355264fab1e9b30c63695a48446c16ed8914a29dc",
     "/dashboard/providers/openrouter": "10030796f15fbfd517654907254dead1f80d44e27928e81a207406aa4f0d8120",
     "/dashboard/skills": "6aabc9d1d3e09a7cc0feb545aeff9b27536ef4b86c3ff62728b0d99617b97f4c",
-    "/dashboard/console-log": "bdddf98f4d3ab2efbd37724835b5526b56ba74da2404c15a42ac4e893a871835"
+    "/dashboard/console-log": "bdddf98f4d3ab2efbd37724835b5526b56ba74da2404c15a42ac4e893a871835",
+    "/dashboard/providers/xai": "10030796f15fbfd517654907254dead1f80d44e27928e81a207406aa4f0d8120"
   }
 }

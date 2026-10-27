@@ -152,9 +152,26 @@ async fn initialize_auto_ping(key: Option<&str>) -> Result<serde_json::Map<Strin
 struct ModelLoad {
     models: Signal<Models>,
     catalog_version: Signal<u64>,
+    xai_refresh: Signal<XaiRefresh>,
+    xai_catalog_queue: Signal<XaiCatalogQueue>,
     optional_version: Signal<u64>,
     free_version: Signal<u64>,
     favorites_version: Signal<u64>,
+}
+
+#[derive(Clone, Default, PartialEq)]
+struct XaiRefresh {
+    version: u64,
+    pending: bool,
+    warning: String,
+    catalog_error: String,
+}
+
+#[derive(Default)]
+struct XaiCatalogQueue {
+    running: bool,
+    queued: bool,
+    waiters: Vec<futures_channel::oneshot::Sender<()>>,
 }
 
 fn encoded(value: &str) -> String {
@@ -269,41 +286,140 @@ fn free_only_local(alias: &str) -> bool {
         .is_some_and(|s| s == "1")
 }
 
-fn refresh_catalog(id: String, mut load: ModelLoad) {
+fn begin_xai_refresh(mut state: Signal<XaiRefresh>) -> u64 {
+    let mut state = state.write();
+    state.version = state.version.wrapping_add(1);
+    state.pending = true;
+    state.warning.clear();
+    state.version
+}
+
+fn finish_xai_refresh(mut state: Signal<XaiRefresh>, version: u64, warning: String) {
+    let mut state = state.write();
+    if state.version == version {
+        state.pending = false;
+        state.warning = warning;
+    }
+}
+
+fn next_catalog_version(mut load: ModelLoad) -> u64 {
     load.catalog_version += 1;
-    let version = *load.catalog_version.peek();
-    spawn(async move {
-        let catalog = get("/api/catalog").await;
-        if *load.catalog_version.peek() != version {
-            return;
-        }
-        let mut models = load.models.write();
-        let Some(catalog) = catalog.filter(|c| c["providerModels"].is_array()) else {
-            if !models.catalog_ready {
-                models.error = true;
-            }
-            return;
+    *load.catalog_version.peek()
+}
+
+async fn xai_catalog_body(response: &web_sys::Response) -> Result<Value, String> {
+    let error = |value| auto_ping_request_error(value, "Failed to load model catalog");
+    let promise = response.json().map_err(error)?;
+    let value = wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .map_err(error)?;
+    let text = js_sys::JSON::stringify(&value)
+        .map_err(error)?
+        .as_string()
+        .ok_or_else(|| "Failed to load model catalog".to_owned())?;
+    serde_json::from_str(&text).map_err(|_| "Failed to load model catalog".to_owned())
+}
+
+async fn fetch_catalog(id: &str, mut load: ModelLoad, version: u64) {
+    let catalog = if id == "xai" {
+        let result = match dashboard_get_no_store("/api/catalog").await {
+            Ok(response) if !response.ok() => Err(format!(
+                "Failed to load model catalog ({})",
+                response.status()
+            )),
+            Ok(response) => xai_catalog_body(&response).await,
+            Err(error) => Err(auto_ping_request_error(
+                error,
+                "Failed to load model catalog",
+            )),
         };
-        let alias = catalog["providerIdToAlias"][&id]
-            .as_str()
-            .filter(|v| !v.is_empty())
-            .unwrap_or(&id);
-        models.catalog = catalog["providerModels"]
-            .as_array()
-            .and_then(|rows| rows.iter().find(|r| text(r, "alias") == alias))
-            .map(|r| array(r, "models"))
-            .unwrap_or_default();
-        models.thinking_catalog = catalog["providerModels"]
-            .as_array()
-            .and_then(|rows| rows.iter().find(|r| text(r, "alias") == storage_alias(&id)))
-            .map(|r| array(r, "models"))
-            .unwrap_or_default();
-        models.catalog_ready = true;
-        models.ready = models.saved_ready;
-        if models.ready {
-            models.error = false;
+        load.xai_refresh.write().catalog_error = result.as_ref().err().cloned().unwrap_or_default();
+        result.ok()
+    } else {
+        get("/api/catalog").await
+    };
+    if *load.catalog_version.peek() != version {
+        return;
+    }
+    let mut models = load.models.write();
+    let Some(catalog) = catalog.filter(|c| c["providerModels"].is_array()) else {
+        if !models.catalog_ready {
+            models.error = true;
+        }
+        return;
+    };
+    let alias = catalog["providerIdToAlias"][id]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        .unwrap_or(id);
+    models.catalog = catalog["providerModels"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|r| text(r, "alias") == alias))
+        .map(|r| array(r, "models"))
+        .unwrap_or_default();
+    models.thinking_catalog = catalog["providerModels"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|r| text(r, "alias") == storage_alias(id)))
+        .map(|r| array(r, "models"))
+        .unwrap_or_default();
+    models.catalog_ready = true;
+    models.ready = models.saved_ready;
+    if models.ready {
+        models.error = false;
+    }
+}
+
+fn refresh_catalog(id: String, load: ModelLoad) {
+    if id == "xai" {
+        let xai_version = begin_xai_refresh(load.xai_refresh);
+        let done = queue_xai_catalog(load);
+        spawn(async move {
+            let _ = done.await;
+            finish_xai_refresh(load.xai_refresh, xai_version, String::new());
+        });
+        return;
+    }
+    let version = next_catalog_version(load);
+    spawn(async move {
+        fetch_catalog(&id, load, version).await;
+    });
+}
+
+fn queue_xai_catalog(mut load: ModelLoad) -> futures_channel::oneshot::Receiver<()> {
+    let (sender, receiver) = futures_channel::oneshot::channel();
+    {
+        let mut queue = load.xai_catalog_queue.write();
+        queue.waiters.push(sender);
+        if queue.running {
+            queue.queued = true;
+            return receiver;
+        }
+        queue.running = true;
+    }
+    load.xai_refresh.write().catalog_error.clear();
+    spawn(async move {
+        loop {
+            let version = next_catalog_version(load);
+            fetch_catalog("xai", load, version).await;
+            let waiters = {
+                let mut queue = load.xai_catalog_queue.write();
+                if queue.queued {
+                    queue.queued = false;
+                    None
+                } else {
+                    queue.running = false;
+                    Some(std::mem::take(&mut queue.waiters))
+                }
+            };
+            if let Some(waiters) = waiters {
+                for waiter in waiters {
+                    let _ = waiter.send(());
+                }
+                break;
+            }
         }
     });
+    receiver
 }
 
 async fn load_models(id: String, alias: String, mut load: ModelLoad) {
@@ -569,28 +685,103 @@ async fn load_connections(
     mut loading: Signal<bool>,
     mut error: Signal<bool>,
     mut generation: Signal<u64>,
-) {
+) -> Option<Vec<Value>> {
     let current = (*generation.peek()).wrapping_add(1);
     generation.set(current);
     let result = get("/api/providers")
         .await
         .and_then(|v| v["connections"].as_array().cloned());
     if *generation.peek() != current {
+        return None;
+    }
+    let result = match result {
+        Some(items) => {
+            let items: Vec<_> = items
+                .into_iter()
+                .filter(|v| text(v, "provider") == id)
+                .collect();
+            connections.set(items.clone());
+            error.set(false);
+            Some(items)
+        }
+        None => {
+            error.set(true);
+            None
+        }
+    };
+    loading.set(false);
+    result
+}
+
+fn force_xai_catalog(
+    load: ModelLoad,
+    connections: Signal<Vec<Value>>,
+    mut pools: Signal<Vec<Value>>,
+    loading: Signal<bool>,
+    error: Signal<bool>,
+    generation: Signal<u64>,
+) {
+    if load.xai_refresh.peek().pending {
         return;
     }
-    match result {
-        Some(items) => {
-            connections.set(
-                items
-                    .into_iter()
-                    .filter(|v| text(v, "provider") == id)
-                    .collect(),
-            );
-            error.set(false);
+    let request = begin_xai_refresh(load.xai_refresh);
+    spawn(async move {
+        // Use the freshly read canonical order, not the displayed optimistic
+        // order or priority. Missing isActive means active to the backend.
+        // The reference's connection refresh also reads nodes, pools and
+        // settings concurrently before selecting the canonical source.
+        let current = (*generation.peek()).wrapping_add(1);
+        let (canonical, auxiliary) = futures_util::join!(
+            load_connections("xai", connections, loading, error, generation),
+            async {
+                let (nodes, pools, settings) = futures_util::join!(
+                    dashboard_get_no_store("/api/provider-nodes"),
+                    dashboard_get_no_store("/api/proxy-pools?isActive=true"),
+                    dashboard_get_no_store("/api/settings")
+                );
+                let nodes = nodes.ok()?;
+                let pools = pools.ok()?;
+                let settings = settings.ok()?;
+                json_body(&nodes).await?;
+                let data = json_body(&pools).await?;
+                if settings.ok() {
+                    json_body(&settings).await?;
+                }
+                (pools.ok() && data["proxyPools"].is_array()).then(|| array(&data, "proxyPools"))
+            }
+        );
+        let canonical = if *generation.peek() == current {
+            if let Some(updated) = auxiliary {
+                pools.set(updated);
+            }
+            canonical
+        } else {
+            None
+        };
+        let mut warning = String::new();
+        if load.xai_refresh.peek().version == request {
+            match canonical {
+                None => warning = "Could not load xAI connections. Try refreshing again.".into(),
+                Some(items) => match items.iter().find(|item| item["isActive"] != false) {
+                    None => warning =
+                        "No active xAI connection. Add or enable a connection to discover models."
+                            .into(),
+                    Some(source) => {
+                        let path = format!("/api/providers/{}/models", encoded(text(source, "id")));
+                        match dashboard_get_no_store(&path).await {
+                            Ok(response) if !response.ok() => warning = format!("xAI model refresh failed ({}). Showing the last available catalog.", response.status()),
+                            Err(error) => warning = auto_ping_request_error(error, "xAI model refresh failed"),
+                            _ => {}
+                        }
+                    }
+                },
+            }
         }
-        None => error.set(true),
-    }
-    loading.set(false);
+        // The force response is not an inventory to import. Always project the
+        // backend catalog, even after failure or a superseding refresh.
+        let _ = queue_xai_catalog(load).await;
+        finish_xai_refresh(load.xai_refresh, request, warning);
+    });
 }
 
 fn provider(id: &str) -> Option<Value> {
@@ -748,6 +939,8 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
     let mut load = ModelLoad {
         models,
         catalog_version: use_signal(|| 0),
+        xai_refresh: use_signal(XaiRefresh::default),
+        xai_catalog_queue: use_signal(XaiCatalogQueue::default),
         optional_version: use_signal(|| 0),
         free_version: use_signal(|| 0),
         favorites_version: use_signal(|| 0),
@@ -1707,10 +1900,12 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
     // page additionally exposes the signup link from the provider registry.
     let site = if id == "codex" {
         Some("https://chatgpt.com/codex".to_owned())
+    } else if id == "xai" {
+        Some("https://console.x.ai".to_owned())
     } else {
         sites[&id]["url"].as_str().map(str::to_owned)
     };
-    let site_label = if sites[&id]["kind"] == "key" {
+    let site_label = if id == "xai" || sites[&id]["kind"] == "key" {
         "Get API Key"
     } else {
         "Sign up / Learn more"
@@ -1813,6 +2008,12 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
         .collect();
     let all_selected = connection_count > 0 && selected_ids.len() == connection_count;
     let tests = connection_tests();
+    let xai_refresh = (load.xai_refresh)();
+    let xai_warning = if xai_refresh.warning.is_empty() {
+        &xai_refresh.catalog_error
+    } else {
+        &xai_refresh.warning
+    };
     let id_for_retry = id.clone();
     let alias_for_retry = alias.clone();
     rsx! {
@@ -1880,18 +2081,21 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
                     div { class: "flex items-center gap-3", h2 { class: "text-lg font-semibold", "Available Models" }
                         select { class: "rounded-md border border-border bg-background px-2 py-1 text-xs focus:border-primary focus:outline-none", value: "{thinking_mode}", onchange: move |e| thinking_mode.set(e.value()), for level in levels.clone() { option { value: "{level}", if level == "auto" { "Thinking: Auto" } else { "Thinking: " "{level.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default()}{level.chars().skip(1).collect::<String>()}" } } } }
                     }
-                    if data.ready && !compatible { div { class: "flex flex-wrap items-center gap-2",
-                        if has_free && id != "opencode-zen" {
+                    if (data.ready || id == "xai") && !compatible { div { class: "flex flex-wrap items-center gap-2",
+                        if id == "xai" { XaiRefreshButton { pending: xai_refresh.pending, onclick: move |_| force_xai_catalog(load, connections, pools, loading, connection_error, connection_generation) } }
+                        if data.ready && has_free && id != "opencode-zen" {
                             button { r#type: "button", title: "Show only free models", class: if data.free_only { "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors border-primary bg-primary/10 text-primary" } else { "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors border-border bg-surface text-text-muted hover:border-primary/50 hover:text-primary" }, onclick: { let alias = alias.clone(); move |_| {
                                 let next = !models.peek().free_only; load.free_version += 1; models.write().free_only = next;
                                 if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) { let _ = storage.set_item(&format!("openproxy:freeOnly:{alias}"), if next { "1" } else { "0" }); }
                                 let alias = alias.clone(); spawn(async move { let _ = dashboard_request("PUT", "/api/providers/filters", Some(&json!({"alias":alias,"freeOnly":next}))).await; });
                             } }, span { class: "material-symbols-outlined text-[13px]", "sell" } "Free only" }
                         }
-                        if !disabled.is_empty() { Button { label: "Active All".to_owned(), small: true, variant: "secondary", icon: "restart_alt".to_owned(), onclick: { let alias = alias.clone(); move |_| { let alias = alias.clone(); spawn(async move { let path = format!("/api/models/disabled?providerAlias={}", encoded(&alias)); if dashboard_request("DELETE", &path, None).await.is_ok() { refresh_disabled(&alias, models).await; } }); } } } }
-                        if !active.is_empty() { Button { label: "Disable All".to_owned(), small: true, variant: "secondary", icon: "block".to_owned(), onclick: { let ids = active.iter().map(|r| r.id.clone()).collect::<Vec<_>>(); move |_| disable_all.set(Some(ids.clone())) } } }
+                        if data.ready && !disabled.is_empty() { Button { label: "Active All".to_owned(), small: true, variant: "secondary", icon: "restart_alt".to_owned(), onclick: { let alias = alias.clone(); move |_| { let alias = alias.clone(); spawn(async move { let path = format!("/api/models/disabled?providerAlias={}", encoded(&alias)); if dashboard_request("DELETE", &path, None).await.is_ok() { refresh_disabled(&alias, models).await; } }); } } } }
+                        if data.ready && !active.is_empty() { Button { label: "Disable All".to_owned(), small: true, variant: "secondary", icon: "block".to_owned(), onclick: { let ids = active.iter().map(|r| r.id.clone()).collect::<Vec<_>>(); move |_| disable_all.set(Some(ids.clone())) } } }
                     } }
                 }
+                if id == "xai" && xai_refresh.pending { p { role: "status", class: "mb-3 text-xs text-text-muted", "Loading xAI model catalog..." } }
+                if id == "xai" && !xai_warning.is_empty() { p { role: "alert", class: "mb-3 break-words text-xs text-amber-600 dark:text-amber-400", "{xai_warning}" } }
                 if !models_test_error().is_empty() { p { class: "text-xs text-red-500 mb-3 break-words", "{models_test_error}" } }
                 if data.error { div { role: "alert", class: "text-sm text-text-muted", "Unable to load available models. Saved configuration was not changed." Button { label: "Retry".to_owned(), small: true, variant: "secondary", onclick: move |_| { models.write().error = false; let id = id_for_retry.clone(); let alias = alias_for_retry.clone(); spawn(async move { load_models(id, alias, load).await; }); } } } }
                 else if !data.ready { p { class: "text-sm text-text-muted", "Loading models..." } }
@@ -1925,6 +2129,25 @@ pub(in crate::browser) fn ProviderDetailPage(id: String) -> Element {
         edit::EditConnection { provider_id: id.clone(), selected: edit_connection, pools, on_saved: refresh_after_connection, compatible }
         if let Some(attempt) = oauth_open() { oauth::OAuthFlow { key: "{attempt}", provider: id.clone(), name: name.clone(), attempt, on_close: move |_| { if *oauth_open.peek() == Some(attempt) { oauth_open.set(None); } }, on_request: oauth_request } }
         if codex_import_open() { codex_import::BulkImportCodex { on_close: move |_| codex_import_open.set(false), on_success: move |_| { codex_import_open.set(false); refresh_after_connection.call(()); } } }
+    }
+}
+
+#[component]
+fn XaiRefreshButton(pending: bool, onclick: EventHandler<MouseEvent>) -> Element {
+    let label = if pending {
+        "Refreshing models..."
+    } else {
+        "Refresh models"
+    };
+    rsx! {
+        button {
+            class: "inline-flex items-center justify-center gap-2 rounded-mini-md leading-none transition-colors duration-150 ease-out cursor-pointer tracking-tight active:scale-[0.99] disabled:cursor-not-allowed disabled:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-coral/30 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas bg-canvas text-ink border border-hairline hover:border-ink/40 hover:bg-surface-soft disabled:border-hairline disabled:text-muted h-8 px-3 text-[12px] font-medium",
+            aria_label: "{label}",
+            disabled: pending,
+            onclick,
+            span { class: "material-symbols-outlined text-[18px]", "refresh" }
+            "{label}"
+        }
     }
 }
 

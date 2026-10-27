@@ -163,8 +163,8 @@ page renders only after WASM starts; it cannot reproduce Astro's pre-WASM first
 paint.
 
 Detail is **not reference-complete or pixel-perfect**: some OAuth modal details
-(including copy buttons) and xAI-specific
-force-refresh and diagnostic states remain to migrate. Local OAuth proxy ownership is coordinated
+(including copy buttons) and xAI catalog diagnostic states remain to migrate.
+Local OAuth proxy ownership is coordinated
 within this browser application only: the backend stop endpoint is
 provider-wide, so other tabs/processes and an unconfirmed stop after a
 transport failure cannot be isolated by this client alone. A pending stop
