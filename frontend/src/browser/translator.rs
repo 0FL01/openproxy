@@ -1591,6 +1591,88 @@ struct NativeUndo {
     edits: Vec<CompositionEdit>,
 }
 
+#[derive(Default)]
+struct NativeSelectionHistory {
+    undo: Vec<NativeSelection>,
+    redo: Vec<NativeSelection>,
+    undo_after: Option<String>,
+    redo_before: Option<String>,
+}
+
+struct NativeSelection {
+    change: CompositionEdit,
+    // Ordinary native edits between this command and the preceding command.
+    since_previous: Option<CompositionEdit>,
+    selection_before: (u32, u32, String),
+    selection_after: (u32, u32, String),
+}
+
+impl NativeSelectionHistory {
+    fn record(&mut self, operation: NativeUndo) {
+        let Some(after) = operation.after_selection else {
+            return;
+        };
+        // Keep compact changes and one text anchor per history direction, not
+        // two whole document copies for every command's selection metadata.
+        let since_previous = self
+            .undo_after
+            .as_ref()
+            .map(|previous| CompositionEdit::new(previous, &operation.before));
+        self.undo.push(NativeSelection {
+            change: CompositionEdit::new(&operation.before, &operation.after),
+            since_previous,
+            selection_before: (operation.start, operation.end, operation.direction),
+            selection_after: after,
+        });
+        self.undo_after = Some(operation.after);
+        self.clear_redo();
+    }
+
+    fn clear_redo(&mut self) {
+        self.redo.clear();
+        self.redo_before = None;
+    }
+
+    fn restore(&mut self, before: &str, after: &str, undo: bool) -> Option<(u32, u32, String)> {
+        let (source, anchor) = if undo {
+            (&mut self.undo, self.undo_after.as_deref()?)
+        } else {
+            (&mut self.redo, self.redo_before.as_deref()?)
+        };
+        let operation = source.last()?;
+        if before != anchor {
+            return None;
+        }
+        let expected = operation.change.apply(anchor, undo)?;
+        if after != expected {
+            return None;
+        }
+        let operation = source.pop()?;
+        let selection = if undo {
+            operation.selection_before.clone()
+        } else {
+            operation.selection_after.clone()
+        };
+        if undo {
+            self.undo_after = operation
+                .since_previous
+                .as_ref()
+                .and_then(|change| change.apply(after, true));
+            self.redo_before = Some(expected);
+            self.redo.push(operation);
+        } else {
+            self.redo_before = self
+                .redo
+                .last()
+                .and_then(|next| next.since_previous.as_ref())
+                .and_then(|change| change.apply(after, false));
+            self.undo_after = Some(expected);
+            self.undo.push(operation);
+        }
+        Some(selection)
+    }
+}
+
 #[derive(Clone)]
 struct CompositionEdit {
     start: usize,
@@ -1670,8 +1752,7 @@ fn Editor(
     let mut last_input = use_signal(move || initial_value);
     let mut composition_start = use_signal(|| None::<NativeUndo>);
     let mut composition_undo = use_signal(|| None::<NativeUndo>);
-    let mut format_undo = use_signal(|| None::<NativeUndo>);
-    let mut line_undo = use_signal(|| None::<NativeUndo>);
+    let mut command_selections = use_signal(NativeSelectionHistory::default);
     let mut composition_extendable = use_signal(|| false);
     let mut composition_cursor = use_signal(|| None::<(u32, u32)>);
     let mut adjusting_history = use_signal(|| false);
@@ -2400,7 +2481,7 @@ fn Editor(
                             if json && (document_format || selection_format) {
                                 event.prevent_default();
                                 if let Some(input) = textarea.peek().as_ref() && let Some(undo) = format::apply(input, selection_format, rendered.peek().clone()) {
-                                    format_undo.set(Some(undo));
+                                    command_selections.write().record(undo);
                                     composition_extendable.set(false);
                                     update_cursor.call(());
                                 }
@@ -2414,7 +2495,7 @@ fn Editor(
                             if control && !modifiers.alt() && event.key() == Key::Enter {
                                 event.prevent_default();
                                 if let Some(input) = textarea.peek().as_ref() && let Some(undo) = insert_line(input, modifiers.shift(), json) {
-                                    line_undo.set(Some(undo));
+                                    command_selections.write().record(undo);
                                     composition_extendable.set(false);
                                     update_cursor.call(());
                                 }
@@ -2586,13 +2667,17 @@ fn Editor(
                             if input_type != "insertCompositionText" && value != *last_input.peek() { composition_extendable.set(false); }
                             let undo = input_type == "historyUndo";
                             let redo = input_type == "historyRedo";
-                            if (undo || redo) && let Some(group) = line_undo.peek().as_ref().filter(|group| {
-                                if undo { *last_input.peek() == group.after && value == group.before }
-                                else { *last_input.peek() == group.before && value == group.after }
-                            }).cloned().or_else(|| format_undo.peek().as_ref().filter(|group| {
-                                if undo { *last_input.peek() == group.after && value == group.before }
-                                else { *last_input.peek() == group.before && value == group.after }
-                            }).cloned()).or_else(|| composition_undo.peek().clone())
+                            let selection = if undo || redo {
+                                command_selections.write().restore(&previous, &value, undo)
+                            } else {
+                                command_selections.write().clear_redo();
+                                None
+                            };
+                            if let Some((start, end, direction)) = selection {
+                                if let Some(input) = textarea.peek().as_ref() {
+                                    let _ = input.set_selection_range_with_direction(start, end, &direction);
+                                }
+                            } else if (undo || redo) && let Some(group) = composition_undo.peek().clone()
                                 && let Some(input) = textarea.peek().clone() {
                                 let edits: Vec<_> = if undo { group.edits.iter().rev().collect() } else { group.edits.iter().collect() };
                                 let initial = if undo { &group.after } else { &group.before };
