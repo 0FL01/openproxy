@@ -104,6 +104,20 @@ async function main() {
       console.log("synthetic translator selection smoke passed");
       return;
     }
+    const lines = "alpha\nbeta\ngamma";
+    if (reference) await page.evaluate(text => { const editor = window.monaco.editor.getEditors()[0]; editor.setValue(text); editor.setPosition({ lineNumber: 2, column: 3 }); editor.focus(); }, lines);
+    else { await editor().fill(lines); await editor().evaluate(input => input.setSelectionRange(8, 8)); }
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const lineSelection = () => reference ? page.evaluate(() => { const editor = window.monaco.editor.getEditors()[0]; const s = editor.getSelection(); return [editor.getModel().getOffsetAt(s.getStartPosition()), editor.getModel().getOffsetAt(s.getEndPosition())]; }) : editor().evaluate(input => [input.selectionStart, input.selectionEnd]);
+    await page.keyboard.press("Control+l");
+    assert.deepEqual(await lineSelection(), [6, 11], "Ctrl+L selects the current logical line including its newline");
+    await page.keyboard.press("Control+l");
+    assert.deepEqual(await lineSelection(), [6, 16], "repeating Ctrl+L extends the selection to the next line");
+    if (process.env.TRANSLATOR_LINE_SELECTION_ONLY === "1") {
+      assert.deepEqual(errors, []);
+      console.log("synthetic translator line selection smoke passed");
+      return;
+    }
     if (!reference) {
       await page.getByRole("button", { name: /Load$/ }).click();
       await page.waitForFunction(value => document.querySelector('textarea[aria-label="Translator editor"]')?.value === value, JSON.stringify(source));

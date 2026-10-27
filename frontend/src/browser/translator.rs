@@ -388,6 +388,28 @@ fn indent_json_newline(input: &web_sys::HtmlTextAreaElement) -> bool {
     !indentation.is_empty() && insert_text(input, start, end, &format!("\n{indentation}"))
 }
 
+fn select_line(input: &web_sys::HtmlTextAreaElement) {
+    let start = input.selection_start().ok().flatten().unwrap_or_default();
+    let end = input.selection_end().ok().flatten().unwrap_or(start);
+    let text = js_sys::JsString::from(input.value());
+    let before = text.slice(0, start).as_string().unwrap_or_default();
+    let after = text
+        .slice(end, text.length())
+        .as_string()
+        .unwrap_or_default();
+    let line_start = start
+        - before
+            .rsplit('\n')
+            .next()
+            .unwrap_or("")
+            .encode_utf16()
+            .count() as u32;
+    let line_end = after.find('\n').map_or(text.length(), |index| {
+        end + after[..index].encode_utf16().count() as u32 + 1
+    });
+    let _ = input.set_selection_range(line_start, line_end);
+}
+
 fn indent_selection(input: &web_sys::HtmlTextAreaElement, backwards: bool) {
     const TAB_SIZE: u32 = 4;
     let text = js_sys::JsString::from(input.value());
@@ -991,6 +1013,10 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
                             } else if event.key() == Key::Tab && !event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().alt() {
                                 event.prevent_default();
                                 if let Some(input) = textarea.peek().as_ref() { indent_selection(input, event.modifiers().shift()); }
+                                update_cursor.call(());
+                            } else if (event.modifiers().ctrl() || event.modifiers().meta()) && !event.modifiers().shift() && !event.modifiers().alt() && key.eq_ignore_ascii_case("l") {
+                                event.prevent_default();
+                                if let Some(input) = textarea.peek().as_ref() { select_line(input); }
                                 update_cursor.call(());
                             } else if (event.modifiers().ctrl() || event.modifiers().meta()) && (key.eq_ignore_ascii_case("f") || key.eq_ignore_ascii_case("h")) {
                                 event.prevent_default();
