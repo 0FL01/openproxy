@@ -118,6 +118,30 @@ async function main() {
         return input && Array.from(input.parentElement.querySelectorAll("span.bracket-match"), span => span.textContent).join("") === expected;
       }, { reference, index, expected });
 
+      const expectBracketRuler = (index, visible) => page.waitForFunction(({ reference, index, visible }) => {
+        const root = reference
+          ? window.monaco.editor.getEditors()[index]?.getDomNode()
+          : document.querySelectorAll('[aria-label="Translator editor"]')[index]?.parentElement.parentElement;
+        const canvas = root?.querySelector("canvas");
+        if (!canvas) return false;
+        const pixels = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+        const rows = new Set();
+        for (let i = 0; i < pixels.length; i += 4) {
+          if (pixels[i] === 160 && pixels[i + 1] === 160 && pixels[i + 2] === 160 && pixels[i + 3] === 255) rows.add(Math.floor(i / 4 / canvas.width));
+        }
+        return visible ? rows.has(20) && rows.has(72) && !rows.has(40) : rows.size === 0;
+      }, { reference, index, visible });
+
+      const rulerJson = '{\n  "a": [0,\n    1,\n    2,\n    3]\n}';
+      await setText(0, rulerJson, rulerJson.indexOf("[") + 1);
+      await expectBrackets(0, "[]");
+      await expectBracketRuler(0, true);
+      await move(0, rulerJson.indexOf("0") + 1);
+      await expectBrackets(0, "[]");
+      await expectBracketRuler(0, false); // enclosing pairs have no ruler markers
+      await move(0, rulerJson.indexOf("[") + 1, rulerJson.indexOf("0") + 1);
+      await expectBracketRuler(0, false); // selections clear bracket markers
+
       const json = '{"a":[1,2],"str":"😺{x}"}';
       await setText(0, json, json.indexOf("1") + 1);
       await expectBrackets(0, "[]");

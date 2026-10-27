@@ -1571,6 +1571,24 @@ fn Editor(
     } else {
         0
     };
+    let tokens = if json {
+        json_tokens(&value)
+    } else {
+        vec![(value.as_str(), "#d4d4d4")]
+    };
+    let brackets = if widget_focused() && !has_selection() {
+        matching_brackets(&tokens, cursor(), json)
+    } else {
+        Vec::new()
+    };
+    let overview_brackets = if brackets
+        .iter()
+        .any(|(start, end)| *start == cursor() || *end == cursor())
+    {
+        brackets.clone()
+    } else {
+        Vec::new()
+    };
     use_effect(use_reactive((&find_padding,), move |(padding,)| {
         if let Some(input) = textarea() {
             let previous = *applied_find_padding.peek();
@@ -1581,7 +1599,9 @@ fn Editor(
             }
         }
     }));
-    use_effect(use_reactive((&value, &matches), move |(value, matches)| {
+    let ranges = (matches.clone(), overview_brackets);
+    use_effect(use_reactive((&value, &ranges), move |(value, ranges)| {
+        let (matches, brackets) = ranges;
         if !value.is_empty() && !*has_changed.peek() {
             has_changed.set(true);
         }
@@ -1615,7 +1635,7 @@ fn Editor(
         } else {
             0
         };
-        if find_open() && !matches.is_empty() {
+        if !brackets.is_empty() || (find_open() && !matches.is_empty()) {
             let lines: Vec<_> = value.split('\n').collect();
             let mut starts = vec![0_u32];
             for (index, unit) in value.encode_utf16().enumerate() {
@@ -1661,8 +1681,6 @@ fn Editor(
             };
             let ratio = height as f64 / document_height;
             let half_min = (6.0 * scale) as i32 / 2;
-            let mut combined: Option<(i32, i32)> = None;
-            context.set_fill_style_str("rgba(209,134,22,0.49)");
             let draw = |start: i32, end: i32| {
                 context.fill_rect(
                     1.0,
@@ -1671,29 +1689,37 @@ fn Editor(
                     (end - start) as f64,
                 );
             };
-            for (start, end) in matches {
-                let mut y1 = (position_top(start).max(0) as f64 * ratio) as i32;
-                let mut y2 = ((position_top(end.saturating_sub(u32::from(end > start))) + 16).max(0)
-                    as f64
-                    * ratio) as i32;
-                if y2 - y1 < half_min * 2 {
-                    let center = ((y1 + y2) / 2).clamp(half_min, height as i32 - half_min);
-                    y1 = center - half_min;
-                    y2 = center + half_min;
-                }
-                if let Some((previous_start, previous_end)) = combined {
-                    if y1 <= previous_end + 1 {
-                        combined = Some((previous_start, previous_end.max(y2)));
+            let find_matches = if find_open() { matches.as_slice() } else { &[] };
+            for (color, ranges) in [
+                ("#a0a0a0", brackets.as_slice()),
+                ("rgba(209,134,22,0.49)", find_matches),
+            ] {
+                context.set_fill_style_str(color);
+                let mut combined: Option<(i32, i32)> = None;
+                for &(start, end) in ranges {
+                    let mut y1 = (position_top(start).max(0) as f64 * ratio) as i32;
+                    let mut y2 = ((position_top(end.saturating_sub(u32::from(end > start))) + 16)
+                        .max(0) as f64
+                        * ratio) as i32;
+                    if y2 - y1 < half_min * 2 {
+                        let center = ((y1 + y2) / 2).clamp(half_min, height as i32 - half_min);
+                        y1 = center - half_min;
+                        y2 = center + half_min;
+                    }
+                    if let Some((previous_start, previous_end)) = combined {
+                        if y1 <= previous_end + 1 {
+                            combined = Some((previous_start, previous_end.max(y2)));
+                        } else {
+                            draw(previous_start, previous_end);
+                            combined = Some((y1, y2));
+                        }
                     } else {
-                        draw(previous_start, previous_end);
                         combined = Some((y1, y2));
                     }
-                } else {
-                    combined = Some((y1, y2));
                 }
-            }
-            if let Some((start, end)) = combined {
-                draw(start, end);
+                if let Some((start, end)) = combined {
+                    draw(start, end);
+                }
             }
         }
         let top = line_tops().get(line).copied().unwrap_or(line as i32 * 16)
@@ -2021,16 +2047,6 @@ fn Editor(
             (match_index() % matches.len()) + 1,
             matches.len()
         )
-    };
-    let tokens = if json {
-        json_tokens(&value)
-    } else {
-        vec![(value.as_str(), "#d4d4d4")]
-    };
-    let brackets = if widget_focused() && !has_selection() {
-        matching_brackets(&tokens, cursor(), json)
-    } else {
-        Vec::new()
     };
     let mut lines = vec![Vec::new()];
     for (text, color) in tokens {
