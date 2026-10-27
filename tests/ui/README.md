@@ -191,11 +191,12 @@ mutations are blocked. The test never clicks Check, Save, Delete, Add API Key
 or Import from /models.
 
 For a later Dioxus comparison, provide that build's exact same-origin hashed
-static paths as the JSON array `UI_PARITY_COMPATIBLE_ASSETS` (passed into the
+static paths as the JSON array `UI_PARITY_DETAIL_ASSETS` (passed into the
 browser container with `-e`), for example
 `["/assets/openproxy-dashboard-dxh123.js","/assets/openproxy-dashboard_bg-dxh123.wasm"]`.
 Only paths under `/assets/`, `/_astro/`, or `/i18n/` with no query, fragment,
 or traversal are accepted. Candidate paths are never allowed during recording.
+The previous name `UI_PARITY_COMPATIBLE_ASSETS` remains supported as a fallback.
 
 This deliberately covers a prefixed node already present in the read fixture,
 not creation or real persistence. An existing create-to-detail gap needs
@@ -205,6 +206,73 @@ for an `openai-compatible-` ID prefix. Saving/deleting, validation and errors,
 API-key connections, model changes, Responses/Anthropic-compatible nodes and
 real backend behavior are not covered. These are Astro references, not Dioxus
 parity evidence.
+
+## Codex connection auto-ping slice
+
+`UI_PARITY_SECTION=provider-codex-autoping` selects eight captures of
+`/dashboard/providers/codex`: two states at desktop/mobile sizes in light and
+dark. The OAuth connection and its auto-ping button must be in the screenshot;
+the test scrolls the button into view if necessary.
+
+| Scenario | State captured |
+|---|---|
+| `provider-codex-autoping-off` | Auto-ping is **off** for `Fixture Codex`, although the aggregate `enabled` is true because a different synthetic connection ID is on. |
+| `provider-codex-autoping-on` | Start with both synthetic IDs off, click Auto-ping, and reload. The selected connection is **on** and the other ID remains off. |
+
+Every fresh context has one active, successful, credential-free Codex OAuth
+connection (`fixture-codex-connection`, named `Fixture Codex`) and a synthetic
+`cx/fixture-model` catalog entry. There is no real OAuth session. The settings
+fixture uses `{ enabled, connections }` under `codexAutoPing`, with the second
+ID `fixture-other-codex-connection` present only in that map; `glmAutoPing` is
+disabled. This deliberately checks the per-connection value rather than
+assuming the aggregate `enabled` applies to every connection.
+
+Both cases assert the correct accessible label, `aria-pressed`, enabled button
+and the Codex tooltip text. The on case accepts only two queryless
+`PATCH /api/settings` requests, in order. The first has exactly this JSON body:
+
+```json
+{
+  "codexAutoPing": {
+    "enabled": true,
+    "connections": {
+      "fixture-codex-connection": true,
+      "fixture-other-codex-connection": false
+    }
+  }
+}
+```
+
+The second changes both `enabled` and `fixture-codex-connection` to `false`,
+leaving the other ID `false`. Each complete JSON body is checked before the
+fixture updates its context-local settings. The screenshot is taken only after
+a reload confirms the on state from that fixture; after capture, the test clicks
+off and reloads again to confirm the false state. The off scenario allows no
+PATCH. This tests client read-back from an in-memory mock, **not** SQLite
+persistence or restart durability.
+
+All API responses are synthetic and intercepted, never forwarded. The exact
+queryless GETs are `/api/auth/status`, `/api/settings`, `/api/build`,
+`/api/catalog`, `/api/providers`, `/api/provider-nodes`,
+`/api/providers/filters`, `/api/models`, `/api/models/custom`,
+`/api/models/alias`, `/api/models/favorites`, and
+`/api/oauth/codex/stop-proxy`; plus `/api/proxy-pools?isActive=true` and
+`/api/models/disabled?providerAlias=` or `?providerAlias=cx`. Astro's closed
+OAuth modal calls the last OAuth URL during mount, despite not starting OAuth.
+Although its method is GET, the real endpoint stops a listener: the fixture
+fulfills it with `{ "success": true }` and **never forwards it**. The build
+commit is null, as for the other detail fixtures. The test pins the Codex Astro
+HTML hash and island marker, permits only its exact detail page, local Codex
+icon and enumerated same-origin Astro bundles and fonts, and blocks all other
+requests, external origins, WebSockets and mutations. For a Dioxus comparison,
+`UI_PARITY_DETAIL_ASSETS` supplies only the candidate's exact static paths as
+described above; it does not relax the API allowlist.
+
+No warmup, quota tick, real provider traffic, credentials or production data are
+used. Saving failures, migration of legacy settings, the saving/loading state,
+multiple visible accounts, GLM/API-key eligibility, tooltip hover, OAuth,
+scheduler behavior and real-backend persistence are outside this slice. These
+are Astro references, not evidence of Dioxus parity.
 
 ## OAuth callback slice
 
