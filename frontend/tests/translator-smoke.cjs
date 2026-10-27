@@ -195,6 +195,48 @@ async function main() {
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await page.keyboard.press("Control+z");
     assert.equal(await value(), '{"text":"猫犬"}', "a composition after redo is a separate undo group");
+    for (const { arrows, composed, cursor } of [
+      { arrows: ["ArrowLeft"], composed: '{"text":"犬猫"}', cursor: 9 },
+      { arrows: ["ArrowLeft", "ArrowRight"], composed: '{"text":"猫犬"}', cursor: 10 },
+      { arrows: null, composed: '{"text":"犬猫"}', cursor: 9 },
+    ]) {
+      if (reference) await page.evaluate(text => window.monaco.editor.getEditors()[0].setValue(text), compositionBase);
+      else await editor().fill(compositionBase);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      if (reference) await page.evaluate(() => { const e = window.monaco.editor.getEditors()[0]; e.setPosition({ lineNumber: 1, column: 10 }); e.focus(); });
+      else await editor().evaluate(input => { input.setSelectionRange(9, 9); input.focus(); });
+      await cdp.send("Input.imeSetComposition", { text: "猫", selectionStart: 1, selectionEnd: 1 });
+      await cdp.send("Input.insertText", { text: "猫" });
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      if (arrows) {
+        for (const arrow of arrows) await page.keyboard.press(arrow);
+      } else {
+        const point = await page.evaluate(reference => {
+          if (reference) {
+            const editor = window.monaco.editor.getEditors()[0];
+            const rect = editor.getDomNode().getBoundingClientRect();
+            const position = editor.getScrolledVisiblePosition({ lineNumber: 1, column: 10 });
+            return { x: rect.left + position.left + 1, y: rect.top + position.top + position.height / 2 };
+          }
+          const input = document.querySelector('textarea[aria-label="Translator editor"]');
+          const rect = input.getBoundingClientRect(), style = getComputedStyle(input);
+          const canvas = document.createElement("canvas"), context = canvas.getContext("2d");
+          context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+          return { x: rect.left + parseFloat(style.paddingLeft) + context.measureText('{"text":"').width + 1, y: rect.top + 8 };
+        }, reference);
+        await page.mouse.click(point.x, point.y);
+      }
+      assert.deepEqual(await selection(), [cursor, cursor], "navigation places the IME cursor");
+      await cdp.send("Input.imeSetComposition", { text: "犬", selectionStart: 1, selectionEnd: 1 });
+      await cdp.send("Input.insertText", { text: "犬" });
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.equal(await value(), composed);
+      await page.keyboard.press("Control+z");
+      assert.equal(await value(), '{"text":"猫"}', "moving the cursor separates IME undo groups");
+      assert.deepEqual(await selection(), [cursor, cursor], "undo restores the cursor after navigation");
+      await page.keyboard.press("Control+Shift+z");
+      assert.equal(await value(), composed, "redo restores the later IME composition");
+    }
     if (process.env.TRANSLATOR_IME_ONLY === "1") {
       assert.deepEqual(errors, []);
       console.log("synthetic translator IME smoke passed");

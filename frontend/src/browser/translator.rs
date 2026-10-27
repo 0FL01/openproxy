@@ -990,6 +990,7 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
     let mut composition_start = use_signal(|| None::<CompositionUndo>);
     let mut composition_undo = use_signal(|| None::<CompositionUndo>);
     let mut composition_extendable = use_signal(|| false);
+    let mut composition_cursor = use_signal(|| None::<(u32, u32)>);
     let mut adjusting_history = use_signal(|| false);
     let mut auto_pairs = use_signal(Vec::<(char, u32)>::new);
     let mut ruler = use_signal(|| None::<web_sys::HtmlCanvasElement>);
@@ -1077,6 +1078,14 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
     let update_cursor = use_callback(move |_| {
         if let Some(input) = textarea.peek().as_ref() {
             let cursor = input.selection_start().ok().flatten().unwrap_or_default();
+            let end = input.selection_end().ok().flatten().unwrap_or(cursor);
+            if *composition_extendable.peek()
+                && composition_start.peek().is_none()
+                && !*adjusting_history.peek()
+                && *composition_cursor.peek() != Some((cursor, end))
+            {
+                composition_extendable.set(false);
+            }
             let before = js_sys::JsString::from(input.value())
                 .slice(0, cursor)
                 .as_string()
@@ -1427,11 +1436,15 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
                                 let before = input.value();
                                 last_input.set(before.clone());
                                 let start = input.selection_start().ok().flatten().unwrap_or_default();
+                                let end = input.selection_end().ok().flatten().unwrap_or(start);
+                                if *composition_extendable.peek() && *composition_cursor.peek() != Some((start, end)) {
+                                    composition_extendable.set(false);
+                                }
                                 composition_start.set(Some(CompositionUndo {
                                     before,
                                     after: String::new(),
                                     start,
-                                    end: input.selection_end().ok().flatten().unwrap_or(start),
+                                    end,
                                     direction: input.selection_direction().ok().flatten().unwrap_or_default(),
                                     edits: Vec::new(),
                                 }));
@@ -1452,6 +1465,9 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
                                         composition_undo.set(Some(composition));
                                     }
                                     composition_extendable.set(true);
+                                    let start = input.selection_start().ok().flatten().unwrap_or_default();
+                                    let end = input.selection_end().ok().flatten().unwrap_or(start);
+                                    composition_cursor.set(Some((start, end)));
                                 }
                             }
                         },
@@ -1506,6 +1522,7 @@ fn Editor(value: String, json: bool, on_change: EventHandler<String>) -> Element
                             update_cursor.call(());
                         },
                         onselect: move |_| update_cursor.call(()),
+                        onmouseup: move |_| update_cursor.call(()),
                         onkeyup: move |_| update_cursor.call(()),
                         onscroll: move |_| { if let Some(input) = textarea.peek().as_ref() { scroll_top.set(input.scroll_top()); } }
                     }
