@@ -105,7 +105,7 @@ are not covered. These are Astro references, not Dioxus parity evidence.
 
 ## Kilo Code provider detail slice
 
-`UI_PARITY_SECTION=provider-kilocode` selects 32 captures for
+`UI_PARITY_SECTION=provider-kilocode` selects 36 captures for
 `/dashboard/providers/kilocode`: each scenario runs at both viewports and in
 both themes. The model scenarios scroll the page's main container to the
 Available Models card; the initial state stays at the top.
@@ -120,6 +120,7 @@ Available Models card; the initial state stays at the top.
 | `provider-kilocode-add-model-dialog` | Open Add Custom Model and enter `kc/fixture-new-model`; the form shows the stripped ID and display prefix. No test is sent. |
 | `provider-kilocode-add-model-saved` | Submit that model; its new custom row is visible. |
 | `provider-kilocode-disable-all-dialog` | Open the confirmation for four active models, without confirming. |
+| `provider-kilocode-device-oauth` | Open the device-code waiting dialog with synthetic URLs and code; `window.open` is stubbed and no provider is contacted. |
 
 Each fresh browser context receives synthetic, credential-free data:
 
@@ -153,15 +154,17 @@ with the stripped ID. Responses and subsequent reads use state held **only in
 that browser context's fixture**; it is reset before the second capture. After
 each mutation screenshot the test reloads and verifies the UI against those
 in-memory responses, not SQLite persistence.
-All other requests and mutations—including `/api/models/test`, OAuth, real
-provider traffic and external origins—are blocked and fail the test.
+The device-dialog case allows only a synthetic device-code response; the Open
+button is checked against a stub. All other requests and mutations—including
+`/api/models/test`, real OAuth/provider traffic and external origins—are
+blocked and fail the test.
 
 At 390px the enabled model IDs are truncated to similar `kc/fixtur...`
 labels, and the custom-model dialog's Test button reaches past its content
 edge. These are existing Astro appearances preserved by the reference.
 
 This slice does not cover real backend persistence or `/v1/models`, adding or
-testing connections, OAuth, custom-model test/delete, confirming Disable All,
+testing connections, real OAuth, custom-model test/delete, confirming Disable All,
 Active All, alias/favorite changes, errors, other providers, or localization.
 The screenshots are Astro references, not a claim of Dioxus detail parity.
 

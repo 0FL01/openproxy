@@ -107,6 +107,7 @@ impl Drop for ModalGuard {
 pub fn Modal(
     title: String,
     #[props(default)] small: bool,
+    #[props(default)] large: bool,
     on_close: EventHandler<()>,
     children: Element,
     #[props(default)] footer: Option<Element>,
@@ -127,7 +128,13 @@ pub fn Modal(
             document.add_event_listener_with_callback("keydown", handler.as_ref().unchecked_ref());
         Some(Rc::new(ModalGuard { document, handler }))
     });
-    let size = if small { "max-w-sm" } else { "max-w-md" };
+    let size = if small {
+        "max-w-sm"
+    } else if large {
+        "max-w-lg"
+    } else {
+        "max-w-md"
+    };
     rsx! {
         div { class: "fixed inset-0 z-50 flex items-center justify-center p-4",
             div { class: "absolute inset-0 bg-black/50 backdrop-blur-[2px] fade-in" }

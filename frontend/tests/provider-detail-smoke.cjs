@@ -1031,9 +1031,8 @@ async function runOAuthCopyFixture(page, origin) {
   const loginCopy = dialog.getByRole("button", { name: "Copy login URL" });
   const codeCopy = dialog.getByRole("button", { name: "Copy user code" });
   await dialog.getByText(complete, { exact: true }).waitFor();
-  const loginLink = dialog.getByRole("link", { name: base });
-  assert.equal(await loginLink.getAttribute("href"), base, "the existing verification link is unchanged");
-  assert.equal(await loginLink.getAttribute("rel"), "noopener noreferrer");
+  await dialog.getByRole("button", { name: /Open$/ }).click();
+  assert.equal((await page.evaluate(() => window.fixtureOpenCalls.at(-1)))[0], complete);
   await loginCopy.click();
   await icon(loginCopy, "check").waitFor();
   await page.waitForFunction(value => navigator.clipboard.readText().then(text => text === value), complete);
@@ -1046,7 +1045,8 @@ async function runOAuthCopyFixture(page, origin) {
   // Without a complete URL, the verification URI is copied instead.
   delete state.deviceCopyData.verification_uri_complete;
   dialog = await openDevice();
-  assert.equal(await dialog.getByRole("link", { name: base }).getAttribute("href"), base);
+  await dialog.getByRole("button", { name: /Open$/ }).click();
+  assert.equal((await page.evaluate(() => window.fixtureOpenCalls.at(-1)))[0], base);
   await dialog.getByRole("button", { name: "Copy login URL" }).click();
   await page.waitForFunction(value => navigator.clipboard.readText().then(text => text === value), base);
   await closeDevice(dialog);
@@ -1057,6 +1057,7 @@ async function runOAuthCopyFixture(page, origin) {
   const priorOpens = await page.evaluate(() => window.fixtureOpenCalls.length);
   dialog = await openDevice();
   assert.equal(await dialog.getByRole("link").count(), 0);
+  assert.equal(await dialog.getByRole("button", { name: /Open$/ }).isDisabled(), true);
   assert.equal(await page.evaluate(() => window.fixtureOpenCalls.length), priorOpens);
   await dialog.getByRole("button", { name: "Copy login URL" }).click();
   await page.waitForFunction(value => navigator.clipboard.readText().then(text => text === value), "javascript:fixture");

@@ -684,37 +684,46 @@ pub(super) fn OAuthFlow(
     } else {
         format!("Connect {name}")
     };
-    let (device_login_url, device_verification_uri) = {
+    let device_login_url = {
         let data = state();
-        let verification_uri = text(&data, "verification_uri").to_owned();
-        let login_url = data["verification_uri_complete"]
+        data["verification_uri_complete"]
             .as_str()
             .filter(|url| !url.is_empty())
-            .unwrap_or(&verification_uri)
-            .to_owned();
-        (login_url, verification_uri)
+            .unwrap_or_else(|| text(&data, "verification_uri"))
+            .to_owned()
     };
-    rsx! { Modal { title, on_close,
+    rsx! { Modal { title, large: true, on_close,
         div { class: "flex flex-col gap-4",
             if !error().is_empty() { div { role: "alert", class: "text-sm text-red-500", "{error}" } Button { label: "Retry".to_owned(), variant: "secondary", onclick: move |_| flow.restart() } }
             else if device {
                 if state().is_null() { p { class: "text-sm text-text-muted", "Starting authorization..." } }
-                else { p { class: "text-sm", "Open the verification page and enter this code:" }
-                    div { class: "flex items-center gap-2",
-                        code { class: "text-lg font-mono font-bold select-all", "{text(&state(), \"user_code\")}" }
-                        button { r#type: "button", aria_label: "Copy user code", class: "inline-flex h-8 items-center justify-center rounded-mini-md px-3 text-ink hover:bg-surface-card", onclick: move |_| copy_text(text(&state(), "user_code").to_owned(), "user_code".into(), copied, generation),
-                            span { class: "material-symbols-outlined text-[18px]", if copied() == "user_code" { "check" } else { "content_copy" } }
+                else {
+                    div { class: "text-center py-4",
+                        p { class: "text-sm text-text-muted mb-4", "Visit the login URL below and authorize:" }
+                        div { class: "bg-sidebar p-4 rounded-lg mb-4",
+                            p { class: "text-xs text-text-muted mb-1", "Login URL" }
+                            div { class: "flex items-center gap-2",
+                                code { class: "flex-1 text-sm break-all", "{device_login_url}" }
+                                button { r#type: "button", aria_label: "Copy login URL", class: "inline-flex items-center justify-center gap-2 rounded-mini-md leading-none transition-colors duration-150 ease-out cursor-pointer tracking-tight active:scale-[0.99] disabled:cursor-not-allowed disabled:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-coral/30 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas bg-transparent text-ink hover:bg-surface-card disabled:text-muted h-8 px-3 text-[12px] font-medium", disabled: device_login_url.is_empty(), onclick: { let device_login_url = device_login_url.clone(); move |_| copy_text(device_login_url.clone(), "login_url".into(), copied, generation) },
+                                    span { class: "material-symbols-outlined text-[18px]", if copied() == "login_url" { "check" } else { "content_copy" } }
+                                }
+                                Button { label: "Open".to_owned(), small: true, variant: "ghost", icon: "open_in_new".to_owned(), disabled: !safe_url(&device_login_url), onclick: { let device_login_url = device_login_url.clone(); move |_| open_url(&device_login_url) } }
+                            }
+                        }
+                        div { class: "bg-primary/10 p-4 rounded-lg",
+                            p { class: "text-xs text-text-muted mb-1", "Your Code" }
+                            div { class: "flex items-center justify-center gap-2",
+                                p { class: "text-2xl font-mono font-bold text-primary", "{text(&state(), \"user_code\")}" }
+                                button { r#type: "button", aria_label: "Copy user code", class: "inline-flex items-center justify-center gap-2 rounded-mini-md leading-none transition-colors duration-150 ease-out cursor-pointer tracking-tight active:scale-[0.99] disabled:cursor-not-allowed disabled:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-coral/30 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas bg-transparent text-ink hover:bg-surface-card disabled:text-muted h-8 px-3 text-[12px] font-medium", onclick: move |_| copy_text(text(&state(), "user_code").to_owned(), "user_code".into(), copied, generation),
+                                    span { class: "material-symbols-outlined text-[18px]", if copied() == "user_code" { "check" } else { "content_copy" } }
+                                }
+                            }
                         }
                     }
-                    div { class: "flex items-center gap-2",
-                        if device_login_url == device_verification_uri && safe_url(&device_verification_uri) { a { href: "{device_verification_uri}", target: "_blank", rel: "noopener noreferrer", class: "min-w-0 text-primary underline break-all", "{device_verification_uri}" } }
-                        else { code { class: "min-w-0 break-all", "{device_login_url}" } }
-                        button { r#type: "button", aria_label: "Copy login URL", class: "inline-flex h-8 shrink-0 items-center justify-center rounded-mini-md px-3 text-ink hover:bg-surface-card disabled:text-muted", disabled: device_login_url.is_empty(), onclick: { let device_login_url = device_login_url.clone(); move |_| copy_text(device_login_url.clone(), "login_url".into(), copied, generation) },
-                            span { class: "material-symbols-outlined text-[18px]", if copied() == "login_url" { "check" } else { "content_copy" } }
+                    div { class: "flex items-center justify-center gap-2 text-sm text-text-muted",
+                        span { class: "material-symbols-outlined animate-spin", "progress_activity" }
+                        "Waiting for authorization..."
                         }
-                    }
-                    if device_login_url != device_verification_uri && safe_url(&device_verification_uri) { a { href: "{device_verification_uri}", target: "_blank", rel: "noopener noreferrer", class: "text-primary underline break-all", "{device_verification_uri}" } }
-                    p { class: "text-sm text-text-muted", "Waiting for authorization..." }
                 }
             } else if state().is_null() { p { class: "text-sm text-text-muted", "Starting authorization..." } }
             else {
@@ -745,7 +754,7 @@ pub(super) fn OAuthFlow(
                     });
                 } } }
             }
-            Button { label: "Cancel".to_owned(), variant: "ghost", onclick: move |_| on_close.call(()) }
+            if !device || state().is_null() || !error().is_empty() { Button { label: "Cancel".to_owned(), variant: "ghost", onclick: move |_| on_close.call(()) } }
         }
     } }
 }

@@ -94,6 +94,7 @@ const screens = [
   { section: "provider-kilocode", name: "add-model-dialog", action: "add-model-dialog" },
   { section: "provider-kilocode", name: "add-model-saved", action: "add-model-saved" },
   { section: "provider-kilocode", name: "disable-all-dialog", action: "disable-all-dialog" },
+  { section: "provider-kilocode", name: "device-oauth", action: "device-oauth" },
   { section: "provider-compatible", name: "ready" },
   { section: "provider-compatible", name: "edit-dialog", action: "edit-dialog" },
   { section: "provider-compatible", name: "edit-dialog-scroll-bottom", action: "edit-dialog-scroll-bottom" },
@@ -292,6 +293,9 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     };
                   });
                 }
+                if (screen.action === "device-oauth") await page.addInitScript(() => {
+                  window.open = (...args) => { window.__fixtureOpened = args; return null; };
+                });
                 if (screen.section === "quota") await page.addInitScript(() => localStorage.setItem("quotaAutoRefresh", "false"));
                 if (screen.storedTheme) {
                   await page.addInitScript((theme) => localStorage.setItem("theme", JSON.stringify({ state: { theme }, version: 0 })), screen.storedTheme);
@@ -397,6 +401,7 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     ["/api/auth/status", "/api/settings", "/api/build", "/api/catalog"].includes(path);
                   const kiloGet = screen.section === "provider-kilocode" && method === "GET" && (
                     (!url.search && ["/api/auth/status", "/api/settings", "/api/build", "/api/catalog", "/api/providers", "/api/provider-nodes", "/api/providers/kilo/free-models", "/api/providers/filters", "/api/models", "/api/models/custom", "/api/models/alias", "/api/models/favorites"].includes(path)) ||
+                    (screen.action === "device-oauth" && !url.search && path === "/api/oauth/kilocode/device-code") ||
                     (path === "/api/proxy-pools" && url.search === "?isActive=true") ||
                     (path === "/api/models/disabled" && ["?providerAlias=", "?providerAlias=kc"].includes(url.search))
                   );
@@ -469,6 +474,10 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   let body = {};
                   const headers = {};
                   if (translatorRequest) return route.fulfill({ json: { success: false, error: "Synthetic detection failure" } });
+                  if (screen.action === "device-oauth" && path === "/api/oauth/kilocode/device-code") return route.fulfill({ json: {
+                    device_code: "fixture-device", user_code: "ABCD-EFGH", verification_uri: "https://fixture.example.invalid/login",
+                    verification_uri_complete: "https://fixture.example.invalid/login?user_code=ABCD-EFGH", interval: 300, expires_in: 1200,
+                  } });
                   if (path === "/api/providers/fixture-xai/models") {
                     if (screen.name === "pending") await new Promise((resolve) => { releaseXaiForce = resolve; observeXaiForce(); });
                     return route.fulfill({ status: 503, json: { error: "Synthetic discovery failure" } });
@@ -1468,8 +1477,18 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                   await restored("fixture-disabled").waitFor();
                   await restored("fixture-custom-disabled").waitFor();
                   await page.getByTitle("Show only free models").waitFor();
-                  if (screen.action) await scrollModels();
-                  if (screen.action === "disable-model") {
+                  if (screen.action && screen.action !== "device-oauth") await scrollModels();
+                  if (screen.action === "device-oauth") {
+                    await page.getByRole("button", { name: /OAuth/ }).click();
+                    await page.getByRole("heading", { name: "Connect Kilo Code" }).waitFor();
+                    await page.getByText("Visit the login URL below and authorize:", { exact: true }).waitFor();
+                    await page.getByText("ABCD-EFGH", { exact: true }).waitFor();
+                    verifyAfterCapture = async () => {
+                      const modal = page.getByRole("heading", { name: "Connect Kilo Code" }).locator("../../..");
+                      await modal.getByRole("button", { name: /Open/ }).click();
+                      assert.equal((await page.evaluate(() => window.__fixtureOpened))[0], "https://fixture.example.invalid/login?user_code=ABCD-EFGH");
+                    };
+                  } else if (screen.action === "disable-model") {
                     const response = waitWrite("POST", "/api/models/disabled");
                     await modelRow("fixture-standard").hover();
                     await modelRow("fixture-standard").getByTitle("Disable model").click();
