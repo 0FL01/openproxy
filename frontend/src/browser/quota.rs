@@ -307,7 +307,7 @@ fn QuotaTable(provider: String, data: Value) -> Element {
                   let dot = if balance { "bg-text-muted" } else { bar }; let border = if remaining == 0.0 { "border-black/10 dark:border-white/10" } else { "border-transparent" }; let total_label = if total > 0.0 { number(total) } else { "∞".into() }; let balance_value = quota["remaining"].as_f64().map(number).unwrap_or_else(|| "N/A".into()); let unit = quota["unit"].as_str().unwrap_or("credit value");
                   rsx! { tr { key: "{index}", class: "border-b border-black/5 dark:border-white/5 hover:bg-black/[0.02] dark:hover:bg-white/[0.02] transition-colors",
                     td { class: "py-1 px-1.5 w-[30%]", div { class: "flex items-center gap-1.5 min-w-0", span { class: "w-2 h-2 rounded-full shrink-0 {dot}" } span { class: "text-[11px] font-medium text-text-primary truncate", "{text(&quota, \"name\")}" } } }
-                    td { class: "py-1 px-1.5 w-[45%]", if unlimited { div { class: "text-[11px] font-medium text-green-600 dark:text-green-400", "Unlimited" } } else if balance { div { class: "text-[11px] font-medium text-text-primary", "{balance_value} {unit}" } } else { div { class: "space-y-1", div { class: "h-1 rounded-full overflow-hidden border {light} {border}", div { class: "h-full transition-all duration-300 {bar}", style: "width: {remaining.min(100.0)}%" } } div { class: "flex items-center justify-between text-[10px]", span { class: "text-text-muted", "{used} / {total_label}" if let Some(unit) = quota["unit"].as_str().filter(|s| !s.is_empty()) { " {unit}" } } span { class: "font-medium {color}", "{remaining}%" } } } } }
+                    td { class: "py-1 px-1.5 w-[45%]", if unlimited { div { class: "text-[11px] font-medium text-green-600 dark:text-green-400", "Unlimited" } } else if balance { div { class: "text-[11px] font-medium text-text-primary", "{balance_value}" " " "{unit}" } } else { div { class: "space-y-1", div { class: "h-1 rounded-full overflow-hidden border {light} {border}", div { class: "h-full transition-all duration-300 {bar}", style: "width: {remaining.min(100.0)}%" } } div { class: "flex items-center justify-between text-[10px]", span { class: "text-text-muted", "{used}" " / " "{total_label}" if let Some(unit) = quota["unit"].as_str().filter(|s| !s.is_empty()) { " {unit}" } } span { class: "font-medium {color}", "{remaining}%" } } } } }
                     td { class: "py-1 px-1.5 w-[25%]", if balance { div { class: "text-[11px] text-text-muted", "Available" } } else if label == "N/A" { div { class: "text-[11px] text-text-muted italic", "N/A" } } else { div { class: "text-[11px] text-text-primary font-medium truncate", title: "{reset_title}", "{label}" } } }
                   } }
                 }
@@ -331,12 +331,24 @@ fn QuotaCard(
 ) -> Element {
     let provider = text(&connection, "provider").to_owned();
     let id = text(&connection, "id").to_owned();
+    let mut image_error = use_signal(|| false);
     let name = ["name", "email", "displayName"]
         .into_iter()
         .map(|key| text(&connection, key).trim())
         .find(|value| !value.is_empty())
         .unwrap_or("")
         .to_owned();
+    let primary_name = text(&connection, "name").trim();
+    let secondary = ["email", "displayName"]
+        .into_iter()
+        .map(|key| text(&connection, key).trim())
+        .find(|value| !primary_name.is_empty() && !value.is_empty() && *value != primary_name)
+        .unwrap_or("");
+    let fallback = if provider.is_empty() {
+        "PR".to_owned()
+    } else {
+        provider.chars().take(2).collect::<String>().to_uppercase()
+    };
     let data = quota.data.unwrap_or_default();
     let entries = quota_entries(&provider, &data);
     let opacity = if connection["isActive"] == false {
@@ -365,8 +377,8 @@ fn QuotaCard(
     rsx! {
         div { class: "bg-canvas border border-hairline text-ink rounded-mini-lg shadow-none min-w-0 {opacity}",
             div { class: "px-3 py-2 border-b border-black/10 dark:border-white/10", div { class: "flex items-center justify-between gap-2",
-                div { class: "flex items-center gap-2 min-w-0", div { class: "w-8 h-8 shrink-0 rounded-md flex items-center justify-center overflow-hidden", img { src: "/providers/{provider}.png", alt: "{provider}", width: "32", height: "32", class: "object-contain" } }
-                    div { class: "min-w-0", div { class: "flex items-center gap-1.5", h3 { class: "text-sm font-semibold text-text-primary capitalize truncate", "{provider}" } if let Some(plan) = data["plan"].as_str().filter(|plan| !plan.is_empty() && *plan != "unknown") { span { class: "shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[9px] font-medium capitalize text-primary", "{plan}" } } } if !name.is_empty() { p { class: "text-xs text-text-muted truncate", "{name}" } } }
+                div { class: "flex items-center gap-2 min-w-0", div { class: "w-8 h-8 shrink-0 rounded-md flex items-center justify-center overflow-hidden", if image_error() { span { class: "inline-flex items-center justify-center font-bold rounded-lg object-contain", style: "width: 32px; height: 32px; font-size: 12px;", "{fallback}" } } else { img { src: "/providers/{provider}.png", alt: "{provider}", width: "32", height: "32", class: "object-contain", onerror: move |_| image_error.set(true) } } }
+                    div { class: "min-w-0", div { class: "flex items-center gap-1.5", h3 { class: "text-sm font-semibold text-text-primary capitalize truncate", "{provider}" } if let Some(plan) = data["plan"].as_str().filter(|plan| !plan.is_empty() && *plan != "unknown") { span { class: "shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[9px] font-medium capitalize text-primary", "{plan}" } } } if !name.is_empty() { p { class: "text-xs text-text-muted truncate", "{name}" } } if !secondary.is_empty() { p { class: "text-[10px] text-text-muted/70 truncate", "{secondary}" } } }
                 }
                 div { class: "flex items-center gap-1 shrink-0",
                     if ping.ready && ping_eligible { div { class: "relative inline-flex group",
