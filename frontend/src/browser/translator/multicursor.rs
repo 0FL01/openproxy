@@ -408,6 +408,42 @@ impl Cursors {
         true
     }
 
+    pub fn document_edge(
+        &mut self,
+        input: &web_sys::HtmlTextAreaElement,
+        start: bool,
+        extend: bool,
+    ) {
+        let units: Vec<_> = input.value().encode_utf16().collect();
+        let next = if start { 0 } else { units.len() as u32 };
+        for (start, end, direction) in &mut self.ranges {
+            let anchor = if direction == "backward" {
+                *end
+            } else {
+                *start
+            };
+            *start = if extend { anchor.min(next) } else { next };
+            *end = if extend { anchor.max(next) } else { next };
+            *direction = if extend && next < anchor {
+                "backward"
+            } else {
+                "forward"
+            }
+            .into();
+        }
+        normalize(&mut self.ranges);
+        self.vertical = None;
+        self.added = None;
+        self.line_edge = None;
+        self.query = None;
+        self.typing = false;
+        self.starts_typing = false;
+        self.validate_pairs(&units);
+        let primary = &self.ranges[0];
+        let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
+        input.set_scroll_top(if next == 0 { 0 } else { input.scroll_height() });
+    }
+
     pub fn home_end(
         &mut self,
         input: &web_sys::HtmlTextAreaElement,

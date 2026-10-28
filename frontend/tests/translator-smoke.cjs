@@ -86,7 +86,7 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
-    if (process.env.TRANSLATOR_GOTO_LINE_ONLY === "1" || process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1" || process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1" || process.env.TRANSLATOR_MULTI_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_HOME_END_ONLY === "1" || process.env.TRANSLATOR_MULTI_VERTICAL_ONLY === "1" || process.env.TRANSLATOR_ADD_CURSORS_ONLY === "1") {
+    if (process.env.TRANSLATOR_GOTO_LINE_ONLY === "1" || process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1" || process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1" || process.env.TRANSLATOR_MULTI_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_HOME_END_ONLY === "1" || process.env.TRANSLATOR_MULTI_DOCUMENT_EDGES_ONLY === "1" || process.env.TRANSLATOR_MULTI_VERTICAL_ONLY === "1" || process.env.TRANSLATOR_ADD_CURSORS_ONLY === "1") {
       const index = process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" ? 0 : 1;
       if (index === 1) await page.getByRole("button", { name: /Provider Response/ }).click();
       if (reference) await page.locator(".monaco-editor .view-lines").nth(index).waitFor();
@@ -369,6 +369,65 @@ async function main() {
         assert.deepEqual(await primary(), [13, 13], "ordinary wrapped text still breaks between words");
         assert.deepEqual(errors, []);
         console.log("synthetic translator multicursor Home/End smoke passed");
+        return;
+      }
+      if (process.env.TRANSLATOR_MULTI_DOCUMENT_EDGES_ONLY === "1") {
+        const initial = "😺 cat first\nmiddle cat\nlast 😺 tail";
+        const first = initial.indexOf("cat"), second = initial.lastIndexOf("cat");
+        const selectCats = async () => {
+          await setText(initial, first, first + 3);
+          await page.keyboard.press("Control+Shift+l");
+          await waitFor(async () => await count() === 2);
+        };
+        await selectCats();
+        await page.keyboard.press("Control+Shift+Home");
+        assert.deepEqual(await primary(), [0, second], "document start extends every selection before merging them");
+        assert.equal(await count(), 1);
+        if (reference) assert.equal(await page.evaluate(() => window.monaco.editor.getEditors()[1].getSelection().getDirection()), 1);
+        else assert.equal(await input().evaluate(input => input.selectionDirection), "backward");
+        await page.keyboard.type("X");
+        assert.equal(await text(), `X${initial.slice(second)}`);
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), initial);
+        assert.deepEqual(await primary(), [0, second]);
+        await page.keyboard.press("Control+Shift+z");
+        assert.equal(await text(), `X${initial.slice(second)}`);
+
+        await selectCats();
+        await page.keyboard.press("Control+Shift+End");
+        assert.deepEqual(await primary(), [first, initial.length], "document end retains all anchors before merging");
+        assert.equal(await count(), 1);
+        await page.keyboard.type("Y");
+        assert.equal(await text(), `${initial.slice(0, first)}Y`);
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), initial);
+        assert.deepEqual(await primary(), [first, initial.length]);
+
+        const tall = Array.from({ length: 80 }, (_, i) => `row ${i} 😺`).join("\n");
+        const selectRows = async () => {
+          const start = tall.indexOf("row 50");
+          await setText(tall, start, start + 3);
+          await page.keyboard.press("Control+d");
+          await waitFor(async () => await count() === 2);
+          if (reference) await page.evaluate(() => window.monaco.editor.getEditors()[1].setScrollTop(400));
+          else await input().evaluate(input => { input.scrollTop = 400; });
+          await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        };
+        const scroll = () => reference ? page.evaluate(() => window.monaco.editor.getEditors()[1].getScrollTop()) : input().evaluate(input => input.scrollTop);
+        await selectRows();
+        await page.keyboard.press("Control+Home");
+        assert.deepEqual(await primary(), [0, 0]);
+        assert.equal(await count(), 1, "coincident document-start carets merge");
+        await waitFor(async () => await scroll() === 0);
+        await selectRows();
+        await page.keyboard.press("Control+End");
+        assert.deepEqual(await primary(), [tall.length, tall.length]);
+        assert.equal(await count(), 1, "coincident document-end carets merge");
+        await waitFor(async () => await scroll() > 400);
+        assert.deepEqual(errors, []);
+        console.log("synthetic translator multicursor document edges smoke passed");
         return;
       }
       if (process.env.TRANSLATOR_MULTI_WORD_ONLY === "1") {

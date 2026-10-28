@@ -3259,6 +3259,22 @@ fn Editor(
                                 goto_open.set(true);
                                 return;
                             }
+                            let mac = web_sys::window().is_some_and(|window| window.navigator().user_agent().unwrap_or_default().contains("Macintosh"));
+                            let document_edge = !modifiers.alt() && if mac {
+                                modifiers.meta() && !modifiers.ctrl() && matches!(event.key(), Key::ArrowUp | Key::ArrowDown)
+                            } else {
+                                control && matches!(event.key(), Key::Home | Key::End)
+                            };
+                            if document_edge && cursors.peek().ranges.len() > 1 {
+                                event.prevent_default();
+                                command_selections.write().stop_typing();
+                                composition_extendable.set(false);
+                                if let Some(input) = textarea.peek().as_ref() {
+                                    cursors.write().document_edge(input, matches!(event.key(), Key::Home | Key::ArrowUp), modifiers.shift());
+                                }
+                                update_cursor.call(());
+                                return;
+                            }
                             let linux = web_sys::window().and_then(|window| window.navigator().user_agent().ok()).is_some_and(|agent| agent.contains("Linux"));
                             let add_cursor = if linux { modifiers.shift() && (modifiers.alt() && !control || control && !modifiers.alt()) } else { control && modifiers.alt() && !modifiers.shift() };
                             if add_cursor && matches!(event.key(), Key::ArrowUp | Key::ArrowDown) {
@@ -3306,7 +3322,6 @@ fn Editor(
                                 return;
                             }
                             if matches!(event.key(), Key::ArrowLeft | Key::ArrowRight) && cursors.peek().ranges.len() > 1 {
-                                let mac = web_sys::window().is_some_and(|window| window.navigator().user_agent().unwrap_or_default().contains("Macintosh"));
                                 let word = if mac { modifiers.alt() && !control } else { control && !modifiers.alt() };
                                 if !word && (control || modifiers.alt()) { return; }
                                 event.prevent_default();
