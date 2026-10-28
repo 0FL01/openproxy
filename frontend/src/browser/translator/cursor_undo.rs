@@ -3,30 +3,41 @@
 //! Follows Monaco's cursorUndo controller (Microsoft, MIT); the full notice is
 //! shipped in public/assets/translator-codicon-LICENSE.txt.
 
+use super::multicursor::{selection, Selection};
 use web_sys::HtmlTextAreaElement;
 
 #[derive(Clone)]
 struct Position {
-    start: u32,
-    end: u32,
-    backward: bool,
+    selections: Vec<Selection>,
     top: i32,
     left: i32,
 }
 
 impl Position {
-    fn read(input: &HtmlTextAreaElement) -> Option<Self> {
-        Some(Self {
-            start: input.selection_start().ok().flatten()?,
-            end: input.selection_end().ok().flatten()?,
-            backward: input.selection_direction().ok().flatten().as_deref() == Some("backward"),
+    fn read(input: &HtmlTextAreaElement, ranges: &[Selection]) -> Self {
+        let primary = selection(input);
+        let mut selections = if ranges.first() == Some(&primary) {
+            ranges.to_vec()
+        } else {
+            vec![primary]
+        };
+        for (start, end, direction) in &mut selections {
+            *direction = if start != end && direction == "backward" {
+                "backward"
+            } else {
+                "forward"
+            }
+            .into();
+        }
+        Self {
+            selections,
             top: input.scroll_top(),
             left: input.scroll_left(),
-        })
+        }
     }
 
     fn same_selection(&self, other: &Self) -> bool {
-        (self.start, self.end, self.backward) == (other.start, other.end, other.backward)
+        self.selections == other.selections
     }
 }
 
@@ -37,15 +48,13 @@ pub(super) struct CursorUndo {
 }
 
 impl CursorUndo {
-    pub fn reset(&mut self, input: &HtmlTextAreaElement) {
+    pub fn reset(&mut self, input: &HtmlTextAreaElement, ranges: &[Selection]) {
         self.entries.clear();
-        self.current = Position::read(input);
+        self.current = Some(Position::read(input, ranges));
     }
 
-    pub fn observe(&mut self, input: &HtmlTextAreaElement) {
-        let Some(next) = Position::read(input) else {
-            return;
-        };
+    pub fn observe(&mut self, input: &HtmlTextAreaElement, ranges: &[Selection]) {
+        let next = Position::read(input, ranges);
         if let Some(previous) = &self.current
             && !previous.same_selection(&next)
             && !self
@@ -62,19 +71,18 @@ impl CursorUndo {
         self.current = Some(next);
     }
 
-    pub fn undo(&mut self, input: &HtmlTextAreaElement) {
-        self.observe(input);
-        let Some(previous) = self.entries.pop() else {
-            return;
-        };
+    pub fn undo(
+        &mut self,
+        input: &HtmlTextAreaElement,
+        ranges: &[Selection],
+    ) -> Option<Vec<Selection>> {
+        self.observe(input, ranges);
+        let previous = self.entries.pop()?;
         self.current = Some(previous.clone());
-        let direction = if previous.backward {
-            "backward"
-        } else {
-            "forward"
-        };
-        let _ = input.set_selection_range_with_direction(previous.start, previous.end, direction);
+        let primary = &previous.selections[0];
+        let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
         input.set_scroll_top(previous.top);
         input.set_scroll_left(previous.left);
+        Some(previous.selections)
     }
 }

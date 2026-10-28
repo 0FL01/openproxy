@@ -200,7 +200,9 @@ impl Cursors {
                 case || primary.0 == primary.1,
                 whole || primary.0 == primary.1,
             ));
-            self.ranges = vec![(start, end, primary.2.clone())];
+            if self.ranges.len() < 2 || primary.0 == primary.1 {
+                self.ranges = vec![(start, end, primary.2.clone())];
+            }
             if !all && primary.0 == primary.1 {
                 let _ = input.set_selection_range(start, end);
                 self.ranges[0] = selection(input);

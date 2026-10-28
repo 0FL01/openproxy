@@ -2535,7 +2535,9 @@ fn Editor(
                 cursors.set(multicursor::Cursors::default());
                 command_selections.write().stop_typing();
             }
-            cursor_history.write().observe(input);
+            cursor_history
+                .write()
+                .observe(input, &cursors.peek().ranges);
             let start = input.selection_start().ok().flatten().unwrap_or_default();
             let end = input.selection_end().ok().flatten().unwrap_or(start);
             if current_find
@@ -2729,7 +2731,7 @@ fn Editor(
     });
     use_effect(use_reactive((&value,), move |_| {
         if let Some(input) = textarea() {
-            cursor_history.write().reset(&input);
+            cursor_history.write().reset(&input, &cursors.peek().ranges);
             if input.value() != *last_input.peek() {
                 cursors.set(multicursor::Cursors::default());
             }
@@ -3185,11 +3187,14 @@ fn Editor(
                             if event.is_composing() { return; }
                             let key = event.key().to_string();
                             if let Some(input) = textarea.peek().as_ref() {
-                                cursor_history.write().observe(input);
+                                cursor_history.write().observe(input, &cursors.peek().ranges);
                             }
                             if (event.modifiers().ctrl() || event.modifiers().meta()) && !event.modifiers().alt() && !event.modifiers().shift() && key.eq_ignore_ascii_case("u") {
                                 event.prevent_default();
-                                if let Some(input) = textarea.peek().as_ref() { cursor_history.write().undo(input); }
+                                if let Some(input) = textarea.peek().as_ref() {
+                                    let restored = cursor_history.write().undo(input, &cursors.peek().ranges);
+                                    if let Some(ranges) = restored { cursors.write().restore(ranges); command_selections.write().stop_typing(); }
+                                }
                                 update_cursor.call(());
                                 return;
                             }
@@ -3256,7 +3261,7 @@ fn Editor(
                                     if let Some(scope) = scope { find_scope.set(Some(adjust_find_scope(&before, &after, scope))); }
                                     composition_extendable.set(false);
                                     auto_indent.set(None);
-                                    cursor_history.write().reset(input);
+                                    cursor_history.write().reset(input, &cursors.peek().ranges);
                                     last_input.set(after.clone());
                                     on_change.call(after);
                                     update_cursor.call(());
@@ -3507,7 +3512,7 @@ fn Editor(
                             let previous = last_input.peek().clone();
                             if previous != value {
                                 current_find.set(None);
-                                if let Some(input) = textarea.peek().as_ref() { cursor_history.write().reset(input); }
+                                if let Some(input) = textarea.peek().as_ref() { cursor_history.write().reset(input, &cursors.peek().ranges); }
                             }
                             let scope = *find_scope.peek();
                             if let Some(scope) = scope && previous != value {
@@ -3586,7 +3591,7 @@ fn Editor(
                         onselect: move |_| update_cursor.call(()),
                         onmouseup: move |_| update_cursor.call(()),
                         onkeyup: move |_| update_cursor.call(()),
-                        onscroll: move |_| { if let Some(input) = textarea.peek().as_ref() { cursor_history.write().observe(input); scroll_top.set(input.scroll_top()); } }
+                        onscroll: move |_| { if let Some(input) = textarea.peek().as_ref() { cursor_history.write().observe(input, &cursors.peek().ranges); scroll_top.set(input.scroll_top()); } }
                     }
                 }
                 canvas { aria_hidden: "true", style: "position:absolute;transform:translate3d(0,0,0);contain:strict;top:0;right:0;width:14px;height:400px;pointer-events:none;", onmounted: move |event| { if let Some(element) = event.data().downcast::<web_sys::Element>() && let Ok(canvas) = element.clone().dyn_into::<web_sys::HtmlCanvasElement>() { ruler.set(Some(canvas)); } } }
