@@ -1519,6 +1519,26 @@ fn indent_selection(input: &web_sys::HtmlTextAreaElement, backwards: bool) -> Op
     })
 }
 
+fn shifted_indentation(line: &str, backwards: bool) -> (usize, String) {
+    let old = line
+        .bytes()
+        .take_while(|byte| matches!(byte, b' ' | b'\t'))
+        .count();
+    let columns = line[..old].bytes().fold(0_usize, |column, byte| {
+        if byte == b'\t' {
+            column + 4 - column % 4
+        } else {
+            column + 1
+        }
+    });
+    let columns = if backwards {
+        columns.saturating_sub(1) / 4 * 4
+    } else {
+        (columns / 4 + 1) * 4
+    };
+    (old, " ".repeat(columns))
+}
+
 fn indent_lines(input: &web_sys::HtmlTextAreaElement, backwards: bool) -> Option<NativeUndo> {
     let before = input.value();
     let text = js_sys::JsString::from(before.as_str());
@@ -1566,27 +1586,10 @@ fn indent_lines(input: &web_sys::HtmlTextAreaElement, backwards: bool) -> Option
     let updated = lines
         .split('\n')
         .map(|line| {
-            let old_indent = line
-                .bytes()
-                .take_while(|byte| matches!(byte, b' ' | b'\t'))
-                .count();
-            let columns = line[..old_indent].bytes().fold(0_usize, |column, byte| {
-                if byte == b'\t' {
-                    column + 4 - column % 4
-                } else {
-                    column + 1
-                }
-            });
-            let columns = if backwards {
-                columns.saturating_sub(1) / 4 * 4
-            } else {
-                (columns / 4 + 1) * 4
-            };
-            let indent = if multiple && line.is_empty() {
-                String::new()
-            } else {
-                " ".repeat(columns)
-            };
+            let (old_indent, mut indent) = shifted_indentation(line, backwards);
+            if multiple && line.is_empty() {
+                indent.clear();
+            }
             first_indent.get_or_insert(old_indent as u32);
             let old_end = offset + old_indent as u32;
             let delta = indent.len() as i64 - old_indent as i64;
@@ -3456,7 +3459,22 @@ fn Editor(
                                 }
                                 return;
                             }
-                            if control && !modifiers.shift() && !modifiers.alt() && matches!(key.as_str(), "[" | "]") {
+                            let indent_command = control && !modifiers.shift() && !modifiers.alt() && matches!(key.as_str(), "[" | "]");
+                            let tab_command = event.key() == Key::Tab && !control && !modifiers.alt() && !*tab_moves_focus.peek();
+                            if cursors.peek().ranges.len() > 1 && (indent_command || tab_command) {
+                                event.prevent_default();
+                                command_selections.write().stop_typing();
+                                composition_extendable.set(false);
+                                if let Some(input) = textarea.peek().clone() {
+                                    let ranges = cursors.peek().ranges.clone();
+                                    adjusting_history.set(true);
+                                    let operation = cursors.write().indent(&input, key == "[" || tab_command && modifiers.shift(), tab_command);
+                                    adjusting_history.set(false);
+                                    if let Some(operation) = operation { finish_multi_edit.call((operation, ranges)); }
+                                }
+                                return;
+                            }
+                            if indent_command {
                                 event.prevent_default();
                                 if let Some(input) = textarea.peek().as_ref() && let Some(undo) = indent_lines(input, key == "[") {
                                     command_selections.write().record(undo);

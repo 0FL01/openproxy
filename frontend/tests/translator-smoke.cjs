@@ -86,7 +86,7 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
-    if (process.env.TRANSLATOR_GOTO_LINE_ONLY === "1" || process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1" || process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1" || process.env.TRANSLATOR_MULTI_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_DELETE_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_HOME_END_ONLY === "1" || process.env.TRANSLATOR_MULTI_DOCUMENT_EDGES_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAGE_ONLY === "1" || process.env.TRANSLATOR_MULTI_VERTICAL_ONLY === "1" || process.env.TRANSLATOR_ADD_CURSORS_ONLY === "1") {
+    if (process.env.TRANSLATOR_GOTO_LINE_ONLY === "1" || process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1" || process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1" || process.env.TRANSLATOR_MULTI_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_DELETE_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_INDENT_ONLY === "1" || process.env.TRANSLATOR_MULTI_HOME_END_ONLY === "1" || process.env.TRANSLATOR_MULTI_DOCUMENT_EDGES_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAGE_ONLY === "1" || process.env.TRANSLATOR_MULTI_VERTICAL_ONLY === "1" || process.env.TRANSLATOR_ADD_CURSORS_ONLY === "1") {
       const index = process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" ? 0 : 1;
       if (index === 1) await page.getByRole("button", { name: /Provider Response/ }).click();
       if (reference) await page.locator(".monaco-editor .view-lines").nth(index).waitFor();
@@ -505,6 +505,67 @@ async function main() {
         assert.equal(await text(), `${"a".repeat(498)}R\n${"a".repeat(498)}R`);
         assert.deepEqual(errors, []);
         console.log("synthetic translator multicursor PageUp/PageDown smoke passed");
+        return;
+      }
+      if (process.env.TRANSLATOR_MULTI_INDENT_ONLY === "1") {
+        const choose = async (value, start, end) => {
+          await setText(value, start, end);
+          await page.keyboard.press("Control+d");
+          await waitFor(async () => await count() === 2);
+        };
+        const initial = "      😺 cat\n  cat";
+        const start = initial.indexOf("cat");
+        const indented = "        😺 cat\n    cat";
+        await choose(initial, start, start + 3);
+        await page.keyboard.press("Control+]");
+        await waitFor(async () => await text() === indented);
+        assert.deepEqual(await primary(), [start + 2, start + 5]);
+        assert.equal(await count(), 2);
+        await page.keyboard.press("Control+[");
+        await waitFor(async () => await text() === "    😺 cat\ncat");
+        await page.keyboard.press("Control+z");
+        await waitFor(async () => await text() === indented);
+        await page.keyboard.press("Control+z");
+        await waitFor(async () => await text() === initial);
+        assert.deepEqual(await primary(), [start, start + 3]);
+        await page.keyboard.press("Control+Shift+z");
+        await waitFor(async () => await text() === indented);
+        await page.keyboard.press("Tab");
+        assert.equal(await text(), "        😺  \n    ", "Tab advances each partial selection to its own column stop");
+        assert.deepEqual(await primary(), [start + 3, start + 3]);
+        await page.keyboard.press("Control+z");
+        await waitFor(async () => await text() === indented);
+        assert.deepEqual(await primary(), [start + 2, start + 5]);
+        await page.keyboard.press("Shift+Tab");
+        await waitFor(async () => await text() === "    😺 cat\ncat");
+        await page.keyboard.press("Control+z");
+        await waitFor(async () => await text() === indented);
+
+        await choose("  cat cat", 2, 5);
+        await page.keyboard.press("Control+]");
+        await waitFor(async () => await text() === "    cat cat");
+        assert.equal(await count(), 1, "overlapping indentation replacements keep the earlier cursor command");
+        await page.keyboard.press("Control+z");
+        await waitFor(async () => await text() === "  cat cat");
+        assert.equal(await count(), 2);
+        await choose("cat cat", 0, 3);
+        await page.keyboard.press("Control+]");
+        await waitFor(async () => await text() === "        cat cat");
+        assert.deepEqual(await primary(), [0, 11], "non-overlapping empty insertions both contribute, retaining the leading selection start");
+        assert.equal(await count(), 2);
+
+        const lines = "  cat\nnext\n  cat\nnext";
+        await choose(lines, 0, 6);
+        await page.keyboard.press("Tab");
+        await waitFor(async () => await text() === "    cat\nnext\n    cat\nnext");
+        assert.deepEqual(await primary(), [0, 8], "a following line at column one is not indented");
+        await page.keyboard.press("Control+z");
+        await waitFor(async () => await text() === lines);
+        assert.deepEqual(await primary(), [0, 6]);
+        await page.keyboard.type("X");
+        await waitFor(async () => await text() === "Xnext\nXnext");
+        assert.deepEqual(errors, []);
+        console.log("synthetic translator multicursor indentation smoke passed");
         return;
       }
       if (process.env.TRANSLATOR_MULTI_DELETE_WORD_ONLY === "1") {

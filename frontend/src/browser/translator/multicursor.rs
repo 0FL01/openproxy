@@ -3,7 +3,7 @@
 //! Permission/warranty notice: public/assets/translator-codicon-LICENSE.txt.
 use super::{
     character_top, find_ranges, grapheme, in_json_string, insert_text, json_bracket_newline,
-    line_indentation, position_top, NativeUndo,
+    line_indentation, position_top, shifted_indentation, NativeUndo,
 };
 use dioxus::prelude::Callback;
 use std::{collections::HashSet, rc::Rc};
@@ -144,6 +144,27 @@ fn word_deletion(units: &[u16], position: usize, left: bool) -> (u32, u32) {
         }
         (position as u32, target as u32)
     }
+}
+
+// The source command executor rejects a whole later cursor command if any of
+// its edits overlap. Empty insertions at the same position do not overlap.
+fn conflicting_cursors(mut operations: Vec<(usize, u32, u32)>) -> HashSet<usize> {
+    operations.sort_by_key(|&(_, start, end)| std::cmp::Reverse((end, start)));
+    let mut losing = HashSet::new();
+    let mut index = 1;
+    while index < operations.len() {
+        let previous = operations[index - 1];
+        let current = operations[index];
+        if previous.1 < current.2 {
+            let loser = previous.0.max(current.0);
+            losing.insert(loser);
+            operations.retain(|operation| operation.0 != loser);
+            index = index.saturating_sub(1).max(1);
+        } else {
+            index += 1;
+        }
+    }
+    losing
 }
 
 fn normalize(ranges: &mut Vec<Selection>) -> Vec<usize> {
@@ -1132,25 +1153,13 @@ impl Cursors {
 
         // Monaco rejects the later cursor's conflicting command, rather than
         // taking the union used by whole-line Cut. Keep original cursor priority.
-        let mut ordered: Vec<_> = (0..replacements.len()).collect();
-        ordered.sort_by_key(|&index| {
-            let (start, end, _) = replacements[index];
-            std::cmp::Reverse((end, start))
-        });
-        let mut index = 1;
-        let mut losing = HashSet::new();
-        while index < ordered.len() {
-            let previous = ordered[index - 1];
-            let current = ordered[index];
-            if replacements[previous].0 < replacements[current].1 {
-                let loser = previous.max(current);
-                losing.insert(loser);
-                ordered.remove(if loser == previous { index - 1 } else { index });
-                index = index.saturating_sub(1).max(1);
-            } else {
-                index += 1;
-            }
-        }
+        let losing = conflicting_cursors(
+            replacements
+                .iter()
+                .enumerate()
+                .map(|(index, &(start, end, _))| (index, start, end))
+                .collect(),
+        );
         let original = std::mem::take(&mut self.ranges);
         self.ranges = original
             .iter()
@@ -1169,6 +1178,150 @@ impl Cursors {
             self.ranges = original;
         }
         operation
+    }
+
+    pub fn indent(
+        &mut self,
+        input: &web_sys::HtmlTextAreaElement,
+        backwards: bool,
+        tab: bool,
+    ) -> Option<NativeUndo> {
+        let original = selection(input);
+        if self.ranges.len() < 2 || self.ranges.first() != Some(&original) {
+            return None;
+        }
+        let before = input.value();
+        let units: Vec<_> = before.encode_utf16().collect();
+        let mut offset = 0_u32;
+        let lines: Vec<_> = before
+            .split('\n')
+            .map(|line| {
+                let start = offset;
+                offset += line.encode_utf16().count() as u32 + 1;
+                (start, line)
+            })
+            .collect();
+        let mut operations = Vec::new();
+        let mut stays = vec![None; self.ranges.len()];
+        let mut replaced = vec![false; self.ranges.len()];
+        for (index, &(start, end, _)) in self.ranges.iter().enumerate() {
+            let first = lines
+                .partition_point(|(offset, _)| *offset <= start)
+                .saturating_sub(1);
+            let mut last = lines
+                .partition_point(|(offset, _)| *offset <= end)
+                .saturating_sub(1);
+            let line_end = lines[first].0 + lines[first].1.encode_utf16().count() as u32;
+            if tab
+                && !backwards
+                && (start == end || first == last && (start != lines[first].0 || end != line_end))
+            {
+                let prefix = &units[lines[first].0 as usize..start as usize];
+                let column = grapheme::visible_column(prefix, prefix.len());
+                operations.push((index, (start, end, " ".repeat(4 - column % 4))));
+                replaced[index] = true;
+                continue;
+            }
+            if last > first && end == lines[last].0 {
+                last -= 1;
+            }
+            for (line_index, &(offset, line)) in lines.iter().enumerate().take(last + 1).skip(first)
+            {
+                let (old, indent) = shifted_indentation(line, backwards);
+                if backwards && old == 0 || first != last && line.is_empty() {
+                    continue;
+                }
+                if line_index == first && start != end && start <= offset + old as u32 {
+                    stays[index] = Some((offset, start - offset));
+                }
+                operations.push((index, (offset, offset + old as u32, indent)));
+            }
+        }
+        self.typing = false;
+        self.starts_typing = false;
+        if operations.is_empty() {
+            return None;
+        }
+        let losing = conflicting_cursors(
+            operations
+                .iter()
+                .map(|(index, (start, end, _))| (*index, *start, *end))
+                .collect(),
+        );
+        operations.retain(|(index, _)| !losing.contains(index));
+        operations.sort_by_key(|(_, (start, end, _))| (*start, *end));
+        let mut output = Vec::new();
+        let mut last = 0;
+        let mut positions = Vec::with_capacity(operations.len());
+        for (_, (start, end, text)) in operations {
+            output.extend_from_slice(&units[last..start as usize]);
+            output.extend(text.encode_utf16());
+            positions.push((start, end, output.len() as u32));
+            last = end as usize;
+        }
+        output.extend_from_slice(&units[last..]);
+        let map = |position: u32| {
+            let index = positions.partition_point(|(start, _, _)| *start <= position);
+            if index == 0 {
+                position
+            } else {
+                let (_, end, after) = positions[index - 1];
+                after + position.saturating_sub(end)
+            }
+        };
+        let mut ranges: Vec<_> = self
+            .ranges
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !losing.contains(index))
+            .map(|(index, &(start, end, ref direction))| {
+                let end = map(end);
+                let mut start = if replaced[index] { end } else { map(start) };
+                if let Some((line, column)) = stays[index] {
+                    let previous = positions.partition_point(|(offset, _, _)| *offset < line);
+                    let line = if previous == 0 {
+                        line
+                    } else {
+                        let (_, end, after) = positions[previous - 1];
+                        after + line - end
+                    };
+                    start = start.min(line + column);
+                }
+                (
+                    start,
+                    end.max(start),
+                    if replaced[index] {
+                        "forward".into()
+                    } else {
+                        direction.clone()
+                    },
+                )
+            })
+            .collect();
+        let after = String::from_utf16(&output).ok()?;
+        let scroll = input.scroll_top();
+        if !insert_text(input, 0, units.len() as u32, &after) {
+            return None;
+        }
+        normalize(&mut ranges);
+        let primary = ranges[0].clone();
+        let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
+        input.set_scroll_top(scroll);
+        self.ranges = ranges;
+        self.vertical = None;
+        self.added = None;
+        self.line_edge = None;
+        self.query = None;
+        self.map_auto_closed(&positions, &output);
+        Some(NativeUndo {
+            before,
+            after: input.value(),
+            start: original.0,
+            end: original.1,
+            direction: original.2,
+            after_selection: Some(primary),
+            edits: Vec::new(),
+        })
     }
 
     pub fn apply_json(
@@ -1435,6 +1588,19 @@ impl Cursors {
         self.query = None;
         self.typing = false;
         self.starts_typing = false;
+        self.map_auto_closed(&positions, &output);
+        Some(NativeUndo {
+            before,
+            after: input.value(),
+            start: original.0,
+            end: original.1,
+            direction: original.2,
+            after_selection: Some(primary),
+            edits: Vec::new(),
+        })
+    }
+
+    fn map_auto_closed(&mut self, positions: &[(u32, u32, u32)], output: &[u16]) {
         let map = |position: u32| {
             let index = positions.partition_point(|(start, _, _)| *start <= position);
             if index == 0 {
@@ -1456,16 +1622,7 @@ impl Cursors {
                 true
             });
         }
-        self.validate_pairs(&output);
-        Some(NativeUndo {
-            before,
-            after: input.value(),
-            start: original.0,
-            end: original.1,
-            direction: original.2,
-            after_selection: Some(primary),
-            edits: Vec::new(),
-        })
+        self.validate_pairs(output);
     }
 }
 
