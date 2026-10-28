@@ -466,6 +466,63 @@ async function main() {
         await run("Delete Line");
         assert.equal(await text(), "keep", "a merged deletion through the empty last line removes the preceding newline");
         assert.deepEqual(await primary(), [3, 3]);
+        for (const [label, expected, cursor] of [
+          ["Copy Line Up", "top\n😺 cat\n😺 cat\ntail", 8],
+          ["Copy Line Down", "top\n😺 cat\n😺 cat\ntail", 15],
+          ["Move Line Up", "😺 cat\ntop\ntail", 4],
+          ["Move Line Down", "top\ntail\n😺 cat", 13],
+        ]) {
+          await setText("top\n😺 cat\ntail", 8);
+          await run(label);
+          assert.equal(await text(), expected);
+          assert.deepEqual(await primary(), [cursor, cursor]);
+          await page.keyboard.press("Control+z");
+          assert.equal(await text(), "top\n😺 cat\ntail");
+          assert.deepEqual(await primary(), [8, 8]);
+          await page.keyboard.press("Control+Shift+z");
+          assert.equal(await text(), expected);
+        }
+        for (const [label, expected, range] of [
+          ["Copy Line Up", "head\nalpha\nbeta\nalpha\nbeta\ntail\nend", [7, 16]],
+          ["Copy Line Down", "head\nalpha\nbeta\nalpha\nbeta\ntail\nend", [18, 27]],
+          ["Move Line Up", "alpha\nbeta\nhead\ntail\nend", [2, 11]],
+          ["Move Line Down", "head\ntail\nalpha\nbeta\nend", [12, 21]],
+        ]) {
+          const original = "head\nalpha\nbeta\ntail\nend";
+          await setText(original, 7, 16);
+          await run(label);
+          assert.equal(await text(), expected, "line actions exclude the following line selected only at column one");
+          assert.deepEqual(await primary(), range);
+          await page.keyboard.press("Control+z");
+          assert.equal(await text(), original);
+          assert.deepEqual(await primary(), [7, 16]);
+        }
+        for (const [label, expected] of [
+          ["Copy Line Up", "X / X\ncat / cat\nend"],
+          ["Copy Line Down", "cat / cat\nX / X\nend"],
+        ]) {
+          await setText("cat / cat\nend", 6, 9);
+          await page.keyboard.press("Control+Shift+l");
+          await waitFor(async () => await count() === 2);
+          await run(label);
+          assert.equal(await text(), "cat / cat\ncat / cat\nend", "a shared line is copied once");
+          assert.deepEqual(await primary(), label === "Copy Line Up" ? [0, 3] : [10, 13], "copy commands return document-ordered selections");
+          await page.keyboard.type("X");
+          assert.equal(await text(), expected);
+          await page.keyboard.press("Control+z");
+          await page.keyboard.press("Control+z");
+          await page.keyboard.type("Y");
+          assert.equal(await text(), "Y / Y\nend", "Undo restores both original copy selections");
+        }
+        await setText("aa cat\nbb cat\nend", 3, 6);
+        await page.keyboard.press("Control+Shift+l");
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.press("Alt+ArrowDown");
+        assert.equal(await text(), "bb cat\naa cat\nend", "conflicting move commands retain the earlier cursor");
+        assert.deepEqual(await primary(), [10, 13]);
+        await page.keyboard.press("Control+z");
+        await page.keyboard.type("X");
+        assert.equal(await text(), "aa X\nbb X\nend", "Undo restores both move selections");
         assert.deepEqual(errors, []);
         console.log("synthetic Translator command palette, case and line transforms passed");
         return;

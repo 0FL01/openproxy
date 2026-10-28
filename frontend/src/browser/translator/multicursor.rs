@@ -1718,6 +1718,17 @@ impl Cursors {
         command: super::commands::Command,
         json: bool,
     ) -> Option<NativeUndo> {
+        use super::commands::Command;
+        if matches!(
+            command,
+            Command::CopyUp | Command::CopyDown | Command::MoveUp | Command::MoveDown
+        ) {
+            return self.shift_lines(
+                input,
+                matches!(command, Command::CopyDown | Command::MoveDown),
+                matches!(command, Command::CopyUp | Command::CopyDown),
+            );
+        }
         if command == super::commands::Command::DeleteLine {
             return self.delete_lines(input);
         }
@@ -1794,6 +1805,215 @@ impl Cursors {
         let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
         operation.after_selection = Some(primary);
         Some(operation)
+    }
+
+    fn shift_lines(
+        &mut self,
+        input: &web_sys::HtmlTextAreaElement,
+        down: bool,
+        copy: bool,
+    ) -> Option<NativeUndo> {
+        let original = selection(input);
+        if self.ranges.first() != Some(&original) {
+            return None;
+        }
+        let before = input.value();
+        let units: Vec<_> = before.encode_utf16().collect();
+        let mut starts = vec![0_u32];
+        starts.extend(
+            units
+                .iter()
+                .enumerate()
+                .filter_map(|(index, unit)| (*unit == 10).then_some(index as u32 + 1)),
+        );
+        let line_at = |offset| starts.partition_point(|start| *start <= offset) - 1;
+        let line_end = |line| {
+            starts
+                .get(line + 1)
+                .map_or(units.len() as u32, |next| next - 1)
+        };
+        let mut ordered: Vec<_> = self.ranges.iter().cloned().enumerate().collect();
+        let mut ignored = HashSet::new();
+        if copy {
+            ordered.sort_by_key(|(_, range)| (range.0, range.1));
+            // Copy's common-line ownership uses the original cursor indexes,
+            // while its commands (and resulting primary) are document ordered.
+            let mut previous = 0;
+            for index in 1..ordered.len() {
+                if line_at(ordered[previous].1 .1) == line_at(ordered[index].1 .0) {
+                    if ordered[previous].0 < ordered[index].0 {
+                        ignored.insert(index);
+                    } else {
+                        ignored.insert(previous);
+                        previous = index;
+                    }
+                }
+            }
+        }
+        let mut plans = Vec::with_capacity(ordered.len());
+        let mut edits = Vec::new();
+        for (owner, (_, range)) in ordered.iter().enumerate() {
+            let first = line_at(range.0);
+            let raw_last = line_at(range.1);
+            if !copy && (down && raw_last + 1 == starts.len() || !down && first == 0) {
+                plans.push((range.clone(), 0_usize, 0_usize));
+                continue;
+            }
+            let shrink = first < raw_last && range.1 == starts[raw_last];
+            let last = raw_last - usize::from(shrink);
+            let end = line_end(last);
+            let mut tracked = (range.0, if shrink { end } else { range.1 }, range.2.clone());
+            let mut start_delta = 0;
+            let mut end_delta = usize::from(shrink);
+            if copy {
+                if ignored.contains(&owner) {
+                    let next = starts.get(last + 1).copied().unwrap_or(end);
+                    edits.push((
+                        owner,
+                        end,
+                        next,
+                        units[end as usize..next as usize].to_vec(),
+                    ));
+                } else {
+                    let mut text = units[starts[first] as usize..end as usize].to_vec();
+                    let empty = text.is_empty();
+                    let position = if down {
+                        text.push(10);
+                        starts[first]
+                    } else {
+                        text.insert(0, 10);
+                        end
+                    };
+                    edits.push((owner, position, position, text));
+                    if down && empty {
+                        start_delta += 1;
+                        end_delta += 1;
+                    }
+                }
+            } else if first == last && starts[first] == end {
+                let other = if down { first + 1 } else { first - 1 };
+                let text = units[starts[other] as usize..line_end(other) as usize].to_vec();
+                edits.push((owner, starts[first], starts[first], text));
+                edits.push((owner, starts[other], line_end(other), Vec::new()));
+                tracked = (starts[other], starts[other], range.2.clone());
+            } else if down {
+                let next_end = line_end(last + 1);
+                let mut text = units[starts[last + 1] as usize..next_end as usize].to_vec();
+                text.push(10);
+                edits.push((owner, end, next_end, Vec::new()));
+                edits.push((owner, starts[first], starts[first], text));
+            } else {
+                let previous_start = starts[first - 1];
+                let mut text = vec![10];
+                text.extend_from_slice(&units[previous_start as usize..starts[first] as usize - 1]);
+                edits.push((owner, previous_start, starts[first], Vec::new()));
+                edits.push((owner, end, end, text));
+            }
+            plans.push((tracked, start_delta, end_delta));
+        }
+        let losing = conflicting_cursors(
+            edits
+                .iter()
+                .map(|(owner, start, end, _)| (*owner, *start, *end))
+                .collect(),
+        );
+        edits.retain(|(owner, _, _, _)| !losing.contains(owner));
+        if edits.is_empty() {
+            return None;
+        }
+        edits.sort_by_key(|(owner, start, end, _)| (*start, *end, *owner));
+        let mut output = Vec::new();
+        let mut previous = 0;
+        let mut positions = Vec::with_capacity(edits.len());
+        for (_, start, end, text) in &edits {
+            if *start < previous {
+                return None;
+            }
+            output.extend_from_slice(&units[previous as usize..*start as usize]);
+            output.extend_from_slice(text);
+            positions.push((*start, *end, output.len() as u32));
+            previous = *end;
+        }
+        output.extend_from_slice(&units[previous as usize..]);
+        let after = String::from_utf16(&output).ok()?;
+        let mut after_starts = vec![0_u32];
+        after_starts.extend(
+            output
+                .iter()
+                .enumerate()
+                .filter_map(|(index, unit)| (*unit == 10).then_some(index as u32 + 1)),
+        );
+        let map = |position: u32, after_insert: bool| {
+            let mut delta = 0_i64;
+            for (_, start, end, text) in &edits {
+                if position < *start || position == *start && !after_insert {
+                    break;
+                }
+                if position < *end {
+                    return (*start as i64
+                        + delta
+                        + if after_insert { text.len() as i64 } else { 0 })
+                        as u32;
+                }
+                delta += text.len() as i64 - i64::from(end - start);
+            }
+            (position as i64 + delta) as u32
+        };
+        let mut ranges = Vec::new();
+        for (owner, (range, start_delta, end_delta)) in plans.into_iter().enumerate() {
+            if losing.contains(&owner) {
+                continue;
+            }
+            let empty = range.0 == range.1;
+            let after_insert = !empty || range.0 != line_end(line_at(range.0));
+            let start = map(range.0, after_insert);
+            let end = map(range.1, if empty { after_insert } else { false });
+            let next_line = |position, delta| {
+                let line = after_starts.partition_point(|start| *start <= position) - 1;
+                after_starts
+                    .get(line + delta)
+                    .copied()
+                    .unwrap_or(output.len() as u32)
+            };
+            ranges.push((
+                if start_delta == 0 {
+                    start
+                } else {
+                    next_line(start, start_delta)
+                },
+                if end_delta == 0 {
+                    end
+                } else {
+                    next_line(end, end_delta)
+                },
+                range.2,
+            ));
+        }
+        let scroll = input.scroll_top();
+        if !insert_text(input, 0, units.len() as u32, &after) {
+            return None;
+        }
+        normalize(&mut ranges);
+        let primary = ranges[0].clone();
+        let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
+        input.set_scroll_top(scroll);
+        self.ranges = ranges;
+        self.vertical = None;
+        self.added = None;
+        self.line_edge = None;
+        self.query = None;
+        self.typing = false;
+        self.starts_typing = false;
+        self.map_auto_closed(&positions, &output);
+        Some(NativeUndo {
+            before,
+            after: input.value(),
+            start: original.0,
+            end: original.1,
+            direction: original.2,
+            after_selection: Some(primary),
+            edits: Vec::new(),
+        })
     }
 
     fn delete_lines(&mut self, input: &web_sys::HtmlTextAreaElement) -> Option<NativeUndo> {

@@ -1025,123 +1025,6 @@ fn select_line(input: &web_sys::HtmlTextAreaElement) {
     let _ = input.set_selection_range(line_start, line_end);
 }
 
-fn move_lines(input: &web_sys::HtmlTextAreaElement, down: bool) {
-    let start = input.selection_start().ok().flatten().unwrap_or_default() as usize;
-    let end = input.selection_end().ok().flatten().unwrap_or(start as u32) as usize;
-    let direction = input
-        .selection_direction()
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let text: Vec<u16> = input.value().encode_utf16().collect();
-    let newline = b'\n' as u16;
-    let line_start = text[..start]
-        .iter()
-        .rposition(|ch| *ch == newline)
-        .map_or(0, |index| index + 1);
-    let selected_end = if end > start && text[end - 1] == newline {
-        end - 1
-    } else {
-        end
-    };
-    let line_end = text[selected_end..]
-        .iter()
-        .position(|ch| *ch == newline)
-        .map_or(text.len(), |index| selected_end + index);
-    let (replace_start, replace_end, replacement, new_start, new_end) = if down {
-        if !text[end..].contains(&newline) {
-            return;
-        }
-        let next_start = line_end + 1;
-        let next_end = text[next_start..]
-            .iter()
-            .position(|ch| *ch == newline)
-            .map_or(text.len(), |index| next_start + index);
-        let mut replacement = text[next_start..next_end].to_vec();
-        replacement.push(newline);
-        replacement.extend_from_slice(&text[line_start..line_end]);
-        let delta = next_end - next_start + 1;
-        (
-            line_start,
-            next_end,
-            replacement,
-            start + delta,
-            (end + delta).min(text.len()),
-        )
-    } else {
-        if line_start == 0 {
-            return;
-        }
-        let previous_end = line_start - 1;
-        let previous_start = text[..previous_end]
-            .iter()
-            .rposition(|ch| *ch == newline)
-            .map_or(0, |index| index + 1);
-        let mut replacement = text[line_start..line_end].to_vec();
-        replacement.push(newline);
-        replacement.extend_from_slice(&text[previous_start..previous_end]);
-        let delta = line_start - previous_start;
-        (
-            previous_start,
-            line_end,
-            replacement,
-            start - delta,
-            end - delta,
-        )
-    };
-    if insert_text(
-        input,
-        replace_start as u32,
-        replace_end as u32,
-        &String::from_utf16_lossy(&replacement),
-    ) {
-        let _ =
-            input.set_selection_range_with_direction(new_start as u32, new_end as u32, &direction);
-    }
-}
-
-fn copy_lines(input: &web_sys::HtmlTextAreaElement, down: bool) {
-    let start = input.selection_start().ok().flatten().unwrap_or_default() as usize;
-    let end = input.selection_end().ok().flatten().unwrap_or(start as u32) as usize;
-    let direction = input
-        .selection_direction()
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let text: Vec<u16> = input.value().encode_utf16().collect();
-    let newline = b'\n' as u16;
-    let line_start = text[..start]
-        .iter()
-        .rposition(|ch| *ch == newline)
-        .map_or(0, |index| index + 1);
-    let selected_end = if end > start && text[end - 1] == newline {
-        end - 1
-    } else {
-        end
-    };
-    let line_end = text[selected_end..]
-        .iter()
-        .position(|ch| *ch == newline)
-        .map_or(text.len(), |index| selected_end + index);
-    let selected_lines = String::from_utf16_lossy(&text[line_start..line_end]);
-    let (position, replacement, delta) = if down {
-        (
-            line_start,
-            format!("{selected_lines}\n"),
-            line_end - line_start + 1,
-        )
-    } else {
-        (line_end, format!("\n{selected_lines}"), 0)
-    };
-    if insert_text(input, position as u32, position as u32, &replacement) {
-        let _ = input.set_selection_range_with_direction(
-            (start + delta) as u32,
-            (end + delta) as u32,
-            &direction,
-        );
-    }
-}
-
 struct BlockComment {
     edits: Vec<(u32, u32, String)>,
     start: u32,
@@ -3646,13 +3529,11 @@ fn Editor(
                                 run_command.call(commands::Command::DeleteLine);
                             } else if event.modifiers().alt() && !event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().shift() && matches!(event.key(), Key::ArrowUp | Key::ArrowDown) {
                                 event.prevent_default();
-                                if let Some(input) = textarea.peek().as_ref() { move_lines(input, event.key() == Key::ArrowDown); }
-                                update_cursor.call(());
+                                run_command.call(if event.key() == Key::ArrowDown { commands::Command::MoveDown } else { commands::Command::MoveUp });
                             } else if event.modifiers().alt() && event.modifiers().shift() && !event.modifiers().meta() && matches!(event.key(), Key::ArrowUp | Key::ArrowDown)
                                 && event.modifiers().ctrl() == web_sys::window().and_then(|window| window.navigator().user_agent().ok()).is_some_and(|agent| agent.contains("Linux")) {
                                 event.prevent_default();
-                                if let Some(input) = textarea.peek().as_ref() { copy_lines(input, event.key() == Key::ArrowDown); }
-                                update_cursor.call(());
+                                run_command.call(if event.key() == Key::ArrowDown { commands::Command::CopyDown } else { commands::Command::CopyUp });
                             } else if (event.modifiers().ctrl() || event.modifiers().meta()) && (key.eq_ignore_ascii_case("f") || key.eq_ignore_ascii_case("h")) {
                                 event.prevent_default();
                                 current_find.set(None);

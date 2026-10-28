@@ -7,6 +7,10 @@ use wasm_bindgen::{closure::Closure, JsCast};
 
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Command {
+    CopyUp,
+    CopyDown,
+    MoveUp,
+    MoveDown,
     DeleteLine,
     DeleteLeft,
     DeleteRight,
@@ -26,7 +30,11 @@ pub(super) enum Command {
 }
 
 impl Command {
-    const ALL: [Self; 16] = [
+    const ALL: [Self; 20] = [
+        Self::CopyUp,
+        Self::CopyDown,
+        Self::MoveUp,
+        Self::MoveDown,
         Self::DeleteLine,
         Self::DeleteLeft,
         Self::DeleteRight,
@@ -47,6 +55,10 @@ impl Command {
 
     fn label(self) -> &'static str {
         match self {
+            Self::CopyUp => "Copy Line Up",
+            Self::CopyDown => "Copy Line Down",
+            Self::MoveUp => "Move Line Up",
+            Self::MoveDown => "Move Line Down",
             Self::DeleteLine => "Delete Line",
             Self::DeleteLeft => "Delete All Left",
             Self::DeleteRight => "Delete All Right",
@@ -68,6 +80,10 @@ impl Command {
 
     fn id(self) -> &'static str {
         match self {
+            Self::CopyUp => "editor.action.copyLinesUpAction",
+            Self::CopyDown => "editor.action.copyLinesDownAction",
+            Self::MoveUp => "editor.action.moveLinesUpAction",
+            Self::MoveDown => "editor.action.moveLinesDownAction",
             Self::DeleteLine => "editor.action.deleteLines",
             Self::DeleteLeft => "deleteAllLeft",
             Self::DeleteRight => "deleteAllRight",
