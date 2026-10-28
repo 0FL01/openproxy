@@ -86,7 +86,7 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
-    if (process.env.TRANSLATOR_GOTO_LINE_ONLY === "1" || process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1" || process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1" || process.env.TRANSLATOR_MULTI_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_HOME_END_ONLY === "1" || process.env.TRANSLATOR_MULTI_DOCUMENT_EDGES_ONLY === "1" || process.env.TRANSLATOR_MULTI_VERTICAL_ONLY === "1" || process.env.TRANSLATOR_ADD_CURSORS_ONLY === "1") {
+    if (process.env.TRANSLATOR_GOTO_LINE_ONLY === "1" || process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1" || process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1" || process.env.TRANSLATOR_MULTI_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_HOME_END_ONLY === "1" || process.env.TRANSLATOR_MULTI_DOCUMENT_EDGES_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAGE_ONLY === "1" || process.env.TRANSLATOR_MULTI_VERTICAL_ONLY === "1" || process.env.TRANSLATOR_ADD_CURSORS_ONLY === "1") {
       const index = process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" ? 0 : 1;
       if (index === 1) await page.getByRole("button", { name: /Provider Response/ }).click();
       if (reference) await page.locator(".monaco-editor .view-lines").nth(index).waitFor();
@@ -428,6 +428,83 @@ async function main() {
         await waitFor(async () => await scroll() > 400);
         assert.deepEqual(errors, []);
         console.log("synthetic translator multicursor document edges smoke passed");
+        return;
+      }
+      if (process.env.TRANSLATOR_MULTI_PAGE_ONLY === "1") {
+        const lines = Array.from({ length: 80 }, (_, i) => [27, 31].includes(i) ? "x" : `row ${String(i).padStart(2, "0")} ${[4, 8].includes(i) ? "cat" : "abc"} tail`);
+        const initial = lines.join("\n");
+        const at = (row, column) => lines.slice(0, row).reduce((offset, line) => offset + line.length + 1, 0) + column;
+        const selectCats = async () => {
+          await setText(initial, at(4, 7), at(4, 10));
+          await page.keyboard.press("Control+Shift+l");
+          await waitFor(async () => await count() === 2);
+        };
+        await selectCats();
+        await page.keyboard.press("PageDown");
+        await waitFor(async () => await count() === 2);
+        assert.deepEqual(await primary(), [at(27, 1), at(27, 1)], "a 400px editor moves by 23 visual rows, clamping on a short line");
+        await page.keyboard.press("PageDown");
+        assert.deepEqual(await primary(), [at(50, 10), at(50, 10)], "the preferred column survives a page ending on a short line");
+        await page.keyboard.press("PageUp");
+        assert.deepEqual(await primary(), [at(27, 1), at(27, 1)]);
+        await page.keyboard.type("X");
+        const changed = lines.map((line, i) => [27, 31].includes(i) ? `${line}X` : line).join("\n");
+        assert.equal(await text(), changed);
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), initial);
+        assert.deepEqual(await primary(), [at(27, 1), at(27, 1)]);
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.press("Control+Shift+z");
+        assert.equal(await text(), changed);
+
+        await selectCats();
+        await page.keyboard.press("Shift+PageDown");
+        assert.deepEqual(await primary(), [at(4, 7), at(31, 1)], "Shift retains every anchor before overlapping selections merge");
+        assert.equal(await count(), 1);
+        await selectCats();
+        await page.keyboard.press("PageUp");
+        assert.deepEqual(await primary(), [0, 0], "overshooting the first visual row moves to document start");
+        assert.equal(await count(), 1);
+
+        const late = initial.replaceAll("cat", "abc").replace("row 70 abc", "row 70 cat").replace("row 74 abc", "row 74 cat");
+        const last = late.indexOf("cat");
+        await setText(late, last, last + 3);
+        await page.keyboard.press("Control+Shift+l");
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.press("PageDown");
+        assert.deepEqual(await primary(), [late.length, late.length], "overshooting the last visual row moves to document end");
+        assert.equal(await count(), 1);
+
+        await page.setViewportSize({ width: 390, height: 844 });
+        const wrapped = `${"a".repeat(1000)} cat`;
+        await setText(`${wrapped}\n${wrapped}`, 1001, 1004);
+        await page.keyboard.press("Control+Shift+l");
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.press("ArrowRight");
+        if (reference) await page.evaluate(() => window.monaco.editor.getEditors()[1].setScrollTop(400));
+        else await input().evaluate(input => { input.scrollTop = 400; });
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        const scroll = () => reference ? page.evaluate(() => window.monaco.editor.getEditors()[1].getScrollTop()) : input().evaluate(input => input.scrollTop);
+        await page.keyboard.press("PageUp");
+        assert.deepEqual(await primary(), [498, 498], "page movement counts soft-wrapped visual rows");
+        await waitFor(async () => await count() === 2);
+        assert.equal(await scroll(), 400, "a cursor box taller than the viewport is not revealed to the primary alone");
+        await page.keyboard.press("PageDown");
+        assert.deepEqual(await primary(), [1004, 1004]);
+        await page.keyboard.press("Shift+PageUp");
+        assert.deepEqual(await primary(), [498, 1004]);
+        await page.keyboard.type("Q");
+        assert.equal(await text(), `${"a".repeat(498)}Q\n${"a".repeat(498)}Q`);
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), `${wrapped}\n${wrapped}`);
+        assert.deepEqual(await primary(), [498, 1004]);
+        // A wrapped selection has several paint rectangles; edit both restored ranges.
+        await page.keyboard.type("R");
+        assert.equal(await text(), `${"a".repeat(498)}R\n${"a".repeat(498)}R`);
+        assert.deepEqual(errors, []);
+        console.log("synthetic translator multicursor PageUp/PageDown smoke passed");
         return;
       }
       if (process.env.TRANSLATOR_MULTI_WORD_ONLY === "1") {

@@ -3306,14 +3306,16 @@ fn Editor(
                                 }
                                 return;
                             }
-                            if !control && !modifiers.alt() && matches!(event.key(), Key::ArrowUp | Key::ArrowDown) && cursors.peek().ranges.len() > 1 {
+                            if !control && !modifiers.alt() && matches!(event.key(), Key::ArrowUp | Key::ArrowDown | Key::PageUp | Key::PageDown) && cursors.peek().ranges.len() > 1 {
+                                let page = matches!(event.key(), Key::PageUp | Key::PageDown);
                                 let changed = if let Some(input) = textarea.peek().as_ref()
                                     && let Some(element) = rendered.peek().as_ref() {
-                                    cursors.write().vertical(input, element, event.key() == Key::ArrowUp, modifiers.shift())
+                                    let distance = if page { (input.client_height() / 16 - 2).max(1) as usize } else { 1 };
+                                    cursors.write().vertical(input, element, matches!(event.key(), Key::ArrowUp | Key::PageUp), modifiers.shift(), distance)
                                 } else { None };
                                 if let Some(changed) = changed {
                                     event.prevent_default();
-                                    if changed {
+                                    if page || changed {
                                         command_selections.write().stop_typing();
                                         composition_extendable.set(false);
                                     }

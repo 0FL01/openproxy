@@ -261,6 +261,26 @@ fn reveal(input: &web_sys::HtmlTextAreaElement, rendered: &web_sys::HtmlElement,
     }
 }
 
+fn reveal_all(input: &web_sys::HtmlTextAreaElement, top: f64, bottom: f64) {
+    let padding = input
+        .style()
+        .get_property_value("padding-top")
+        .ok()
+        .and_then(|value| value.trim_end_matches("px").parse::<f64>().ok())
+        .unwrap_or_default();
+    // Leave the viewport alone when the complete selection box cannot fit.
+    // Both bounds must be measured before this single scroll update.
+    let height = f64::from(input.client_height());
+    if bottom - top <= height - padding {
+        let shift = if top < padding {
+            top - padding
+        } else {
+            (bottom + 16.0 - height).max(0.0)
+        };
+        input.set_scroll_top(input.scroll_top() + shift as i32);
+    }
+}
+
 #[derive(Clone)]
 struct ClosedPair {
     open: u32,
@@ -546,23 +566,7 @@ impl Cursors {
         self.validate_pairs(&units);
         let primary = &self.ranges[0];
         let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
-        let padding = input
-            .style()
-            .get_property_value("padding-top")
-            .ok()
-            .and_then(|value| value.trim_end_matches("px").parse::<f64>().ok())
-            .unwrap_or_default();
-        // Like revealAllCursors, leave the viewport alone when the complete
-        // selection box cannot fit. Compute both bounds before scrolling once.
-        let height = f64::from(input.client_height());
-        if bottom - top <= height - padding {
-            let shift = if top < padding {
-                top - padding
-            } else {
-                (bottom + 16.0 - height).max(0.0)
-            };
-            input.set_scroll_top(input.scroll_top() + shift as i32);
-        }
+        reveal_all(input, top, bottom);
         Some(changed)
     }
 
@@ -572,6 +576,7 @@ impl Cursors {
         rendered: &web_sys::HtmlElement,
         up: bool,
         extend: bool,
+        distance: usize,
     ) -> Option<bool> {
         let text = input.value();
         let units: Vec<_> = text.encode_utf16().collect();
@@ -584,6 +589,7 @@ impl Cursors {
             .filter(|state| state.ranges == self.ranges && state.width == input.client_width());
         let mut ranges = Vec::new();
         let mut leftover = Vec::new();
+        let (mut top, mut bottom) = (f64::MAX, f64::MIN);
         for (index, &(start, end, ref direction)) in self.ranges.iter().enumerate() {
             let (anchor, active) = if direction == "backward" {
                 (end, start)
@@ -605,17 +611,22 @@ impl Cursors {
             let row = &rows[row_index];
             let preferred =
                 row.left(position)? - origin + previous.map_or(0.0, |state| state.leftover[index]);
-            let target_index = if up {
-                row_index.saturating_sub(1)
+            let overshoots = if up {
+                distance > row_index
             } else {
-                (row_index + 1).min(rows.len() - 1)
+                distance > rows.len() - 1 - row_index
+            };
+            let target_index = if up {
+                row_index.saturating_sub(distance)
+            } else {
+                row_index.saturating_add(distance).min(rows.len() - 1)
             };
             let target = &rows[target_index];
-            let next = if target_index == row_index {
+            let next = if overshoots {
                 if up {
-                    row.start
+                    target.start
                 } else {
-                    row.end
+                    target.end
                 }
             } else {
                 let mut nearest = target.start;
@@ -631,6 +642,14 @@ impl Cursors {
                 }
                 nearest
             };
+            let cursor_top = position_top(input, rendered, target.start)?;
+            let anchor_top = if extend {
+                position_top(input, rendered, anchor)?
+            } else {
+                cursor_top
+            };
+            top = top.min(cursor_top.min(anchor_top));
+            bottom = bottom.max(cursor_top.max(anchor_top) + 16.0);
             let at_edge = target_index == row_index && position == next;
             leftover.push(if at_edge {
                 0.0
@@ -664,15 +683,7 @@ impl Cursors {
         let primary = &self.ranges[0];
         let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
         self.added = None;
-        reveal(
-            input,
-            rendered,
-            if primary.2 == "backward" {
-                primary.0
-            } else {
-                primary.1
-            },
-        );
+        reveal_all(input, top, bottom);
         Some(true)
     }
 
