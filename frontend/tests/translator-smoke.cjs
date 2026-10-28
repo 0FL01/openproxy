@@ -47,7 +47,7 @@ const server = http.createServer(async (req, res) => {
 
 async function waitFor(predicate) {
   const deadline = Date.now() + 5000;
-  while (!predicate()) { if (Date.now() > deadline) throw new Error("synthetic translator action timed out"); await new Promise(resolve => setTimeout(resolve, 10)); }
+  while (!await predicate()) { if (Date.now() > deadline) throw new Error("synthetic translator action timed out"); await new Promise(resolve => setTimeout(resolve, 10)); }
 }
 
 async function main() {
@@ -86,6 +86,116 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
+    if (process.env.TRANSLATOR_MULTICURSOR_ONLY === "1") {
+      await page.getByRole("button", { name: /Provider Response/ }).click();
+      if (reference) await page.locator(".monaco-editor .view-lines").nth(1).waitFor();
+      const input = () => editor().nth(1);
+      await (reference ? page.locator(".monaco-editor").nth(1) : input()).scrollIntoViewIfNeeded();
+      const text = () => reference ? page.evaluate(() => window.monaco.editor.getEditors()[1].getValue()) : input().inputValue();
+      const primary = () => reference ? page.evaluate(() => {
+        const e = window.monaco.editor.getEditors()[1], s = e.getSelection();
+        return [e.getModel().getOffsetAt(s.getStartPosition()), e.getModel().getOffsetAt(s.getEndPosition())];
+      }) : input().evaluate(input => [input.selectionStart, input.selectionEnd]);
+      const count = () => reference ? page.evaluate(() => window.monaco.editor.getEditors()[1].getSelections().length)
+        : input().evaluate(input => 1 + input.parentElement.querySelectorAll(".multicursor-selection, .multicursor-cursor").length);
+      const setText = async (value, start, end = start) => {
+        if (reference) await page.evaluate(value => window.monaco.editor.getEditors()[1].setValue(value), value);
+        else await input().fill(value);
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        if (reference) await page.evaluate(({ start, end }) => {
+          const e = window.monaco.editor.getEditors()[1];
+          const a = e.getModel().getPositionAt(start), b = e.getModel().getPositionAt(end);
+          e.setSelection(new window.monaco.Selection(a.lineNumber, a.column, b.lineNumber, b.column)); e.focus();
+        }, { start, end });
+        else await input().evaluate((input, [start, end]) => { input.setSelectionRange(start, end); input.dispatchEvent(new Event("select", { bubbles: true })); }, [start, end]);
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      };
+      const initial = "😺 cat cat\ncat";
+      await setText(initial, 4);
+      await page.keyboard.press("Control+d");
+      assert.deepEqual(await primary(), [3, 6], "first Ctrl+D selects the current word");
+      await page.keyboard.press("Control+d");
+      await waitFor(async () => await count() === 2);
+      await page.keyboard.type("dog", { delay: 30 });
+      assert.equal(await text(), "😺 dog dog\ncat", "typing replaces both selected occurrences");
+      await page.keyboard.press("Control+z");
+      assert.equal(await text(), initial, "one Undo restores the simultaneous typing group");
+      assert.deepEqual(await primary(), [3, 6]);
+      await waitFor(async () => await count() === 2);
+      await page.keyboard.press("Control+Shift+z");
+      assert.equal(await text(), "😺 dog dog\ncat");
+      assert.deepEqual(await primary(), [6, 6]);
+      await page.keyboard.press("Escape");
+      await waitFor(async () => await count() === 1);
+      await page.keyboard.type("!");
+      assert.equal(await text(), "😺 dog! dog\ncat", "Escape keeps only the primary cursor");
+      await setText("a a", 0, 1);
+      await page.keyboard.press("Control+Shift+l");
+      await waitFor(async () => await count() === 2);
+      await page.keyboard.type("a");
+      assert.deepEqual(await primary(), [1, 1], "replacing selected text with itself still collapses each selection");
+      await page.keyboard.type("b");
+      assert.equal(await text(), "ab ab");
+      await page.keyboard.press("Control+z");
+      assert.equal(await text(), "a a");
+      assert.deepEqual(await primary(), [0, 1]);
+      await waitFor(async () => await count() === 2);
+      await page.keyboard.press("Control+Shift+z");
+      assert.equal(await text(), "ab ab");
+      await setText("aaa", 1, 3);
+      await page.keyboard.press("Control+Shift+l");
+      await waitFor(async () => await count() === 1);
+      assert.deepEqual(await primary(), [0, 2], "Select All uses the actual matches, not an overlapping original selection");
+      await page.keyboard.type("X");
+      assert.equal(await text(), "Xa");
+      await setText("aaa", 1, 3);
+      await page.keyboard.press("Control+d");
+      await waitFor(async () => await count() === 1);
+      assert.deepEqual(await primary(), [0, 3], "overlapping occurrence selections merge");
+      await page.keyboard.type("X");
+      assert.equal(await text(), "X");
+      await setText("aa", 0, 1);
+      await page.keyboard.press("Control+Shift+l");
+      await waitFor(async () => await count() === 2);
+      await page.keyboard.press("Backspace");
+      assert.equal(await text(), "");
+      await waitFor(async () => await count() === 1);
+      await page.keyboard.type("X");
+      assert.equal(await text(), "X", "coincident carets merge before subsequent input");
+      await setText("😺 foo foo Foo", 3, 6);
+      assert.deepEqual(await primary(), [3, 6]);
+      await page.keyboard.press("Control+Shift+l");
+      await waitFor(async () => await count() === 3);
+      await page.keyboard.type("X");
+      assert.equal(await text(), "😺 X X X");
+      await page.keyboard.press("Control+z");
+      assert.equal(await text(), "😺 foo foo Foo");
+      await waitFor(async () => await count() === 3);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      const highlights = reference ? page.locator(".monaco-editor").nth(1).locator(".selected-text") : input().locator("..").locator(".multicursor-selection");
+      const highlightRects = await highlights.evaluateAll(elements => elements.map(element => { const r = element.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; }));
+      const rect = highlightRects.filter(rect => rect.width >= 20 && rect.height === 15).sort((a, b) => a.x - b.x).at(-1);
+      assert.ok(rect, `multiple selections reserve the first visual-row pixel as in Monaco: ${JSON.stringify(highlightRects)}`);
+      const primaryPoint = await page.evaluate(reference => {
+        const root = reference ? document.querySelectorAll(".monaco-editor")[1] : document.querySelectorAll('[aria-label="Translator editor"]')[1].parentElement;
+        const spans = root.querySelectorAll(reference ? ".view-lines .view-line span" : "pre > div > span");
+        const span = [...spans].find(span => !span.children.length && span.textContent.includes("foo"));
+        const range = document.createRange(), index = span.textContent.indexOf("foo"); range.setStart(span.firstChild, index); range.setEnd(span.firstChild, index + 3);
+        const r = range.getBoundingClientRect(); return { x: Math.floor(r.x + r.width / 2), y: Math.floor(r.bottom - 1) };
+      }, reference);
+      const pixels = await page.screenshot({ animations: "disabled" });
+      const selectionPixels = await page.evaluate(async ({ base64, points }) => {
+        const image = new Image(); image.src = `data:image/png;base64,${base64}`; await image.decode();
+        const canvas = document.createElement("canvas"); canvas.width = image.width; canvas.height = image.height;
+        const context = canvas.getContext("2d"); context.drawImage(image, 0, 0);
+        return points.map(({ x, y }) => [...context.getImageData(x, y, 1, 1).data].slice(0, 3));
+      }, { base64: pixels.toString("base64"), points: [primaryPoint, { x: Math.floor(rect.x + rect.width / 2), y: Math.floor(rect.y + rect.height - 1) }] });
+      assert.ok(selectionPixels.every(([red, green, blue]) => red < green && green < blue), `both selections visibly paint a blue background, not just DOM geometry: ${JSON.stringify(selectionPixels)}`);
+      assert.ok((await highlights.evaluateAll(elements => elements.map(element => getComputedStyle(element).backgroundColor))).every(color => color === "rgb(38, 79, 120)"));
+      assert.deepEqual(errors, []);
+      console.log("synthetic translator multicursor smoke passed");
+      return;
+    }
     if (process.env.TRANSLATOR_CURSOR_UNDO_ONLY === "1") {
       await page.getByRole("button", { name: /Provider Response/ }).click();
       if (reference) await page.locator(".monaco-editor .view-lines").nth(1).waitFor();

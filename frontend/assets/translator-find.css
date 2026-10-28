@@ -107,3 +107,6 @@
 .translator-find.reduced .replace-box { flex-basis: calc(100% - 62px); }
 .translator-find.collapsed .find-box:not(.replace-box) .find-options { display: none; }
 .translator-find.collapsed .find-box:not(.replace-box) .find-input { width: 100%; }
+
+/* Match the additional occurrence selections without painting duplicate text. */
+.translator-occurrences::selection { background: #264f78; color: transparent; }

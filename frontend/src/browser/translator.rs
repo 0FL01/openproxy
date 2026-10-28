@@ -2,6 +2,7 @@
 mod clipboard;
 mod cursor_undo;
 mod format;
+mod multicursor;
 
 use super::{endpoint::copy_text, json_body, shell::dashboard_request, ui::Button};
 use dioxus::prelude::*;
@@ -2058,6 +2059,15 @@ struct NativeSelection {
     since_previous: Option<CompositionEdit>,
     selection_before: (u32, u32, String),
     selection_after: (u32, u32, String),
+    secondary_before: Vec<multicursor::Selection>,
+    secondary_after: Vec<multicursor::Selection>,
+    native_edits: Vec<CompositionEdit>,
+    typing: bool,
+}
+
+struct RestoredSelection {
+    primary: multicursor::Selection,
+    secondary: Vec<multicursor::Selection>,
 }
 
 impl NativeSelectionHistory {
@@ -2076,6 +2086,10 @@ impl NativeSelectionHistory {
             since_previous,
             selection_before: (operation.start, operation.end, operation.direction),
             selection_after: after,
+            secondary_before: Vec::new(),
+            secondary_after: Vec::new(),
+            native_edits: Vec::new(),
+            typing: false,
         });
         self.undo_after = Some(operation.after);
         self.clear_redo();
@@ -2086,7 +2100,71 @@ impl NativeSelectionHistory {
         self.redo_before = None;
     }
 
-    fn restore(&mut self, before: &str, after: &str, undo: bool) -> Option<(u32, u32, String)> {
+    fn stop_typing(&mut self) {
+        if let Some(operation) = self.undo.last_mut() {
+            operation.typing = false;
+        }
+    }
+
+    fn record_multi(
+        &mut self,
+        operation: NativeUndo,
+        before: Vec<multicursor::Selection>,
+        after: Vec<multicursor::Selection>,
+        typing: bool,
+    ) {
+        let change = CompositionEdit::new(&operation.before, &operation.after);
+        if typing
+            && self.undo_after.as_ref() == Some(&operation.before)
+            && let Some(previous) = self.undo.last_mut()
+            && previous.typing
+            && previous.secondary_after == before
+            && previous.selection_after
+                == (operation.start, operation.end, operation.direction.clone())
+            && let Some(original) = previous.change.apply(&operation.before, true)
+            && let Some(selection) = operation.after_selection.clone()
+        {
+            previous.change = CompositionEdit::new(&original, &operation.after);
+            previous.native_edits.push(change);
+            previous.selection_after = selection;
+            previous.secondary_after = after;
+            self.undo_after = Some(operation.after);
+            self.clear_redo();
+            return;
+        }
+        self.record(operation);
+        if let Some(last) = self.undo.last_mut() {
+            last.secondary_before = before;
+            last.secondary_after = after;
+            last.native_edits.push(change);
+            last.typing = typing;
+        }
+    }
+
+    fn multi_history_steps(
+        &self,
+        value: &str,
+        undo: bool,
+    ) -> Option<(String, Vec<CompositionEdit>)> {
+        let (operations, anchor) = if undo {
+            (&self.undo, self.undo_after.as_deref()?)
+        } else {
+            (&self.redo, self.redo_before.as_deref()?)
+        };
+        let operation = operations.last()?;
+        if value != anchor || operation.native_edits.is_empty() {
+            return None;
+        }
+        let target = operation.change.apply(value, undo)?;
+        let edits = if undo {
+            operation.native_edits.iter().rev().cloned().collect()
+        } else {
+            operation.native_edits.clone()
+        };
+        Some((target, edits))
+    }
+
+    fn restore(&mut self, before: &str, after: &str, undo: bool) -> Option<RestoredSelection> {
         let (source, anchor) = if undo {
             (&mut self.undo, self.undo_after.as_deref()?)
         } else {
@@ -2101,10 +2179,17 @@ impl NativeSelectionHistory {
             return None;
         }
         let operation = source.pop()?;
-        let selection = if undo {
-            operation.selection_before.clone()
-        } else {
-            operation.selection_after.clone()
+        let selection = RestoredSelection {
+            primary: if undo {
+                operation.selection_before.clone()
+            } else {
+                operation.selection_after.clone()
+            },
+            secondary: if undo {
+                operation.secondary_before.clone()
+            } else {
+                operation.secondary_after.clone()
+            },
         };
         if undo {
             self.undo_after = operation
@@ -2207,6 +2292,9 @@ fn Editor(
     let mut composition_start = use_signal(|| None::<NativeUndo>);
     let mut composition_undo = use_signal(|| None::<NativeUndo>);
     let mut command_selections = use_signal(NativeSelectionHistory::default);
+    let mut cursors = use_signal(multicursor::Cursors::default);
+    let mut cursor_boxes = use_signal(Vec::<multicursor::Box>::new);
+    let mut multi_input = use_signal(|| None::<Rc<multicursor::InputListener>>);
     let mut cursor_history = use_signal(cursor_undo::CursorUndo::default);
     let mut auto_indent = use_signal(|| None::<AutoIndent>);
     let mut composition_extendable = use_signal(|| false);
@@ -2431,6 +2519,16 @@ fn Editor(
     }));
     let update_cursor = use_callback(move |_| {
         if let Some(input) = textarea.peek().as_ref() {
+            if !*adjusting_history.peek()
+                && cursors
+                    .peek()
+                    .ranges
+                    .first()
+                    .is_some_and(|expected| *expected != multicursor::selection(input))
+            {
+                cursors.set(multicursor::Cursors::default());
+                command_selections.write().stop_typing();
+            }
             cursor_history.write().observe(input);
             let start = input.selection_start().ok().flatten().unwrap_or_default();
             let end = input.selection_end().ok().flatten().unwrap_or(start);
@@ -2489,6 +2587,81 @@ fn Editor(
             active_visual_top.set(top);
         }
     });
+    let before_input = use_callback(move |event: web_sys::InputEvent| {
+        if *adjusting_history.peek() || event.is_composing() || !event.cancelable() {
+            return;
+        }
+        let kind = event.input_type();
+        if !matches!(
+            kind.as_str(),
+            "insertText"
+                | "insertLineBreak"
+                | "insertParagraph"
+                | "deleteContentBackward"
+                | "deleteContentForward"
+        ) {
+            return;
+        }
+        let Some(input) = textarea.peek().clone() else {
+            return;
+        };
+        let ranges = cursors.peek().ranges.clone();
+        if ranges.len() < 2 || ranges.first() != Some(&multicursor::selection(&input)) {
+            return;
+        }
+        event.prevent_default();
+        adjusting_history.set(true);
+        let operation = cursors
+            .write()
+            .apply(&input, &kind, &event.data().unwrap_or_default());
+        adjusting_history.set(false);
+        if let Some(operation) = operation {
+            let after = operation.after.clone();
+            let next = cursors.peek().clone();
+            command_selections.write().record_multi(
+                operation,
+                ranges.into_iter().skip(1).collect(),
+                next.ranges.into_iter().skip(1).collect(),
+                next.typing,
+            );
+            let previous = last_input.peek().clone();
+            let scope = *find_scope.peek();
+            if let Some(scope) = scope {
+                find_scope.set(Some(adjust_find_scope(&previous, &after, scope)));
+            }
+            auto_indent.set(None);
+            composition_extendable.set(false);
+            current_find.set(None);
+            last_input.set(after.clone());
+            on_change.call(after);
+            update_cursor.call(());
+        }
+    });
+    use_effect(use_reactive((&value,), move |(value,)| {
+        let ranges = cursors().ranges;
+        let _ = scroll_top();
+        let _ = editor_width();
+        let _ = applied_find_padding();
+        let Some(input) = textarea() else { return };
+        let Some(element) = rendered() else { return };
+        if ranges.len() < 2 {
+            cursor_boxes.set(Vec::new());
+            return;
+        }
+        spawn(async move {
+            for _ in 0..2 {
+                let frame = js_sys::Promise::new(&mut |resolve, _| {
+                    if let Some(window) = web_sys::window() {
+                        let _ = window.request_animation_frame(&resolve);
+                    }
+                });
+                let _ = JsFuture::from(frame).await;
+            }
+            if cursors.peek().ranges == ranges && input.value() == value {
+                cursor_boxes.set(multicursor::boxes(&input, &element, &ranges[1..]));
+            }
+        });
+    }));
     let on_clipboard = use_callback(move |event: ClipboardEvent| {
         if composition_start.peek().is_some() {
             return;
@@ -2518,6 +2691,9 @@ fn Editor(
     use_effect(use_reactive((&value,), move |_| {
         if let Some(input) = textarea() {
             cursor_history.write().reset(&input);
+            if input.value() != *last_input.peek() {
+                cursors.set(multicursor::Cursors::default());
+            }
         }
     }));
     use_effect(use_reactive((&value,), move |_| {
@@ -2917,6 +3093,11 @@ fn Editor(
                     }
                 }
                 div { style: "position:absolute;overflow:hidden;left:62px;right:0;height:400px;background:#1e1e1e;transform:translate3d(0,0,0);contain:paint;",
+                    for (index, rect) in cursor_boxes().iter().enumerate() {
+                        { let width = if rect.caret { 2.0 } else { rect.width }; let color = if rect.caret { "#aeafad" } else { "#264f78" }; rsx! {
+                            div { key: "{index}", aria_hidden: "true", class: if rect.caret { "multicursor-cursor" } else { "multicursor-selection" }, style: "position:absolute;pointer-events:none;left:{rect.left}px;top:{rect.top}px;width:{width}px;height:{rect.height}px;background:{color};" }
+                        } }
+                    }
                     pre { aria_hidden: "true", style: "position:absolute;top:{text_top}px;left:0;right:0;margin:0;white-space:pre-wrap;overflow-wrap:anywhere;pointer-events:none;font-family:'Droid Sans Mono',monospace;font-size:12px;line-height:16px;",
                         onmounted: move |event| { if let Some(element) = event.data().downcast::<web_sys::Element>() && let Ok(element) = element.clone().dyn_into::<web_sys::HtmlElement>() { rendered.set(Some(element)); } },
                         for (line, segments) in lines.iter().enumerate() {
@@ -2942,7 +3123,7 @@ fn Editor(
                             } }
                         }
                     }
-                    textarea { aria_label: "Translator editor", spellcheck: "false", value: "{value}",
+                    textarea { aria_label: "Translator editor", spellcheck: "false", value: "{value}", class: if cursors.read().ranges.is_empty() { "" } else { "translator-occurrences" },
                         oncopy: move |event| on_clipboard.call(event),
                         oncut: move |event| on_clipboard.call(event),
                         onpaste: move |event| on_clipboard.call(event),
@@ -2957,6 +3138,7 @@ fn Editor(
                                     size_observer.set(Some(Rc::new(EditorSizeObserver { observer, _callback: callback })));
                                 }
                                 wheel_listener.set(EditorWheel::new(input.clone()).map(Rc::new));
+                                multi_input.set(multicursor::InputListener::new(input.clone(), before_input));
                                 textarea.set(Some(input));
                             }
                         },
@@ -2974,6 +3156,63 @@ fn Editor(
                             }
                             let modifiers = event.modifiers();
                             let control = modifiers.ctrl() || modifiers.meta();
+                            if control && !modifiers.alt() && ((!modifiers.shift() && key.eq_ignore_ascii_case("d")) || (modifiers.shift() && key.eq_ignore_ascii_case("l"))) {
+                                event.prevent_default();
+                                command_selections.write().stop_typing();
+                                if let Some(input) = textarea.peek().as_ref() {
+                                    cursors.write().choose(input, json, *match_case.peek(), *whole_word.peek(), modifiers.shift());
+                                    update_cursor.call(());
+                                }
+                                return;
+                            }
+                            if event.key() == Key::Escape && cursors.peek().ranges.len() > 1 {
+                                event.prevent_default();
+                                cursors.set(multicursor::Cursors::default());
+                                command_selections.write().stop_typing();
+                                return;
+                            }
+                            if control && !modifiers.alt() && (key.eq_ignore_ascii_case("z") || key.eq_ignore_ascii_case("y"))
+                                && let Some(input) = textarea.peek().as_ref() {
+                                let before = input.value();
+                                let undo = key.eq_ignore_ascii_case("z") && !modifiers.shift();
+                                let work = command_selections.peek().multi_history_steps(&before, undo);
+                                if let Some((target, edits)) = work {
+                                    event.prevent_default();
+                                    adjusting_history.set(true);
+                                    let mut after = before.clone();
+                                    for edit in edits {
+                                        // Identical replacement still changes selection and can
+                                        // consume a native history entry without changing text.
+                                        let Some(expected) = edit.apply(&after, undo) else { break };
+                                        if !editing_command(if undo { "undo" } else { "redo" }) { break; }
+                                        after = input.value();
+                                        if after != expected {
+                                            if after != target {
+                                                let _ = editing_command(if undo { "redo" } else { "undo" });
+                                                after = input.value();
+                                            }
+                                            break;
+                                        }
+                                    }
+                                    adjusting_history.set(false);
+                                    let restored = command_selections.write().restore(&before, &after, undo);
+                                    if let Some(restored) = restored {
+                                        let (start, end, direction) = &restored.primary;
+                                        let _ = input.set_selection_range_with_direction(*start, *end, direction);
+                                        let mut ranges = vec![multicursor::selection(input)]; ranges.extend(restored.secondary);
+                                        cursors.write().restore(ranges);
+                                    } else { cursors.set(multicursor::Cursors::default()); }
+                                    let scope = *find_scope.peek();
+                                    if let Some(scope) = scope { find_scope.set(Some(adjust_find_scope(&before, &after, scope))); }
+                                    composition_extendable.set(false);
+                                    auto_indent.set(None);
+                                    cursor_history.write().reset(input);
+                                    last_input.set(after.clone());
+                                    on_change.call(after);
+                                    update_cursor.call(());
+                                    return;
+                                }
+                            }
                             let chord = *command_chord.peek() && control && !modifiers.shift() && !modifiers.alt();
                             let selection_format = chord && key.eq_ignore_ascii_case("f");
                             if !matches!(event.key(), Key::Control | Key::Meta | Key::Shift | Key::Alt) { command_chord.set(false); }
@@ -3225,9 +3464,12 @@ fn Editor(
                                 command_selections.write().clear_redo();
                                 None
                             };
-                            if let Some((start, end, direction)) = selection {
+                            if let Some(restored) = selection {
                                 if let Some(input) = textarea.peek().as_ref() {
+                                    let (start, end, direction) = restored.primary;
                                     let _ = input.set_selection_range_with_direction(start, end, &direction);
+                                    let mut ranges = vec![multicursor::selection(input)]; ranges.extend(restored.secondary);
+                                    cursors.write().restore(ranges);
                                 }
                             } else if (undo || redo) && let Some(group) = composition_undo.peek().clone()
                                 && let Some(input) = textarea.peek().clone() {
@@ -3276,6 +3518,7 @@ fn Editor(
                                 }
                             }
                             last_input.set(value.clone());
+                            if !undo && !redo && !cursors.peek().ranges.is_empty() { cursors.set(multicursor::Cursors::default()); }
                             on_change.call(value);
                             update_cursor.call(());
                         },
