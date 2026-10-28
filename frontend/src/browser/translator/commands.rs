@@ -7,6 +7,8 @@ use wasm_bindgen::{closure::Closure, JsCast};
 
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Command {
+    DeleteLeft,
+    DeleteRight,
     Deduplicate,
     Duplicate,
     Join,
@@ -23,7 +25,9 @@ pub(super) enum Command {
 }
 
 impl Command {
-    const ALL: [Self; 13] = [
+    const ALL: [Self; 15] = [
+        Self::DeleteLeft,
+        Self::DeleteRight,
         Self::Deduplicate,
         Self::Duplicate,
         Self::Join,
@@ -41,6 +45,8 @@ impl Command {
 
     fn label(self) -> &'static str {
         match self {
+            Self::DeleteLeft => "Delete All Left",
+            Self::DeleteRight => "Delete All Right",
             Self::Deduplicate => "Delete Duplicate Lines",
             Self::Duplicate => "Duplicate Selection",
             Self::Join => "Join Lines",
@@ -59,6 +65,8 @@ impl Command {
 
     fn id(self) -> &'static str {
         match self {
+            Self::DeleteLeft => "deleteAllLeft",
+            Self::DeleteRight => "deleteAllRight",
             Self::Deduplicate => "editor.action.removeDuplicateLines",
             Self::Duplicate => "editor.action.duplicateSelection",
             Self::Join => "editor.action.joinLines",

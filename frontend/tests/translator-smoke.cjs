@@ -364,6 +364,58 @@ async function main() {
         await page.keyboard.press("Control+z");
         await page.keyboard.type("X");
         assert.equal(await text(), "X\nseparator\nX\nend", "Undo restores both joined multiline selections");
+
+        for (const [label, original, start, end, expected, cursor] of [
+          ["Delete All Left", "ab😺cd\n  next", 5, 5, "d\n  next", 0],
+          ["Delete All Right", "ab😺cd\n  next", 2, 2, "ab\n  next", 2],
+          ["Delete All Left", "prefix ab\n  😺tail\nlast", 8, 16, "il\nlast", 0],
+          ["Delete All Right", "prefix ab\n  😺tail\nlast", 8, 16, "prefix ail\nlast", 8],
+          ["Delete All Left", "alpha\n  beta", 6, 6, "alpha  beta", 5],
+          ["Delete All Right", "alpha\n  beta", 5, 5, "alpha  beta", 5],
+        ]) {
+          await setText(original, start, end);
+          await run(label);
+          assert.equal(await text(), expected);
+          assert.deepEqual(await primary(), [cursor, cursor]);
+          await page.keyboard.press("Control+z");
+          assert.equal(await text(), original);
+          assert.deepEqual(await primary(), [start, end]);
+          await page.keyboard.press("Control+Shift+z");
+          assert.equal(await text(), expected);
+        }
+        for (const [label, expected, cursor] of [
+          ["Delete All Left", " zz\n yy\nend", 0],
+          ["Delete All Right", "aa  zz\nbb  yy\nend", 3],
+        ]) {
+          const original = "aa cat zz\nbb cat yy\nend";
+          await setText(original, 3, 6);
+          await page.keyboard.press("Control+Shift+l");
+          await waitFor(async () => await count() === 2);
+          await run(label);
+          assert.equal(await text(), expected);
+          assert.deepEqual(await primary(), [cursor, cursor]);
+          await page.keyboard.type("!");
+          assert.equal(await text(), expected.replace(" zz", "! zz").replace(" yy", "! yy"));
+          await page.keyboard.press("Control+z");
+          await page.keyboard.press("Control+z");
+          assert.equal(await text(), original);
+          await page.keyboard.type("X");
+          assert.equal(await text(), "aa X zz\nbb X yy\nend", "Undo restores both boundary-deletion selections");
+        }
+        for (const [label, expected] of [["Delete All Left", "\nend"], ["Delete All Right", "catend"]]) {
+          const original = "cat / cat\nend";
+          await setText(original, 0, 3);
+          await page.keyboard.press("Control+Shift+l");
+          await waitFor(async () => await count() === 2);
+          await page.keyboard.press("ArrowRight");
+          await run(label);
+          assert.equal(await text(), expected, "overlapping and touching boundary deletions merge");
+          assert.equal(await count(), 1);
+          await page.keyboard.press("Control+z");
+          assert.equal(await text(), original);
+          await page.keyboard.type("!");
+          assert.equal(await text(), "cat! / cat!\nend", "Undo restores both merged cursors");
+        }
         assert.deepEqual(errors, []);
         console.log("synthetic Translator command palette, case and line transforms passed");
         return;

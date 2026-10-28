@@ -1718,6 +1718,12 @@ impl Cursors {
         command: super::commands::Command,
         json: bool,
     ) -> Option<NativeUndo> {
+        if matches!(
+            command,
+            super::commands::Command::DeleteLeft | super::commands::Command::DeleteRight
+        ) {
+            return self.delete_to_boundary(input, command == super::commands::Command::DeleteLeft);
+        }
         if command == super::commands::Command::Duplicate {
             return self.duplicate_selection(input);
         }
@@ -1781,6 +1787,117 @@ impl Cursors {
         let mut operation = self.replace(input, replacements, false)?;
         normalize(&mut ranges);
         self.ranges = ranges;
+        let primary = self.ranges[0].clone();
+        let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
+        operation.after_selection = Some(primary);
+        Some(operation)
+    }
+
+    fn delete_to_boundary(
+        &mut self,
+        input: &web_sys::HtmlTextAreaElement,
+        left: bool,
+    ) -> Option<NativeUndo> {
+        let primary = selection(input);
+        if self.ranges.first() != Some(&primary) {
+            return None;
+        }
+        let units: Vec<_> = input.value().encode_utf16().collect();
+        let mut starts = vec![0];
+        starts.extend(
+            units
+                .iter()
+                .enumerate()
+                .filter_map(|(index, unit)| (*unit == 10).then_some(index + 1)),
+        );
+        let line_at = |offset: u32| starts.partition_point(|start| *start <= offset as usize) - 1;
+        let replacements: Vec<_> = self
+            .ranges
+            .iter()
+            .map(|(start, end, _)| {
+                let (mut start, mut end) = (*start, *end);
+                let line = line_at(start);
+                if left {
+                    start = if start == end && start as usize == starts[line] {
+                        start.saturating_sub(1)
+                    } else {
+                        starts[line] as u32
+                    };
+                } else if start == end {
+                    let line_end = starts.get(line + 1).map_or(units.len(), |next| next - 1) as u32;
+                    end = if end == line_end {
+                        (end + 1).min(units.len() as u32)
+                    } else {
+                        line_end
+                    };
+                }
+                (start, end, String::new())
+            })
+            .collect();
+        let mut ordered: Vec<_> = replacements
+            .iter()
+            .map(|(start, end, _)| (*start, *end))
+            .collect();
+        ordered.sort_unstable();
+        let mut effective: Vec<(u32, u32)> = Vec::new();
+        for (start, end) in ordered {
+            if let Some(previous) = effective.last_mut()
+                && start <= previous.1
+            {
+                previous.1 = previous.1.max(end);
+            } else {
+                effective.push((start, end));
+            }
+        }
+        // The source supplies explicit model coordinates after merging ranges,
+        // rather than tracking every original cursor through the deletions.
+        let mut destinations = Vec::new();
+        let mut primary_destination = None;
+        let mut deleted_lines = 0;
+        for (start, end) in effective {
+            let (line, end_line) = (line_at(start), line_at(end));
+            let destination_line = if left && end as usize == starts[end_line] && deleted_lines > 0
+            {
+                line.saturating_sub(deleted_lines)
+            } else {
+                line
+            };
+            let destination = (destination_line, start as usize - starts[line]);
+            deleted_lines += end_line - line;
+            if start <= primary.1 && end >= primary.0 {
+                primary_destination = Some(destination);
+            } else {
+                destinations.push(destination);
+            }
+        }
+        if let Some(primary) = primary_destination {
+            destinations.insert(0, primary);
+        }
+        let mut operation = self.replace(input, replacements, false)?;
+        let after: Vec<_> = input.value().encode_utf16().collect();
+        let mut after_starts = vec![0];
+        after_starts.extend(
+            after
+                .iter()
+                .enumerate()
+                .filter_map(|(index, unit)| (*unit == 10).then_some(index + 1)),
+        );
+        self.ranges = destinations
+            .into_iter()
+            .map(|(line, column)| {
+                let offset = if let Some(start) = after_starts.get(line) {
+                    let end = after_starts
+                        .get(line + 1)
+                        .map_or(after.len(), |next| next - 1);
+                    (start + column).min(end)
+                } else {
+                    after.len()
+                } as u32;
+                (offset, offset, "forward".into())
+            })
+            .collect();
+        normalize(&mut self.ranges);
+        self.validate_pairs(&after);
         let primary = self.ranges[0].clone();
         let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
         operation.after_selection = Some(primary);
