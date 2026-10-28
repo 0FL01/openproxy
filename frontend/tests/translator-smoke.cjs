@@ -86,8 +86,8 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
-    if (process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1") {
-      const index = process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" ? 0 : 1;
+    if (process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1") {
+      const index = process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" ? 0 : 1;
       if (index === 1) await page.getByRole("button", { name: /Provider Response/ }).click();
       if (reference) await page.locator(".monaco-editor .view-lines").nth(index).waitFor();
       const input = () => editor().nth(index);
@@ -114,6 +114,65 @@ async function main() {
         else await input().evaluate((input, [start, end]) => { input.setSelectionRange(start, end); input.dispatchEvent(new Event("select", { bubbles: true })); }, [start, end]);
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       };
+      if (process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1") {
+        const initial = '{"😺": null,"other": null}';
+        const start = initial.indexOf("null");
+        const empty = initial.replaceAll("null", "");
+        const emptyValues = async () => {
+          await setText(initial, start, start + 4);
+          await page.keyboard.press("Control+Shift+l");
+          await waitFor(async () => await count() === 2);
+          await page.keyboard.press("Backspace");
+          await waitFor(async () => await text() === empty);
+        };
+        await emptyValues();
+        await page.keyboard.type("{");
+        assert.equal(await text(), initial.replaceAll("null", "{}"));
+        assert.deepEqual(await primary(), [start + 1, start + 1]);
+        await page.keyboard.type("x");
+        await page.keyboard.type("}");
+        const filled = initial.replaceAll("null", "{x}");
+        assert.equal(await text(), filled, "generated closing braces are overtyped at every cursor");
+        assert.deepEqual(await primary(), [start + 3, start + 3]);
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), empty, "pair insertion, typing and overtyping undo together");
+        assert.deepEqual(await primary(), [start, start]);
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.press("Control+Shift+z");
+        assert.equal(await text(), filled);
+        assert.deepEqual(await primary(), [start + 3, start + 3]);
+        await emptyValues();
+        await page.keyboard.type("[");
+        const arrays = initial.replaceAll("null", "[]");
+        assert.equal(await text(), arrays);
+        await page.keyboard.press("Backspace");
+        assert.equal(await text(), empty, "Backspace deletes both sides of every generated empty pair");
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), arrays);
+        assert.deepEqual(await primary(), [start + 1, start + 1]);
+        await emptyValues();
+        await page.keyboard.type('"');
+        assert.equal(await text(), initial.replaceAll("null", '""'));
+        await page.keyboard.type('"');
+        assert.equal(await text(), initial.replaceAll("null", '""'), "generated quotes are overtyped");
+        const strings = '{"😺":"null","other":null}';
+        await setText(strings, strings.indexOf("null"), strings.indexOf("null") + 4);
+        await page.keyboard.press("Control+Shift+l");
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.press("Backspace");
+        await page.keyboard.type("[");
+        assert.equal(await text(), strings.replaceAll("null", "["), "a JSON string cursor disables auto-closing for the entire insertion");
+        const existing = '{"😺":{"":0},"other":{"":0}}';
+        await setText(existing, existing.indexOf('"":0'), existing.indexOf('"":0') + 4);
+        await page.keyboard.press("Control+Shift+l");
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.press("Backspace");
+        await page.keyboard.press("Backspace");
+        assert.equal(await text(), existing.replaceAll('{"":0}', '}'), "untracked pairs do not delete their closing brace");
+        assert.deepEqual(errors, []);
+        console.log("synthetic translator multicursor JSON auto-pairs smoke passed");
+        return;
+      }
       if (process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1") {
         const initial = '{\n  "😺": null,\n  "other": null\n}';
         const start = initial.indexOf("null");

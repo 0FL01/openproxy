@@ -2597,6 +2597,11 @@ fn Editor(
         move |(operation, ranges): (NativeUndo, Vec<multicursor::Selection>)| {
             let after = operation.after.clone();
             let next = cursors.peek().clone();
+            if next.starts_typing {
+                command_selections.write().stop_typing();
+            }
+            auto_pairs.set(next.auto_pairs());
+            pair_text.set(after.clone());
             command_selections.write().record_multi(
                 operation,
                 ranges.into_iter().skip(1).collect(),
@@ -2642,6 +2647,10 @@ fn Editor(
         adjusting_history.set(true);
         let operation = if json && matches!(kind.as_str(), "insertLineBreak" | "insertParagraph") {
             cursors.write().enter_json(&input)
+        } else if json {
+            cursors
+                .write()
+                .apply_json(&input, &kind, &event.data().unwrap_or_default())
         } else {
             cursors
                 .write()

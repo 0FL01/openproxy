@@ -1,9 +1,11 @@
 //! Occurrence selections layered over the existing native text input/history.
 //! Rules follow Monaco 0.55.1 (Copyright Microsoft Corporation, MIT).
 //! Permission/warranty notice: public/assets/translator-codicon-LICENSE.txt.
-use super::{find_ranges, insert_text, json_bracket_newline, line_indentation, NativeUndo};
+use super::{
+    find_ranges, in_json_string, insert_text, json_bracket_newline, line_indentation, NativeUndo,
+};
 use dioxus::prelude::Callback;
-use std::rc::Rc;
+use std::{collections::HashSet, rc::Rc};
 use wasm_bindgen::{closure::Closure, JsCast};
 
 pub(super) type Selection = (u32, u32, String);
@@ -52,10 +54,43 @@ fn normalize(ranges: &mut Vec<Selection>) {
 pub(super) struct Cursors {
     pub ranges: Vec<Selection>,
     pub typing: bool,
+    pub starts_typing: bool,
     query: Option<(String, bool, bool)>,
+    auto_closed: Vec<Vec<ClosedPair>>,
+}
+
+#[derive(Clone)]
+struct ClosedPair {
+    open: u32,
+    close: u32,
+    character: char,
 }
 
 impl Cursors {
+    pub fn auto_pairs(&self) -> Vec<(char, u32)> {
+        self.auto_closed
+            .iter()
+            .flatten()
+            .map(|pair| (pair.character, pair.close))
+            .collect()
+    }
+
+    fn validate_pairs(&mut self, units: &[u16]) {
+        let mut ranges = self.ranges.clone();
+        ranges.sort_by_key(|range| (range.0, range.1));
+        self.auto_closed.retain(|group| {
+            ranges.len() <= group.len()
+                && group.iter().all(|pair| {
+                    pair.open < pair.close
+                        && !units[pair.open as usize..=pair.close as usize].contains(&10)
+                })
+                && ranges
+                    .iter()
+                    .zip(group)
+                    .all(|(range, pair)| pair.open < range.0 && range.1 <= pair.close)
+        });
+    }
+
     pub fn restore(&mut self, mut ranges: Vec<Selection>) {
         normalize(&mut ranges);
         *self = Self {
@@ -217,6 +252,126 @@ impl Cursors {
         Some(operation)
     }
 
+    pub fn apply_json(
+        &mut self,
+        input: &web_sys::HtmlTextAreaElement,
+        kind: &str,
+        data: &str,
+    ) -> Option<NativeUndo> {
+        let text = input.value();
+        let units: Vec<_> = text.encode_utf16().collect();
+        let collapsed = self.ranges.iter().all(|range| range.0 == range.1);
+        if collapsed && (kind == "insertText" || kind == "deleteContentBackward") {
+            self.validate_pairs(&units);
+            let closing = data.chars().next().filter(|_| data.len() == 1);
+            let marked_positions: HashSet<_> = self
+                .auto_closed
+                .iter()
+                .flatten()
+                .map(|pair| (pair.close, pair.character))
+                .collect();
+            let marked = self.ranges.iter().all(|range| {
+                let character = if kind == "deleteContentBackward" {
+                    units
+                        .get(range.0 as usize)
+                        .and_then(|ch| char::from_u32(*ch as u32))
+                } else {
+                    closing
+                };
+                character.is_some_and(|ch| marked_positions.contains(&(range.0, ch)))
+            });
+            let overtype = kind == "insertText"
+                && (closing != Some('"')
+                    || self
+                        .ranges
+                        .iter()
+                        .all(|range| range.0 == 0 || units[range.0 as usize - 1] != b'\\' as u16));
+            let delete_pair = kind == "deleteContentBackward"
+                && self.ranges.iter().all(|range| {
+                    range.0 > 0
+                        && units
+                            .get(range.0 as usize - 1..=range.0 as usize)
+                            .is_some_and(|pair| matches!(pair, [123, 125] | [91, 93] | [34, 34]))
+                });
+            if marked && (overtype || delete_pair) {
+                let deleting = kind == "deleteContentBackward";
+                let replacements = self
+                    .ranges
+                    .iter()
+                    .map(|range| {
+                        (
+                            range.0 - u32::from(deleting),
+                            range.1 + 1,
+                            if deleting {
+                                String::new()
+                            } else {
+                                data.to_owned()
+                            },
+                        )
+                    })
+                    .collect();
+                let operation = self.replace(input, replacements, false)?;
+                self.typing = !deleting;
+                return Some(operation);
+            }
+            if kind == "insertText"
+                && let Some(close) = match data {
+                    "{" => Some('}'),
+                    "[" => Some(']'),
+                    "\"" => Some('"'),
+                    _ => None,
+                }
+            {
+                let string = js_sys::JsString::from(text.as_str());
+                let allowed = self.ranges.iter().all(|range| {
+                    let before = string.slice(0, range.0).as_string().unwrap_or_default();
+                    let after = units.get(range.0 as usize).copied();
+                    !in_json_string(&before)
+                        && after.is_none_or(|ch| {
+                            ";:.,=}])> \n\t\r"
+                                .encode_utf16()
+                                .any(|allowed| allowed == ch)
+                        })
+                        && (close != '"'
+                            || before.chars().last().is_none_or(|ch| {
+                                "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/? \t\r\n".contains(ch)
+                            }))
+                });
+                if allowed {
+                    let replacements = self
+                        .ranges
+                        .iter()
+                        .map(|range| (range.0, range.1, format!("{data}{close}")))
+                        .collect();
+                    let mut operation = self.replace(input, replacements, false)?;
+                    for range in &mut self.ranges {
+                        range.0 -= 1;
+                        range.1 = range.0;
+                    }
+                    let mut group: Vec<_> = self
+                        .ranges
+                        .iter()
+                        .map(|range| ClosedPair {
+                            open: range.0 - 1,
+                            close: range.0,
+                            character: close,
+                        })
+                        .collect();
+                    group.sort_by_key(|pair| pair.open);
+                    self.auto_closed.push(group);
+                    let primary = self.ranges[0].clone();
+                    let _ =
+                        input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
+                    operation.after_selection = Some(primary);
+                    self.typing = true;
+                    self.starts_typing = true;
+                    return Some(operation);
+                }
+            }
+        }
+        self.apply(input, kind, data)
+    }
+
     pub fn enter_json(&mut self, input: &web_sys::HtmlTextAreaElement) -> Option<NativeUndo> {
         let text = js_sys::JsString::from(input.value());
         let mut replacements = Vec::with_capacity(self.ranges.len());
@@ -312,6 +467,7 @@ impl Cursors {
         let mut last = 0;
         let mut last_deleted = false;
         let mut deletion_position = 0;
+        let mut positions: Vec<(u32, u32, u32)> = Vec::with_capacity(edits.len());
         let mut ranges = self.ranges.clone();
         for (index, (start, end, text)) in edits {
             let (start, end) = (start as usize, end as usize);
@@ -325,6 +481,9 @@ impl Cursors {
                 // Whole-line cuts from cursors on the same/adjacent lines can
                 // overlap. Remove the union once and merge the resulting carets.
                 last = last.max(end);
+                if let Some(previous) = positions.last_mut() {
+                    previous.1 = last as u32;
+                }
                 ranges[index] = (deletion_position, deletion_position, "forward".into());
                 continue;
             }
@@ -335,6 +494,7 @@ impl Cursors {
             last = end;
             last_deleted = text.is_empty();
             deletion_position = position;
+            positions.push((start as u32, end as u32, position));
         }
         output.extend_from_slice(&units[last..]);
         let after = String::from_utf16(&output).ok()?;
@@ -352,6 +512,29 @@ impl Cursors {
         self.ranges = ranges;
         self.query = None;
         self.typing = false;
+        self.starts_typing = false;
+        let map = |position: u32| {
+            let index = positions.partition_point(|(start, _, _)| *start <= position);
+            if index == 0 {
+                Some(position)
+            } else {
+                let (_, end, after) = positions[index - 1];
+                (position >= end).then(|| after + position - end)
+            }
+        };
+        // Keep marker coordinates through the actual simultaneous edits, not
+        // one prefix/suffix diff which would discard unchanged interior pairs.
+        for group in &mut self.auto_closed {
+            group.retain_mut(|pair| {
+                let (Some(open), Some(close)) = (map(pair.open), map(pair.close)) else {
+                    return false;
+                };
+                pair.open = open;
+                pair.close = close;
+                true
+            });
+        }
+        self.validate_pairs(&output);
         Some(NativeUndo {
             before,
             after: input.value(),
