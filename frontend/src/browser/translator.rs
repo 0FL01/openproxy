@@ -2,6 +2,7 @@
 mod clipboard;
 mod cursor_undo;
 mod format;
+mod grapheme;
 mod multicursor;
 
 use super::{endpoint::copy_text, json_body, shell::dashboard_request, ui::Button};
@@ -3200,6 +3201,17 @@ fn Editor(
                             }
                             let modifiers = event.modifiers();
                             let control = modifiers.ctrl() || modifiers.meta();
+                            if !control && !modifiers.alt() && matches!(event.key(), Key::ArrowLeft | Key::ArrowRight) && cursors.peek().ranges.len() > 1 {
+                                event.prevent_default();
+                                if let Some(input) = textarea.peek().as_ref() {
+                                    if cursors.write().horizontal(input, event.key() == Key::ArrowLeft, modifiers.shift()) {
+                                        command_selections.write().stop_typing();
+                                        composition_extendable.set(false);
+                                    }
+                                    update_cursor.call(());
+                                }
+                                return;
+                            }
                             if modifiers.shift() && modifiers.alt() && !control && key.eq_ignore_ascii_case("i") {
                                 event.prevent_default();
                                 if let Some(input) = textarea.peek().as_ref() {

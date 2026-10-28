@@ -86,7 +86,7 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
-    if (process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1") {
+    if (process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1" || process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1") {
       const index = process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" ? 0 : 1;
       if (index === 1) await page.getByRole("button", { name: /Provider Response/ }).click();
       if (reference) await page.locator(".monaco-editor .view-lines").nth(index).waitFor();
@@ -114,6 +114,45 @@ async function main() {
         else await input().evaluate((input, [start, end]) => { input.setSelectionRange(start, end); input.dispatchEvent(new Event("select", { bubbles: true })); }, [start, end]);
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       };
+      if (process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1") {
+        const prefix = "a😺e\u0301👩‍💻z";
+        const initial = `${prefix} cat\n${prefix} cat`;
+        const start = initial.indexOf("cat");
+        const selectWords = async () => {
+          await setText(initial, start, start + 3);
+          await page.keyboard.press("Control+Shift+l");
+          await waitFor(async () => await count() === 2);
+        };
+        await selectWords();
+        await page.keyboard.press("ArrowLeft");
+        assert.deepEqual(await primary(), [start, start], "Left collapses every selected range to its start");
+        await waitFor(async () => await count() === 2);
+        for (const offset of [11, 10, 5, 3, 1]) {
+          await page.keyboard.press("Shift+ArrowLeft");
+          assert.deepEqual(await primary(), [offset, start], "Shift+Left retains its anchor and moves one reference grapheme");
+        }
+        await page.keyboard.press("Shift+ArrowRight");
+        assert.deepEqual(await primary(), [3, start]);
+        await page.keyboard.type("X");
+        const replaced = `${prefix.slice(0, 3)}Xcat\n${prefix.slice(0, 3)}Xcat`;
+        assert.equal(await text(), replaced, "typing replaces the extended selection at every cursor");
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), initial);
+        assert.deepEqual(await primary(), [3, start]);
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.press("Control+Shift+z");
+        assert.equal(await text(), replaced);
+        await selectWords();
+        await page.keyboard.press("ArrowRight");
+        assert.deepEqual(await primary(), [start + 3, start + 3], "Right collapses every selected range to its end");
+        await page.keyboard.press("ArrowRight");
+        assert.deepEqual(await primary(), [start + 4, start + 4], "Right crosses LF without moving a cursor beyond document end");
+        await page.keyboard.type("!");
+        assert.equal(await text(), `${prefix} cat\n!${prefix} cat!`);
+        assert.deepEqual(errors, []);
+        console.log("synthetic translator multicursor horizontal navigation smoke passed");
+        return;
+      }
       if (process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1") {
         const initial = "alpha\n\nbeta😺\nomega";
         await setText(initial, 2, 9);

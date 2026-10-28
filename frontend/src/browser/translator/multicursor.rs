@@ -2,7 +2,8 @@
 //! Rules follow Monaco 0.55.1 (Copyright Microsoft Corporation, MIT).
 //! Permission/warranty notice: public/assets/translator-codicon-LICENSE.txt.
 use super::{
-    find_ranges, in_json_string, insert_text, json_bracket_newline, line_indentation, NativeUndo,
+    find_ranges, grapheme, in_json_string, insert_text, json_bracket_newline, line_indentation,
+    NativeUndo,
 };
 use dioxus::prelude::Callback;
 use std::{collections::HashSet, rc::Rc};
@@ -143,6 +144,58 @@ impl Cursors {
         } else {
             false
         }
+    }
+
+    pub fn horizontal(
+        &mut self,
+        input: &web_sys::HtmlTextAreaElement,
+        left: bool,
+        extend: bool,
+    ) -> bool {
+        let units: Vec<_> = input.value().encode_utf16().collect();
+        let mut ranges: Vec<_> = self
+            .ranges
+            .iter()
+            .map(|(start, end, direction)| {
+                let (anchor, active) = if direction == "backward" {
+                    (*end, *start)
+                } else {
+                    (*start, *end)
+                };
+                let next = if !extend && start != end {
+                    if left {
+                        *start
+                    } else {
+                        *end
+                    }
+                } else if left {
+                    grapheme::previous(&units, active as usize) as u32
+                } else {
+                    grapheme::next(&units, active as usize) as u32
+                };
+                if extend {
+                    (
+                        anchor.min(next),
+                        anchor.max(next),
+                        if next < anchor { "backward" } else { "forward" }.into(),
+                    )
+                } else {
+                    (next, next, "forward".into())
+                }
+            })
+            .collect();
+        normalize(&mut ranges);
+        if ranges == self.ranges {
+            return false;
+        }
+        self.ranges = ranges;
+        self.query = None;
+        self.typing = false;
+        self.starts_typing = false;
+        self.validate_pairs(&units);
+        let primary = &self.ranges[0];
+        let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
+        true
     }
 
     pub fn choose(
