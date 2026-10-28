@@ -8,6 +8,7 @@ use wasm_bindgen::{closure::Closure, JsCast};
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Command {
     Deduplicate,
+    Duplicate,
     Reverse,
     SortAscending,
     SortDescending,
@@ -21,8 +22,9 @@ pub(super) enum Command {
 }
 
 impl Command {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 12] = [
         Self::Deduplicate,
+        Self::Duplicate,
         Self::Reverse,
         Self::SortAscending,
         Self::SortDescending,
@@ -38,6 +40,7 @@ impl Command {
     fn label(self) -> &'static str {
         match self {
             Self::Deduplicate => "Delete Duplicate Lines",
+            Self::Duplicate => "Duplicate Selection",
             Self::Reverse => "Reverse lines",
             Self::SortAscending => "Sort Lines Ascending",
             Self::SortDescending => "Sort Lines Descending",
@@ -54,6 +57,7 @@ impl Command {
     fn id(self) -> &'static str {
         match self {
             Self::Deduplicate => "editor.action.removeDuplicateLines",
+            Self::Duplicate => "editor.action.duplicateSelection",
             Self::Reverse => "editor.action.reverseLines",
             Self::SortAscending => "editor.action.sortLinesAscending",
             Self::SortDescending => "editor.action.sortLinesDescending",

@@ -263,6 +263,53 @@ async function main() {
         assert.equal(await text(), "cat\ncat", "sort is a no-op when the selections do not span sortable lines");
         await page.keyboard.type("X");
         assert.equal(await text(), "X\nX");
+
+        for (const [original, start, end] of [["a😺b\nsecond", 1, 4], ["alpha\nβeta\nend", 2, 8]]) {
+          const expected = original.slice(0, end) + original.slice(start, end) + original.slice(end);
+          await setText(original, start, end);
+          await run("Duplicate Selection");
+          assert.equal(await text(), expected);
+          assert.deepEqual(await primary(), [end, end + end - start], "the inserted copy becomes the selection");
+          await page.keyboard.press("Control+z");
+          assert.equal(await text(), original);
+          assert.deepEqual(await primary(), [start, end]);
+          await page.keyboard.press("Control+Shift+z");
+          assert.equal(await text(), expected);
+        }
+        for (const [original, cursor, expected, after] of [
+          ["alpha\n😺 beta\nend", 10, "alpha\n😺 beta\n😺 beta\nend", 18],
+          ["alpha\n\nend", 6, "alpha\n\n\nend", 7],
+        ]) {
+          await setText(original, cursor);
+          await run("Duplicate Selection");
+          assert.equal(await text(), expected, "an empty selection duplicates its logical line");
+          assert.deepEqual(await primary(), [after, after]);
+          await page.keyboard.press("Control+z");
+          assert.equal(await text(), original);
+          assert.deepEqual(await primary(), [cursor, cursor]);
+        }
+        await setText("cat / cat", 0, 3);
+        await page.keyboard.press("Control+Shift+l");
+        await waitFor(async () => await count() === 2);
+        await run("Duplicate Selection");
+        assert.equal(await text(), "catcat / catcat");
+        assert.deepEqual(await primary(), [3, 6]);
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), "cat / cat");
+        await page.keyboard.type("X");
+        assert.equal(await text(), "X / X", "Undo restores both duplicated selections");
+
+        await setText("cat / cat", 0, 3);
+        await page.keyboard.press("Control+Shift+l");
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.press("ArrowRight");
+        await run("Duplicate Selection");
+        assert.equal(await text(), "cat / cat\ncat / cat\ncat / cat", "two line-copy insertions at the same position both apply");
+        assert.deepEqual(await primary(), [23, 23]);
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), "cat / cat");
+        await page.keyboard.type("!");
+        assert.equal(await text(), "cat! / cat!", "Undo restores both original line cursors");
         assert.deepEqual(errors, []);
         console.log("synthetic Translator command palette, case and line transforms passed");
         return;

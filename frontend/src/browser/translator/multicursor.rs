@@ -1718,6 +1718,9 @@ impl Cursors {
         command: super::commands::Command,
         json: bool,
     ) -> Option<NativeUndo> {
+        if command == super::commands::Command::Duplicate {
+            return self.duplicate_selection(input);
+        }
         if command.is_line_action() {
             return self.transform_lines(input, command);
         }
@@ -1771,6 +1774,67 @@ impl Cursors {
             }
             delta += i64::from(length) - i64::from(end - start);
             previous_end = *end;
+        }
+        let mut operation = self.replace(input, replacements, false)?;
+        normalize(&mut ranges);
+        self.ranges = ranges;
+        let primary = self.ranges[0].clone();
+        let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
+        operation.after_selection = Some(primary);
+        Some(operation)
+    }
+
+    fn duplicate_selection(&mut self, input: &web_sys::HtmlTextAreaElement) -> Option<NativeUndo> {
+        if self.ranges.first() != Some(&selection(input)) {
+            return None;
+        }
+        let before = input.value();
+        let text = js_sys::JsString::from(before.as_str());
+        let mut starts = vec![0_u32];
+        starts.extend(
+            before
+                .encode_utf16()
+                .enumerate()
+                .filter_map(|(index, unit)| (unit == u16::from(b'\n')).then_some(index as u32 + 1)),
+        );
+        let original = self.ranges.clone();
+        let replacements: Vec<_> = original
+            .iter()
+            .map(|(start, end, _)| {
+                Some(if start == end {
+                    // CopyLinesCommand inserts before the current logical line;
+                    // the original cursor follows that line, including when empty.
+                    let line = starts.partition_point(|offset| offset <= start) - 1;
+                    let line_end = starts.get(line + 1).map_or(text.length(), |end| end - 1);
+                    (
+                        starts[line],
+                        starts[line],
+                        format!("{}\n", text.slice(starts[line], line_end).as_string()?),
+                    )
+                } else {
+                    (*end, *end, text.slice(*start, *end).as_string()?)
+                })
+            })
+            .collect::<Option<_>>()?;
+        let mut order: Vec<_> = (0..replacements.len()).collect();
+        order.sort_by_key(|index| replacements[*index].0);
+        let mut inserted = vec![0_u32];
+        let mut ranges = original.clone();
+        for &index in &order {
+            let (at, _, replacement) = &replacements[index];
+            let length = replacement.encode_utf16().count() as u32;
+            let start = at + inserted.last()?;
+            ranges[index] = (start, start + length, "forward".into());
+            inserted.push(inserted.last()? + length);
+        }
+        for (index, range) in original.iter().enumerate() {
+            if range.0 == range.1 {
+                // Several line-copy commands may insert at the same position.
+                // All of those inserts move each tracked original cursor.
+                let count = order.partition_point(|index| replacements[*index].0 <= range.0);
+                let cursor = range.0 + inserted[count];
+                ranges[index] = (cursor, cursor, "forward".into());
+            }
         }
         let mut operation = self.replace(input, replacements, false)?;
         normalize(&mut ranges);
