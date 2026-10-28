@@ -1721,6 +1721,9 @@ impl Cursors {
         if command == super::commands::Command::Duplicate {
             return self.duplicate_selection(input);
         }
+        if command == super::commands::Command::Join {
+            return self.join_lines(input);
+        }
         if command.is_line_action() {
             return self.transform_lines(input, command);
         }
@@ -1843,6 +1846,169 @@ impl Cursors {
         let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
         operation.after_selection = Some(primary);
         Some(operation)
+    }
+
+    fn join_lines(&mut self, input: &web_sys::HtmlTextAreaElement) -> Option<NativeUndo> {
+        let original = selection(input);
+        if self.ranges.first() != Some(&original) {
+            return None;
+        }
+        let before = input.value();
+        let units: Vec<_> = before.encode_utf16().collect();
+        let lines: Vec<_> = before.split('\n').collect();
+        let lengths: Vec<_> = lines
+            .iter()
+            .map(|line| line.encode_utf16().count() as u32)
+            .collect();
+        let mut starts = vec![0_u32];
+        for length in &lengths[..lengths.len() - 1] {
+            starts.push(starts.last()? + length + 1);
+        }
+        let line_at = |offset| starts.partition_point(|start| *start <= offset) - 1;
+        let mut ordered = self.ranges.clone();
+        ordered.sort_by_key(|range| (range.0, range.1));
+        let mut primary = original.clone();
+        let mut reduced = Vec::new();
+        let mut previous = ordered[0].clone();
+        for current in ordered.into_iter().skip(1) {
+            let end_line = line_at(previous.1);
+            let start_line = line_at(current.0);
+            if previous.0 == previous.1 && end_line == start_line {
+                if previous == primary {
+                    primary = current.clone();
+                }
+                previous = current;
+            } else if start_line > end_line + usize::from(previous.0 == previous.1) {
+                reduced.push(previous);
+                previous = current;
+            } else {
+                previous = (previous.0, current.1, "forward".into());
+            }
+        }
+        reduced.push(previous);
+
+        let trailing = js_sys::RegExp::new(r"[\s\uFEFF\xA0]+$", "g");
+        let mut output = Vec::new();
+        let mut last = 0_usize;
+        let mut positions = Vec::new();
+        let mut ranges = Vec::new();
+        let mut primary_result = None;
+        for range in reduced {
+            let first = line_at(range.0);
+            let selected_last = line_at(range.1);
+            let final_line = if first == selected_last {
+                (first + 1).min(lines.len() - 1)
+            } else {
+                selected_last
+            };
+            let (start, end) = (starts[first], starts[final_line] + lengths[final_line]);
+            if start == end {
+                continue;
+            }
+            if start < last as u32 {
+                return None;
+            }
+            let mut joined = lines[first].to_owned();
+            let mut column_delta = 0_u32;
+            for line in &lines[first + 1..=final_line] {
+                let indent = line
+                    .bytes()
+                    .take_while(|ch| matches!(ch, b' ' | b'\t'))
+                    .count();
+                if indent == line.len() {
+                    column_delta = 0;
+                    continue;
+                }
+                let insert_space = !joined.is_empty() && !joined.ends_with([' ', '\t']);
+                if !joined.is_empty() && !insert_space {
+                    joined = js_sys::JsString::from(joined.as_str())
+                        .replace_by_pattern(&trailing, " ")
+                        .as_string()?;
+                }
+                if insert_space {
+                    joined.push(' ');
+                }
+                joined.push_str(&line[indent..]);
+                column_delta =
+                    line[indent..].encode_utf16().count() as u32 + u32::from(insert_space);
+            }
+            output.extend_from_slice(&units[last..start as usize]);
+            let base = output.len() as u32;
+            output.extend(joined.encode_utf16());
+            let length = output.len() as u32 - base;
+            let (a, b) = if range.0 == range.1 {
+                let cursor = length - column_delta;
+                (cursor, cursor)
+            } else if first == selected_last {
+                (range.0 - starts[first], range.1 - starts[first])
+            } else {
+                (
+                    range.0 - starts[first],
+                    length
+                        .saturating_sub(lengths[selected_last] - (range.1 - starts[selected_last])),
+                )
+            };
+            let (a, b) = (a.min(length), b.min(length));
+            let result = (
+                base + a.min(b),
+                base + a.max(b),
+                if a > b { "backward" } else { "forward" }.into(),
+            );
+            if start <= primary.1 && primary.0 <= end {
+                primary_result = Some(result);
+            } else {
+                ranges.push(result);
+            }
+            last = end as usize;
+            positions.push((start, end, output.len() as u32));
+        }
+        if positions.is_empty() {
+            return None;
+        }
+        output.extend_from_slice(&units[last..]);
+        let after = String::from_utf16(&output).ok()?;
+        let primary = primary_result.unwrap_or_else(|| {
+            // An empty final-line primary has no edit, but remains primary.
+            // Monaco clamps its original logical coordinates in the new model.
+            let after_lines: Vec<_> = after.split('\n').collect();
+            let map = |offset| {
+                let line = line_at(offset);
+                let target = line.min(after_lines.len() - 1);
+                let start: usize = after_lines[..target]
+                    .iter()
+                    .map(|line| line.encode_utf16().count() + 1)
+                    .sum();
+                start as u32
+                    + (offset - starts[line]).min(after_lines[target].encode_utf16().count() as u32)
+            };
+            (map(primary.0), map(primary.1), primary.2)
+        });
+        ranges.insert(0, primary);
+        let scroll = input.scroll_top();
+        if !insert_text(input, 0, units.len() as u32, &after) {
+            return None;
+        }
+        normalize(&mut ranges);
+        let primary = ranges[0].clone();
+        let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
+        input.set_scroll_top(scroll);
+        self.ranges = ranges;
+        self.vertical = None;
+        self.added = None;
+        self.line_edge = None;
+        self.query = None;
+        self.typing = false;
+        self.starts_typing = false;
+        self.map_auto_closed(&positions, &output);
+        Some(NativeUndo {
+            before,
+            after: input.value(),
+            start: original.0,
+            end: original.1,
+            direction: original.2,
+            after_selection: Some(primary),
+            edits: Vec::new(),
+        })
     }
 
     fn transform_lines(

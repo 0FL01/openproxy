@@ -310,6 +310,60 @@ async function main() {
         assert.equal(await text(), "cat / cat");
         await page.keyboard.type("!");
         assert.equal(await text(), "cat! / cat!", "Undo restores both original line cursors");
+
+        for (const [original, start, end, expected, selected] of [
+          ["  alpha \t\n \t βeta\n\nnext", 4, 4, "  alpha βeta\n\nnext", [8, 8]],
+          ["  alpha\n\tβeta\n  😺tail\nsuffix", 2, 18, "  alpha βeta 😺tail\nsuffix", [2, 15]],
+          ["abc\n  def\nend", 0, 2, "abc def\nend", [0, 2]],
+          ["\n \t\n 😺beta\nend", 0, 0, "\n 😺beta\nend", [0, 0]],
+        ]) {
+          await setText(original, start, end);
+          await run("Join Lines");
+          assert.equal(await text(), expected, "joining preserves initial indentation and strips subsequent line indentation");
+          assert.deepEqual(await primary(), selected);
+          await page.keyboard.press("Control+z");
+          assert.equal(await text(), original);
+          assert.deepEqual(await primary(), [start, end]);
+          await page.keyboard.press("Control+Shift+z");
+          assert.equal(await text(), expected);
+        }
+        await setText("alpha\nlast", 8);
+        await page.keyboard.type("Q");
+        await run("Join Lines");
+        assert.equal(await text(), "alpha\nlaQst");
+        assert.deepEqual(await primary(), [11, 11], "joining the final line moves to its end");
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), "alpha\nlaQst", "the unchanged replacement still has its own Undo stop");
+        assert.deepEqual(await primary(), [9, 9]);
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), "alpha\nlast");
+
+        for (const [original, expected, selected] of [
+          ["cat / cat\n  next\nend", "cat / cat next\nend", [9, 9]],
+          ["cat\ncat\nnext", "cat cat\nnext", [3, 7]],
+        ]) {
+          await setText(original, 0, 3);
+          await page.keyboard.press("Control+Shift+l");
+          await waitFor(async () => await count() === 2);
+          await page.keyboard.press("ArrowRight");
+          await run("Join Lines");
+          assert.equal(await text(), expected);
+          assert.deepEqual(await primary(), selected, "same-line and adjacent cursors follow the source selection reduction");
+          await page.keyboard.press("Control+z");
+          assert.equal(await text(), original);
+          await page.keyboard.type("!");
+          assert.equal(await text(), original.replaceAll("cat", "cat!"), "Undo restores both reduced cursors");
+        }
+        const block = "first\n  second";
+        await setText(`${block}\nseparator\n${block}\nend`, 0, block.length);
+        await page.keyboard.press("Control+Shift+l");
+        await waitFor(async () => reference ? await count() === 2 : input().evaluate(input => !!input.parentElement.querySelector(".multicursor-selection")));
+        await run("Join Lines");
+        assert.equal(await text(), "first second\nseparator\nfirst second\nend");
+        assert.deepEqual(await primary(), [0, 12]);
+        await page.keyboard.press("Control+z");
+        await page.keyboard.type("X");
+        assert.equal(await text(), "X\nseparator\nX\nend", "Undo restores both joined multiline selections");
         assert.deepEqual(errors, []);
         console.log("synthetic Translator command palette, case and line transforms passed");
         return;
