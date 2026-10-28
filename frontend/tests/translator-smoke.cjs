@@ -173,8 +173,98 @@ async function main() {
         await page.keyboard.type("X");
         assert.equal(await text(), "X / X", "Undo restores both command selections");
 
+        const run = async label => {
+          await open(label);
+          await page.keyboard.press("Enter");
+          await palette().waitFor({ state: "hidden" });
+          await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        };
+        const original = "b\nA\na\n10\n2\n😺\nёж";
+        const sorted = await page.evaluate(value => value.split("\n").sort(new Intl.Collator().compare).join("\n"), original);
+        for (const [label, expected] of [["Sort Lines Ascending", sorted], ["Sort Lines Descending", sorted.split("\n").reverse().join("\n")]]) {
+          await setText(original, 0, original.length);
+          await run(label);
+          assert.equal(await text(), expected, "line sorting uses the browser's default locale collator");
+          assert.deepEqual(await primary(), [0, expected.length]);
+          await page.keyboard.press("Control+z");
+          assert.equal(await text(), original);
+          assert.deepEqual(await primary(), [0, original.length]);
+          await page.keyboard.press("Control+Shift+z");
+          assert.equal(await text(), expected);
+        }
+        await setText(original, 2);
+        await run("Sort Lines Ascending");
+        assert.equal(await text(), sorted, "a single collapsed selection sorts the document");
+        assert.deepEqual(await primary(), [0, sorted.length]);
+        await page.keyboard.press("Control+z");
+        assert.deepEqual(await primary(), [2, 2]);
+
+        await setText("prefix\nb\nA\nsuffix", 7, 11);
+        await run("Sort Lines Ascending");
+        assert.equal(await text(), "prefix\nA\nb\nsuffix", "sorting excludes a following line selected only at column one");
+        assert.deepEqual(await primary(), [7, 11]);
+
+        await setText("alpha\nb\n😺tail\n", 1);
+        await run("Reverse lines");
+        assert.equal(await text(), "😺tail\nb\nalpha\n", "reverse retains the final empty document line");
+        assert.deepEqual(await primary(), [10, 10], "the cursor follows its logical line");
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), "alpha\nb\n😺tail\n");
+        assert.deepEqual(await primary(), [1, 1]);
+        await setText("prefix\nbbb\nAA\nsuffix", 8, 12);
+        await run("Reverse lines");
+        assert.equal(await text(), "prefix\nAA\nbbb\nsuffix");
+        assert.deepEqual(await primary(), [8, 11]);
+        if (reference) assert.equal(await page.evaluate(index => window.monaco.editor.getEditors()[index].getSelection().getDirection(), index), 1);
+        else assert.equal(await input().evaluate(input => input.selectionDirection), "backward");
+        await page.keyboard.press("Control+z");
+        assert.deepEqual(await primary(), [8, 12]);
+
+        await setText("b\na\nb\n😺\n😺\n", 1);
+        await run("Delete Duplicate Lines");
+        assert.equal(await text(), "b\na\n😺\n", "duplicate removal is stable and exact");
+        assert.deepEqual(await primary(), [1, 1]);
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), "b\na\nb\n😺\n😺\n");
+        assert.deepEqual(await primary(), [1, 1]);
+        await setText("keep\nb\na\nb\ntail", 5, 10);
+        await run("Delete Duplicate Lines");
+        assert.equal(await text(), "keep\nb\na\ntail");
+        assert.deepEqual(await primary(), [5, 7]);
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), "keep\nb\na\nb\ntail");
+        assert.deepEqual(await primary(), [5, 10]);
+        await page.keyboard.press("Control+Shift+z");
+        assert.equal(await text(), "keep\nb\na\ntail");
+
+        for (const [label, block, expectedBlock, selected] of [
+          ["Sort Lines Ascending", "b\nA", "A\nb", [0, 3]],
+          ["Reverse lines", "b\nA", "A\nb", [1, 2]],
+          ["Delete Duplicate Lines", "b\nb", "b", [0, 0]],
+        ]) {
+          const repeated = `${block}\nseparator\n${block}`;
+          await setText(repeated, 0, block.length);
+          await page.keyboard.press("Control+Shift+l");
+          // One multiline secondary selection paints more than one rectangle;
+          // the edits below verify that both logical selections are retained.
+          await waitFor(async () => reference ? await count() === 2 : input().evaluate(input => !!input.parentElement.querySelector(".multicursor-selection")));
+          await run(label);
+          assert.equal(await text(), `${expectedBlock}\nseparator\n${expectedBlock}`);
+          assert.deepEqual(await primary(), selected);
+          await page.keyboard.press("Control+z");
+          assert.equal(await text(), repeated);
+          await page.keyboard.type("X");
+          assert.equal(await text(), "X\nseparator\nX", "Undo restores both editable line selections");
+        }
+        await setText("cat\ncat", 0, 3);
+        await page.keyboard.press("Control+Shift+l");
+        await waitFor(async () => await count() === 2);
+        await run("Sort Lines Ascending");
+        assert.equal(await text(), "cat\ncat", "sort is a no-op when the selections do not span sortable lines");
+        await page.keyboard.type("X");
+        assert.equal(await text(), "X\nX");
         assert.deepEqual(errors, []);
-        console.log("synthetic Translator command palette and case transforms passed");
+        console.log("synthetic Translator command palette, case and line transforms passed");
         return;
       }
       if (process.env.TRANSLATOR_MULTI_COMMENT_ONLY === "1") {

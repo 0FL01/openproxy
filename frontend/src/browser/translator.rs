@@ -2712,7 +2712,7 @@ fn Editor(
         let ranges = cursors.peek().ranges.clone();
         if ranges.len() > 1 && ranges.first() == Some(&multicursor::selection(&input)) {
             adjusting_history.set(true);
-            let operation = cursors.write().transform_case(&input, command, json);
+            let operation = cursors.write().run_command(&input, command, json);
             adjusting_history.set(false);
             if let Some(operation) = operation {
                 finish_multi_edit.call((operation, ranges));
@@ -2720,7 +2720,7 @@ fn Editor(
         } else {
             let mut single = multicursor::Cursors::default();
             single.ranges.push(multicursor::selection(&input));
-            if let Some(operation) = single.transform_case(&input, command, json) {
+            if let Some(operation) = single.run_command(&input, command, json) {
                 command_selections.write().record(operation);
                 update_cursor.call(());
             }

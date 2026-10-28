@@ -1712,12 +1712,15 @@ impl Cursors {
         Some(operation)
     }
 
-    pub fn transform_case(
+    pub fn run_command(
         &mut self,
         input: &web_sys::HtmlTextAreaElement,
         command: super::commands::Command,
         json: bool,
     ) -> Option<NativeUndo> {
+        if command.is_line_action() {
+            return self.transform_lines(input, command);
+        }
         let before = input.value();
         if self.ranges.first() != Some(&selection(input)) {
             return None;
@@ -1772,6 +1775,189 @@ impl Cursors {
         let mut operation = self.replace(input, replacements, false)?;
         normalize(&mut ranges);
         self.ranges = ranges;
+        let primary = self.ranges[0].clone();
+        let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
+        operation.after_selection = Some(primary);
+        Some(operation)
+    }
+
+    fn transform_lines(
+        &mut self,
+        input: &web_sys::HtmlTextAreaElement,
+        command: super::commands::Command,
+    ) -> Option<NativeUndo> {
+        use super::commands::Command;
+        let before = input.value();
+        if self.ranges.first() != Some(&selection(input)) || before.is_empty() {
+            return None;
+        }
+        let lines: Vec<_> = before.split('\n').collect();
+        let lengths: Vec<_> = lines
+            .iter()
+            .map(|line| line.encode_utf16().count() as u32)
+            .collect();
+        let mut starts = vec![0_u32];
+        for length in &lengths[..lengths.len() - 1] {
+            starts.push(starts.last()? + length + 1);
+        }
+        let line_at = |position| {
+            starts
+                .partition_point(|start| *start <= position)
+                .saturating_sub(1)
+        };
+        let whole = self.ranges.len() == 1 && self.ranges[0].0 == self.ranges[0].1;
+        let sorting = matches!(command, Command::SortAscending | Command::SortDescending);
+        let original = self.ranges.clone();
+        let mut scopes = Vec::with_capacity(original.len());
+        let mut replacements = Vec::with_capacity(original.len());
+        let mut unique_lengths = Vec::with_capacity(original.len());
+        for range in &original {
+            let (start, end) = if whole {
+                (0, before.encode_utf16().count() as u32)
+            } else {
+                (range.0, range.1)
+            };
+            let first = line_at(start);
+            let mut last = line_at(end);
+            if command != Command::Deduplicate && end == starts[last] && last > first {
+                last -= 1;
+            }
+            if command == Command::Reverse && last == lines.len() - 1 && lines[last].is_empty() {
+                if last <= first {
+                    return None;
+                }
+                last -= 1;
+            }
+            if sorting && first >= last {
+                return None;
+            }
+            let selected = lines[first..=last].join("\n");
+            let replacement = command.transform(&selected);
+            // Monaco refuses the entire sort if any selected range cannot change.
+            if sorting && replacement == selected {
+                return None;
+            }
+            unique_lengths.push((
+                replacement.split('\n').count(),
+                replacement.rsplit('\n').next()?.encode_utf16().count() as u32,
+            ));
+            replacements.push((starts[first], starts[last] + lengths[last], replacement));
+            scopes.push((first, last));
+        }
+        let losing = if sorting {
+            conflicting_cursors(
+                replacements
+                    .iter()
+                    .enumerate()
+                    .map(|(owner, (start, end, _))| (owner, *start, *end))
+                    .collect(),
+            )
+        } else {
+            HashSet::new()
+        };
+        let owners: Vec<_> = (0..original.len())
+            .filter(|index| !losing.contains(index))
+            .collect();
+        let mut ranges = original.clone();
+        if sorting {
+            let mut order = owners.clone();
+            order.sort_by_key(|index| (replacements[*index].0, replacements[*index].1));
+            let mut delta = 0_i64;
+            for index in order {
+                let (start, end, text) = &replacements[index];
+                let length = text.encode_utf16().count() as u32;
+                let map = |position: u32, at_start: bool| {
+                    if position <= *start {
+                        (i64::from(position) + delta) as u32
+                    } else if position < *end {
+                        (i64::from(*start) + delta) as u32 + if at_start { 0 } else { length }
+                    } else {
+                        (i64::from(position) + delta + i64::from(length) - i64::from(end - start))
+                            as u32
+                    }
+                };
+                let range = if whole {
+                    (
+                        0,
+                        before.encode_utf16().count() as u32,
+                        "forward".to_owned(),
+                    )
+                } else {
+                    original[index].clone()
+                };
+                ranges[index] = (map(range.0, true), map(range.1, false), range.2);
+                delta += i64::from(length) - i64::from(end - start);
+            }
+        }
+        self.ranges = owners
+            .iter()
+            .map(|index| original[*index].clone())
+            .collect();
+        let replacements = replacements
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, edit)| (!losing.contains(&index)).then_some(edit))
+            .collect();
+        let Some(mut operation) = self.replace(input, replacements, false) else {
+            self.ranges = original;
+            return None;
+        };
+        let after = input.value();
+        let after_lengths: Vec<_> = after
+            .split('\n')
+            .map(|line| line.encode_utf16().count() as u32)
+            .collect();
+        let mut after_starts = vec![0_u32];
+        for length in &after_lengths[..after_lengths.len() - 1] {
+            after_starts.push(after_starts.last()? + length + 1);
+        }
+        let position = |line: usize, column: u32| {
+            let line = line.min(after_lengths.len() - 1);
+            after_starts[line] + column.min(after_lengths[line])
+        };
+        let mut deleted = 0_usize;
+        for &index in &owners {
+            let (first, last) = scopes[index];
+            let range = &original[index];
+            if command == Command::Reverse {
+                let map = |offset| {
+                    let line = line_at(offset);
+                    let target = if line <= last {
+                        last - line + first
+                    } else {
+                        line
+                    };
+                    position(target, offset - starts[line])
+                };
+                let (a, b) = (map(range.0), map(range.1));
+                let backward = (a > b) != (range.2 == "backward");
+                ranges[index] = (
+                    a.min(b),
+                    a.max(b),
+                    if backward { "backward" } else { "forward" }.into(),
+                );
+            } else if command == Command::Deduplicate {
+                if whole {
+                    let line = line_at(range.0);
+                    let cursor = position(line, range.0 - starts[line]);
+                    ranges[index] = (cursor, cursor, "forward".into());
+                } else {
+                    let (count, last_length) = unique_lengths[index];
+                    let first = first.saturating_sub(deleted);
+                    ranges[index] = (
+                        position(first, 0),
+                        position(first + count - 1, last_length.saturating_sub(1)),
+                        "forward".into(),
+                    );
+                }
+                deleted += last - first + 1 - unique_lengths[index].0;
+            }
+        }
+        self.ranges = owners
+            .into_iter()
+            .map(|index| ranges[index].clone())
+            .collect();
+        normalize(&mut self.ranges);
         let primary = self.ranges[0].clone();
         let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
         operation.after_selection = Some(primary);

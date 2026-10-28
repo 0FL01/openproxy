@@ -1,4 +1,4 @@
-//! Command Palette's case actions follow Monaco 0.55.1 (Microsoft, MIT).
+//! Command Palette's editing actions follow Monaco 0.55.1 (Microsoft, MIT).
 //! Full notice: public/assets/translator-codicon-LICENSE.txt.
 use dioxus::{core::current_scope_id, prelude::*};
 use gloo_timers::future::TimeoutFuture;
@@ -7,6 +7,10 @@ use wasm_bindgen::{closure::Closure, JsCast};
 
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Command {
+    Deduplicate,
+    Reverse,
+    SortAscending,
+    SortDescending,
     Camel,
     Kebab,
     Lower,
@@ -17,7 +21,11 @@ pub(super) enum Command {
 }
 
 impl Command {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 11] = [
+        Self::Deduplicate,
+        Self::Reverse,
+        Self::SortAscending,
+        Self::SortDescending,
         Self::Camel,
         Self::Kebab,
         Self::Lower,
@@ -29,6 +37,10 @@ impl Command {
 
     fn label(self) -> &'static str {
         match self {
+            Self::Deduplicate => "Delete Duplicate Lines",
+            Self::Reverse => "Reverse lines",
+            Self::SortAscending => "Sort Lines Ascending",
+            Self::SortDescending => "Sort Lines Descending",
             Self::Camel => "Transform to Camel Case",
             Self::Kebab => "Transform to Kebab Case",
             Self::Lower => "Transform to Lowercase",
@@ -41,6 +53,10 @@ impl Command {
 
     fn id(self) -> &'static str {
         match self {
+            Self::Deduplicate => "editor.action.removeDuplicateLines",
+            Self::Reverse => "editor.action.reverseLines",
+            Self::SortAscending => "editor.action.sortLinesAscending",
+            Self::SortDescending => "editor.action.sortLinesDescending",
             Self::Camel => "editor.action.transformToCamelcase",
             Self::Kebab => "editor.action.transformToKebabcase",
             Self::Lower => "editor.action.transformToLowercase",
@@ -51,7 +67,52 @@ impl Command {
         }
     }
 
+    pub fn is_line_action(self) -> bool {
+        matches!(
+            self,
+            Self::Deduplicate | Self::Reverse | Self::SortAscending | Self::SortDescending
+        )
+    }
+
     pub fn transform(self, text: &str) -> String {
+        if self.is_line_action() {
+            let mut lines: Vec<_> = text.split('\n').collect();
+            match self {
+                Self::Deduplicate => {
+                    let mut seen = std::collections::HashSet::new();
+                    lines.retain(|line| seen.insert(*line));
+                }
+                Self::Reverse => lines.reverse(),
+                Self::SortAscending | Self::SortDescending => {
+                    let collator =
+                        js_sys::Intl::Collator::new(&js_sys::Array::new(), &js_sys::Object::new());
+                    let compare = collator.compare();
+                    lines.sort_by(|a, b| {
+                        let result = compare
+                            .call2(
+                                &wasm_bindgen::JsValue::UNDEFINED,
+                                &(*a).into(),
+                                &(*b).into(),
+                            )
+                            .expect("Intl.Collator compares strings")
+                            .as_f64()
+                            .expect("Intl.Collator returns a number");
+                        if result < 0.0 {
+                            std::cmp::Ordering::Less
+                        } else if result > 0.0 {
+                            std::cmp::Ordering::Greater
+                        } else {
+                            std::cmp::Ordering::Equal
+                        }
+                    });
+                    if self == Self::SortDescending {
+                        lines.reverse();
+                    }
+                }
+                _ => unreachable!(),
+            }
+            return lines.join("\n");
+        }
         let text = JsString::from(text);
         let transformed = match self {
             Self::Upper => text.to_locale_upper_case(None),
@@ -125,6 +186,7 @@ impl Command {
                 }
                 JsString::from(result)
             }
+            _ => unreachable!(),
         };
         transformed.as_string().unwrap_or_default()
     }
