@@ -256,3 +256,38 @@ unset OPENPROXY_UI_WEB_DIR project
 The test creates, disables, reloads and restores a synthetic custom model,
 checking `/v1/models` at each step. It does not contact a provider or verify
 database durability across backend restarts; Compose `down` removes the tmpfs.
+
+### Actual backend restart persistence
+
+`tests/restart-persistence.py` runs the optional restart phase in the existing
+`tests/dioxus_login_backend.browser.test.mjs`. It uses a fresh test-owned data
+directory, verifies suppressed backend output before credentials, and stops and
+starts the **same** disposable container. It checks custom/enabled/disabled models,
+GLM/Codex context settings, and `/v1/models` without repair writes or providers.
+An exit code of 137 after the stop timeout is a forced-restart result, not
+evidence of graceful shutdown. The runner records PID/StartedAt and removes its
+own containers, network and data; it retains only the frontend snapshot and
+nonsensitive evidence under the chosen artifact directory.
+
+With a current local `target/debug/openproxy` and a completed Dioxus build from
+`frontend/scripts/build.sh`, prepare an immutable snapshot from the repository root
+(do not rebuild that frontend output concurrently):
+
+```sh
+snapshot=$(mktemp -d "$PWD/.ui-browser/artifacts/r3-restart-XXXXXX")
+cp -a frontend/target/dx/openproxy-dashboard/release/web/public "$snapshot/public"
+python3 - "$snapshot" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+snapshot = Path(sys.argv[1])
+public = snapshot / "public"
+hashes = {str(p.relative_to(public)): hashlib.sha256(p.read_bytes()).hexdigest()
+          for p in public.rglob("*") if p.is_file()}
+(snapshot / "snapshot.json").write_text(json.dumps({"sha256": hashes}))
+PY
+python3 .ui-browser/tests/restart-persistence.py "$snapshot"
+```
+
+For a custom project-local `CARGO_TARGET_DIR`, use that build's public directory
+instead of the default path in the copy command. Do not point this runner at any
+existing user data or production Compose project.

@@ -502,6 +502,16 @@ mod tests {
             .unwrap();
         assert_eq!(rows, 2);
 
+        let exported = db
+            .with_conn(|c| crate::db::sqlite::export::export_all(c))
+            .unwrap();
+        assert!(exported["disabledModels"].is_array());
+        let reloaded = AppDb::from_json_value(exported);
+        assert_eq!(
+            reloaded.extra["disabledModels"],
+            json!({ "openai": ["gpt-4", "gpt-4o"] })
+        );
+
         // Remove one model.
         old = new.clone();
         new.extra

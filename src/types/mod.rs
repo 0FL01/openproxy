@@ -60,8 +60,20 @@ impl AppDb {
                 self.extra.remove(key);
             }
         }
-        if matches!(self.extra.get("disabledModels"), Some(Value::Array(a)) if a.is_empty()) {
-            self.extra.remove("disabledModels");
+        // SQLite exports table rows; runtime consumers use a provider-to-model map.
+        if let Some(Value::Array(rows)) = self.extra.get("disabledModels") {
+            let mut disabled = BTreeMap::<String, Vec<String>>::new();
+            for row in rows {
+                if let (Some(provider), Some(model)) =
+                    (row["provider"].as_str(), row["model"].as_str())
+                {
+                    disabled
+                        .entry(provider.to_owned())
+                        .or_default()
+                        .push(model.to_owned());
+                }
+            }
+            self.extra.insert("disabledModels".into(), json!(disabled));
         }
         if let Some(Value::Object(obj)) = self.extra.get("disabledModels") {
             if obj.is_empty() {

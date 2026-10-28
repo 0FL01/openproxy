@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 
 test("Dioxus database backups require password reauthentication on an isolated backend", {
@@ -170,10 +172,12 @@ test("Dioxus database backups require password reauthentication on an isolated b
 });
 
 // Run first against a fresh, output-suppressed .ui-browser backend. No Codex
-// connection is needed to edit its advertised context setting.
+// connection is needed to edit its advertised context setting. The optional
+// restart handshake is driven by .ui-browser/tests/restart-persistence.py; the
+// browser never receives Docker access or a backend restart API.
 test("Dioxus provider advertised context persists across a page reload with an isolated backend", {
   skip: process.env.RUN_DIOXUS_BACKEND_TEST !== "1",
-  timeout: 60_000,
+  timeout: process.env.DIOXUS_RESTART_HANDSHAKE_DIR ? 180_000 : 60_000,
 }, async () => {
   assert.equal(process.env.DIOXUS_BACKEND_OUTPUT_SUPPRESSED, "1", "fixture backend output must be suppressed before startup");
   const { chromium } = await import(process.env.DASHBOARD_PLAYWRIGHT_MODULE || "playwright");
@@ -190,6 +194,13 @@ test("Dioxus provider advertised context persists across a page reload with an i
       let expectedLimits;
       let saving = false;
       let patches = 0;
+      const restartDir = process.env.DIOXUS_RESTART_HANDSHAKE_DIR;
+      const customId = `fixture-restart-${randomUUID()}`;
+      let discoveryKey;
+      let modelWrite;
+      let customCreates = 0;
+      let disables = 0;
+      let restores = 0;
       const blocked = { external: 0, unexpected: 0 };
       await context.route("**/*", async (route) => {
         const request = route.request();
@@ -200,14 +211,12 @@ test("Dioxus provider advertised context persists across a page reload with an i
         }
         const method = request.method();
         const path = url.pathname;
+        let body;
+        try { body = request.postDataJSON(); } catch { body = null; }
         if (method === "POST" && path === "/api/auth/login" && !url.search) {
-          let body;
-          try { body = request.postDataJSON(); } catch { body = null; }
           if (body?.password === fixturePassword && Object.keys(body).length === 1) return route.continue();
         }
         if (method === "PATCH" && path === "/api/settings" && !url.search && saving && patches < 2) {
-          let body;
-          try { body = request.postDataJSON(); } catch { body = null; }
           const limits = body?.providerContextLimits;
           if (body && Object.keys(body).length === 1 && limits && typeof limits === "object" &&
               !Array.isArray(limits) && Object.keys(limits).length === Object.keys(expectedLimits).length &&
@@ -216,16 +225,37 @@ test("Dioxus provider advertised context persists across a page reload with an i
             return route.continue();
           }
         }
+        if (restartDir && !url.search && method === "POST" && path === "/api/models/custom" &&
+            modelWrite === "add" && customCreates === 0 &&
+            isDeepStrictEqual(body, { providerAlias: "glm", id: customId, type: "llm" })) {
+          customCreates++;
+          return route.continue();
+        }
+        if (restartDir && !url.search && method === "POST" && path === "/api/models/disabled" &&
+            modelWrite?.startsWith("disable:") && disables < 2 &&
+            isDeepStrictEqual(body, { providerAlias: "glm", ids: [modelWrite.slice(8)] })) {
+          disables++;
+          return route.continue();
+        }
+        if (restartDir && method === "DELETE" && path === "/api/models/disabled" &&
+            modelWrite?.startsWith("restore:") && restores === 0 &&
+            url.search === `?providerAlias=glm&id=${encodeURIComponent(modelWrite.slice(8))}`) {
+          restores++;
+          return route.continue();
+        }
+        if (restartDir && !url.search && method === "GET" && path === "/v1/models" && discoveryKey &&
+            request.headers().authorization === `Bearer ${discoveryKey}`) return route.continue();
         const allowedGet = method === "GET" && (
           (!url.search && ["/login", "/dashboard/providers/codex", "/dashboard/providers/glm", "/favicon.svg", "/providers/codex.png", "/providers/glm.png"].includes(path)) ||
           (!url.search && ["/api/auth/status", "/api/build", "/api/settings", "/api/providers", "/api/provider-nodes",
             "/api/catalog", "/api/models", "/api/models/custom", "/api/models/alias", "/api/models/favorites", "/api/providers/filters"].includes(path)) ||
           (path === "/api/models/disabled" && ["?providerAlias=cx", "?providerAlias=glm"].includes(url.search)) ||
           (path === "/api/proxy-pools" && url.search === "?isActive=true") ||
+          (restartDir && !url.search && ["/dashboard", "/api/keys"].includes(path)) ||
           (!url.search && (path.startsWith("/assets/") || path.startsWith("/_astro/")))
         );
         if (allowedGet) return route.continue();
-        // Never allow provider validation, tests, model discovery, or other writes.
+        // Never allow provider validation, tests, upstream discovery, or other writes.
         blocked.unexpected++;
         return route.abort("blockedbyclient");
       });
@@ -302,6 +332,143 @@ test("Dioxus provider advertised context persists across a page reload with an i
       assert.deepEqual(await readSettings(), { ...initial, limits: expectedLimits });
       assert.equal(patches, 2, "reload must not write settings again");
       assert.deepEqual(blocked, { external: 0, unexpected: 0 }, "unexpected requests must be blocked");
+
+      if (restartDir) {
+        // Keys remain in memory, never in handshake files, assertions or logs.
+        discoveryKey = await page.evaluate(async () => {
+          const response = await fetch("/api/keys", { cache: "no-store" });
+          const keys = (await response.json()).keys;
+          if (response.status !== 200 || keys?.length !== 1 || keys[0].name !== "default" ||
+              keys[0].isActive === false || typeof keys[0].key !== "string" || !keys[0].key) {
+            throw new Error("Expected one generated isolated discovery key");
+          }
+          return keys[0].key;
+        });
+        const catalog = await page.evaluate(async () => (await (await fetch("/api/catalog")).json()).providerModels);
+        const core = catalog.find((row) => row.alias === "glm")?.models.filter((row) => !row.kind || row.kind === "llm");
+        assert.ok(core?.length >= 2, "the local GLM catalog must contain two native models");
+        const [enabledId, disabledId] = core.slice(0, 2).map((row) => row.id);
+        const fullCustom = `glm/${customId}`;
+        const fullEnabled = `glm/${enabledId}`;
+        const fullDisabled = `glm/${disabledId}`;
+        const readModels = () => page.evaluate(async ({ key, ids }) => {
+          const responses = await Promise.all([
+            fetch("/api/models/custom", { cache: "no-store" }),
+            fetch("/api/models/disabled?providerAlias=glm", { cache: "no-store" }),
+            fetch("/api/providers", { cache: "no-store" }),
+            fetch("/v1/models", { cache: "no-store", headers: { Authorization: `Bearer ${key}` } }),
+          ]);
+          const [custom, disabled, providers, discovery] = await Promise.all(responses.map((response) => response.json()));
+          return {
+            statuses: responses.map((response) => response.status),
+            custom: custom.models.map(({ providerAlias, id, type, name }) => ({ providerAlias, id, type, name })),
+            disabled: disabled.ids, connections: providers.connections.length,
+            discovery: discovery.data.filter((row) => ids.includes(row.id)).map((row) => ({
+              id: row.id, source: row.opencode?.source,
+            })).sort((a, b) => a.id.localeCompare(b.id)),
+          };
+        }, { key: discoveryKey, ids: [fullCustom, fullEnabled, fullDisabled] });
+        const beforeModels = await readModels();
+        assert.deepEqual(beforeModels, {
+          statuses: [200, 200, 200, 200], custom: [], disabled: [], connections: 0,
+          discovery: [fullEnabled, fullDisabled].sort((a, b) => a.localeCompare(b)).map((id) => ({ id, source: "glm" })),
+        });
+
+        await page.getByRole("button", { name: /Add Model/ }).click();
+        const addDialog = page.getByRole("dialog", { name: "Add Custom Model" });
+        await addDialog.getByPlaceholder("e.g. claude-opus-4-5").fill(customId);
+        modelWrite = "add";
+        const [created] = await Promise.all([
+          page.waitForResponse((response) => response.url() === "https://app:4623/api/models/custom" && response.request().method() === "POST"),
+          addDialog.getByRole("button", { name: "Add Model", exact: true }).click(),
+        ]);
+        assert.equal(created.status(), 200);
+        modelWrite = undefined;
+        await addDialog.waitFor({ state: "detached" });
+        await page.getByText(fullCustom, { exact: true }).waitFor();
+        const disableModel = async (id) => {
+          modelWrite = `disable:${id}`;
+          const [response] = await Promise.all([
+            page.waitForResponse((response) => response.url() === "https://app:4623/api/models/disabled" && response.request().method() === "POST"),
+            page.locator("div.group").filter({ has: page.getByText(`glm/${id}`, { exact: true }) }).getByTitle("Disable model", { exact: true }).click(),
+          ]);
+          modelWrite = undefined;
+          assert.equal(response.status(), 200);
+          await page.getByTitle("Restore model", { exact: true }).filter({ hasText: id }).waitFor();
+        };
+        await disableModel(enabledId);
+        modelWrite = `restore:${enabledId}`;
+        const [restored] = await Promise.all([
+          page.waitForResponse((response) => response.url() === `https://app:4623/api/models/disabled?providerAlias=glm&id=${encodeURIComponent(enabledId)}` && response.request().method() === "DELETE"),
+          page.getByTitle("Restore model", { exact: true }).filter({ hasText: enabledId }).click(),
+        ]);
+        assert.equal(restored.status(), 200);
+        modelWrite = undefined;
+        await page.getByText(fullEnabled, { exact: true }).waitFor();
+        await disableModel(disabledId);
+        const expectedModels = {
+          statuses: [200, 200, 200, 200],
+          custom: [{ providerAlias: "glm", id: customId, type: "llm", name: null }],
+          disabled: [disabledId], connections: 0,
+          discovery: [fullCustom, fullEnabled].sort((a, b) => a.localeCompare(b)).map((id) => ({ id, source: "glm" })),
+        };
+        assert.deepEqual(await readModels(), expectedModels);
+        const publish = async (name, value) => {
+          await writeFile(`${restartDir}/${name}.tmp`, JSON.stringify(value), { flag: "wx" });
+          await rename(`${restartDir}/${name}.tmp`, `${restartDir}/${name}.json`);
+        };
+        await publish("ready", { limits: expectedLimits, models: expectedModels });
+        let restart;
+        const deadline = Date.now() + 90_000;
+        while (!restart && Date.now() < deadline) {
+          try { restart = JSON.parse(await readFile(`${restartDir}/restarted.json`, "utf8")); }
+          catch (error) { if (error.code !== "ENOENT") throw error; }
+          if (!restart) await delay(200);
+        }
+        assert.ok(restart, "host fixture must perform an actual backend stop/start");
+        assert.equal(restart.before.id, restart.after.id, "restart must retain the same container");
+        assert.notEqual(restart.before.pid, restart.after.pid);
+        assert.notEqual(restart.before.startedAt, restart.after.startedAt);
+        assert.equal(restart.stopped.running, false);
+        assert.equal(restart.stopped.pid, 0);
+
+        await context.clearCookies();
+        await page.goto("https://app:4623/login");
+        await page.getByPlaceholder("Enter your password").evaluate((input, value) => {
+          input.value = value;
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        }, fixturePassword);
+        await page.getByRole("button", { name: "Sign In" }).click();
+        await page.waitForURL("https://app:4623/dashboard");
+        await page.goto("https://app:4623/dashboard/providers/glm");
+        await advertisedContext.waitFor();
+        await page.waitForFunction((value) => Array.from(document.querySelectorAll('input[type="number"]')).some((input) => input.value === value && !input.disabled), String(expectedLimits.glm));
+        await page.getByText(fullCustom, { exact: true }).waitFor();
+        await page.getByText(fullEnabled, { exact: true }).waitFor();
+        const afterRestart = {
+          settings: await readSettings(), models: await readModels(),
+          blocked: { ...blocked }, writes: { patches, customCreates, disables, restores },
+          ui: {
+            customVisible: await page.getByText(fullCustom, { exact: true }).isVisible(),
+            enabledVisible: await page.getByText(fullEnabled, { exact: true }).isVisible(),
+            disabledRestoreCount: await page.getByTitle("Restore model", { exact: true }).filter({ hasText: disabledId }).count(),
+            disabledActiveCount: await page.getByText(fullDisabled, { exact: true }).count(),
+            advertisedContext: await advertisedContext.inputValue(),
+          },
+        };
+        await publish("post-restart", afterRestart);
+        assert.deepEqual(afterRestart.models, expectedModels, "the real backend must retain the pre-restart model configuration");
+        await page.getByTitle("Restore model", { exact: true }).filter({ hasText: disabledId }).waitFor();
+        assert.equal(await page.getByText(fullDisabled, { exact: true }).count(), 0);
+        assert.deepEqual(await readModels(), expectedModels, "UI and discovery must retain custom/enabled/disabled state after restart");
+        assert.deepEqual(await readSettings(), { ...initial, limits: expectedLimits });
+        await page.goto("https://app:4623/dashboard/providers/codex");
+        await page.waitForFunction((value) => Array.from(document.querySelectorAll('input[type="number"]')).some((input) => input.value === value && !input.disabled), String(expectedLimits.codex));
+        assert.equal(await advertisedContext.inputValue(), String(expectedLimits.codex));
+        assert.deepEqual({ patches, customCreates, disables, restores }, { patches: 2, customCreates: 1, disables: 2, restores: 1 }, "post-restart reads must not repair or rewrite persisted data");
+        assert.deepEqual(blocked, { external: 0, unexpected: 0 });
+        await publish("verified", { limits: expectedLimits, models: expectedModels, blocked, patches, customCreates, disables, restores });
+      }
     } finally {
       await context.close();
     }
