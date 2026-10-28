@@ -1270,15 +1270,20 @@ fn toggle_json_block_comment(input: &web_sys::HtmlTextAreaElement) {
     }
 }
 
-fn toggle_json_line_comments(input: &web_sys::HtmlTextAreaElement) {
-    let start = input.selection_start().ok().flatten().unwrap_or_default() as usize;
-    let end = input.selection_end().ok().flatten().unwrap_or(start as u32) as usize;
-    let direction = input
-        .selection_direction()
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let text: Vec<u16> = input.value().encode_utf16().collect();
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LineComment {
+    Toggle,
+    Add,
+    Remove,
+}
+
+fn line_comment_edits(
+    text: &[u16],
+    start: usize,
+    end: usize,
+    mode: LineComment,
+    ignore_first: bool,
+) -> Vec<(u32, u32, String)> {
     let newline = b'\n' as u16;
     let line_start = text[..start]
         .iter()
@@ -1293,30 +1298,48 @@ fn toggle_json_line_comments(input: &web_sys::HtmlTextAreaElement) {
         .iter()
         .position(|ch| *ch == newline)
         .map_or(text.len(), |index| selected_end + index);
-    let lines: Vec<_> = text[line_start..line_end]
+    if ignore_first && !text[start..end].contains(&newline) {
+        return Vec::new();
+    }
+    let mut lines: Vec<_> = text[line_start..line_end]
         .split(|ch| *ch == newline)
-        .collect();
-    let indents: Vec<_> = lines
-        .iter()
-        .map(|line| {
-            line.iter()
-                .take_while(|ch| **ch == b' ' as u16 || **ch == b'\t' as u16)
-                .count()
+        .enumerate()
+        .map(|(index, line)| {
+            let ignore = ignore_first && index == 0;
+            let indent = if ignore {
+                0
+            } else {
+                line.iter()
+                    .take_while(|ch| **ch == b' ' as u16 || **ch == b'\t' as u16)
+                    .count()
+            };
+            (line, indent, ignore)
         })
         .collect();
     let has_content = lines
         .iter()
-        .zip(&indents)
-        .any(|(line, indent)| *indent < line.len());
-    let remove = has_content
-        && lines.iter().zip(&indents).all(|(line, indent)| {
-            *indent == line.len() || line[*indent..].starts_with(&[b'/' as u16, b'/' as u16])
-        });
+        .any(|(line, indent, ignore)| !ignore && *indent < line.len());
+    let commented =
+        |line: &[u16], indent: usize| line[indent..].starts_with(&[b'/' as u16, b'/' as u16]);
+    let remove = mode == LineComment::Remove
+        || mode == LineComment::Toggle
+            && has_content
+            && lines.iter().all(|(line, indent, ignore)| {
+                *ignore || *indent == line.len() || commented(line, *indent)
+            });
+    for (line, indent, ignore) in &mut lines {
+        *ignore = if mode == LineComment::Toggle && !has_content {
+            false
+        } else {
+            *ignore
+                || *indent == line.len()
+                || mode == LineComment::Remove && !commented(line, *indent)
+        };
+    }
     let column = lines
         .iter()
-        .zip(&indents)
-        .filter(|(line, indent)| !has_content || **indent < line.len())
-        .map(|(line, indent)| {
+        .filter(|(_, _, ignore)| !ignore)
+        .map(|(line, indent, _)| {
             line[..*indent].iter().fold(0, |column, ch| {
                 if *ch == b'\t' as u16 {
                     column + 4 - column % 4
@@ -1329,24 +1352,23 @@ fn toggle_json_line_comments(input: &web_sys::HtmlTextAreaElement) {
         .unwrap_or_default()
         / 4
         * 4;
-    let mut updated = Vec::new();
     let mut edits = Vec::new();
     let mut offset = line_start;
-    for (index, (line, indent)) in lines.iter().zip(&indents).enumerate() {
-        if index > 0 {
-            updated.push(newline);
-        }
-        if has_content && *indent == line.len() {
-            updated.extend_from_slice(line);
+    for (line, indent, ignore) in lines {
+        if ignore {
+            offset += line.len() + 1;
+            continue;
         } else if remove {
             let count = 2 + usize::from(line.get(indent + 2) == Some(&(b' ' as u16)));
-            updated.extend_from_slice(&line[..*indent]);
-            updated.extend_from_slice(&line[indent + count..]);
-            edits.push((offset + indent, count, 0));
+            edits.push((
+                (offset + indent) as u32,
+                (offset + indent + count) as u32,
+                String::new(),
+            ));
         } else {
             let mut width = 0;
             let mut at = 0;
-            while at < *indent && width < column {
+            while at < indent && width < column {
                 let next = if line[at] == b'\t' as u16 {
                     width + 4 - width % 4
                 } else {
@@ -1358,36 +1380,11 @@ fn toggle_json_line_comments(input: &web_sys::HtmlTextAreaElement) {
                 width = next;
                 at += 1;
             }
-            updated.extend_from_slice(&line[..at]);
-            updated.extend_from_slice(&[b'/' as u16, b'/' as u16, b' ' as u16]);
-            updated.extend_from_slice(&line[at..]);
-            edits.push((offset + at, 0, 3));
+            edits.push(((offset + at) as u32, (offset + at) as u32, "// ".to_owned()));
         }
         offset += line.len() + 1;
     }
-    let position_after = |position: usize| {
-        let mut result = position as isize;
-        for (at, removed, added) in &edits {
-            if position >= at + removed {
-                result += *added as isize - *removed as isize;
-            } else if position > *at {
-                result += *added as isize - (position - at) as isize;
-            }
-        }
-        result as u32
-    };
-    if insert_text(
-        input,
-        line_start as u32,
-        line_end as u32,
-        &String::from_utf16_lossy(&updated),
-    ) {
-        let _ = input.set_selection_range_with_direction(
-            position_after(start),
-            position_after(end),
-            &direction,
-        );
-    }
+    edits
 }
 
 fn trim_trailing_whitespace(
@@ -3257,7 +3254,7 @@ fn Editor(
                             if let Some(input) = textarea.peek().as_ref() {
                                 cursor_history.write().observe(input, &cursors.peek().ranges);
                             }
-                            if (event.modifiers().ctrl() || event.modifiers().meta()) && !event.modifiers().alt() && !event.modifiers().shift() && key.eq_ignore_ascii_case("u") {
+                            if (event.modifiers().ctrl() || event.modifiers().meta()) && !event.modifiers().alt() && !event.modifiers().shift() && key.eq_ignore_ascii_case("u") && !*command_chord.peek() {
                                 event.prevent_default();
                                 if let Some(input) = textarea.peek().as_ref() {
                                     let restored = cursor_history.write().undo(input, &cursors.peek().ranges);
@@ -3422,6 +3419,34 @@ fn Editor(
                             let chord = *command_chord.peek() && control && !modifiers.shift() && !modifiers.alt();
                             let selection_format = chord && key.eq_ignore_ascii_case("f");
                             if !matches!(event.key(), Key::Control | Key::Meta | Key::Shift | Key::Alt) { command_chord.set(false); }
+                            let line_comment = if json && control && !modifiers.shift() && !modifiers.alt() {
+                                if key == "/" { Some(LineComment::Toggle) }
+                                else if chord && key.eq_ignore_ascii_case("c") { Some(LineComment::Add) }
+                                else if chord && key.eq_ignore_ascii_case("u") { Some(LineComment::Remove) }
+                                else { None }
+                            } else { None };
+                            if let Some(mode) = line_comment {
+                                event.prevent_default();
+                                command_selections.write().stop_typing();
+                                composition_extendable.set(false);
+                                if let Some(input) = textarea.peek().clone() {
+                                    let ranges = cursors.peek().ranges.clone();
+                                    if ranges.len() > 1 {
+                                        adjusting_history.set(true);
+                                        let operation = cursors.write().line_comments(&input, mode);
+                                        adjusting_history.set(false);
+                                        if let Some(operation) = operation { finish_multi_edit.call((operation, ranges)); }
+                                    } else {
+                                        let mut single = multicursor::Cursors::default();
+                                        single.ranges.push(multicursor::selection(&input));
+                                        if let Some(operation) = single.line_comments(&input, mode) {
+                                            command_selections.write().record(operation);
+                                            update_cursor.call(());
+                                        }
+                                    }
+                                }
+                                return;
+                            }
                             if chord && key.eq_ignore_ascii_case("x") {
                                 event.prevent_default();
                                 if let Some(input) = textarea.peek().as_ref() && let Some(undo) = trim_trailing_whitespace(input, json) {
@@ -3601,10 +3626,6 @@ fn Editor(
                                 && event.modifiers().ctrl() == web_sys::window().and_then(|window| window.navigator().user_agent().ok()).is_some_and(|agent| agent.contains("Linux")) {
                                 event.prevent_default();
                                 if let Some(input) = textarea.peek().as_ref() { copy_lines(input, event.key() == Key::ArrowDown); }
-                                update_cursor.call(());
-                            } else if json && (event.modifiers().ctrl() || event.modifiers().meta()) && !event.modifiers().shift() && !event.modifiers().alt() && key == "/" {
-                                event.prevent_default();
-                                if let Some(input) = textarea.peek().as_ref() { toggle_json_line_comments(input); }
                                 update_cursor.call(());
                             } else if json && event.modifiers().shift() && !event.modifiers().meta() && key.eq_ignore_ascii_case("a")
                                 && if web_sys::window().and_then(|window| window.navigator().user_agent().ok()).is_some_and(|agent| agent.contains("Linux")) { event.modifiers().ctrl() && !event.modifiers().alt() } else { event.modifiers().alt() && !event.modifiers().ctrl() } {

@@ -3,7 +3,8 @@
 //! Permission/warranty notice: public/assets/translator-codicon-LICENSE.txt.
 use super::{
     character_top, find_ranges, grapheme, in_json_string, insert_text, json_bracket_newline,
-    line_indentation, position_top, shifted_indentation, NativeUndo,
+    line_comment_edits, line_indentation, position_top, shifted_indentation, LineComment,
+    NativeUndo,
 };
 use dioxus::prelude::Callback;
 use std::{collections::HashSet, rc::Rc};
@@ -1297,6 +1298,110 @@ impl Cursors {
                     },
                 )
             })
+            .collect();
+        let after = String::from_utf16(&output).ok()?;
+        let scroll = input.scroll_top();
+        if !insert_text(input, 0, units.len() as u32, &after) {
+            return None;
+        }
+        normalize(&mut ranges);
+        let primary = ranges[0].clone();
+        let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
+        input.set_scroll_top(scroll);
+        self.ranges = ranges;
+        self.vertical = None;
+        self.added = None;
+        self.line_edge = None;
+        self.query = None;
+        self.map_auto_closed(&positions, &output);
+        Some(NativeUndo {
+            before,
+            after: input.value(),
+            start: original.0,
+            end: original.1,
+            direction: original.2,
+            after_selection: Some(primary),
+            edits: Vec::new(),
+        })
+    }
+
+    pub fn line_comments(
+        &mut self,
+        input: &web_sys::HtmlTextAreaElement,
+        mode: LineComment,
+    ) -> Option<NativeUndo> {
+        let original = selection(input);
+        if self.ranges.first() != Some(&original) {
+            return None;
+        }
+        let before = input.value();
+        let units: Vec<_> = before.encode_utf16().collect();
+        let mut ordered: Vec<_> = self.ranges.iter().enumerate().collect();
+        ordered.sort_by_key(|(_, range)| (range.0, range.1));
+        let mut ignore_first = vec![false; self.ranges.len()];
+        let mut previous = ordered[0];
+        for current in ordered.iter().skip(1).copied() {
+            if !units[previous.1 .1 as usize..current.1 .0 as usize].contains(&10) {
+                if previous.0 < current.0 {
+                    ignore_first[current.0] = true;
+                } else {
+                    ignore_first[previous.0] = true;
+                    previous = current;
+                }
+            }
+        }
+        let mut operations = Vec::new();
+        for (index, &(start, end, _)) in self.ranges.iter().enumerate() {
+            operations.extend(
+                line_comment_edits(
+                    &units,
+                    start as usize,
+                    end as usize,
+                    mode,
+                    ignore_first[index],
+                )
+                .into_iter()
+                .map(|edit| (index, edit)),
+            );
+        }
+        self.typing = false;
+        self.starts_typing = false;
+        if operations.is_empty() {
+            return None;
+        }
+        let losing = conflicting_cursors(
+            operations
+                .iter()
+                .map(|(index, (start, end, _))| (*index, *start, *end))
+                .collect(),
+        );
+        operations.retain(|(index, _)| !losing.contains(index));
+        operations.sort_by_key(|(_, (start, end, _))| (*start, *end));
+        let mut output = Vec::new();
+        let mut last = 0;
+        let mut positions = Vec::with_capacity(operations.len());
+        for (_, (start, end, text)) in operations {
+            output.extend_from_slice(&units[last..start as usize]);
+            output.extend(text.encode_utf16());
+            positions.push((start, end, output.len() as u32));
+            last = end as usize;
+        }
+        output.extend_from_slice(&units[last..]);
+        let map = |position: u32| {
+            let index = positions.partition_point(|(start, _, _)| *start <= position);
+            if index == 0 {
+                position
+            } else {
+                let (_, end, after) = positions[index - 1];
+                after + position.saturating_sub(end)
+            }
+        };
+        let mut ranges: Vec<_> = self
+            .ranges
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !losing.contains(index))
+            .map(|(_, (start, end, direction))| (map(*start), map(*end), direction.clone()))
             .collect();
         let after = String::from_utf16(&output).ok()?;
         let scroll = input.scroll_top();

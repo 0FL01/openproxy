@@ -86,8 +86,8 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
-    if (process.env.TRANSLATOR_GOTO_LINE_ONLY === "1" || process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1" || process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1" || process.env.TRANSLATOR_MULTI_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_DELETE_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_INDENT_ONLY === "1" || process.env.TRANSLATOR_MULTI_HOME_END_ONLY === "1" || process.env.TRANSLATOR_MULTI_DOCUMENT_EDGES_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAGE_ONLY === "1" || process.env.TRANSLATOR_MULTI_VERTICAL_ONLY === "1" || process.env.TRANSLATOR_ADD_CURSORS_ONLY === "1") {
-      const index = process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" ? 0 : 1;
+    if (process.env.TRANSLATOR_MULTI_COMMENT_ONLY === "1" || process.env.TRANSLATOR_GOTO_LINE_ONLY === "1" || process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1" || process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1" || process.env.TRANSLATOR_MULTI_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_DELETE_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_INDENT_ONLY === "1" || process.env.TRANSLATOR_MULTI_HOME_END_ONLY === "1" || process.env.TRANSLATOR_MULTI_DOCUMENT_EDGES_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAGE_ONLY === "1" || process.env.TRANSLATOR_MULTI_VERTICAL_ONLY === "1" || process.env.TRANSLATOR_ADD_CURSORS_ONLY === "1") {
+      const index = process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_MULTI_COMMENT_ONLY === "1" ? 0 : 1;
       if (index === 1) await page.getByRole("button", { name: /Provider Response/ }).click();
       if (reference) await page.locator(".monaco-editor .view-lines").nth(index).waitFor();
       const input = () => editor().nth(index);
@@ -114,6 +114,65 @@ async function main() {
         else await input().evaluate((input, [start, end]) => { input.setSelectionRange(start, end); input.dispatchEvent(new Event("select", { bubbles: true })); }, [start, end]);
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       };
+      if (process.env.TRANSLATOR_MULTI_COMMENT_ONLY === "1") {
+        const choose = async (value, start, end) => {
+          await setText(value, start, end);
+          await page.keyboard.press("Control+Shift+l");
+          await waitFor(async () => await count() === 2);
+        };
+        const chord = async key => {
+          await page.keyboard.press("Control+k");
+          await page.keyboard.press(`Control+${key}`);
+        };
+        const initial = '{\n  "😺": null,\n      "other": null\n}';
+        const start = initial.indexOf("null");
+        const commented = '{\n//   "😺": null,\n    //   "other": null\n}';
+        await choose(initial, start, start + 4);
+        await page.keyboard.press("Control+/");
+        assert.equal(await text(), commented, "each cursor toggles its logical line at its own indentation stop");
+        assert.deepEqual(await primary(), [start + 3, start + 7]);
+        await page.keyboard.press("Control+/");
+        assert.equal(await text(), initial);
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), commented, "each comment command has its own undo stop");
+        assert.deepEqual(await primary(), [start + 3, start + 7]);
+        await page.keyboard.press("Control+Shift+z");
+        assert.equal(await text(), initial);
+        await chord("c");
+        assert.equal(await text(), commented, "the add-comment chord applies to every cursor");
+        await chord("c");
+        assert.equal(await text(), '{\n// //   "😺": null,\n    // //   "other": null\n}', "force add does not toggle existing comments");
+        await chord("u");
+        assert.equal(await text(), commented);
+        await chord("u");
+        assert.equal(await text(), initial);
+        await chord("u");
+        assert.equal(await text(), initial, "force remove leaves uncommented lines intact");
+        await page.keyboard.type("0");
+        assert.equal(await text(), initial.replaceAll("null", "0"), "both comment selections remain editable");
+
+        const same = '{"a": null, "b": null}';
+        await choose(same, same.indexOf("null"), same.indexOf("null") + 4);
+        await page.keyboard.press("Control+/");
+        assert.equal(await text(), `// ${same}`, "two selections on one line add only one comment");
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), same);
+        await page.keyboard.type("1");
+        assert.equal(await text(), same.replaceAll("null", "1"), "undo restores both ranges on the shared line");
+
+        const multiline = '{\n  "a": 1,\n\n    "b": 2,\n  "a": 1,\n\n    "b": 2\n}';
+        const fragment = '  "a": 1,\n\n';
+        await choose(multiline, multiline.indexOf(fragment), multiline.indexOf(fragment) + fragment.length);
+        await page.keyboard.press("Control+/");
+        assert.equal(await text(), multiline.replaceAll('  "a": 1,', '//   "a": 1,'), "multiline selections skip empty lines and the following line at column one");
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), multiline);
+        await page.keyboard.type("X");
+        assert.equal(await text(), multiline.replaceAll(fragment, "X"), "undo restores both multiline comment selections");
+        assert.deepEqual(errors, []);
+        console.log("synthetic translator multicursor line comment smoke passed");
+        return;
+      }
       if (process.env.TRANSLATOR_GOTO_LINE_ONLY === "1") {
         const initial = "alpha\n😺beta\ngamma\nlast";
         const box = () => page.getByRole("textbox", { name: /^(Type a (line number|character position) to go to|Press 'Enter' to go to line)/ });
