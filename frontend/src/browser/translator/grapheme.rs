@@ -123,18 +123,48 @@ pub(super) fn previous(units: &[u16], offset: usize) -> usize {
     position
 }
 
+fn is_emoji_imprecise(code: u32) -> bool {
+    matches!(code,
+        0x1f1e6..=0x1f1ff | 8986 | 8987 | 9200 | 9203 | 9728..=10175 |
+        11088 | 11093 | 127744..=128591 | 128640..=128764 |
+        128992..=129008 | 129280..=129535 | 129648..=129782
+    )
+}
+
+// Strings.getLeftDeleteOffset removes an emoji component, not a whole grapheme.
+pub(super) fn delete_left(units: &[u16], offset: usize) -> usize {
+    if offset == 0 {
+        return 0;
+    }
+    let (mut code, mut start) = previous_point(units, offset);
+    let single_point = start;
+    while matches!(code, 0x1f3fb..=0x1f3ff | 65039 | 8419) {
+        if start == 0 {
+            return single_point;
+        }
+        (code, start) = previous_point(units, start);
+    }
+    if !is_emoji_imprecise(code) {
+        return single_point;
+    }
+    if start > 0 {
+        let (previous, position) = previous_point(units, start);
+        if previous == 8205 {
+            return position;
+        }
+    }
+    start
+}
+
 // CursorColumns' configured four-column tabs and pinned wide-character rules.
 fn next_column(code: u32, column: usize) -> usize {
     if code == 9 {
         return column + 4 - column % 4;
     }
     column
-        + if matches!(code,
-            0x2e80..=0xd7af | 0xf900..=0xfaff | 0xff01..=0xff5e |
-            0x1f1e6..=0x1f1ff | 8986 | 8987 | 9200 | 9203 | 9728..=10175 |
-            11088 | 11093 | 127744..=128591 | 128640..=128764 |
-            128992..=129008 | 129280..=129535 | 129648..=129782
-        ) {
+        + if matches!(code, 0x2e80..=0xd7af | 0xf900..=0xfaff | 0xff01..=0xff5e)
+            || is_emoji_imprecise(code)
+        {
             2
         } else {
             1

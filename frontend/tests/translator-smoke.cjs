@@ -86,7 +86,7 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
-    if (process.env.TRANSLATOR_MULTI_COMMENT_ONLY === "1" || process.env.TRANSLATOR_GOTO_LINE_ONLY === "1" || process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1" || process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1" || process.env.TRANSLATOR_MULTI_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_DELETE_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_INDENT_ONLY === "1" || process.env.TRANSLATOR_MULTI_HOME_END_ONLY === "1" || process.env.TRANSLATOR_MULTI_DOCUMENT_EDGES_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAGE_ONLY === "1" || process.env.TRANSLATOR_MULTI_VERTICAL_ONLY === "1" || process.env.TRANSLATOR_ADD_CURSORS_ONLY === "1") {
+    if (process.env.TRANSLATOR_MULTI_UNICODE_DELETE_ONLY === "1" || process.env.TRANSLATOR_MULTI_COMMENT_ONLY === "1" || process.env.TRANSLATOR_GOTO_LINE_ONLY === "1" || process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1" || process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1" || process.env.TRANSLATOR_MULTI_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_DELETE_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_INDENT_ONLY === "1" || process.env.TRANSLATOR_MULTI_HOME_END_ONLY === "1" || process.env.TRANSLATOR_MULTI_DOCUMENT_EDGES_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAGE_ONLY === "1" || process.env.TRANSLATOR_MULTI_VERTICAL_ONLY === "1" || process.env.TRANSLATOR_ADD_CURSORS_ONLY === "1") {
       const index = process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_MULTI_COMMENT_ONLY === "1" ? 0 : 1;
       if (index === 1) await page.getByRole("button", { name: /Provider Response/ }).click();
       if (reference) await page.locator(".monaco-editor .view-lines").nth(index).waitFor();
@@ -813,6 +813,41 @@ async function main() {
         assert.equal(scroll, 400, "word movement started with multiple cursors does not reveal even when the result merges to one selection");
         assert.deepEqual(errors, []);
         console.log("synthetic translator multicursor word navigation smoke passed");
+        return;
+      }
+      if (process.env.TRANSLATOR_MULTI_UNICODE_DELETE_ONLY === "1") {
+        const initial = "a👩‍💻 cat\na👍🏽 cat\nae\u0301 cat";
+        const start = initial.indexOf("cat");
+        const choose = async () => {
+          await setText(initial, start, start + 3);
+          await page.keyboard.press("Control+Shift+l");
+          await waitFor(async () => await count() === 3);
+          await page.keyboard.press("ArrowLeft");
+          await page.keyboard.press("ArrowLeft");
+        };
+        await choose();
+        assert.deepEqual(await primary(), [6, 6]);
+        await page.keyboard.press("Backspace");
+        const backwards = "a👩 cat\na cat\nae cat";
+        assert.equal(await text(), backwards, "Backspace removes the final emoji component with its joiner/modifiers, or one ordinary code point");
+        assert.deepEqual(await primary(), [3, 3]);
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), initial);
+        assert.deepEqual(await primary(), [6, 6]);
+        await waitFor(async () => await count() === 3);
+        await page.keyboard.press("Control+Shift+z");
+        assert.equal(await text(), backwards);
+        await choose();
+        await page.keyboard.press("ArrowLeft");
+        assert.deepEqual(await primary(), [1, 1]);
+        await page.keyboard.press("Delete");
+        assert.equal(await text(), "a cat\na cat\na cat", "Delete removes one complete reference grapheme at every cursor");
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), initial);
+        assert.deepEqual(await primary(), [1, 1]);
+        await waitFor(async () => await count() === 3);
+        assert.deepEqual(errors, []);
+        console.log("synthetic translator multicursor Unicode deletion smoke passed");
         return;
       }
       if (process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1") {

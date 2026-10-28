@@ -1085,21 +1085,9 @@ impl Cursors {
                 return None;
             }
             if start == end && kind == "deleteContentBackward" && start > 0 {
-                start -= 1;
-                if start > 0
-                    && (0xdc00..=0xdfff).contains(&units[start])
-                    && (0xd800..=0xdbff).contains(&units[start - 1])
-                {
-                    start -= 1;
-                }
+                start = grapheme::delete_left(&units, start);
             } else if start == end && kind == "deleteContentForward" && end < units.len() {
-                end += 1;
-                if end < units.len()
-                    && (0xd800..=0xdbff).contains(&units[end - 1])
-                    && (0xdc00..=0xdfff).contains(&units[end])
-                {
-                    end += 1;
-                }
+                end = grapheme::next(&units, end);
             }
             replacements.push((start as u32, end as u32, inserted.to_owned()));
         }
