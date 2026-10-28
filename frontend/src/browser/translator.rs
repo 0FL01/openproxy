@@ -3140,7 +3140,7 @@ fn Editor(
                             div { key: "{index}", aria_hidden: "true", class: if rect.caret { "multicursor-cursor" } else { "multicursor-selection" }, style: "position:absolute;pointer-events:none;left:{rect.left}px;top:{rect.top}px;width:{width}px;height:{rect.height}px;background:{color};" }
                         } }
                     }
-                    pre { aria_hidden: "true", style: "position:absolute;top:{text_top}px;left:0;right:0;margin:0;white-space:pre-wrap;overflow-wrap:anywhere;pointer-events:none;font-family:'Droid Sans Mono',monospace;font-size:12px;line-height:16px;",
+                    pre { aria_hidden: "true", style: "position:absolute;top:{text_top}px;left:0;right:0;margin:0;white-space:pre-wrap;overflow-wrap:anywhere;pointer-events:none;font-family:'Droid Sans Mono',monospace;font-size:12px;line-height:16px;tab-size:4;",
                         onmounted: move |event| { if let Some(element) = event.data().downcast::<web_sys::Element>() && let Ok(element) = element.clone().dyn_into::<web_sys::HtmlElement>() { rendered.set(Some(element)); } },
                         for (line, segments) in lines.iter().enumerate() {
                             { let in_range = selected_lines.as_ref().is_some_and(|range| range.contains(&line)); let layer = if in_range { "z-index:0;" } else { "" }; rsx! {
@@ -3169,7 +3169,7 @@ fn Editor(
                         oncopy: move |event| on_clipboard.call(event),
                         oncut: move |event| on_clipboard.call(event),
                         onpaste: move |event| on_clipboard.call(event),
-                        style: "position:absolute;inset:0 14px 0 0;width:calc(100% - 14px);height:100%;resize:none;border:0;outline:0;padding:{find_padding}px {right_padding}px 0 {wrapping_indent}px;text-indent:-{wrapping_indent}px each-line;background:transparent;color:transparent;caret-color:white;font-family:'Droid Sans Mono',monospace;font-size:12px;line-height:16px;white-space:pre-wrap;overflow-wrap:anywhere;",
+                        style: "position:absolute;inset:0 14px 0 0;width:calc(100% - 14px);height:100%;resize:none;border:0;outline:0;padding:{find_padding}px {right_padding}px 0 {wrapping_indent}px;text-indent:-{wrapping_indent}px each-line;background:transparent;color:transparent;caret-color:white;font-family:'Droid Sans Mono',monospace;font-size:12px;line-height:16px;white-space:pre-wrap;overflow-wrap:anywhere;tab-size:4;",
                         onmounted: move |event| {
                             if let Some(element) = event.data().downcast::<web_sys::Element>() && let Ok(input) = element.clone().dyn_into::<web_sys::HtmlTextAreaElement>() && let Some(container) = input.parent_element() {
                                 editor_width.set(container.client_width().saturating_sub(14));
@@ -3201,6 +3201,21 @@ fn Editor(
                             }
                             let modifiers = event.modifiers();
                             let control = modifiers.ctrl() || modifiers.meta();
+                            if !control && !modifiers.alt() && matches!(event.key(), Key::ArrowUp | Key::ArrowDown) && cursors.peek().ranges.len() > 1 {
+                                let changed = if let Some(input) = textarea.peek().as_ref()
+                                    && let Some(element) = rendered.peek().as_ref() {
+                                    cursors.write().vertical(input, element, event.key() == Key::ArrowUp, modifiers.shift())
+                                } else { None };
+                                if let Some(changed) = changed {
+                                    event.prevent_default();
+                                    if changed {
+                                        command_selections.write().stop_typing();
+                                        composition_extendable.set(false);
+                                    }
+                                    update_cursor.call(());
+                                }
+                                return;
+                            }
                             if !control && !modifiers.alt() && matches!(event.key(), Key::ArrowLeft | Key::ArrowRight) && cursors.peek().ranges.len() > 1 {
                                 event.prevent_default();
                                 if let Some(input) = textarea.peek().as_ref() {

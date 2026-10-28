@@ -2,8 +2,8 @@
 //! Rules follow Monaco 0.55.1 (Copyright Microsoft Corporation, MIT).
 //! Permission/warranty notice: public/assets/translator-codicon-LICENSE.txt.
 use super::{
-    find_ranges, grapheme, in_json_string, insert_text, json_bracket_newline, line_indentation,
-    NativeUndo,
+    character_top, cursor_top, find_ranges, grapheme, in_json_string, insert_text,
+    json_bracket_newline, line_indentation, NativeUndo,
 };
 use dioxus::prelude::Callback;
 use std::{collections::HashSet, rc::Rc};
@@ -24,7 +24,7 @@ pub(super) fn selection(input: &web_sys::HtmlTextAreaElement) -> Selection {
     )
 }
 
-fn normalize(ranges: &mut Vec<Selection>) {
+fn normalize(ranges: &mut Vec<Selection>) -> Vec<usize> {
     let last_added = ranges.len().saturating_sub(1);
     let mut ordered: Vec<_> = std::mem::take(ranges).into_iter().enumerate().collect();
     ordered.sort_by_key(|(_, range)| (range.0, range.1));
@@ -48,7 +48,9 @@ fn normalize(ranges: &mut Vec<Selection>) {
         }
     }
     merged.sort_by_key(|(owner, _, _)| *owner);
+    let owners = merged.iter().map(|(owner, _, _)| *owner).collect();
     *ranges = merged.into_iter().map(|(_, range, _)| range).collect();
+    owners
 }
 
 #[derive(Clone, Default)]
@@ -58,6 +60,99 @@ pub(super) struct Cursors {
     pub starts_typing: bool,
     query: Option<(String, bool, bool)>,
     auto_closed: Vec<Vec<ClosedPair>>,
+    vertical: Option<Vertical>,
+}
+
+#[derive(Clone)]
+struct Vertical {
+    ranges: Vec<Selection>,
+    width: i32,
+    leftover: Vec<f64>,
+}
+
+struct ViewRow {
+    start: u32,
+    end: u32,
+    line_start: u32,
+    line: web_sys::HtmlElement,
+}
+
+impl ViewRow {
+    fn left(&self, position: u32) -> Option<f64> {
+        if self.start == self.end {
+            return Some(self.line.get_bounding_client_rect().left());
+        }
+        let at_end = position == self.end;
+        let mut offset = position - self.line_start - u32::from(at_end);
+        let document = self.line.owner_document()?;
+        let children = self.line.child_nodes();
+        for index in 0..children.length() {
+            let Some(span) = children
+                .item(index)
+                .and_then(|node| node.dyn_into::<web_sys::Element>().ok())
+                .filter(|element| element.tag_name() == "SPAN")
+            else {
+                continue;
+            };
+            let text = span.first_child()?;
+            let length = js_sys::JsString::from(text.text_content()?).length();
+            if offset < length {
+                let range = document.create_range().ok()?;
+                range.set_start(&text, offset).ok()?;
+                range.set_end(&text, offset + 1).ok()?;
+                let rect = range.get_bounding_client_rect();
+                return Some(if at_end { rect.right() } else { rect.left() });
+            }
+            offset -= length;
+        }
+        None
+    }
+}
+
+fn view_rows(text: &str, rendered: &web_sys::HtmlElement) -> Option<Vec<ViewRow>> {
+    let mut rows = Vec::new();
+    let mut line_start = 0;
+    for (index, text) in text.split('\n').enumerate() {
+        let line = rendered
+            .child_nodes()
+            .item(index as u32)?
+            .dyn_into::<web_sys::HtmlElement>()
+            .ok()?;
+        if line.text_content().as_deref() != Some(text) {
+            return None;
+        }
+        let length = text.encode_utf16().count();
+        let mut start = 0;
+        loop {
+            let end = if line.offset_height() <= 16 || start == length {
+                length
+            } else {
+                let top = character_top(&line, start)?;
+                let (mut low, mut high) = (start + 1, length);
+                while low < high {
+                    let middle = low + (high - low) / 2;
+                    if character_top(&line, middle)? > top {
+                        high = middle;
+                    } else {
+                        low = middle + 1;
+                    }
+                }
+                low
+            };
+            rows.push(ViewRow {
+                start: line_start + start as u32,
+                end: line_start + end as u32,
+                line_start,
+                line: line.clone(),
+            });
+            if end == length {
+                break;
+            }
+            start = end;
+        }
+        line_start += length as u32 + 1;
+    }
+    Some(rows)
 }
 
 #[derive(Clone)]
@@ -137,6 +232,7 @@ impl Cursors {
             self.query = None;
             self.typing = false;
             self.starts_typing = false;
+            self.vertical = None;
             self.validate_pairs(&units);
             let primary = &self.ranges[0];
             let _ = input.set_selection_range(primary.0, primary.1);
@@ -152,6 +248,7 @@ impl Cursors {
         left: bool,
         extend: bool,
     ) -> bool {
+        self.vertical = None;
         let units: Vec<_> = input.value().encode_utf16().collect();
         let mut ranges: Vec<_> = self
             .ranges
@@ -198,6 +295,119 @@ impl Cursors {
         true
     }
 
+    pub fn vertical(
+        &mut self,
+        input: &web_sys::HtmlTextAreaElement,
+        rendered: &web_sys::HtmlElement,
+        up: bool,
+        extend: bool,
+    ) -> Option<bool> {
+        let text = input.value();
+        let units: Vec<_> = text.encode_utf16().collect();
+        let rows = view_rows(&text, rendered)?;
+        let origin = rendered.get_bounding_client_rect().left();
+        let previous = self
+            .vertical
+            .as_ref()
+            .filter(|state| state.ranges == self.ranges && state.width == input.client_width());
+        let mut ranges = Vec::new();
+        let mut leftover = Vec::new();
+        for (index, &(start, end, ref direction)) in self.ranges.iter().enumerate() {
+            let (anchor, active) = if direction == "backward" {
+                (end, start)
+            } else {
+                (start, end)
+            };
+            let position = if !extend && start != end {
+                if up {
+                    start
+                } else {
+                    end
+                }
+            } else {
+                active
+            };
+            let row_index = rows
+                .partition_point(|row| row.start <= position)
+                .saturating_sub(1);
+            let row = &rows[row_index];
+            let preferred =
+                row.left(position)? - origin + previous.map_or(0.0, |state| state.leftover[index]);
+            let target_index = if up {
+                row_index.saturating_sub(1)
+            } else {
+                (row_index + 1).min(rows.len() - 1)
+            };
+            let target = &rows[target_index];
+            let next = if target_index == row_index {
+                if up {
+                    row.start
+                } else {
+                    row.end
+                }
+            } else {
+                let mut nearest = target.start;
+                let mut distance = (target.left(nearest)? - origin - preferred).abs();
+                let mut offset = nearest as usize;
+                while offset < target.end as usize {
+                    offset = grapheme::next(&units[..target.end as usize], offset);
+                    let next_distance = (target.left(offset as u32)? - origin - preferred).abs();
+                    if next_distance < distance {
+                        nearest = offset as u32;
+                        distance = next_distance;
+                    }
+                }
+                nearest
+            };
+            let at_edge = target_index == row_index && position == next;
+            leftover.push(if at_edge {
+                0.0
+            } else {
+                preferred - (target.left(next)? - origin)
+            });
+            ranges.push(if extend {
+                (
+                    anchor.min(next),
+                    anchor.max(next),
+                    if next < anchor { "backward" } else { "forward" }.into(),
+                )
+            } else {
+                (next, next, "forward".into())
+            });
+        }
+        let owners = normalize(&mut ranges);
+        self.vertical = Some(Vertical {
+            ranges: ranges.clone(),
+            width: input.client_width(),
+            leftover: owners.into_iter().map(|owner| leftover[owner]).collect(),
+        });
+        if ranges == self.ranges {
+            return Some(false);
+        }
+        self.ranges = ranges;
+        self.query = None;
+        self.typing = false;
+        self.starts_typing = false;
+        self.validate_pairs(&units);
+        let primary = &self.ranges[0];
+        let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
+        if let Some(top) = cursor_top(input, rendered) {
+            let padding = input
+                .style()
+                .get_property_value("padding-top")
+                .ok()
+                .and_then(|value| value.trim_end_matches("px").parse::<f64>().ok())
+                .unwrap_or_default();
+            let shift = if top < padding {
+                top - padding
+            } else {
+                (top + 16.0 - f64::from(input.client_height())).max(0.0)
+            };
+            input.set_scroll_top(input.scroll_top() + shift as i32);
+        }
+        Some(true)
+    }
+
     pub fn choose(
         &mut self,
         input: &web_sys::HtmlTextAreaElement,
@@ -206,6 +416,7 @@ impl Cursors {
         whole: bool,
         all: bool,
     ) {
+        self.vertical = None;
         let primary = selection(input);
         if self.ranges.first() != Some(&primary) {
             self.ranges.clear();
@@ -556,6 +767,7 @@ impl Cursors {
         replacements: Vec<(u32, u32, String)>,
         document_order: bool,
     ) -> Option<NativeUndo> {
+        self.vertical = None;
         let original = selection(input);
         if self.ranges.first() != Some(&original) || replacements.len() != self.ranges.len() {
             return None;
