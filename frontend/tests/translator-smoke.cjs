@@ -86,30 +86,76 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
-    if (process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1") {
-      await page.getByRole("button", { name: /Provider Response/ }).click();
-      if (reference) await page.locator(".monaco-editor .view-lines").nth(1).waitFor();
-      const input = () => editor().nth(1);
-      await (reference ? page.locator(".monaco-editor").nth(1) : input()).scrollIntoViewIfNeeded();
-      const text = () => reference ? page.evaluate(() => window.monaco.editor.getEditors()[1].getValue()) : input().inputValue();
-      const primary = () => reference ? page.evaluate(() => {
-        const e = window.monaco.editor.getEditors()[1], s = e.getSelection();
+    if (process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1") {
+      const index = process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" ? 0 : 1;
+      if (index === 1) await page.getByRole("button", { name: /Provider Response/ }).click();
+      if (reference) await page.locator(".monaco-editor .view-lines").nth(index).waitFor();
+      const input = () => editor().nth(index);
+      await (reference ? page.locator(".monaco-editor").nth(index) : input()).scrollIntoViewIfNeeded();
+      const text = () => reference ? page.evaluate(index => window.monaco.editor.getEditors()[index].getValue(), index) : input().inputValue();
+      const primary = () => reference ? page.evaluate(index => {
+        const e = window.monaco.editor.getEditors()[index], s = e.getSelection();
         return [e.getModel().getOffsetAt(s.getStartPosition()), e.getModel().getOffsetAt(s.getEndPosition())];
-      }) : input().evaluate(input => [input.selectionStart, input.selectionEnd]);
-      const count = () => reference ? page.evaluate(() => window.monaco.editor.getEditors()[1].getSelections().length)
+      }, index) : input().evaluate(input => [input.selectionStart, input.selectionEnd]);
+      const count = () => reference ? page.evaluate(index => window.monaco.editor.getEditors()[index].getSelections().length, index)
         : input().evaluate(input => 1 + input.parentElement.querySelectorAll(".multicursor-selection, .multicursor-cursor").length);
       const setText = async (value, start, end = start) => {
-        if (reference) await page.evaluate(value => window.monaco.editor.getEditors()[1].setValue(value), value);
+        if (reference) {
+          if (index === 0) await settleReferenceJson();
+          await page.evaluate(({ value, index }) => window.monaco.editor.getEditors()[index].setValue(value), { value, index });
+        }
         else await input().fill(value);
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-        if (reference) await page.evaluate(({ start, end }) => {
-          const e = window.monaco.editor.getEditors()[1];
+        if (reference) await page.evaluate(({ start, end, index }) => {
+          const e = window.monaco.editor.getEditors()[index];
           const a = e.getModel().getPositionAt(start), b = e.getModel().getPositionAt(end);
           e.setSelection(new window.monaco.Selection(a.lineNumber, a.column, b.lineNumber, b.column)); e.focus();
-        }, { start, end });
+        }, { start, end, index });
         else await input().evaluate((input, [start, end]) => { input.setSelectionRange(start, end); input.dispatchEvent(new Event("select", { bubbles: true })); }, [start, end]);
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       };
+      if (process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1") {
+        const initial = '{\n  "😺": null,\n    "other": null\n}';
+        const start = initial.indexOf("null");
+        await setText(initial, start, start + 4);
+        await page.keyboard.press("Control+Shift+l");
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.press("Enter");
+        const entered = '{\n  "😺": \n  ,\n    "other": \n    \n}';
+        assert.equal(await text(), entered, "Enter replaces both selections with each line's indentation");
+        assert.deepEqual(await primary(), [start + 3, start + 3]);
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), initial);
+        assert.deepEqual(await primary(), [start, start + 4]);
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.press("Control+Shift+z");
+        assert.equal(await text(), entered);
+        assert.deepEqual(await primary(), [start + 3, start + 3]);
+        const objects = '{\n  "😺": {"":0},\n    "other": {"":0}\n}';
+        const inside = objects.indexOf('"":0');
+        await setText(objects, inside, inside + 4);
+        await page.keyboard.press("Control+Shift+l");
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.press("Backspace");
+        const empty = objects.replaceAll('"":0', "");
+        await waitFor(async () => await text() === empty);
+        await page.keyboard.press("Enter");
+        const expanded = '{\n  "😺": {\n    \n  },\n    "other": {\n        \n    }\n}';
+        assert.equal(await text(), expanded, "each structural pair expands to its own next indentation stop");
+        assert.deepEqual(await primary(), [inside + 5, inside + 5]);
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), empty);
+        assert.deepEqual(await primary(), [inside, inside]);
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.press("Control+Shift+z");
+        assert.equal(await text(), expanded);
+        assert.deepEqual(await primary(), [inside + 5, inside + 5]);
+        assert.deepEqual(errors, []);
+        console.log("synthetic translator multicursor JSON Enter smoke passed");
+        return;
+      }
       if (process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1") {
         await page.evaluate(() => document.addEventListener("copy", event => {
           window.fixtureCopyMetadata = event.clipboardData?.getData("vscode-editor-data");

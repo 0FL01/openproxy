@@ -593,34 +593,27 @@ fn update_auto_pairs(before: &str, after: &str, pairs: &mut Vec<(char, u32)>) {
     });
 }
 
-fn expand_json_brackets(input: &web_sys::HtmlTextAreaElement) -> bool {
-    let start = input.selection_start().ok().flatten().unwrap_or_default();
-    let end = input.selection_end().ok().flatten().unwrap_or(start);
-    if start != end {
-        return false;
-    }
-    let text = js_sys::JsString::from(input.value());
-    let before = text.slice(0, start).as_string().unwrap_or_default();
-    let after = text
-        .slice(start, text.length())
-        .as_string()
-        .unwrap_or_default();
-    if !matches!(
-        (before.chars().last(), after.chars().next()),
-        (Some('{'), Some('}')) | (Some('['), Some(']'))
-    ) {
-        return false;
-    }
-    if in_json_string(&before) {
-        return false;
-    }
-    let indentation: String = before
+fn line_indentation(before: &str) -> String {
+    before
         .rsplit('\n')
         .next()
         .unwrap_or("")
         .chars()
         .take_while(|ch| matches!(ch, ' ' | '\t'))
-        .collect();
+        .collect()
+}
+
+fn json_bracket_newline(before: &str, after: &str) -> Option<(String, u32)> {
+    if !matches!(
+        (before.chars().last(), after.chars().next()),
+        (Some('{'), Some('}')) | (Some('['), Some(']'))
+    ) {
+        return None;
+    }
+    if in_json_string(before) {
+        return None;
+    }
+    let indentation = line_indentation(before);
     let column = indentation.chars().fold(0_u32, |column, ch| {
         if ch == '\t' {
             column + 4 - column % 4
@@ -633,8 +626,27 @@ fn expand_json_brackets(input: &web_sys::HtmlTextAreaElement) -> bool {
         "\n{indentation}{}\n{indentation}",
         " ".repeat(spaces as usize)
     );
+    let cursor = 1 + indentation.encode_utf16().count() as u32 + spaces;
+    Some((replacement, cursor))
+}
+
+fn expand_json_brackets(input: &web_sys::HtmlTextAreaElement) -> bool {
+    let start = input.selection_start().ok().flatten().unwrap_or_default();
+    let end = input.selection_end().ok().flatten().unwrap_or(start);
+    if start != end {
+        return false;
+    }
+    let text = js_sys::JsString::from(input.value());
+    let before = text.slice(0, start).as_string().unwrap_or_default();
+    let after = text
+        .slice(end, text.length())
+        .as_string()
+        .unwrap_or_default();
+    let Some((replacement, offset)) = json_bracket_newline(&before, &after) else {
+        return false;
+    };
     if insert_text(input, start, end, &replacement) {
-        let cursor = start + 1 + indentation.encode_utf16().count() as u32 + spaces;
+        let cursor = start + offset;
         let _ = input.set_selection_range(cursor, cursor);
         true
     } else {
@@ -649,13 +661,7 @@ fn indent_json_newline(input: &web_sys::HtmlTextAreaElement) -> bool {
         .slice(0, start)
         .as_string()
         .unwrap_or_default();
-    let indentation: String = before
-        .rsplit('\n')
-        .next()
-        .unwrap_or("")
-        .chars()
-        .take_while(|ch| matches!(ch, ' ' | '\t'))
-        .collect();
+    let indentation = line_indentation(&before);
     !indentation.is_empty() && insert_text(input, start, end, &format!("\n{indentation}"))
 }
 
@@ -2634,9 +2640,13 @@ fn Editor(
         }
         event.prevent_default();
         adjusting_history.set(true);
-        let operation = cursors
-            .write()
-            .apply(&input, &kind, &event.data().unwrap_or_default());
+        let operation = if json && matches!(kind.as_str(), "insertLineBreak" | "insertParagraph") {
+            cursors.write().enter_json(&input)
+        } else {
+            cursors
+                .write()
+                .apply(&input, &kind, &event.data().unwrap_or_default())
+        };
         adjusting_history.set(false);
         if let Some(operation) = operation {
             finish_multi_edit.call((operation, ranges));
@@ -3349,7 +3359,7 @@ fn Editor(
                                     return;
                                 }
                             }
-                            if json && event.key() == Key::Enter && !event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().alt() && !event.modifiers().shift() && textarea.peek().as_ref().is_some_and(|input| expand_json_brackets(input) || indent_json_newline(input)) {
+                            if json && cursors.peek().ranges.len() < 2 && event.key() == Key::Enter && !event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().alt() && !event.modifiers().shift() && textarea.peek().as_ref().is_some_and(|input| expand_json_brackets(input) || indent_json_newline(input)) {
                                 event.prevent_default();
                             } else if event.key() == Key::Home && !event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().alt() {
                                 if let Some(input) = textarea.peek().as_ref() && smart_home(input, rendered.peek().as_ref(), event.modifiers().shift()) {

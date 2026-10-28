@@ -1,7 +1,7 @@
 //! Occurrence selections layered over the existing native text input/history.
 //! Rules follow Monaco 0.55.1 (Copyright Microsoft Corporation, MIT).
 //! Permission/warranty notice: public/assets/translator-codicon-LICENSE.txt.
-use super::{find_ranges, insert_text, NativeUndo};
+use super::{find_ranges, insert_text, json_bracket_newline, line_indentation, NativeUndo};
 use dioxus::prelude::Callback;
 use std::rc::Rc;
 use wasm_bindgen::{closure::Closure, JsCast};
@@ -217,8 +217,43 @@ impl Cursors {
         Some(operation)
     }
 
-    // Clipboard fragments can differ per cursor. Share the same atomic native
-    // edit and selection mapping with typing, rather than editing cursors in turn.
+    pub fn enter_json(&mut self, input: &web_sys::HtmlTextAreaElement) -> Option<NativeUndo> {
+        let text = js_sys::JsString::from(input.value());
+        let mut replacements = Vec::with_capacity(self.ranges.len());
+        let mut tails = Vec::with_capacity(self.ranges.len());
+        for &(start, end, _) in &self.ranges {
+            let before = text.slice(0, start).as_string().unwrap_or_default();
+            let after = text
+                .slice(end, text.length())
+                .as_string()
+                .unwrap_or_default();
+            let (inserted, cursor) = (start == end)
+                .then(|| json_bracket_newline(&before, &after))
+                .flatten()
+                .unwrap_or_else(|| {
+                    let inserted = format!("\n{}", line_indentation(&before));
+                    let cursor = inserted.encode_utf16().count() as u32;
+                    (inserted, cursor)
+                });
+            tails.push(inserted.encode_utf16().count() as u32 - cursor);
+            replacements.push((start, end, inserted));
+        }
+        let mut operation = self.replace(input, replacements, false)?;
+        // replace keeps cursor order; an expanded pair leaves its caret on the
+        // inner line, not after the closing-line indentation.
+        for (range, tail) in self.ranges.iter_mut().zip(tails) {
+            range.0 -= tail;
+            range.1 = range.0;
+        }
+        normalize(&mut self.ranges);
+        let primary = self.ranges[0].clone();
+        let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
+        operation.after_selection = Some(primary);
+        Some(operation)
+    }
+
+    // Clipboard and language-aware edits can differ per cursor. Share the same
+    // atomic native edit and selection mapping rather than editing cursors in turn.
     pub fn replace(
         &mut self,
         input: &web_sys::HtmlTextAreaElement,
