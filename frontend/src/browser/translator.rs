@@ -1373,6 +1373,88 @@ fn toggle_json_line_comments(input: &web_sys::HtmlTextAreaElement) {
     }
 }
 
+fn trim_trailing_whitespace(
+    input: &web_sys::HtmlTextAreaElement,
+    json: bool,
+) -> Option<NativeUndo> {
+    let before = input.value();
+    let start = input.selection_start().ok().flatten()?;
+    let end = input.selection_end().ok().flatten()?;
+    let direction = input
+        .selection_direction()
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let mut strings = Vec::new();
+    if json {
+        let mut offset = 0;
+        for (text, _) in json_tokens(&before) {
+            if text.starts_with('"') {
+                strings.push((offset, offset + text.len()));
+            }
+            offset += text.len();
+        }
+    }
+    let mut string_index = 0;
+    let mut offset = 0;
+    let mut utf16_offset = 0_u32;
+    let mut removed = Vec::new();
+    let mut after = String::with_capacity(before.len());
+    for line in before.split_inclusive('\n') {
+        let content = line.strip_suffix('\n').unwrap_or(line);
+        let mut keep = content.trim_end_matches([' ', '\t']).len();
+        let at = offset + keep;
+        while strings.get(string_index).is_some_and(|(_, end)| *end <= at) {
+            string_index += 1;
+        }
+        // The reference's default does not trim whitespace tokenized as a string.
+        if strings
+            .get(string_index)
+            .is_some_and(|(start, end)| *start <= at && at < *end)
+        {
+            keep = content.len();
+        }
+        if keep < content.len() {
+            let at = utf16_offset + content[..keep].encode_utf16().count() as u32;
+            removed.push((at, at + (content.len() - keep) as u32));
+        }
+        after.push_str(&content[..keep]);
+        if line.ends_with('\n') {
+            after.push('\n');
+        }
+        offset += line.len();
+        utf16_offset += line.encode_utf16().count() as u32;
+    }
+    if removed.is_empty() {
+        return None;
+    }
+    let mapped = |position: u32| {
+        position
+            - removed
+                .iter()
+                .map(|(start, end)| position.saturating_sub(*start).min(end - start))
+                .sum::<u32>()
+    };
+    let selection = (mapped(start), mapped(end), direction.clone());
+    let top = input.scroll_top();
+    let left = input.scroll_left();
+    if !insert_text(input, 0, before.encode_utf16().count() as u32, &after) {
+        return None;
+    }
+    let _ = input.set_selection_range_with_direction(selection.0, selection.1, &selection.2);
+    input.set_scroll_top(top);
+    input.set_scroll_left(left);
+    Some(NativeUndo {
+        before,
+        after: input.value(),
+        start,
+        end,
+        direction,
+        after_selection: Some(selection),
+        edits: Vec::new(),
+    })
+}
+
 fn indent_selection(input: &web_sys::HtmlTextAreaElement, backwards: bool) -> Option<NativeUndo> {
     const TAB_SIZE: u32 = 4;
     let before_value = input.value();
@@ -2136,7 +2218,7 @@ fn Editor(
     let mut find_open = use_signal(|| false);
     let mut replace_open = use_signal(|| false);
     let mut tab_focus_announcement = use_signal(String::new);
-    let mut format_chord = use_signal(|| false);
+    let mut command_chord = use_signal(|| false);
     let mut query = use_signal(String::new);
     let mut replacement = use_signal(String::new);
     let mut match_index = use_signal(|| 0_usize);
@@ -2892,8 +2974,18 @@ fn Editor(
                             }
                             let modifiers = event.modifiers();
                             let control = modifiers.ctrl() || modifiers.meta();
-                            let selection_format = *format_chord.peek() && control && !modifiers.shift() && !modifiers.alt() && key.eq_ignore_ascii_case("f");
-                            if !matches!(event.key(), Key::Control | Key::Meta | Key::Shift | Key::Alt) { format_chord.set(false); }
+                            let chord = *command_chord.peek() && control && !modifiers.shift() && !modifiers.alt();
+                            let selection_format = chord && key.eq_ignore_ascii_case("f");
+                            if !matches!(event.key(), Key::Control | Key::Meta | Key::Shift | Key::Alt) { command_chord.set(false); }
+                            if chord && key.eq_ignore_ascii_case("x") {
+                                event.prevent_default();
+                                if let Some(input) = textarea.peek().as_ref() && let Some(undo) = trim_trailing_whitespace(input, json) {
+                                    command_selections.write().record(undo);
+                                    composition_extendable.set(false);
+                                    update_cursor.call(());
+                                }
+                                return;
+                            }
                             let document_format = if web_sys::window().and_then(|window| window.navigator().user_agent().ok()).is_some_and(|agent| agent.contains("Linux")) {
                                 modifiers.ctrl() && modifiers.shift() && !modifiers.meta() && !modifiers.alt() && key.eq_ignore_ascii_case("i")
                             } else { modifiers.shift() && modifiers.alt() && !control && key.eq_ignore_ascii_case("f") };
@@ -2906,9 +2998,9 @@ fn Editor(
                                 }
                                 return;
                             }
-                            if json && control && !modifiers.shift() && !modifiers.alt() && key.eq_ignore_ascii_case("k") {
+                            if control && !modifiers.shift() && !modifiers.alt() && key.eq_ignore_ascii_case("k") {
                                 event.prevent_default();
-                                format_chord.set(true);
+                                command_chord.set(true);
                                 return;
                             }
                             if control && !modifiers.alt() && event.key() == Key::Enter {

@@ -492,6 +492,39 @@ async function main() {
       await page.waitForFunction(({ reference, long }) => (reference ? window.monaco.editor.getEditors()[0].getValue() : document.querySelector('[aria-label="Translator editor"]').value) !== long, { reference, long });
       await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       assert.ok(Math.abs(await page.evaluate(cursorTop, reference) - top) < 1, "formatting keeps the cursor at its relative viewport position");
+      const trailing = '{"emoji":"😺",  \n\t"text": "keep  ",\t \n "last": 1\n}\t ';
+      const trimmed = '{"emoji":"😺",\n\t"text": "keep  ",\n "last": 1\n}';
+      if (reference) { await page.evaluate(text => { const e = window.monaco.editor.getEditors()[0]; e.setValue(text); e.setPosition(e.getModel().getPositionAt(text.length)); e.focus(); }, trailing); await settleReferenceJson(); }
+      else { await editor().fill(trailing); await editor().evaluate(input => { input.setSelectionRange(input.value.length, input.value.length); input.focus(); }); }
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.keyboard.press("Control+k");
+      await page.keyboard.press("Control+x");
+      assert.equal(await value(), trimmed, "the whitespace chord trims the document, not the string value or leading indentation");
+      assert.equal(await cursor(), trimmed.length);
+      await page.keyboard.press("Control+z");
+      assert.equal(await value(), trailing);
+      assert.equal(await cursor(), trailing.length, "trim Undo restores the original UTF-16 caret");
+      await page.keyboard.press("Control+Shift+z");
+      assert.equal(await value(), trimmed);
+      assert.equal(await cursor(), trimmed.length);
+
+      if (reference) await settleReferenceJson();
+      await page.getByRole("button", { name: /Provider Response/ }).click();
+      const plain = "  a\t \n\t \nlast  ";
+      if (reference) {
+        await page.locator(".monaco-editor .view-lines").nth(1).waitFor();
+        await page.evaluate(text => { const e = window.monaco.editor.getEditors()[1]; e.setValue(text); e.setSelection(new window.monaco.Selection(3, 3, 1, 3)); e.focus(); }, plain);
+      } else { await editor().nth(1).fill(plain); await editor().nth(1).evaluate(input => { input.setSelectionRange(2, 11, "backward"); input.focus(); }); }
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.keyboard.press("Control+k");
+      await page.keyboard.press("Control+x");
+      const plainValue = () => reference ? page.evaluate(() => window.monaco.editor.getEditors()[1].getValue()) : editor().nth(1).inputValue();
+      const plainSelection = () => reference ? page.evaluate(() => { const e = window.monaco.editor.getEditors()[1], s = e.getSelection(), m = e.getModel(); return [m.getOffsetAt(s.getStartPosition()), m.getOffsetAt(s.getEndPosition()), s.getDirection() === 1]; }) : editor().nth(1).evaluate(input => [input.selectionStart, input.selectionEnd, input.selectionDirection === "backward"]);
+      assert.equal(await plainValue(), "  a\n\nlast");
+      assert.deepEqual(await plainSelection(), [2, 7, true], "trim maps the backward selection without collapsing it");
+      await page.keyboard.press("Control+z");
+      assert.equal(await plainValue(), plain);
+      assert.deepEqual(await plainSelection(), [2, 11, true]);
       assert.deepEqual(errors, []);
       console.log("synthetic translator formatting smoke passed");
       return;
