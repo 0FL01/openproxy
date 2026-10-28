@@ -2,6 +2,7 @@
 mod clipboard;
 mod cursor_undo;
 mod format;
+mod goto_line;
 mod grapheme;
 mod multicursor;
 
@@ -2291,6 +2292,7 @@ fn Editor(
     json: bool,
     mut tab_moves_focus: Signal<bool>,
     mut preserve_case_setting: Signal<bool>,
+    zero_based_offset: Signal<bool>,
     on_change: EventHandler<String>,
 ) -> Element {
     let mut textarea = use_signal(|| None::<web_sys::HtmlTextAreaElement>);
@@ -2319,6 +2321,8 @@ fn Editor(
     let mut ruler = use_signal(|| None::<web_sys::HtmlCanvasElement>);
     let mut has_changed = use_signal(|| !value.is_empty());
     let mut find_open = use_signal(|| false);
+    let mut goto_open = use_signal(|| false);
+    let goto_preview = use_signal(|| None::<u32>);
     let mut replace_open = use_signal(|| false);
     let mut tab_focus_announcement = use_signal(String::new);
     let mut cursor_announcement = use_signal(|| (0_u64, String::new()));
@@ -2420,7 +2424,8 @@ fn Editor(
         } else {
             0
         };
-        if !brackets.is_empty() || (find_open() && !matches.is_empty()) {
+        if !brackets.is_empty() || (find_open() && !matches.is_empty()) || goto_preview().is_some()
+        {
             let lines: Vec<_> = value.split('\n').collect();
             let mut starts = vec![0_u32];
             for (index, unit) in value.encode_utf16().enumerate() {
@@ -2505,6 +2510,24 @@ fn Editor(
                 if let Some((start, end)) = combined {
                     draw(start, end);
                 }
+            }
+            if let Some(offset) = goto_preview() {
+                let line = starts.partition_point(|start| *start <= offset) - 1;
+                let end = starts
+                    .get(line + 1)
+                    .map_or_else(|| value.encode_utf16().count() as u32, |next| *next - 1);
+                let y1 = (position_top(starts[line]).max(0) as f64 * ratio) as i32;
+                let y2 = ((position_top(end.saturating_sub(u32::from(end > starts[line]))) + 16)
+                    .max(0) as f64
+                    * ratio) as i32;
+                let center = ((y1 + y2) / 2).clamp(half_min, height as i32 - half_min);
+                context.set_fill_style_str("rgba(0,122,204,0.6)");
+                context.fill_rect(
+                    1.0,
+                    (y1.min(center - half_min)) as f64,
+                    width.saturating_sub(1) as f64,
+                    (y2.max(center + half_min) - y1.min(center - half_min)) as f64,
+                );
             }
         }
         let top = line_tops().get(line).copied().unwrap_or(line as i32 * 16)
@@ -3131,6 +3154,13 @@ fn Editor(
         ""
     };
     let replacing = if replace_open() { "replacing" } else { "" };
+    let preview_line = goto_preview().map(|offset| {
+        value
+            .encode_utf16()
+            .take(offset as usize)
+            .filter(|unit| *unit == 10)
+            .count()
+    });
     rsx! {
         div { style: "height:400px;position:relative;background:#1e1e1e;color:#d4d4d4;",
             onfocusin: move |_| { widget_focused.set(true); update_cursor.call(()); },
@@ -3152,7 +3182,7 @@ fn Editor(
                     pre { aria_hidden: "true", style: "position:absolute;top:{text_top}px;left:0;right:0;margin:0;white-space:pre-wrap;overflow-wrap:anywhere;pointer-events:none;font-family:'Droid Sans Mono',monospace;font-size:12px;line-height:16px;tab-size:4;",
                         onmounted: move |event| { if let Some(element) = event.data().downcast::<web_sys::Element>() && let Ok(element) = element.clone().dyn_into::<web_sys::HtmlElement>() { rendered.set(Some(element)); } },
                         for (line, segments) in lines.iter().enumerate() {
-                            { let in_range = selected_lines.as_ref().is_some_and(|range| range.contains(&line)); let layer = if in_range { "z-index:0;" } else { "" }; rsx! {
+                            { let in_range = selected_lines.as_ref().is_some_and(|range| range.contains(&line)); let in_preview = preview_line == Some(line); let layer = if in_range || in_preview { "z-index:0;" } else { "" }; rsx! {
                             div { key: "{line}", style: "position:relative;width:{wrapping_width};min-height:16px;padding-left:{wrapping_indent}px;text-indent:-{wrapping_indent}px;{layer}",
                                 if in_range { div { class: "find-range-highlight", style: "position:absolute;z-index:-1;top:0;left:0;width:{current_line_width}px;height:100%;background:rgba(255,255,255,.04);" } }
                                 if let Some(line_guides) = guides.get(line) {
@@ -3161,6 +3191,7 @@ fn Editor(
                                     }
                                 }
                                 if line == active_line() && !has_selection() { div { style: "position:absolute;top:{active_visual_top}px;left:0;width:{current_line_width}px;height:16px;border:2px solid #282828;" } }
+                                if in_preview { div { class: "goto-range-highlight", style: "position:absolute;z-index:1;top:0;left:0;width:{current_line_width}px;height:100%;background:rgba(255,255,255,.04);" } }
                                 if let Some(highlighted) = &highlighted {
                                     for (index, (text, color, matched, bracket)) in highlighted[line].iter().enumerate() {
                                         { let background = match (matched, bracket) { (Some(index), true) if selected_match && *index == current_match => "linear-gradient(rgba(0,100,0,.1),rgba(0,100,0,.1)),#515c6a", (Some(_), true) => "linear-gradient(rgba(0,100,0,.1),rgba(0,100,0,.1)),rgba(234,92,0,.33)", (None, true) => "rgba(0,100,0,.1)", (Some(index), false) if selected_match && *index == current_match => "#515c6a", (Some(_), false) => "rgba(234,92,0,.33)", (None, false) => "transparent" }; let padding = if *bracket || matched.is_some() { "1px 0" } else { "0" }; let border = if *bracket { "inset 0 0 0 1px #888" } else { "none" }; rsx! {
@@ -3210,6 +3241,11 @@ fn Editor(
                             }
                             let modifiers = event.modifiers();
                             let control = modifiers.ctrl() || modifiers.meta();
+                            if control && !modifiers.alt() && !modifiers.shift() && key.eq_ignore_ascii_case("g") {
+                                event.prevent_default();
+                                goto_open.set(true);
+                                return;
+                            }
                             let linux = web_sys::window().and_then(|window| window.navigator().user_agent().ok()).is_some_and(|agent| agent.contains("Linux"));
                             let add_cursor = if linux { modifiers.shift() && (modifiers.alt() && !control || control && !modifiers.alt()) } else { control && modifiers.alt() && !modifiers.shift() };
                             if add_cursor && matches!(event.key(), Key::ArrowUp | Key::ArrowDown) {
@@ -3651,6 +3687,23 @@ fn Editor(
                 canvas { aria_hidden: "true", style: "position:absolute;transform:translate3d(0,0,0);contain:strict;top:0;right:0;width:14px;height:400px;pointer-events:none;", onmounted: move |event| { if let Some(element) = event.data().downcast::<web_sys::Element>() && let Ok(canvas) = element.clone().dyn_into::<web_sys::HtmlCanvasElement>() { ruler.set(Some(canvas)); } } }
                 if !tab_focus_announcement().is_empty() { div { role: "alert", aria_atomic: "true", style: "position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;", "{tab_focus_announcement}" } }
                 div { role: "status", aria_atomic: "true", style: "position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;", span { key: "{cursor_announcement().0}", "{cursor_announcement().1}" } }
+                if goto_open() && let (Some(input), Some(element)) = (textarea(), rendered()) {
+                    goto_line::GoToLine { value: value.clone(), input, rendered: element, width: editor_width() + 76, zero_based: zero_based_offset, preview: goto_preview,
+                        on_close: move |_| goto_open.set(false),
+                        on_accept: move |_| {
+                            cursors.set(multicursor::Cursors::default());
+                            command_selections.write().stop_typing();
+                            composition_extendable.set(false);
+                            update_cursor.call(());
+                            if let Some(input) = textarea.peek().as_ref() {
+                                let position = input.selection_start().ok().flatten().unwrap_or_default() as usize;
+                                let line = input.value().encode_utf16().take(position).filter(|unit| *unit == 10).count();
+                                let message = input.value().split('\n').nth(line).unwrap_or("").to_owned();
+                                cursor_announcement.with_mut(|(version, text)| { *version = version.wrapping_add(1); *text = message; });
+                            }
+                        }
+                    }
+                }
                 if find_open() { div { role: "dialog", aria_label: "Find / Replace", class: "translator-find {find_layout} {replacing}",
                     button { r#type: "button", class: "find-icon find-toggle", aria_label: "Toggle Replace", aria_expanded: "{replace_open}", onclick: move |_| { let next = !*replace_open.peek(); replace_open.set(next); }, if replace_open() { "" } else { "" } }
                     div { class: "find-row",
@@ -3708,6 +3761,7 @@ pub(super) fn TranslatorPage() -> Element {
     let mut contents = use_signal(|| vec![String::new(); STEPS.len()]);
     let tab_moves_focus = use_signal(|| false);
     let preserve_case_setting = use_signal(|| false);
+    let zero_based_offset = use_signal(|| false);
     let mut expanded = use_signal(|| vec![true, false, false, false, false, false, false]);
     let mut loading = use_signal(HashSet::<usize>::new);
     let meta = use_signal(|| None::<Value>);
@@ -3876,7 +3930,7 @@ pub(super) fn TranslatorPage() -> Element {
                                 } }
                             }
                             if is_expanded {
-                                div { class: "border border-hairline rounded-mini-lg overflow-hidden", section { style: "display:flex;position:relative;text-align:initial;width:100%;height:400px;", div { style: "width:100%;", Editor { value: content.clone(), json: step < 4, tab_moves_focus, preserve_case_setting, on_change: move |value: String| { let changed = contents.peek()[step] != value; if changed { contents.write()[step] = value.clone(); if step == 0 { detect_meta(&value, meta); } } } } } } }
+                                div { class: "border border-hairline rounded-mini-lg overflow-hidden", section { style: "display:flex;position:relative;text-align:initial;width:100%;height:400px;", div { style: "width:100%;", Editor { value: content.clone(), json: step < 4, tab_moves_focus, preserve_case_setting, zero_based_offset, on_change: move |value: String| { let changed = contents.peek()[step] != value; if changed { contents.write()[step] = value.clone(); if step == 0 { detect_meta(&value, meta); } } } } } } }
                                 div { class: "flex gap-2 flex-wrap",
                                     Button { label: "Load".to_owned(), icon: "folder_open".to_owned(), variant: "outline", small: true, loading: busy.contains(&(step + 10)), onclick: move |_| load.call(step) }
                                     Button { label: "Format".to_owned(), icon: "data_object".to_owned(), variant: "outline", small: true, onclick: move |_| { let raw = contents.peek()[step].clone(); if let Ok(value) = serde_json::from_str::<Value>(&raw) { contents.write()[step] = pretty(&value); } } }

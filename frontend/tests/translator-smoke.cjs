@@ -86,7 +86,7 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
-    if (process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1" || process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1" || process.env.TRANSLATOR_MULTI_VERTICAL_ONLY === "1" || process.env.TRANSLATOR_ADD_CURSORS_ONLY === "1") {
+    if (process.env.TRANSLATOR_GOTO_LINE_ONLY === "1" || process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1" || process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1" || process.env.TRANSLATOR_MULTI_VERTICAL_ONLY === "1" || process.env.TRANSLATOR_ADD_CURSORS_ONLY === "1") {
       const index = process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" ? 0 : 1;
       if (index === 1) await page.getByRole("button", { name: /Provider Response/ }).click();
       if (reference) await page.locator(".monaco-editor .view-lines").nth(index).waitFor();
@@ -114,6 +114,95 @@ async function main() {
         else await input().evaluate((input, [start, end]) => { input.setSelectionRange(start, end); input.dispatchEvent(new Event("select", { bubbles: true })); }, [start, end]);
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       };
+      if (process.env.TRANSLATOR_GOTO_LINE_ONLY === "1") {
+        const initial = "alpha\n😺beta\ngamma\nlast";
+        const box = () => page.getByRole("textbox", { name: /^(Type a (line number|character position) to go to|Press 'Enter' to go to line)/ });
+        const focus = async () => { if (reference) await page.evaluate(() => window.monaco.editor.getEditors()[1].focus()); else await input().focus(); };
+        const open = async () => { await focus(); await page.keyboard.press("Control+g"); await box().waitFor(); };
+        const scroll = () => reference ? page.evaluate(() => window.monaco.editor.getEditors()[1].getScrollTop()) : input().evaluate(input => input.scrollTop);
+        await setText(initial, 2, 4);
+        await open();
+        assert.equal(await box().inputValue(), ":");
+        await box().fill(":invalid");
+        await box().press("Enter");
+        assert.equal(await box().isVisible(), true, "an invalid destination cannot close the picker");
+        assert.deepEqual(await primary(), [2, 4]);
+        await box().fill(":3:2");
+        await page.getByRole("option", { name: "Press 'Enter' to go to line 3 at column 2.", exact: true }).waitFor();
+        assert.deepEqual(await primary(), [2, 4], "preview must not change the actual selection");
+        await box().press("Escape");
+        await box().waitFor({ state: "hidden" });
+        assert.deepEqual(await primary(), [2, 4]);
+        await open();
+        await box().fill(":-1,-1");
+        await box().press("Enter");
+        await box().waitFor({ state: "hidden" });
+        assert.deepEqual(await primary(), [initial.length - 1, initial.length - 1]);
+        await open();
+        await box().fill(":999#999");
+        await box().press("Enter");
+        await box().waitFor({ state: "hidden" });
+        assert.deepEqual(await primary(), [initial.length, initial.length], "line and column are clamped");
+        await open();
+        await box().fill("::9");
+        await page.getByRole("option", { name: "Press 'Enter' to go to line 2 at column 3.", exact: true }).waitFor();
+        const zero = page.getByRole("checkbox", { name: "Use Zero-Based Offset", exact: true });
+        assert.equal(await zero.getAttribute("aria-checked"), "false");
+        await zero.click();
+        await page.getByRole("option", { name: "Press 'Enter' to go to line 2 at column 4.", exact: true }).waitFor();
+        await box().press("End");
+        await box().press("ArrowRight");
+        assert.equal(await box().isVisible(), true, "background acceptance keeps the picker open");
+        assert.deepEqual(await primary(), [9, 9], "offsets are UTF-16, including astral characters");
+        await box().fill("::invalid");
+        assert.equal(await box().getAttribute("aria-label"), `Type a character position to go to (from 0 to ${initial.length - 1}).`);
+        await box().press("Escape");
+        await box().waitFor({ state: "hidden" });
+        assert.deepEqual(await primary(), [9, 9], "cancel after background acceptance retains the accepted position");
+
+        // A blank current line keeps unrelated word-highlight restoration out of this scroll check.
+        const tall = Array.from({ length: 80 }, (_, i) => i === 29 ? "" : `row ${i + 1} 😺 abc`).join("\n");
+        const tallCursor = tall.indexOf("\n\n") + 1;
+        await setText(tall, tallCursor);
+        if (reference) await page.evaluate(() => window.monaco.editor.getEditors()[1].setScrollTop(400));
+        else await input().evaluate(input => { input.scrollTop = 400; });
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        const before = await scroll();
+        await open();
+        await box().fill(":75");
+        await waitFor(async () => await scroll() > before + 200);
+        assert.deepEqual(await primary(), [tallCursor, tallCursor]);
+        await box().press("Escape");
+        await box().waitFor({ state: "hidden" });
+        await waitFor(async () => Math.abs(await scroll() - before) < 1);
+
+        await setText("cat cat", 1);
+        await page.keyboard.press("Control+Shift+l");
+        await waitFor(async () => await count() === 2);
+        await open();
+        await box().fill(":1:2");
+        await box().press("Enter");
+        await box().waitFor({ state: "hidden" });
+        await waitFor(async () => await count() === 1);
+        await page.keyboard.type("X");
+        assert.equal(await text(), "cXat cat", "acceptance collapses to a single editor cursor and restores focus");
+
+        await open();
+        await page.getByRole("heading", { name: "Translator Debug", exact: true }).click();
+        await box().waitFor({ state: "hidden" });
+        const focused = reference ? await page.evaluate(() => window.monaco.editor.getEditors()[1].hasTextFocus()) : await input().evaluate(input => input === document.activeElement);
+        assert.equal(focused, false, "outside clicks must not steal focus back to the editor");
+        await page.getByRole("button", { name: /OpenAI Response/ }).click();
+        if (reference) { await page.locator(".monaco-editor .view-lines").nth(2).waitFor(); await page.evaluate(() => window.monaco.editor.getEditors()[2].focus()); }
+        else await editor().nth(2).focus();
+        await page.keyboard.press("Control+g");
+        await box().fill("::1");
+        assert.equal(await zero.getAttribute("aria-checked"), "true", "offset mode is shared with another stage in page memory");
+        await box().press("Escape");
+        assert.deepEqual(errors, []);
+        console.log("synthetic translator Go to Line smoke passed");
+        return;
+      }
       if (process.env.TRANSLATOR_ADD_CURSORS_ONLY === "1") {
         const initial = "alpha cat\nx\nlonger text\nlast";
         await setText(initial, 8);

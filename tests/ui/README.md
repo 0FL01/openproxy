@@ -18,13 +18,17 @@ section or screen when testing a partially migrated dashboard.
 
 ## Translator reference (work in progress)
 
-`UI_PARITY_SECTION=translator` includes empty, populated, wrapped, Find and Replace editor states.
+`UI_PARITY_SECTION=translator` includes empty, populated, wrapped, Find, Replace,
+Go to Line (`:3:2`) and Go to Offset (`::9`, zero-based) editor states.
 Recording the Astro reference requires the locally installed Monaco 0.55.1
 `min/vs` directory mounted read-only at `/monaco-vs` (or set
 `UI_MONACO_VS_DIR`); the test fulfills its CDN URLs from those local files and
 blocks all other external requests. The Dioxus candidate does not ship Monaco.
 These references self-repeat, but the candidate has not yet matched them at
 AE=0 and its editor is not a full Monaco replacement.
+The Go to Line/Offset fixtures focus the query after changing offset mode and
+move the pointer away before capture so Monaco's transient toggle hover closes
+through its normal interaction; no pixels or DOM are masked or hidden.
 
 | Scenario | State captured |
 |---|---|

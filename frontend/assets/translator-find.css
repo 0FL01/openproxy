@@ -112,3 +112,23 @@
 
 /* Match the additional occurrence selections without painting duplicate text. */
 .translator-occurrences::selection { background: #264f78; color: transparent; }
+
+.translator-goto {
+  position: absolute;
+  top: 0;
+  z-index: 6;
+  border-radius: 6px;
+  color: #ccc;
+  background: #252526;
+  box-shadow: 0 0 8px 2px rgba(0, 0, 0, .36);
+  font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", HelveticaNeue-Light, system-ui, Ubuntu, "Droid Sans", sans-serif;
+}
+.translator-goto .goto-header { padding: 6px 6px 2px; }
+.translator-goto .goto-input-box { position: relative; background: #3c3c3c; border: 1px solid transparent; border-radius: 2px; }
+.translator-goto .goto-input-box:focus-within { outline: 1px solid #007fd4; outline-offset: -1px; }
+.translator-goto input { display: block; box-sizing: border-box; width: calc(100% - 22px); height: 26px; margin: 0; padding: 4px 6px; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; }
+.translator-goto input:focus { outline: 1px solid #007fd4; outline-offset: -1px; }
+.translator-goto .goto-offset { position: absolute; top: 2px; right: 1px; width: 20px; height: 20px; padding: 1px; border: 1px solid transparent; border-radius: 3px; color: #ccc; font: 16px/16px "OpenProxy Codicons"; }
+.translator-goto .goto-offset[aria-checked="true"] { background: #007fd466; border-color: #007acc; color: #fff; }
+.translator-goto .goto-results { margin: 2px 6px 5px; }
+.translator-goto .goto-results button { display: block; width: 100%; height: 22px; padding: 0 18px 0 11px; border-radius: 3px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: left; background: #04395e; color: #fff; font: inherit; line-height: 22px; }

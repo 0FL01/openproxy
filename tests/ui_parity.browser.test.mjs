@@ -23,6 +23,8 @@ const translatorFixtures = {
   wrapped: `{\n  "message": "${"x".repeat(200)}",\n  "count": 42\n}`,
   find: '{"message":"needle needle"}',
   replace: '{"message":"needle needle"}',
+  "goto-line": '{\n  "model": "fixture",\n  "count": 42,\n  "enabled": true\n}',
+  "goto-offset": '{\n  "model": "fixture",\n  "count": 42,\n  "enabled": true\n}',
 };
 const callbackCodeQuery = "?code=fixture-code&state=fixture-state";
 const callbackErrorQuery = "?error=fixture-error&error_description=Fixture+authorization+denied&state=fixture-state";
@@ -159,6 +161,8 @@ const screens = [
   { section: "translator", name: "wrapped" },
   { section: "translator", name: "find" },
   { section: "translator", name: "replace" },
+  { section: "translator", name: "goto-line" },
+  { section: "translator", name: "goto-offset" },
   { section: "callback", name: "code", query: callbackCodeQuery, colorScheme: "light" },
   { section: "callback", name: "error", query: callbackErrorQuery, colorScheme: "light" },
   { section: "callback", name: "no-auth-data", query: "", colorScheme: "light" },
@@ -910,6 +914,21 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     await page.getByRole("dialog", { name: "Find / Replace" }).getByLabel("Find", { exact: true }).waitFor();
                     if (screen.name === "replace") await page.getByRole("dialog", { name: "Find / Replace" }).getByLabel("Find", { exact: true }).fill("needle");
                     await page.getByText("1 of 2", { exact: true }).waitFor({ state: "attached" });
+                  }
+                  if (screen.name.startsWith("goto-")) {
+                    if (mode === "record") await page.evaluate(() => window.monaco.editor.getEditors()[0].focus());
+                    else await page.getByLabel("Translator editor").focus();
+                    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+                    await page.keyboard.press("Control+g");
+                    const input = page.getByRole("textbox", { name: /Type a line number to go to/ });
+                    await input.waitFor();
+                    await input.fill(screen.name === "goto-line" ? ":3:2" : "::9");
+                    if (screen.name === "goto-offset") await page.getByRole("checkbox", { name: "Use Zero-Based Offset" }).click();
+                    const label = screen.name === "goto-line" ? "Press 'Enter' to go to line 3 at column 2." : "Press 'Enter' to go to line 2 at column 8.";
+                    await page.getByRole("option", { name: label, exact: true }).waitFor();
+                    await page.getByRole("textbox", { name: label, exact: true }).focus();
+                    await page.mouse.move(1, 1);
+                    await page.locator(".monaco-hover:visible").waitFor({ state: "hidden" });
                   }
                   await page.waitForLoadState("networkidle");
                   await page.mouse.move(1, 1);
