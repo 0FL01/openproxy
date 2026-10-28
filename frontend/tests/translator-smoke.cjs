@@ -86,7 +86,7 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
-    if (process.env.TRANSLATOR_MULTI_UNICODE_DELETE_ONLY === "1" || process.env.TRANSLATOR_MULTI_COMMENT_ONLY === "1" || process.env.TRANSLATOR_GOTO_LINE_ONLY === "1" || process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1" || process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1" || process.env.TRANSLATOR_MULTI_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_DELETE_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_INDENT_ONLY === "1" || process.env.TRANSLATOR_MULTI_HOME_END_ONLY === "1" || process.env.TRANSLATOR_MULTI_DOCUMENT_EDGES_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAGE_ONLY === "1" || process.env.TRANSLATOR_MULTI_VERTICAL_ONLY === "1" || process.env.TRANSLATOR_ADD_CURSORS_ONLY === "1") {
+    if (process.env.TRANSLATOR_COMMANDS_ONLY === "1" || process.env.TRANSLATOR_MULTI_UNICODE_DELETE_ONLY === "1" || process.env.TRANSLATOR_MULTI_COMMENT_ONLY === "1" || process.env.TRANSLATOR_GOTO_LINE_ONLY === "1" || process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1" || process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1" || process.env.TRANSLATOR_MULTI_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_DELETE_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_INDENT_ONLY === "1" || process.env.TRANSLATOR_MULTI_HOME_END_ONLY === "1" || process.env.TRANSLATOR_MULTI_DOCUMENT_EDGES_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAGE_ONLY === "1" || process.env.TRANSLATOR_MULTI_VERTICAL_ONLY === "1" || process.env.TRANSLATOR_ADD_CURSORS_ONLY === "1") {
       const index = process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_MULTI_COMMENT_ONLY === "1" ? 0 : 1;
       if (index === 1) await page.getByRole("button", { name: /Provider Response/ }).click();
       if (reference) await page.locator(".monaco-editor .view-lines").nth(index).waitFor();
@@ -114,6 +114,69 @@ async function main() {
         else await input().evaluate((input, [start, end]) => { input.setSelectionRange(start, end); input.dispatchEvent(new Event("select", { bubbles: true })); }, [start, end]);
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       };
+      if (process.env.TRANSLATOR_COMMANDS_ONLY === "1") {
+        const palette = () => reference ? page.locator(".quick-input-widget input:visible") : page.locator(".translator-commands input");
+        const open = async label => {
+          await page.keyboard.press("F1");
+          await palette().waitFor();
+          assert.equal(await palette().inputValue(), ">");
+          await palette().fill(`>${label}`);
+          await page.getByRole("option", { name: label }).waitFor();
+        };
+        await setText("keep this selection", 5, 9);
+        await open("Transform to Uppercase");
+        assert.deepEqual(await primary(), [5, 9], "filtering commands does not move the editor selection");
+        await page.keyboard.press("Escape");
+        assert.equal(await text(), "keep this selection");
+        assert.deepEqual(await primary(), [5, 9]);
+
+        for (const [label, original, expected] of [
+          ["Transform to Uppercase", "Straße Привет", "STRASSE ПРИВЕТ"],
+          ["Transform to Lowercase", "İSTANBUL STRASSE", "i\u0307stanbul strasse"],
+          ["Transform to Title Case", "hELLO don't 'STOP' ПРИВЕТ", "Hello Don't 'Stop' Привет"],
+          ["Transform to Snake Case", "helloWorld HTTPServer2Value", "hello_world http_server2_value"],
+          ["Transform to Camel Case", "Hello_world-two words", "helloWorldTwoWords"],
+          ["Transform to Pascal Case", "HTTP server_name-test", "HttpServerNameTest"],
+          ["Transform to Kebab Case", "HTTPServer_helloWorld", "http-server-hello-world"],
+        ]) {
+          await setText(original, 0, original.length);
+          await open(label);
+          await page.keyboard.press("Enter");
+          await palette().waitFor({ state: "hidden" });
+          await waitFor(async () => await text() === expected);
+          assert.deepEqual(await primary(), [0, expected.length]);
+          await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+          await page.keyboard.press("Control+z");
+          assert.equal(await text(), original);
+          assert.deepEqual(await primary(), [0, original.length]);
+          await page.keyboard.press("Control+Shift+z");
+          assert.equal(await text(), expected);
+        }
+        await setText("foo Straße bar", 6);
+        await open("Transform to Uppercase");
+        await page.keyboard.press("Enter");
+        await waitFor(async () => await text() === "foo STRASSE bar");
+        assert.deepEqual(await primary(), [6, 6], "an empty selection transforms its configured word without moving the cursor");
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), "foo Straße bar");
+        assert.deepEqual(await primary(), [6, 6]);
+
+        await setText("Straße / Straße", 0, 6);
+        await page.keyboard.press("Control+Shift+l");
+        await waitFor(async () => await count() === 2);
+        await open("Transform to Uppercase");
+        await page.keyboard.press("Enter");
+        await waitFor(async () => await text() === "STRASSE / STRASSE");
+        assert.deepEqual(await primary(), [0, 7]);
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), "Straße / Straße");
+        await page.keyboard.type("X");
+        assert.equal(await text(), "X / X", "Undo restores both command selections");
+
+        assert.deepEqual(errors, []);
+        console.log("synthetic Translator command palette and case transforms passed");
+        return;
+      }
       if (process.env.TRANSLATOR_MULTI_COMMENT_ONLY === "1") {
         const choose = async (value, start, end) => {
           await setText(value, start, end);

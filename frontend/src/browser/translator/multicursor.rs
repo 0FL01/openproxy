@@ -25,6 +25,30 @@ pub(super) fn selection(input: &web_sys::HtmlTextAreaElement) -> Selection {
     )
 }
 
+fn word_at(text: &str, position: u32, json: bool) -> Option<(u32, u32)> {
+    let text = js_sys::JsString::from(text);
+    let before = text.slice(0, position).as_string()?;
+    let line_start = before
+        .rfind('\n')
+        .map_or(0, |byte| before[..=byte].encode_utf16().count() as u32);
+    let line = text.slice(line_start, text.length()).as_string()?;
+    let line = line.split('\n').next().unwrap_or_default();
+    let pattern = if json {
+        r#"(-?\d*\.\d\w*)|([^\[\{\]\}\:\",\s]+)"#
+    } else {
+        r#"(-?\d*\.\d\w*)|([^`~!@#$%^&*()\-=+\[\{\]\}\\|;:'\",.<>/?\s]+)"#
+    };
+    let words = js_sys::RegExp::new(pattern, "g");
+    while let Some(found) = words.exec(line) {
+        let end = words.last_index() + line_start;
+        let start = end - found.get(0).length();
+        if start <= position && position <= end {
+            return Some((start, end));
+        }
+    }
+    None
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum WordClass {
     Regular,
@@ -970,31 +994,9 @@ impl Cursors {
         let string = js_sys::JsString::from(text.as_str());
         if self.query.is_none() {
             let (start, end) = if primary.0 == primary.1 {
-                let before = string.slice(0, primary.0).as_string().unwrap_or_default();
-                let line_start = before
-                    .rfind('\n')
-                    .map_or(0, |byte| before[..=byte].encode_utf16().count() as u32);
-                let line = js_sys::JsString::from(text.as_str())
-                    .slice(line_start, string.length())
-                    .as_string()
-                    .unwrap_or_default();
-                let line = line.split('\n').next().unwrap_or_default();
-                let pattern = if json {
-                    r#"(-?\d*\.\d\w*)|([^\[\{\]\}\:\",\s]+)"#
-                } else {
-                    r#"(-?\d*\.\d\w*)|([^`~!@#$%^&*()\-=+\[\{\]\}\\|;:'\",.<>/?\s]+)"#
+                let Some(word) = word_at(&text, primary.0, json) else {
+                    return;
                 };
-                let words = js_sys::RegExp::new(pattern, "g");
-                let mut word = None;
-                while let Some(found) = words.exec(line) {
-                    let end = words.last_index() + line_start;
-                    let start = end - found.get(0).length();
-                    if start <= primary.0 && primary.0 <= end {
-                        word = Some((start, end));
-                        break;
-                    }
-                }
-                let Some(word) = word else { return };
                 word
             } else {
                 (primary.0, primary.1)
@@ -1704,6 +1706,72 @@ impl Cursors {
             range.2 = direction;
         }
         normalize(&mut self.ranges);
+        let primary = self.ranges[0].clone();
+        let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
+        operation.after_selection = Some(primary);
+        Some(operation)
+    }
+
+    pub fn transform_case(
+        &mut self,
+        input: &web_sys::HtmlTextAreaElement,
+        command: super::commands::Command,
+        json: bool,
+    ) -> Option<NativeUndo> {
+        let before = input.value();
+        if self.ranges.first() != Some(&selection(input)) {
+            return None;
+        }
+        let text = js_sys::JsString::from(before.as_str());
+        let mut changed = false;
+        let replacements: Vec<_> = self
+            .ranges
+            .iter()
+            .map(|range| {
+                let (start, end) = if range.0 == range.1 {
+                    word_at(&before, range.0, json).unwrap_or((range.0, range.1))
+                } else {
+                    (range.0, range.1)
+                };
+                let original = text.slice(start, end).as_string().unwrap_or_default();
+                let replacement = command.transform(&original);
+                changed |= replacement != original;
+                (start, end, replacement)
+            })
+            .collect();
+        if !changed {
+            return None;
+        }
+        let mut order: Vec<_> = replacements.iter().enumerate().collect();
+        order.sort_by_key(|(_, (start, end, _))| (*start, *end));
+        let mut ranges = self.ranges.clone();
+        let mut delta = 0_i64;
+        let mut previous_end = 0_u32;
+        for (index, (start, end, replacement)) in order {
+            if *start < previous_end {
+                return None;
+            }
+            let length = replacement.encode_utf16().count() as u32;
+            let new_start = (*start as i64 + delta) as u32;
+            let range = &mut ranges[index];
+            if range.0 == range.1 {
+                let offset = if range.0 == *end {
+                    length
+                } else {
+                    (range.0 - start).min(length)
+                };
+                range.0 = new_start + offset;
+                range.1 = range.0;
+            } else {
+                range.0 = new_start;
+                range.1 = new_start + length;
+            }
+            delta += i64::from(length) - i64::from(end - start);
+            previous_end = *end;
+        }
+        let mut operation = self.replace(input, replacements, false)?;
+        normalize(&mut ranges);
+        self.ranges = ranges;
         let primary = self.ranges[0].clone();
         let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
         operation.after_selection = Some(primary);

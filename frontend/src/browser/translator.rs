@@ -1,5 +1,6 @@
 //! Translator stages and their same-origin dashboard API actions.
 mod clipboard;
+mod commands;
 mod cursor_undo;
 mod format;
 mod goto_line;
@@ -2365,6 +2366,7 @@ fn Editor(
         layout
     });
     let mut goto_open = use_signal(|| false);
+    let mut commands_open = use_signal(|| false);
     let goto_preview = use_signal(|| None::<u32>);
     let mut replace_open = use_signal(|| false);
     let mut tab_focus_announcement = use_signal(String::new);
@@ -2699,6 +2701,31 @@ fn Editor(
             update_cursor.call(());
         },
     );
+    let run_command = use_callback(move |command: commands::Command| {
+        commands_open.set(false);
+        command_selections.write().stop_typing();
+        composition_extendable.set(false);
+        let Some(input) = textarea.peek().clone() else {
+            return;
+        };
+        let _ = input.focus();
+        let ranges = cursors.peek().ranges.clone();
+        if ranges.len() > 1 && ranges.first() == Some(&multicursor::selection(&input)) {
+            adjusting_history.set(true);
+            let operation = cursors.write().transform_case(&input, command, json);
+            adjusting_history.set(false);
+            if let Some(operation) = operation {
+                finish_multi_edit.call((operation, ranges));
+            }
+        } else {
+            let mut single = multicursor::Cursors::default();
+            single.ranges.push(multicursor::selection(&input));
+            if let Some(operation) = single.transform_case(&input, command, json) {
+                command_selections.write().record(operation);
+                update_cursor.call(());
+            }
+        }
+    });
     let before_input = use_callback(move |event: web_sys::InputEvent| {
         if *adjusting_history.peek() || event.is_composing() || !event.cancelable() {
             return;
@@ -3294,6 +3321,13 @@ fn Editor(
                         onkeydown: move |event| {
                             if event.is_composing() { return; }
                             let key = event.key().to_string();
+                            if event.key() == Key::F1 {
+                                event.prevent_default();
+                                command_chord.set(false);
+                                goto_open.set(false);
+                                commands_open.set(true);
+                                return;
+                            }
                             if let Some(input) = textarea.peek().as_ref() {
                                 cursor_history.write().observe(input, &cursors.peek().ranges);
                             }
@@ -3829,6 +3863,11 @@ fn Editor(
                 canvas { aria_hidden: "true", style: "position:absolute;transform:translate3d(0,0,0);contain:strict;top:0;right:0;width:14px;height:400px;pointer-events:none;", onmounted: move |event| { if let Some(element) = event.data().downcast::<web_sys::Element>() && let Ok(canvas) = element.clone().dyn_into::<web_sys::HtmlCanvasElement>() { ruler.set(Some(canvas)); } } }
                 if !tab_focus_announcement().is_empty() { div { role: "alert", aria_atomic: "true", style: "position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;", "{tab_focus_announcement}" } }
                 div { role: "status", aria_atomic: "true", style: "position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;", span { key: "{cursor_announcement().0}", "{cursor_announcement().1}" } }
+                if commands_open() {
+                    commands::CommandPalette { width: editor_width() + 76, on_run: run_command,
+                        on_cancel: move |focus| { commands_open.set(false); if focus && let Some(input) = textarea.peek().as_ref() { let _ = input.focus(); } }
+                    }
+                }
                 if goto_open() && let (Some(input), Some(element)) = (textarea(), rendered()) {
                     goto_line::GoToLine { value: value.clone(), input, rendered: element, width: editor_width() + 76, zero_based: zero_based_offset, preview: goto_preview,
                         on_close: move |_| goto_open.set(false),

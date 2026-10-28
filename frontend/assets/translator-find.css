@@ -136,3 +136,7 @@
 .translator-goto .goto-offset[aria-checked="true"] { background: #007fd466; border-color: #007acc; color: #fff; }
 .translator-goto .goto-results { margin: 2px 6px 5px; }
 .translator-goto .goto-results button { display: block; width: 100%; height: 22px; padding: 0 18px 0 11px; border-radius: 3px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: left; background: #04395e; color: #fff; font: inherit; line-height: 22px; }
+
+.translator-commands input { width: 100%; }
+.translator-commands .goto-results button { color: inherit; background: transparent; }
+.translator-commands .goto-results button[aria-selected="true"] { color: #fff; background: #04395e; }
