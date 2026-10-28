@@ -906,18 +906,36 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     // outside "needle" so its asynchronous occurrence request
                     // cannot race the Find highlights in the pinned reference.
                     const offset = screen.name === "replace" ? 0 : translatorFixtures[screen.name].indexOf("needle");
-                    if (mode === "record") {
-                      await page.evaluate(offset => { const editor = window.monaco.editor.getEditors()[0]; editor.setPosition(editor.getModel().getPositionAt(offset)); editor.focus(); }, offset);
+                    if (mode === "record" && screen.name === "find") {
+                      // Run the normal Find action without a native-text focus
+                      // detour that can seed asynchronous word highlights.
+                      const textFocused = await page.evaluate(async offset => {
+                        const editor = window.monaco.editor.getEditors()[0];
+                        const textFocused = editor.hasTextFocus();
+                        editor.setPosition(editor.getModel().getPositionAt(offset));
+                        await editor.getAction("actions.find").run();
+                        return textFocused;
+                      }, offset);
+                      assert.equal(textFocused, false, "Find reference must start outside native text focus");
                     } else {
-                      const editor = page.getByLabel("Translator editor");
-                      await editor.focus();
-                      await editor.evaluate((element, offset) => { element.setSelectionRange(offset, offset); }, offset);
+                      if (mode === "record") {
+                        await page.evaluate(offset => { const editor = window.monaco.editor.getEditors()[0]; editor.setPosition(editor.getModel().getPositionAt(offset)); editor.focus(); }, offset);
+                      } else {
+                        const editor = page.getByLabel("Translator editor");
+                        await editor.focus();
+                        await editor.evaluate((element, offset) => { element.setSelectionRange(offset, offset); }, offset);
+                      }
+                      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+                      await page.keyboard.press(screen.name === "replace" ? "Control+h" : "Control+f");
                     }
-                    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-                    await page.keyboard.press(screen.name === "replace" ? "Control+h" : "Control+f");
-                    await page.getByRole("dialog", { name: "Find / Replace" }).getByLabel("Find", { exact: true }).waitFor();
-                    if (screen.name === "replace") await page.getByRole("dialog", { name: "Find / Replace" }).getByLabel("Find", { exact: true }).fill("needle");
+                    const find = page.getByRole("dialog", { name: "Find / Replace" }).getByLabel("Find", { exact: true });
+                    await find.waitFor();
+                    if (screen.name === "replace") await find.fill("needle");
                     await page.getByText("1 of 2", { exact: true }).waitFor({ state: "attached" });
+                    if (screen.name === "find") {
+                      assert.equal(await find.inputValue(), "needle");
+                      assert.deepEqual(await find.evaluate(element => [element.selectionStart, element.selectionEnd]), [0, 6]);
+                    }
                   }
                   if (screen.name.startsWith("goto-")) {
                     if (mode === "record") await page.evaluate(() => window.monaco.editor.getEditors()[0].focus());
