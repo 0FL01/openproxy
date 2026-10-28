@@ -87,7 +87,7 @@ async function main() {
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
     if (process.env.TRANSLATOR_COMMANDS_ONLY === "1" || process.env.TRANSLATOR_MULTI_UNICODE_DELETE_ONLY === "1" || process.env.TRANSLATOR_MULTI_COMMENT_ONLY === "1" || process.env.TRANSLATOR_GOTO_LINE_ONLY === "1" || process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1" || process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1" || process.env.TRANSLATOR_MULTI_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_DELETE_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_INDENT_ONLY === "1" || process.env.TRANSLATOR_MULTI_HOME_END_ONLY === "1" || process.env.TRANSLATOR_MULTI_DOCUMENT_EDGES_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAGE_ONLY === "1" || process.env.TRANSLATOR_MULTI_VERTICAL_ONLY === "1" || process.env.TRANSLATOR_ADD_CURSORS_ONLY === "1") {
-      const index = process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_MULTI_COMMENT_ONLY === "1" ? 0 : 1;
+      let index = process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_MULTI_COMMENT_ONLY === "1" ? 0 : 1;
       if (index === 1) await page.getByRole("button", { name: /Provider Response/ }).click();
       if (reference) await page.locator(".monaco-editor .view-lines").nth(index).waitFor();
       const input = () => editor().nth(index);
@@ -116,12 +116,13 @@ async function main() {
       };
       if (process.env.TRANSLATOR_COMMANDS_ONLY === "1") {
         const palette = () => reference ? page.locator(".quick-input-widget input:visible") : page.locator(".translator-commands input");
+        const option = label => page.getByRole("option", { name: new RegExp(`^${label}(?:,|$)`) });
         const open = async label => {
           await page.keyboard.press("F1");
           await palette().waitFor();
           assert.equal(await palette().inputValue(), ">");
           await palette().fill(`>${label}`);
-          await page.getByRole("option", { name: label }).waitFor();
+          await option(label).waitFor();
         };
         await setText("keep this selection", 5, 9);
         await open("Transform to Uppercase");
@@ -175,7 +176,7 @@ async function main() {
 
         const run = async label => {
           await open(label);
-          await page.getByRole("option", { name: label }).click();
+          await option(label).click();
           await palette().waitFor({ state: "hidden" });
           await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
         };
@@ -523,6 +524,70 @@ async function main() {
         await page.keyboard.press("Control+z");
         await page.keyboard.type("X");
         assert.equal(await text(), "aa X\nbb X\nend", "Undo restores both move selections");
+        const indented = "      😺 cat\n  cat";
+        const cat = indented.indexOf("cat");
+        for (const [label, expected, delta] of [
+          ["Indent Line", "        😺 cat\n    cat", 2],
+          ["Outdent Line", "    😺 cat\ncat", -2],
+        ]) {
+          await setText(indented, cat, cat + 3);
+          await page.keyboard.press("Control+Shift+l");
+          await waitFor(async () => await count() === 2);
+          await run(label);
+          assert.equal(await text(), expected);
+          assert.deepEqual(await primary(), [cat + delta, cat + delta + 3]);
+          await page.keyboard.press("Control+z");
+          assert.equal(await text(), indented);
+          await page.keyboard.type("X");
+          assert.equal(await text(), indented.replaceAll("cat", "X"), "palette indentation preserves both ranges through Undo");
+        }
+        await setText(indented, cat + 1);
+        await run("Indent Line");
+        assert.equal(await text(), "        😺 cat\n  cat");
+        assert.deepEqual(await primary(), [cat + 3, cat + 3]);
+        await page.keyboard.press("Control+z");
+        assert.deepEqual(await primary(), [cat + 1, cat + 1]);
+        await run("Outdent Line");
+        assert.equal(await text(), "    😺 cat\n  cat");
+        await page.keyboard.press("Control+z");
+        const commentLabels = ["Toggle Line Comment", "Add Line Comment", "Remove Line Comment", "Toggle Block Comment"];
+        await setText("plain cat", 6);
+        for (const label of commentLabels) {
+          await run(label);
+          assert.equal(await text(), "plain cat", "comment actions remain available but do not invent plaintext comment tokens");
+          assert.deepEqual(await primary(), [6, 6]);
+        }
+
+        index = 0;
+        const json = '{\n  "😺": null,\n      "other": null\n}';
+        const start = json.indexOf("null");
+        const commented = '{\n//   "😺": null,\n    //   "other": null\n}';
+        for (const label of commentLabels) {
+          const removing = label === "Remove Line Comment";
+          const original = removing ? commented : json;
+          const first = original.indexOf("null");
+          await setText(original, first, first + 4);
+          await page.keyboard.press("Control+Shift+l");
+          await waitFor(async () => await count() === 2);
+          await run(label);
+          const expected = removing ? json : label === "Toggle Block Comment" ? json.replaceAll("null", "/* null */") : commented;
+          assert.equal(await text(), expected);
+          const selected = removing ? start : start + 3;
+          assert.deepEqual(await primary(), [selected, selected + 4]);
+          await page.keyboard.press("Control+z");
+          assert.equal(await text(), original);
+          await page.keyboard.type("0");
+          assert.equal(await text(), original.replaceAll("null", "0"), "Undo restores both JSON comment ranges");
+        }
+        await setText(json, start, start + 4);
+        await run("Add Line Comment");
+        assert.equal(await text(), json.replace('  "😺"', '//   "😺"'));
+        await run("Remove Line Comment");
+        assert.equal(await text(), json);
+        await run("Toggle Block Comment");
+        assert.equal(await text(), json.replace("null", "/* null */"));
+        await page.keyboard.press("Control+z");
+        assert.deepEqual(await primary(), [start, start + 4]);
         assert.deepEqual(errors, []);
         console.log("synthetic Translator command palette, case and line transforms passed");
         return;

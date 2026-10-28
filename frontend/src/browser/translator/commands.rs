@@ -7,6 +7,12 @@ use wasm_bindgen::{closure::Closure, JsCast};
 
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Command {
+    Indent,
+    Outdent,
+    ToggleLineComment,
+    AddLineComment,
+    RemoveLineComment,
+    ToggleBlockComment,
     CopyUp,
     CopyDown,
     MoveUp,
@@ -30,7 +36,13 @@ pub(super) enum Command {
 }
 
 impl Command {
-    const ALL: [Self; 20] = [
+    const ALL: [Self; 26] = [
+        Self::Indent,
+        Self::Outdent,
+        Self::ToggleLineComment,
+        Self::AddLineComment,
+        Self::RemoveLineComment,
+        Self::ToggleBlockComment,
         Self::CopyUp,
         Self::CopyDown,
         Self::MoveUp,
@@ -55,6 +67,12 @@ impl Command {
 
     fn label(self) -> &'static str {
         match self {
+            Self::Indent => "Indent Line",
+            Self::Outdent => "Outdent Line",
+            Self::ToggleLineComment => "Toggle Line Comment",
+            Self::AddLineComment => "Add Line Comment",
+            Self::RemoveLineComment => "Remove Line Comment",
+            Self::ToggleBlockComment => "Toggle Block Comment",
             Self::CopyUp => "Copy Line Up",
             Self::CopyDown => "Copy Line Down",
             Self::MoveUp => "Move Line Up",
@@ -80,6 +98,12 @@ impl Command {
 
     fn id(self) -> &'static str {
         match self {
+            Self::Indent => "editor.action.indentLines",
+            Self::Outdent => "editor.action.outdentLines",
+            Self::ToggleLineComment => "editor.action.commentLine",
+            Self::AddLineComment => "editor.action.addCommentLine",
+            Self::RemoveLineComment => "editor.action.removeCommentLine",
+            Self::ToggleBlockComment => "editor.action.blockComment",
             Self::CopyUp => "editor.action.copyLinesUpAction",
             Self::CopyDown => "editor.action.copyLinesDownAction",
             Self::MoveUp => "editor.action.moveLinesUpAction",

@@ -3323,37 +3323,16 @@ fn Editor(
                             let selection_format = chord && key.eq_ignore_ascii_case("f");
                             if !matches!(event.key(), Key::Control | Key::Meta | Key::Shift | Key::Alt) { command_chord.set(false); }
                             let line_comment = if json && control && !modifiers.shift() && !modifiers.alt() {
-                                if key == "/" { Some(LineComment::Toggle) }
-                                else if chord && key.eq_ignore_ascii_case("c") { Some(LineComment::Add) }
-                                else if chord && key.eq_ignore_ascii_case("u") { Some(LineComment::Remove) }
+                                if key == "/" { Some(commands::Command::ToggleLineComment) }
+                                else if chord && key.eq_ignore_ascii_case("c") { Some(commands::Command::AddLineComment) }
+                                else if chord && key.eq_ignore_ascii_case("u") { Some(commands::Command::RemoveLineComment) }
                                 else { None }
                             } else { None };
                             let block_comment = json && modifiers.shift() && !modifiers.meta() && key.eq_ignore_ascii_case("a")
                                 && if linux { modifiers.ctrl() && !modifiers.alt() } else { modifiers.alt() && !modifiers.ctrl() };
                             if line_comment.is_some() || block_comment {
                                 event.prevent_default();
-                                command_selections.write().stop_typing();
-                                composition_extendable.set(false);
-                                if let Some(input) = textarea.peek().clone() {
-                                    let apply = |cursors: &mut multicursor::Cursors| {
-                                        if let Some(mode) = line_comment { cursors.line_comments(&input, mode) }
-                                        else { cursors.block_comments(&input) }
-                                    };
-                                    let ranges = cursors.peek().ranges.clone();
-                                    if ranges.len() > 1 {
-                                        adjusting_history.set(true);
-                                        let operation = apply(&mut cursors.write());
-                                        adjusting_history.set(false);
-                                        if let Some(operation) = operation { finish_multi_edit.call((operation, ranges)); }
-                                    } else {
-                                        let mut single = multicursor::Cursors::default();
-                                        single.ranges.push(multicursor::selection(&input));
-                                        if let Some(operation) = apply(&mut single) {
-                                            command_selections.write().record(operation);
-                                            update_cursor.call(());
-                                        }
-                                    }
-                                }
+                                run_command.call(line_comment.unwrap_or(commands::Command::ToggleBlockComment));
                                 return;
                             }
                             if chord && key.eq_ignore_ascii_case("x") {
@@ -3395,25 +3374,21 @@ fn Editor(
                             }
                             let indent_command = control && !modifiers.shift() && !modifiers.alt() && matches!(key.as_str(), "[" | "]");
                             let tab_command = event.key() == Key::Tab && !control && !modifiers.alt() && !*tab_moves_focus.peek();
-                            if cursors.peek().ranges.len() > 1 && (indent_command || tab_command) {
+                            if indent_command {
+                                event.prevent_default();
+                                run_command.call(if key == "[" { commands::Command::Outdent } else { commands::Command::Indent });
+                                return;
+                            }
+                            if cursors.peek().ranges.len() > 1 && tab_command {
                                 event.prevent_default();
                                 command_selections.write().stop_typing();
                                 composition_extendable.set(false);
                                 if let Some(input) = textarea.peek().clone() {
                                     let ranges = cursors.peek().ranges.clone();
                                     adjusting_history.set(true);
-                                    let operation = cursors.write().indent(&input, key == "[" || tab_command && modifiers.shift(), tab_command);
+                                    let operation = cursors.write().indent(&input, modifiers.shift(), true);
                                     adjusting_history.set(false);
                                     if let Some(operation) = operation { finish_multi_edit.call((operation, ranges)); }
-                                }
-                                return;
-                            }
-                            if indent_command {
-                                event.prevent_default();
-                                if let Some(input) = textarea.peek().as_ref() && let Some(undo) = indent_lines(input, key == "[") {
-                                    command_selections.write().record(undo);
-                                    composition_extendable.set(false);
-                                    update_cursor.call(());
                                 }
                                 return;
                             }

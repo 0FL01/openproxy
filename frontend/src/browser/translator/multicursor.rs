@@ -1182,7 +1182,7 @@ impl Cursors {
         tab: bool,
     ) -> Option<NativeUndo> {
         let original = selection(input);
-        if self.ranges.len() < 2 || self.ranges.first() != Some(&original) {
+        if self.ranges.first() != Some(&original) {
             return None;
         }
         let before = input.value();
@@ -1719,6 +1719,30 @@ impl Cursors {
         json: bool,
     ) -> Option<NativeUndo> {
         use super::commands::Command;
+        match command {
+            Command::Indent | Command::Outdent => {
+                return self.indent(input, command == Command::Outdent, false);
+            }
+            Command::ToggleLineComment | Command::AddLineComment | Command::RemoveLineComment => {
+                if !json {
+                    return None;
+                }
+                let mode = match command {
+                    Command::AddLineComment => LineComment::Add,
+                    Command::RemoveLineComment => LineComment::Remove,
+                    _ => LineComment::Toggle,
+                };
+                return self.line_comments(input, mode);
+            }
+            Command::ToggleBlockComment => {
+                return if json {
+                    self.block_comments(input)
+                } else {
+                    None
+                };
+            }
+            _ => {}
+        }
         if matches!(
             command,
             Command::CopyUp | Command::CopyDown | Command::MoveUp | Command::MoveDown
