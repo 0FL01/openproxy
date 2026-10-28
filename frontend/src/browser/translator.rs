@@ -3315,7 +3315,18 @@ fn Editor(
                                 update_cursor.call(());
                                 return;
                             }
-                            if json && !event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().alt() && let Some(input) = textarea.peek().clone() {
+                            if json && cursors.peek().ranges.len() > 1 && !control && !modifiers.alt() && matches!(key.as_str(), "{" | "[" | "\"") && let Some(input) = textarea.peek().clone() {
+                                let ranges = cursors.peek().ranges.clone();
+                                adjusting_history.set(true);
+                                let operation = cursors.write().surround_json(&input, &key);
+                                adjusting_history.set(false);
+                                if let Some(operation) = operation {
+                                    event.prevent_default();
+                                    finish_multi_edit.call((operation, ranges));
+                                }
+                                return;
+                            }
+                            if json && cursors.peek().ranges.len() < 2 && !event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().alt() && let Some(input) = textarea.peek().clone() {
                                 let before = input.value();
                                 update_auto_pairs(&pair_text.peek(), &before, &mut auto_pairs.write());
                                 pair_text.set(before.clone());

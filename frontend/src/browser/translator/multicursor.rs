@@ -252,6 +252,46 @@ impl Cursors {
         Some(operation)
     }
 
+    pub fn surround_json(
+        &mut self,
+        input: &web_sys::HtmlTextAreaElement,
+        key: &str,
+    ) -> Option<NativeUndo> {
+        let closing = match key {
+            "{" => "}",
+            "[" => "]",
+            "\"" => "\"",
+            _ => return None,
+        };
+        let text = js_sys::JsString::from(input.value());
+        let original = self.ranges.clone();
+        let mut replacements = Vec::with_capacity(original.len());
+        for (start, end, _) in &original {
+            let selected = text.slice(*start, *end).as_string()?;
+            // Monaco surrounds only when every selection contains non-whitespace;
+            // typing a quote over a selected single quote is ordinary replacement.
+            if !selected
+                .chars()
+                .any(|ch| !matches!(ch, ' ' | '\t' | '\n' | '\r'))
+                || key == "\"" && matches!(selected.as_str(), "\"" | "'" | "`")
+            {
+                return None;
+            }
+            replacements.push((*start, *end, format!("{key}{selected}{closing}")));
+        }
+        let mut operation = self.replace(input, replacements, false)?;
+        for (range, (start, end, direction)) in self.ranges.iter_mut().zip(original) {
+            range.1 -= 1;
+            range.0 = range.1 - (end - start);
+            range.2 = direction;
+        }
+        normalize(&mut self.ranges);
+        let primary = self.ranges[0].clone();
+        let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
+        operation.after_selection = Some(primary);
+        Some(operation)
+    }
+
     // Clipboard and language-aware edits can differ per cursor. Share the same
     // atomic native edit and selection mapping rather than editing cursors in turn.
     pub fn replace(

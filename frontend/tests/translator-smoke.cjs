@@ -86,8 +86,8 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
-    if (process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1") {
-      const index = process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" ? 0 : 1;
+    if (process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1") {
+      const index = process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" ? 0 : 1;
       if (index === 1) await page.getByRole("button", { name: /Provider Response/ }).click();
       if (reference) await page.locator(".monaco-editor .view-lines").nth(index).waitFor();
       const input = () => editor().nth(index);
@@ -114,6 +114,37 @@ async function main() {
         else await input().evaluate((input, [start, end]) => { input.setSelectionRange(start, end); input.dispatchEvent(new Event("select", { bubbles: true })); }, [start, end]);
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       };
+      if (process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1") {
+        const initial = '{\n  "😺": null,\n  "other": null\n}';
+        const start = initial.indexOf("null");
+        for (const [open, close] of [["{", "}"], ["[", "]"], ['"', '"']]) {
+          await setText(initial, start, start + 4);
+          await page.keyboard.press("Control+Shift+l");
+          await waitFor(async () => await count() === 2);
+          await page.keyboard.type(open);
+          const surrounded = initial.replaceAll("null", `${open}null${close}`);
+          await waitFor(async () => await text() === surrounded);
+          assert.deepEqual(await primary(), [start + 1, start + 5], "surrounding retains the original selected contents");
+          await waitFor(async () => await count() === 2);
+          await page.keyboard.press("Control+z");
+          assert.equal(await text(), initial);
+          assert.deepEqual(await primary(), [start, start + 4]);
+          await waitFor(async () => await count() === 2);
+          await page.keyboard.press("Control+Shift+z");
+          assert.equal(await text(), surrounded);
+          assert.deepEqual(await primary(), [start + 1, start + 5]);
+        }
+        const whitespace = '{\n  "a": 0,\n  "b": 0\n}';
+        await setText(whitespace, 2, 4);
+        await page.keyboard.press("Control+Shift+l");
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.type("[");
+        assert.equal(await text(), whitespace.replaceAll("  ", "["), "whitespace-only selections are replaced, not surrounded");
+        assert.deepEqual(await primary(), [3, 3]);
+        assert.deepEqual(errors, []);
+        console.log("synthetic translator multicursor JSON surround smoke passed");
+        return;
+      }
       if (process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1") {
         const initial = '{\n  "😺": null,\n    "other": null\n}';
         const start = initial.indexOf("null");
