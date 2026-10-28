@@ -902,12 +902,16 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     await detection;
                   }
                   if (["find", "replace"].includes(screen.name)) {
+                    // Replace does not seed a word from an empty selection. Start
+                    // outside "needle" so its asynchronous occurrence request
+                    // cannot race the Find highlights in the pinned reference.
+                    const offset = screen.name === "replace" ? 0 : translatorFixtures[screen.name].indexOf("needle");
                     if (mode === "record") {
-                      await page.evaluate(() => { const editor = window.monaco.editor.getEditors()[0]; editor.setPosition(editor.getModel().getPositionAt(editor.getValue().indexOf("needle"))); editor.focus(); });
+                      await page.evaluate(offset => { const editor = window.monaco.editor.getEditors()[0]; editor.setPosition(editor.getModel().getPositionAt(offset)); editor.focus(); }, offset);
                     } else {
                       const editor = page.getByLabel("Translator editor");
                       await editor.focus();
-                      await editor.evaluate(element => { const offset = element.value.indexOf("needle"); element.setSelectionRange(offset, offset); });
+                      await editor.evaluate((element, offset) => { element.setSelectionRange(offset, offset); }, offset);
                     }
                     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
                     await page.keyboard.press(screen.name === "replace" ? "Control+h" : "Control+f");
