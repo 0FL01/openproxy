@@ -86,7 +86,7 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
-    if (process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1" || process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1" || process.env.TRANSLATOR_MULTI_VERTICAL_ONLY === "1") {
+    if (process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1" || process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1" || process.env.TRANSLATOR_MULTI_VERTICAL_ONLY === "1" || process.env.TRANSLATOR_ADD_CURSORS_ONLY === "1") {
       const index = process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" ? 0 : 1;
       if (index === 1) await page.getByRole("button", { name: /Provider Response/ }).click();
       if (reference) await page.locator(".monaco-editor .view-lines").nth(index).waitFor();
@@ -114,6 +114,54 @@ async function main() {
         else await input().evaluate((input, [start, end]) => { input.setSelectionRange(start, end); input.dispatchEvent(new Event("select", { bubbles: true })); }, [start, end]);
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       };
+      if (process.env.TRANSLATOR_ADD_CURSORS_ONLY === "1") {
+        const initial = "alpha cat\nx\nlonger text\nlast";
+        await setText(initial, 8);
+        await page.keyboard.press("Shift+Alt+ArrowDown");
+        await waitFor(async () => await count() === 2);
+        assert.deepEqual(await primary(), [8, 8], "adding a cursor retains the original primary");
+        await page.getByText("Cursor added: line 2 column 2", { exact: true }).waitFor({ state: "attached" });
+        await page.keyboard.press("Control+Shift+ArrowDown");
+        await waitFor(async () => await count() === 3);
+        await page.keyboard.type("!");
+        assert.equal(await text(), "alpha ca!t\nx!\nlonger t!ext\nlast", "repeated adds retain the preferred column through short lines");
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), initial);
+        assert.deepEqual(await primary(), [8, 8]);
+        await waitFor(async () => await count() === 3);
+        await page.keyboard.press("Control+Shift+z");
+        assert.equal(await text(), "alpha ca!t\nx!\nlonger t!ext\nlast");
+        const words = "prefix cat\nprefix cat\nprefix cat";
+        await setText(words, 7, 10);
+        await page.keyboard.press("Shift+Alt+ArrowDown");
+        await waitFor(async () => await count() === 2);
+        assert.deepEqual(await primary(), [7, 10]);
+        await page.keyboard.type("X");
+        assert.equal(await text(), "prefix X\nprefix X\nprefix cat", "a nonempty selection is translated rather than collapsed");
+        await setText("aa\nbb\ncc", 7);
+        await page.keyboard.press("Shift+Alt+ArrowUp");
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.press("Shift+Alt+ArrowUp");
+        await waitFor(async () => await count() === 3);
+        await page.keyboard.type("X");
+        assert.equal(await text(), "aXa\nbXb\ncXc", "adding upwards normalizes duplicate cursors");
+        await setText("a😺b\n\t😺ab", 3);
+        await page.keyboard.press("Shift+Alt+ArrowDown");
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.type("!");
+        assert.equal(await text(), "a😺!b\n\t!😺ab", "logical columns account for tabs and emoji");
+        await page.setViewportSize({ width: 390, height: 844 });
+        const a = "a".repeat(100), b = "b".repeat(100);
+        await setText(`${a}\n${b}`, 82);
+        await page.keyboard.press("Shift+Alt+ArrowDown");
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.type("!");
+        assert.equal(await text(), `${a.slice(0, 82)}!${a.slice(82)}\n${b.slice(0, 82)}!${b.slice(82)}`, "the default action adds on logical, not wrapped visual, lines");
+        assert.deepEqual(errors, []);
+        console.log("synthetic translator add-cursor smoke passed");
+        return;
+      }
       if (process.env.TRANSLATOR_MULTI_VERTICAL_ONLY === "1") {
         const selectWords = async initial => {
           const start = initial.indexOf("cat");

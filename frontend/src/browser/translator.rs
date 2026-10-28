@@ -895,6 +895,14 @@ fn cursor_top(
     } else {
         end
     };
+    position_top(input, rendered, position)
+}
+
+fn position_top(
+    input: &web_sys::HtmlTextAreaElement,
+    rendered: &web_sys::HtmlElement,
+    position: u32,
+) -> Option<f64> {
     let text = input.value();
     let before = js_sys::JsString::from(text.as_str())
         .slice(0, position)
@@ -2313,6 +2321,7 @@ fn Editor(
     let mut find_open = use_signal(|| false);
     let mut replace_open = use_signal(|| false);
     let mut tab_focus_announcement = use_signal(String::new);
+    let mut cursor_announcement = use_signal(|| (0_u64, String::new()));
     let mut command_chord = use_signal(|| false);
     let mut query = use_signal(String::new);
     let mut replacement = use_signal(String::new);
@@ -3201,6 +3210,24 @@ fn Editor(
                             }
                             let modifiers = event.modifiers();
                             let control = modifiers.ctrl() || modifiers.meta();
+                            let linux = web_sys::window().and_then(|window| window.navigator().user_agent().ok()).is_some_and(|agent| agent.contains("Linux"));
+                            let add_cursor = if linux { modifiers.shift() && (modifiers.alt() && !control || control && !modifiers.alt()) } else { control && modifiers.alt() && !modifiers.shift() };
+                            if add_cursor && matches!(event.key(), Key::ArrowUp | Key::ArrowDown) {
+                                event.prevent_default();
+                                command_selections.write().stop_typing();
+                                composition_extendable.set(false);
+                                let message = if let Some(input) = textarea.peek().as_ref() {
+                                    let previous = if cursors.peek().ranges.first() == Some(&multicursor::selection(input)) { cursors.peek().ranges.clone() } else { vec![multicursor::selection(input)] };
+                                    let element = rendered.peek().clone();
+                                    cursors.write().add_vertical(input, element.as_ref(), event.key() == Key::ArrowUp);
+                                    element.as_ref().and_then(|element| cursors.peek().added_message(input, element, &previous))
+                                } else { None };
+                                if let Some(message) = message {
+                                    cursor_announcement.with_mut(|(version, text)| { *version = version.wrapping_add(1); *text = message; });
+                                }
+                                update_cursor.call(());
+                                return;
+                            }
                             if !control && !modifiers.alt() && matches!(event.key(), Key::ArrowUp | Key::ArrowDown) && cursors.peek().ranges.len() > 1 {
                                 let changed = if let Some(input) = textarea.peek().as_ref()
                                     && let Some(element) = rendered.peek().as_ref() {
@@ -3623,6 +3650,7 @@ fn Editor(
                 }
                 canvas { aria_hidden: "true", style: "position:absolute;transform:translate3d(0,0,0);contain:strict;top:0;right:0;width:14px;height:400px;pointer-events:none;", onmounted: move |event| { if let Some(element) = event.data().downcast::<web_sys::Element>() && let Ok(canvas) = element.clone().dyn_into::<web_sys::HtmlCanvasElement>() { ruler.set(Some(canvas)); } } }
                 if !tab_focus_announcement().is_empty() { div { role: "alert", aria_atomic: "true", style: "position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;", "{tab_focus_announcement}" } }
+                div { role: "status", aria_atomic: "true", style: "position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;", span { key: "{cursor_announcement().0}", "{cursor_announcement().1}" } }
                 if find_open() { div { role: "dialog", aria_label: "Find / Replace", class: "translator-find {find_layout} {replacing}",
                     button { r#type: "button", class: "find-icon find-toggle", aria_label: "Toggle Replace", aria_expanded: "{replace_open}", onclick: move |_| { let next = !*replace_open.peek(); replace_open.set(next); }, if replace_open() { "" } else { "" } }
                     div { class: "find-row",

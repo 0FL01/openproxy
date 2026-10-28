@@ -122,3 +122,49 @@ pub(super) fn previous(units: &[u16], offset: usize) -> usize {
     }
     position
 }
+
+// CursorColumns' configured four-column tabs and pinned wide-character rules.
+fn next_column(code: u32, column: usize) -> usize {
+    if code == 9 {
+        return column + 4 - column % 4;
+    }
+    column
+        + if matches!(code,
+            0x2e80..=0xd7af | 0xf900..=0xfaff | 0xff01..=0xff5e |
+            0x1f1e6..=0x1f1ff | 8986 | 8987 | 9200 | 9203 | 9728..=10175 |
+            11088 | 11093 | 127744..=128591 | 128640..=128764 |
+            128992..=129008 | 129280..=129535 | 129648..=129782
+        ) {
+            2
+        } else {
+            1
+        }
+}
+
+pub(super) fn visible_column(units: &[u16], offset: usize) -> usize {
+    let units = &units[..offset.min(units.len())];
+    let (mut position, mut column) = (0, 0);
+    while position < units.len() {
+        column = next_column(code_point(units, position).0, column);
+        position = next(units, position);
+    }
+    column
+}
+
+pub(super) fn column_offset(units: &[u16], column: usize) -> usize {
+    let (mut position, mut before) = (0, 0);
+    while position < units.len() {
+        let after = next_column(code_point(units, position).0, before);
+        let end = next(units, position);
+        if after >= column {
+            return if after - column < column - before {
+                end
+            } else {
+                position
+            };
+        }
+        position = end;
+        before = after;
+    }
+    units.len()
+}

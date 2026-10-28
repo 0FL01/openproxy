@@ -2,8 +2,8 @@
 //! Rules follow Monaco 0.55.1 (Copyright Microsoft Corporation, MIT).
 //! Permission/warranty notice: public/assets/translator-codicon-LICENSE.txt.
 use super::{
-    character_top, cursor_top, find_ranges, grapheme, in_json_string, insert_text,
-    json_bracket_newline, line_indentation, NativeUndo,
+    character_top, find_ranges, grapheme, in_json_string, insert_text, json_bracket_newline,
+    line_indentation, position_top, NativeUndo,
 };
 use dioxus::prelude::Callback;
 use std::{collections::HashSet, rc::Rc};
@@ -61,6 +61,7 @@ pub(super) struct Cursors {
     query: Option<(String, bool, bool)>,
     auto_closed: Vec<Vec<ClosedPair>>,
     vertical: Option<Vertical>,
+    added: Option<Added>,
 }
 
 #[derive(Clone)]
@@ -68,6 +69,12 @@ struct Vertical {
     ranges: Vec<Selection>,
     width: i32,
     leftover: Vec<f64>,
+}
+
+#[derive(Clone)]
+struct Added {
+    ranges: Vec<Selection>,
+    columns: Vec<(usize, usize)>,
 }
 
 struct ViewRow {
@@ -155,6 +162,23 @@ fn view_rows(text: &str, rendered: &web_sys::HtmlElement) -> Option<Vec<ViewRow>
     Some(rows)
 }
 
+fn reveal(input: &web_sys::HtmlTextAreaElement, rendered: &web_sys::HtmlElement, position: u32) {
+    if let Some(top) = position_top(input, rendered, position) {
+        let padding = input
+            .style()
+            .get_property_value("padding-top")
+            .ok()
+            .and_then(|value| value.trim_end_matches("px").parse::<f64>().ok())
+            .unwrap_or_default();
+        let shift = if top < padding {
+            top - padding
+        } else {
+            (top + 16.0 - f64::from(input.client_height())).max(0.0)
+        };
+        input.set_scroll_top(input.scroll_top() + shift as i32);
+    }
+}
+
 #[derive(Clone)]
 struct ClosedPair {
     open: u32,
@@ -233,6 +257,7 @@ impl Cursors {
             self.typing = false;
             self.starts_typing = false;
             self.vertical = None;
+            self.added = None;
             self.validate_pairs(&units);
             let primary = &self.ranges[0];
             let _ = input.set_selection_range(primary.0, primary.1);
@@ -249,6 +274,7 @@ impl Cursors {
         extend: bool,
     ) -> bool {
         self.vertical = None;
+        self.added = None;
         let units: Vec<_> = input.value().encode_utf16().collect();
         let mut ranges: Vec<_> = self
             .ranges
@@ -391,21 +417,209 @@ impl Cursors {
         self.validate_pairs(&units);
         let primary = &self.ranges[0];
         let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
-        if let Some(top) = cursor_top(input, rendered) {
-            let padding = input
-                .style()
-                .get_property_value("padding-top")
-                .ok()
-                .and_then(|value| value.trim_end_matches("px").parse::<f64>().ok())
-                .unwrap_or_default();
-            let shift = if top < padding {
-                top - padding
+        self.added = None;
+        reveal(
+            input,
+            rendered,
+            if primary.2 == "backward" {
+                primary.0
             } else {
-                (top + 16.0 - f64::from(input.client_height())).max(0.0)
-            };
-            input.set_scroll_top(input.scroll_top() + shift as i32);
-        }
+                primary.1
+            },
+        );
         Some(true)
+    }
+
+    pub fn add_vertical(
+        &mut self,
+        input: &web_sys::HtmlTextAreaElement,
+        rendered: Option<&web_sys::HtmlElement>,
+        up: bool,
+    ) -> bool {
+        let primary = selection(input);
+        let original = if self.ranges.first() == Some(&primary) {
+            self.ranges.clone()
+        } else {
+            vec![primary]
+        };
+        let units: Vec<_> = input.value().encode_utf16().collect();
+        let mut starts = vec![0];
+        starts.extend(
+            units
+                .iter()
+                .enumerate()
+                .filter_map(|(index, ch)| (*ch == 10).then_some(index + 1)),
+        );
+        let line_index = |position: u32| {
+            starts
+                .partition_point(|start| *start <= position as usize)
+                .saturating_sub(1)
+        };
+        let line_end = |index: usize| starts.get(index + 1).map_or(units.len(), |start| start - 1);
+        let column = |position: u32| {
+            let line = line_index(position);
+            grapheme::visible_column(
+                &units[starts[line]..line_end(line)],
+                position as usize - starts[line],
+            )
+        };
+        let columns = |range: &Selection| {
+            if range.2 == "backward" {
+                (column(range.1), column(range.0))
+            } else {
+                (column(range.0), column(range.1))
+            }
+        };
+        let previous = self.added.as_ref().filter(|state| state.ranges == original);
+        let translated = |position: u32, preferred: usize| {
+            let line = line_index(position);
+            let target = if up {
+                line.saturating_sub(1)
+            } else {
+                (line + 1).min(starts.len() - 1)
+            };
+            if target == line {
+                position
+            } else {
+                (starts[target]
+                    + grapheme::column_offset(&units[starts[target]..line_end(target)], preferred))
+                    as u32
+            }
+        };
+        let mut ranges = Vec::new();
+        let mut preferred = Vec::new();
+        for (index, range) in original.iter().enumerate() {
+            let desired = previous.map_or_else(|| columns(range), |state| state.columns[index]);
+            ranges.push(range.clone());
+            preferred.push(desired);
+            if ranges.len() == 10_000 {
+                break;
+            }
+            let (anchor, active) = if range.2 == "backward" {
+                (range.1, range.0)
+            } else {
+                (range.0, range.1)
+            };
+            let anchor = translated(anchor, desired.0);
+            let active = translated(active, desired.1);
+            ranges.push((
+                anchor.min(active),
+                anchor.max(active),
+                if active < anchor {
+                    "backward"
+                } else {
+                    "forward"
+                }
+                .into(),
+            ));
+            preferred.push(desired);
+            if ranges.len() == 10_000 {
+                break;
+            }
+        }
+        let generated = ranges.clone();
+        let owners = normalize(&mut ranges);
+        self.added = Some(Added {
+            ranges: ranges.clone(),
+            columns: owners
+                .into_iter()
+                .zip(&ranges)
+                .map(|(owner, range)| {
+                    if *range == generated[owner] {
+                        preferred[owner]
+                    } else {
+                        columns(range)
+                    }
+                })
+                .collect(),
+        });
+        self.vertical = None;
+        self.query = None;
+        self.typing = false;
+        self.starts_typing = false;
+        let changed = ranges != original;
+        self.ranges = ranges;
+        self.validate_pairs(&units);
+        let primary = &self.ranges[0];
+        let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
+        if let Some(rendered) = rendered {
+            let positions = self.ranges.iter().map(|range| {
+                if range.2 == "backward" {
+                    range.0
+                } else {
+                    range.1
+                }
+            });
+            let target = if up { positions.min() } else { positions.max() };
+            if let Some(target) = target {
+                reveal(input, rendered, target);
+            }
+        }
+        changed
+    }
+
+    pub fn added_message(
+        &self,
+        input: &web_sys::HtmlTextAreaElement,
+        rendered: &web_sys::HtmlElement,
+        previous: &[Selection],
+    ) -> Option<String> {
+        let rows = view_rows(&input.value(), rendered)?;
+        let previous: HashSet<_> = previous.iter().collect();
+        let mut positions = Vec::new();
+        for range in &self.ranges {
+            if previous.contains(range) {
+                continue;
+            }
+            let active = if range.2 == "backward" {
+                range.0
+            } else {
+                range.1
+            };
+            let index = rows
+                .partition_point(|row| row.start <= active)
+                .saturating_sub(1);
+            let row = &rows[index];
+            let indent = if row.start > row.line_start
+                && row
+                    .line
+                    .style()
+                    .get_property_value("padding-left")
+                    .ok()?
+                    .trim_end_matches("px")
+                    .parse::<f64>()
+                    .ok()?
+                    > 0.0
+            {
+                let text = row.line.text_content()?;
+                let prefix: Vec<_> = text
+                    .chars()
+                    .take_while(|ch| matches!(ch, ' ' | '\t'))
+                    .collect::<String>()
+                    .encode_utf16()
+                    .collect();
+                grapheme::visible_column(&prefix, prefix.len()) as u32
+            } else {
+                0
+            };
+            positions.push(format!(
+                "line {} column {}",
+                index + 1,
+                active - row.start + 1 + indent
+            ));
+        }
+        if positions.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "{}: {}",
+            if positions.len() == 1 {
+                "Cursor added"
+            } else {
+                "Cursors added"
+            },
+            positions.join(", ")
+        ))
     }
 
     pub fn choose(
@@ -417,6 +631,7 @@ impl Cursors {
         all: bool,
     ) {
         self.vertical = None;
+        self.added = None;
         let primary = selection(input);
         if self.ranges.first() != Some(&primary) {
             self.ranges.clear();
@@ -768,6 +983,7 @@ impl Cursors {
         document_order: bool,
     ) -> Option<NativeUndo> {
         self.vertical = None;
+        self.added = None;
         let original = selection(input);
         if self.ranges.first() != Some(&original) || replacements.len() != self.ranges.len() {
             return None;
@@ -991,6 +1207,11 @@ pub(super) fn boxes(
                                 height: 16.0,
                                 caret: start == end,
                             });
+                        }
+                        // A collapsed range may report adjacent font-run rects;
+                        // they still represent one caret, not two cursors.
+                        if start == end {
+                            break;
                         }
                     }
                     if start == end {
