@@ -86,7 +86,7 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
-    if (process.env.TRANSLATOR_GOTO_LINE_ONLY === "1" || process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1" || process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1" || process.env.TRANSLATOR_MULTI_VERTICAL_ONLY === "1" || process.env.TRANSLATOR_ADD_CURSORS_ONLY === "1") {
+    if (process.env.TRANSLATOR_GOTO_LINE_ONLY === "1" || process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1" || process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1" || process.env.TRANSLATOR_MULTI_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_VERTICAL_ONLY === "1" || process.env.TRANSLATOR_ADD_CURSORS_ONLY === "1") {
       const index = process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" ? 0 : 1;
       if (index === 1) await page.getByRole("button", { name: /Provider Response/ }).click();
       if (reference) await page.locator(".monaco-editor .view-lines").nth(index).waitFor();
@@ -303,6 +303,80 @@ async function main() {
         assert.equal(await text(), `${editedLine}\n${editedLine}`);
         assert.deepEqual(errors, []);
         console.log("synthetic translator multicursor vertical navigation smoke passed");
+        return;
+      }
+      if (process.env.TRANSLATOR_MULTI_WORD_ONLY === "1") {
+        const line = "😺 alpha.foo\t кот tail";
+        const initial = `${line}\n${line}`;
+        const selectWords = async () => {
+          await setText(initial, 9, 12);
+          await page.keyboard.press("Control+Shift+l");
+          await waitFor(async () => await count() === 2);
+        };
+        await selectWords();
+        for (const offset of [9, 8, 3]) {
+          await page.keyboard.press("Control+ArrowLeft");
+          assert.deepEqual(await primary(), [offset, offset], "word-start movement retains punctuation stops at multiple cursors");
+          await waitFor(async () => await count() === 2);
+        }
+        await page.keyboard.press("Control+Shift+ArrowRight");
+        assert.deepEqual(await primary(), [3, 8]);
+        await page.keyboard.press("Control+Shift+ArrowRight");
+        assert.deepEqual(await primary(), [3, 12], "word-end movement skips a single separator before a word");
+        await page.keyboard.press("Control+ArrowRight");
+        assert.deepEqual(await primary(), [17, 17], "word movement starts from the active endpoint, not the selection edge");
+        await page.keyboard.press("Control+Shift+ArrowLeft");
+        assert.deepEqual(await primary(), [14, 17]);
+        await page.keyboard.press("Control+Shift+ArrowLeft");
+        assert.deepEqual(await primary(), [9, 17]);
+        await page.keyboard.press("Control+Shift+ArrowRight");
+        assert.deepEqual(await primary(), [12, 17], "a backward selection retains its original anchor");
+        await page.keyboard.type("X");
+        const edited = `${line.slice(0, 12)}X${line.slice(17)}`;
+        assert.equal(await text(), `${edited}\n${edited}`);
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), initial);
+        assert.deepEqual(await primary(), [12, 17]);
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.press("Control+Shift+z");
+        assert.equal(await text(), `${edited}\n${edited}`);
+        await selectWords();
+        for (let i = 0; i < 3; i++) await page.keyboard.press("Control+ArrowRight");
+        assert.deepEqual(await primary(), [line.length + 3, line.length + 3], "word movement crosses to the next logical line");
+        await page.keyboard.press("Control+ArrowLeft");
+        assert.deepEqual(await primary(), [line.length + 1, line.length + 1]);
+        await page.keyboard.press("Control+ArrowLeft");
+        assert.deepEqual(await primary(), [18, 18]);
+        await page.keyboard.type("!");
+        assert.equal(await text(), `${line.slice(0, 18)}!${line.slice(18)}\n${line.slice(0, 14)}!${line.slice(14)}`);
+        await setText("alpha..foo\nalpha..foo", 7, 10);
+        await page.keyboard.press("Control+Shift+l");
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.press("Control+ArrowLeft");
+        await page.keyboard.press("Control+ArrowLeft");
+        await page.keyboard.press("ArrowRight");
+        await page.keyboard.press("Control+ArrowRight");
+        assert.deepEqual(await primary(), [7, 7], "starting inside a longer separator run does not skip the following word");
+        await page.keyboard.type("!");
+        assert.equal(await text(), "alpha..!foo\nalpha..!foo");
+        assert.deepEqual(errors, []);
+        await page.setViewportSize({ width: 390, height: 844 });
+        const longWord = `${"x".repeat(1000)}aa${"x".repeat(1000)}aa`;
+        await setText(longWord, 1000, 1002);
+        await page.keyboard.press("Control+Shift+l");
+        await waitFor(async () => await count() === 2);
+        if (reference) await page.evaluate(index => window.monaco.editor.getEditors()[index].setScrollTop(400), index);
+        else await input().evaluate(input => { input.scrollTop = 400; });
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        await page.keyboard.press("Control+Shift+ArrowLeft");
+        await waitFor(async () => await count() === 1);
+        assert.deepEqual(await primary(), [0, longWord.length - 2], "overlapping word selections merge and retain the active endpoint");
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        const scroll = reference ? await page.evaluate(index => window.monaco.editor.getEditors()[index].getScrollTop(), index) : await input().evaluate(input => input.scrollTop);
+        assert.equal(scroll, 400, "word movement started with multiple cursors does not reveal even when the result merges to one selection");
+        assert.deepEqual(errors, []);
+        console.log("synthetic translator multicursor word navigation smoke passed");
         return;
       }
       if (process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1") {

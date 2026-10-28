@@ -24,6 +24,80 @@ pub(super) fn selection(input: &web_sys::HtmlTextAreaElement) -> Selection {
     )
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WordClass {
+    Regular,
+    Whitespace,
+    Separator,
+}
+
+fn word_class(unit: u16) -> WordClass {
+    if matches!(unit, 9 | 32) {
+        WordClass::Whitespace
+    } else if unit < 128 && b"`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?".contains(&(unit as u8)) {
+        WordClass::Separator
+    } else {
+        WordClass::Regular
+    }
+}
+
+// Configured Monaco defaults: WordStartFast with multiple cursors on the left,
+// WordEnd on the right, with no locale-specific word segmenter.
+fn word_position(units: &[u16], position: usize, left: bool) -> usize {
+    let mut position = position.min(units.len());
+    if left {
+        if position > 0 && units[position - 1] == 10 {
+            position -= 1;
+        }
+        let start = units[..position]
+            .iter()
+            .rposition(|unit| *unit == 10)
+            .map_or(0, |index| index + 1);
+        while position > start && word_class(units[position - 1]) == WordClass::Whitespace {
+            position -= 1;
+        }
+        if position > start {
+            let kind = word_class(units[position - 1]);
+            while position > start && word_class(units[position - 1]) == kind {
+                position -= 1;
+            }
+        }
+    } else {
+        if units.get(position) == Some(&10) {
+            position += 1;
+        }
+        let start = units[..position]
+            .iter()
+            .rposition(|unit| *unit == 10)
+            .map_or(0, |index| index + 1);
+        let end = units[position..]
+            .iter()
+            .position(|unit| *unit == 10)
+            .map_or(units.len(), |index| position + index);
+        while position < end && word_class(units[position]) == WordClass::Whitespace {
+            position += 1;
+        }
+        if position < end {
+            let kind = word_class(units[position]);
+            let mut word_start = position;
+            while word_start > start && word_class(units[word_start - 1]) == kind {
+                word_start -= 1;
+            }
+            while position < end && word_class(units[position]) == kind {
+                position += 1;
+            }
+            // WordEnd skips a single separator followed immediately by a word,
+            // but not the remainder of a longer separator run.
+            if kind == WordClass::Separator && position - word_start == 1 {
+                while position < end && word_class(units[position]) == WordClass::Regular {
+                    position += 1;
+                }
+            }
+        }
+    }
+    position
+}
+
 fn normalize(ranges: &mut Vec<Selection>) -> Vec<usize> {
     let last_added = ranges.len().saturating_sub(1);
     let mut ordered: Vec<_> = std::mem::take(ranges).into_iter().enumerate().collect();
@@ -272,6 +346,7 @@ impl Cursors {
         input: &web_sys::HtmlTextAreaElement,
         left: bool,
         extend: bool,
+        word: bool,
     ) -> bool {
         self.vertical = None;
         self.added = None;
@@ -285,7 +360,9 @@ impl Cursors {
                 } else {
                     (*start, *end)
                 };
-                let next = if !extend && start != end {
+                let next = if word {
+                    word_position(&units, active as usize, left) as u32
+                } else if !extend && start != end {
                     if left {
                         *start
                     } else {

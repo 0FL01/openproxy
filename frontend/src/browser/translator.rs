@@ -3279,15 +3279,19 @@ fn Editor(
                                 }
                                 return;
                             }
-                            if !control && !modifiers.alt() && matches!(event.key(), Key::ArrowLeft | Key::ArrowRight) && cursors.peek().ranges.len() > 1 {
+                            if matches!(event.key(), Key::ArrowLeft | Key::ArrowRight) && cursors.peek().ranges.len() > 1 {
+                                let mac = web_sys::window().is_some_and(|window| window.navigator().user_agent().unwrap_or_default().contains("Macintosh"));
+                                let word = if mac { modifiers.alt() && !control } else { control && !modifiers.alt() };
+                                if !word && (control || modifiers.alt()) { return; }
                                 event.prevent_default();
-                                if let Some(input) = textarea.peek().as_ref() {
-                                    if cursors.write().horizontal(input, event.key() == Key::ArrowLeft, modifiers.shift()) {
-                                        command_selections.write().stop_typing();
-                                        composition_extendable.set(false);
-                                    }
-                                    update_cursor.call(());
+                                let changed = if let Some(input) = textarea.peek().as_ref() {
+                                    cursors.write().horizontal(input, event.key() == Key::ArrowLeft, modifiers.shift(), word)
+                                } else { false };
+                                if word || changed {
+                                    command_selections.write().stop_typing();
+                                    composition_extendable.set(false);
                                 }
+                                update_cursor.call(());
                                 return;
                             }
                             if modifiers.shift() && modifiers.alt() && !control && key.eq_ignore_ascii_case("i") {
