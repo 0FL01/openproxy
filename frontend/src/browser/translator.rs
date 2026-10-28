@@ -469,6 +469,21 @@ fn insert_text(input: &web_sys::HtmlTextAreaElement, start: u32, end: u32, text:
         == Some(true)
 }
 
+fn indentation_backspace(units: &[u16], position: usize) -> Option<usize> {
+    let before = units.get(..position)?;
+    let line_start = before
+        .iter()
+        .rposition(|&unit| unit == 10)
+        .map_or(0, |i| i + 1);
+    let indent = &before[line_start..];
+    if indent.is_empty() || !indent.iter().all(|unit| matches!(unit, 9 | 32)) {
+        return None;
+    }
+    let columns = grapheme::visible_column(indent, indent.len());
+    let target = (columns - 1) / 4 * 4;
+    Some(indent.len() - grapheme::column_offset(indent, target))
+}
+
 fn backspace_indent(input: &web_sys::HtmlTextAreaElement) -> bool {
     let Some(start) = input.selection_start().ok().flatten() else {
         return false;
@@ -476,29 +491,10 @@ fn backspace_indent(input: &web_sys::HtmlTextAreaElement) -> bool {
     if input.selection_end().ok().flatten() != Some(start) {
         return false;
     }
-    let before = js_sys::JsString::from(input.value())
-        .slice(0, start)
-        .as_string()
-        .unwrap_or_default();
-    let indent = before.rsplit('\n').next().unwrap_or("");
-    if indent.is_empty() || !indent.bytes().all(|ch| matches!(ch, b' ' | b'\t')) {
+    let units: Vec<_> = input.value().encode_utf16().collect();
+    let Some(count) = indentation_backspace(&units, start as usize) else {
         return false;
-    }
-    let columns = indent.bytes().fold(0, |column, ch| {
-        column + if ch == b'\t' { 4 - column % 4 } else { 1 }
-    });
-    let target = (columns - 1) / 4 * 4;
-    let mut column = 0;
-    let mut keep = 0;
-    for ch in indent.bytes() {
-        let next = column + if ch == b'\t' { 4 - column % 4 } else { 1 };
-        if next > target {
-            break;
-        }
-        column = next;
-        keep += 1;
-    }
-    let count = indent.len() - keep;
+    };
     if count <= 1 {
         return false;
     }
@@ -3578,7 +3574,8 @@ fn Editor(
                                 }
                                 return;
                             }
-                            if key == "Backspace" && !control && !modifiers.alt() && let Some(input) = textarea.peek().as_ref() && backspace_indent(input) {
+                            let scalar_backspace = key == "Backspace" && !control && !modifiers.alt() && cursors.peek().ranges.len() < 2;
+                            if scalar_backspace && let Some(input) = textarea.peek().as_ref() && backspace_indent(input) {
                                 event.prevent_default();
                                 composition_extendable.set(false);
                                 update_cursor.call(());

@@ -2,9 +2,9 @@
 //! Rules follow Monaco 0.55.1 (Copyright Microsoft Corporation, MIT).
 //! Permission/warranty notice: public/assets/translator-codicon-LICENSE.txt.
 use super::{
-    block_comment_edits, character_top, find_ranges, grapheme, in_json_string, insert_text,
-    json_bracket_newline, line_comment_edits, line_indentation, position_top, shifted_indentation,
-    LineComment, NativeUndo,
+    block_comment_edits, character_top, find_ranges, grapheme, in_json_string,
+    indentation_backspace, insert_text, json_bracket_newline, line_comment_edits, line_indentation,
+    position_top, shifted_indentation, LineComment, NativeUndo,
 };
 use dioxus::prelude::Callback;
 use std::{collections::HashSet, rc::Rc};
@@ -1085,7 +1085,11 @@ impl Cursors {
                 return None;
             }
             if start == end && kind == "deleteContentBackward" && start > 0 {
-                start = grapheme::delete_left(&units, start);
+                start = if let Some(count) = indentation_backspace(&units, start) {
+                    start - count
+                } else {
+                    grapheme::delete_left(&units, start)
+                };
             } else if start == end && kind == "deleteContentForward" && end < units.len() {
                 end = grapheme::next(&units, end);
             }

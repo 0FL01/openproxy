@@ -646,7 +646,7 @@ async function main() {
         assert.equal(await count(), 1, "overlapping indentation replacements keep the earlier cursor command");
         await page.keyboard.press("Control+z");
         await waitFor(async () => await text() === "  cat cat");
-        assert.equal(await count(), 2);
+        await waitFor(async () => await count() === 2);
         await choose("cat cat", 0, 3);
         await page.keyboard.press("Control+]");
         await waitFor(async () => await text() === "        cat cat");
@@ -663,6 +663,28 @@ async function main() {
         assert.deepEqual(await primary(), [0, 6]);
         await page.keyboard.type("X");
         await waitFor(async () => await text() === "Xnext\nXnext");
+
+        await choose(initial, start, start + 3);
+        await page.keyboard.press("Home");
+        assert.deepEqual(await primary(), [6, 6]);
+        await page.keyboard.press("Backspace");
+        await waitFor(async () => await text() === "    😺 cat\ncat");
+        assert.deepEqual(await primary(), [4, 4], "Backspace moves each leading-space caret to its previous indentation stop");
+        await page.keyboard.press("Control+z");
+        await waitFor(async () => await text() === initial);
+        assert.deepEqual(await primary(), [6, 6]);
+        assert.equal(await count(), 2);
+        await page.keyboard.press("Control+Shift+z");
+        await waitFor(async () => await text() === "    😺 cat\ncat");
+        await page.keyboard.type("X");
+        await waitFor(async () => await text() === "    X😺 cat\nXcat");
+
+        await choose("      cat\n\t  cat", 6, 9);
+        await page.keyboard.press("Home");
+        await page.keyboard.press("Backspace");
+        await waitFor(async () => await text() === "    cat\n\tcat");
+        await page.keyboard.type("Y");
+        await waitFor(async () => await text() === "    Ycat\n\tYcat");
         assert.deepEqual(errors, []);
         console.log("synthetic translator multicursor indentation smoke passed");
         return;
