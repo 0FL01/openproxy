@@ -1202,10 +1202,14 @@ fn copy_lines(input: &web_sys::HtmlTextAreaElement, down: bool) {
     }
 }
 
-fn toggle_json_block_comment(input: &web_sys::HtmlTextAreaElement) {
-    let start = input.selection_start().ok().flatten().unwrap_or_default() as usize;
-    let end = input.selection_end().ok().flatten().unwrap_or(start as u32) as usize;
-    let text: Vec<u16> = input.value().encode_utf16().collect();
+struct BlockComment {
+    edits: Vec<(u32, u32, String)>,
+    start: u32,
+    end: u32,
+    empty_caret: Option<u32>,
+}
+
+fn block_comment_edits(text: &[u16], start: usize, end: usize) -> BlockComment {
     let newline = b'\n' as u16;
     let start_line = text[..start]
         .iter()
@@ -1253,19 +1257,34 @@ fn toggle_json_block_comment(input: &web_sys::HtmlTextAreaElement) {
     {
         let inner_start = open + 2 + usize::from(text.get(open + 2) == Some(&(b' ' as u16)));
         let inner_end = close - usize::from(close > inner_start && text[close - 1] == b' ' as u16);
-        let inner = String::from_utf16_lossy(&text[inner_start..inner_end]);
-        if insert_text(input, open as u32, (close + 2) as u32, &inner) {
-            let _ = input.set_selection_range(open as u32, (open + inner_end - inner_start) as u32);
+        let edits = if inner_start < inner_end {
+            vec![
+                (open as u32, inner_start as u32, String::new()),
+                (inner_end as u32, (close + 2) as u32, String::new()),
+            ]
+        } else {
+            vec![(open as u32, (close + 2) as u32, String::new())]
+        };
+        BlockComment {
+            edits,
+            start: inner_start as u32,
+            end: inner_end as u32,
+            empty_caret: None,
         }
     } else {
-        let selected = String::from_utf16_lossy(&text[start..end]);
-        if insert_text(
-            input,
-            start as u32,
-            end as u32,
-            &format!("/* {selected} */"),
-        ) {
-            let _ = input.set_selection_range((start + 3) as u32, (end + 3) as u32);
+        let edits = if start == end {
+            vec![(start as u32, end as u32, "/*  */".to_owned())]
+        } else {
+            vec![
+                (start as u32, start as u32, "/* ".to_owned()),
+                (end as u32, end as u32, " */".to_owned()),
+            ]
+        };
+        BlockComment {
+            edits,
+            start: start as u32,
+            end: end as u32,
+            empty_caret: (start == end).then_some(3),
         }
     }
 }
@@ -3425,21 +3444,27 @@ fn Editor(
                                 else if chord && key.eq_ignore_ascii_case("u") { Some(LineComment::Remove) }
                                 else { None }
                             } else { None };
-                            if let Some(mode) = line_comment {
+                            let block_comment = json && modifiers.shift() && !modifiers.meta() && key.eq_ignore_ascii_case("a")
+                                && if linux { modifiers.ctrl() && !modifiers.alt() } else { modifiers.alt() && !modifiers.ctrl() };
+                            if line_comment.is_some() || block_comment {
                                 event.prevent_default();
                                 command_selections.write().stop_typing();
                                 composition_extendable.set(false);
                                 if let Some(input) = textarea.peek().clone() {
+                                    let apply = |cursors: &mut multicursor::Cursors| {
+                                        if let Some(mode) = line_comment { cursors.line_comments(&input, mode) }
+                                        else { cursors.block_comments(&input) }
+                                    };
                                     let ranges = cursors.peek().ranges.clone();
                                     if ranges.len() > 1 {
                                         adjusting_history.set(true);
-                                        let operation = cursors.write().line_comments(&input, mode);
+                                        let operation = apply(&mut cursors.write());
                                         adjusting_history.set(false);
                                         if let Some(operation) = operation { finish_multi_edit.call((operation, ranges)); }
                                     } else {
                                         let mut single = multicursor::Cursors::default();
                                         single.ranges.push(multicursor::selection(&input));
-                                        if let Some(operation) = single.line_comments(&input, mode) {
+                                        if let Some(operation) = apply(&mut single) {
                                             command_selections.write().record(operation);
                                             update_cursor.call(());
                                         }
@@ -3626,11 +3651,6 @@ fn Editor(
                                 && event.modifiers().ctrl() == web_sys::window().and_then(|window| window.navigator().user_agent().ok()).is_some_and(|agent| agent.contains("Linux")) {
                                 event.prevent_default();
                                 if let Some(input) = textarea.peek().as_ref() { copy_lines(input, event.key() == Key::ArrowDown); }
-                                update_cursor.call(());
-                            } else if json && event.modifiers().shift() && !event.modifiers().meta() && key.eq_ignore_ascii_case("a")
-                                && if web_sys::window().and_then(|window| window.navigator().user_agent().ok()).is_some_and(|agent| agent.contains("Linux")) { event.modifiers().ctrl() && !event.modifiers().alt() } else { event.modifiers().alt() && !event.modifiers().ctrl() } {
-                                event.prevent_default();
-                                if let Some(input) = textarea.peek().as_ref() { toggle_json_block_comment(input); }
                                 update_cursor.call(());
                             } else if (event.modifiers().ctrl() || event.modifiers().meta()) && (key.eq_ignore_ascii_case("f") || key.eq_ignore_ascii_case("h")) {
                                 event.prevent_default();

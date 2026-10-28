@@ -169,8 +169,48 @@ async function main() {
         assert.equal(await text(), multiline);
         await page.keyboard.type("X");
         assert.equal(await text(), multiline.replaceAll(fragment, "X"), "undo restores both multiline comment selections");
+
+        await choose(initial, start, start + 4);
+        await page.keyboard.press("Control+Shift+a");
+        const block = initial.replaceAll("null", "/* null */");
+        assert.equal(await text(), block, "block comments surround both selected values");
+        assert.deepEqual(await primary(), [start + 3, start + 7]);
+        await page.keyboard.press("Control+Shift+a");
+        assert.equal(await text(), initial);
+        assert.deepEqual(await primary(), [start, start + 4]);
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), block);
+        assert.deepEqual(await primary(), [start + 3, start + 7]);
+        await page.keyboard.press("Control+Shift+z");
+        assert.equal(await text(), initial);
+
+        await choose(initial, start, start + 4);
+        await page.keyboard.press("Backspace");
+        const empty = initial.replaceAll("null", "");
+        await page.keyboard.press("Control+Shift+a");
+        assert.equal(await text(), initial.replaceAll("null", "/*  */"), "each collapsed cursor receives its own empty block comment");
+        assert.deepEqual(await primary(), [start + 3, start + 3]);
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), empty);
+        assert.deepEqual(await primary(), [start, start]);
+        await page.keyboard.press("Control+Shift+z");
+        await page.keyboard.press("Control+Shift+a");
+        assert.equal(await text(), empty, "both empty comments are removable");
+        await page.keyboard.type("1");
+        assert.equal(await text(), initial.replaceAll("null", "1"), "both cursors remain editable after removing empty comments");
+
+        const shared = '{/* x x */ "a": 1}';
+        await choose(shared, shared.indexOf("x"), shared.indexOf("x") + 1);
+        await page.keyboard.press("Control+Shift+a");
+        assert.equal(await text(), '{x x "a": 1}', "shared block-comment removals keep only the earlier command");
+        assert.deepEqual(await primary(), [1, 4]);
+        await waitFor(async () => await count() === 1);
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), shared);
+        await page.keyboard.type("y");
+        assert.equal(await text(), shared.replaceAll("x", "y"), "undo restores both ranges that shared a surrounding comment");
         assert.deepEqual(errors, []);
-        console.log("synthetic translator multicursor line comment smoke passed");
+        console.log("synthetic translator multicursor comment smoke passed");
         return;
       }
       if (process.env.TRANSLATOR_GOTO_LINE_ONLY === "1") {
