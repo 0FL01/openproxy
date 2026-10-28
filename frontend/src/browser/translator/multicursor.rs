@@ -98,6 +98,54 @@ fn word_position(units: &[u16], position: usize, left: bool) -> usize {
     position
 }
 
+// DeleteWord uses whitespace heuristics and stays on the current logical line,
+// except for joining at its boundary. It does not use movement's separator skip.
+fn word_deletion(units: &[u16], position: usize, left: bool) -> (u32, u32) {
+    let position = position.min(units.len());
+    let line_start = units[..position]
+        .iter()
+        .rposition(|unit| *unit == 10)
+        .map_or(0, |index| index + 1);
+    let line_end = units[position..]
+        .iter()
+        .position(|unit| *unit == 10)
+        .map_or(units.len(), |index| position + index);
+    let mut target = position;
+    if left {
+        if position == line_start {
+            return (position.saturating_sub(1) as u32, position as u32);
+        }
+        while target > line_start && word_class(units[target - 1]) == WordClass::Whitespace {
+            target -= 1;
+        }
+        if position - target < 2 && target > line_start {
+            let kind = word_class(units[target - 1]);
+            while target > line_start && word_class(units[target - 1]) == kind {
+                target -= 1;
+            }
+        }
+        (target as u32, position as u32)
+    } else {
+        if position == line_end && position < units.len() {
+            target += 1;
+            while target < units.len() && word_class(units[target]) == WordClass::Whitespace {
+                target += 1;
+            }
+        } else {
+            while target < line_end && word_class(units[target]) == WordClass::Whitespace {
+                target += 1;
+            }
+            if target - position < 2 && target < line_end {
+                let kind = word_class(units[target]);
+                while target < line_end && word_class(units[target]) == kind {
+                    target += 1;
+                }
+            }
+        }
+        (position as u32, target as u32)
+    }
+}
+
 fn normalize(ranges: &mut Vec<Selection>) -> Vec<usize> {
     let last_added = ranges.len().saturating_sub(1);
     let mut ordered: Vec<_> = std::mem::take(ranges).into_iter().enumerate().collect();
@@ -1036,6 +1084,91 @@ impl Cursors {
         let operation = self.replace(input, replacements, false)?;
         self.typing = kind == "insertText" && !data.contains(char::is_whitespace);
         Some(operation)
+    }
+
+    pub fn delete_words(
+        &mut self,
+        input: &web_sys::HtmlTextAreaElement,
+        backwards: bool,
+    ) -> Option<NativeUndo> {
+        if self.ranges.len() < 2 || self.ranges.first() != Some(&selection(input)) {
+            return None;
+        }
+        let units: Vec<_> = input.value().encode_utf16().collect();
+        self.validate_pairs(&units);
+        let marked: HashSet<_> = self
+            .auto_closed
+            .iter()
+            .flatten()
+            .map(|pair| (pair.close, pair.character as u16))
+            .collect();
+        let replacements: Vec<_> = self
+            .ranges
+            .iter()
+            .map(|&(start, end, _)| {
+                let (start, end) = if start != end {
+                    (start, end)
+                } else if backwards
+                    && start > 0
+                    && units
+                        .get(start as usize - 1..=start as usize)
+                        .is_some_and(|pair| {
+                            matches!(pair, [123, 125] | [91, 93] | [34, 34])
+                                && marked.contains(&(start, pair[1]))
+                        })
+                {
+                    (start - 1, end + 1)
+                } else {
+                    word_deletion(&units, start as usize, backwards)
+                };
+                (start, end, String::new())
+            })
+            .collect();
+        self.typing = false;
+        self.starts_typing = false;
+        if replacements.iter().all(|(start, end, _)| start == end) {
+            return None;
+        }
+
+        // Monaco rejects the later cursor's conflicting command, rather than
+        // taking the union used by whole-line Cut. Keep original cursor priority.
+        let mut ordered: Vec<_> = (0..replacements.len()).collect();
+        ordered.sort_by_key(|&index| {
+            let (start, end, _) = replacements[index];
+            std::cmp::Reverse((end, start))
+        });
+        let mut index = 1;
+        let mut losing = HashSet::new();
+        while index < ordered.len() {
+            let previous = ordered[index - 1];
+            let current = ordered[index];
+            if replacements[previous].0 < replacements[current].1 {
+                let loser = previous.max(current);
+                losing.insert(loser);
+                ordered.remove(if loser == previous { index - 1 } else { index });
+                index = index.saturating_sub(1).max(1);
+            } else {
+                index += 1;
+            }
+        }
+        let original = std::mem::take(&mut self.ranges);
+        self.ranges = original
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !losing.contains(index))
+            .map(|(_, range)| range.clone())
+            .collect();
+        let replacements = replacements
+            .into_iter()
+            .enumerate()
+            .filter(|(index, _)| !losing.contains(index))
+            .map(|(_, replacement)| replacement)
+            .collect();
+        let operation = self.replace(input, replacements, false);
+        if operation.is_none() {
+            self.ranges = original;
+        }
+        operation
     }
 
     pub fn apply_json(

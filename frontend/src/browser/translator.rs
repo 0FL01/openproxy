@@ -2668,6 +2668,8 @@ fn Editor(
                 | "insertParagraph"
                 | "deleteContentBackward"
                 | "deleteContentForward"
+                | "deleteWordBackward"
+                | "deleteWordForward"
         ) {
             return;
         }
@@ -2679,8 +2681,17 @@ fn Editor(
             return;
         }
         event.prevent_default();
+        let deleting_word = matches!(kind.as_str(), "deleteWordBackward" | "deleteWordForward");
+        if deleting_word {
+            command_selections.write().stop_typing();
+            composition_extendable.set(false);
+        }
         adjusting_history.set(true);
-        let operation = if json && matches!(kind.as_str(), "insertLineBreak" | "insertParagraph") {
+        let operation = if deleting_word {
+            cursors
+                .write()
+                .delete_words(&input, kind == "deleteWordBackward")
+        } else if json && matches!(kind.as_str(), "insertLineBreak" | "insertParagraph") {
             cursors.write().enter_json(&input)
         } else if json {
             cursors

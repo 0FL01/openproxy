@@ -86,7 +86,7 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
-    if (process.env.TRANSLATOR_GOTO_LINE_ONLY === "1" || process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1" || process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1" || process.env.TRANSLATOR_MULTI_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_HOME_END_ONLY === "1" || process.env.TRANSLATOR_MULTI_DOCUMENT_EDGES_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAGE_ONLY === "1" || process.env.TRANSLATOR_MULTI_VERTICAL_ONLY === "1" || process.env.TRANSLATOR_ADD_CURSORS_ONLY === "1") {
+    if (process.env.TRANSLATOR_GOTO_LINE_ONLY === "1" || process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1" || process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1" || process.env.TRANSLATOR_MULTI_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_DELETE_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_HOME_END_ONLY === "1" || process.env.TRANSLATOR_MULTI_DOCUMENT_EDGES_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAGE_ONLY === "1" || process.env.TRANSLATOR_MULTI_VERTICAL_ONLY === "1" || process.env.TRANSLATOR_ADD_CURSORS_ONLY === "1") {
       const index = process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" ? 0 : 1;
       if (index === 1) await page.getByRole("button", { name: /Provider Response/ }).click();
       if (reference) await page.locator(".monaco-editor .view-lines").nth(index).waitFor();
@@ -507,6 +507,80 @@ async function main() {
         console.log("synthetic translator multicursor PageUp/PageDown smoke passed");
         return;
       }
+      if (process.env.TRANSLATOR_MULTI_DELETE_WORD_ONLY === "1") {
+        const line = "😺 alpha.foo  \tкот tail";
+        const initial = `${line}\n${line}`;
+        const choose = async (value, start, end) => {
+          await setText(value, start, end);
+          await page.keyboard.press("Control+Shift+l");
+          await waitFor(async () => await count() === 2);
+        };
+        await choose(initial, 9, 12);
+        await page.keyboard.press("ArrowRight");
+        await page.keyboard.press("Control+Backspace");
+        const removedWord = line.replace("foo", "");
+        assert.equal(await text(), `${removedWord}\n${removedWord}`);
+        assert.deepEqual(await primary(), [9, 9]);
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.press("Control+Backspace");
+        const removedDot = removedWord.replace(".", "");
+        assert.equal(await text(), `${removedDot}\n${removedDot}`, "word deletion stops at punctuation rather than deleting the preceding word");
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), `${removedWord}\n${removedWord}`, "each word command has its own undo stop");
+        assert.deepEqual(await primary(), [9, 9]);
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), initial);
+        assert.deepEqual(await primary(), [12, 12]);
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.press("Control+Shift+z");
+        assert.equal(await text(), `${removedWord}\n${removedWord}`);
+
+        await choose(initial, 9, 12);
+        await page.keyboard.press("ArrowLeft");
+        await page.keyboard.press("ArrowLeft");
+        await page.keyboard.press("Control+Delete");
+        assert.equal(await text(), initial.replaceAll(".", ""), "forward deletion removes only the separator, unlike word-end movement");
+        await page.keyboard.press("Control+z");
+        assert.deepEqual(await primary(), [8, 8]);
+
+        await choose(initial, 15, 18);
+        await page.keyboard.press("ArrowLeft");
+        await page.keyboard.press("Control+Backspace");
+        assert.equal(await text(), initial.replaceAll("  \t", ""), "multiple adjacent spaces/tabs are removed without deleting the preceding word");
+        await choose(initial, 9, 12);
+        await page.keyboard.press("ArrowRight");
+        await page.keyboard.press("Control+Delete");
+        assert.equal(await text(), initial.replaceAll("  \t", ""));
+        await choose(initial, 15, 18);
+        await page.keyboard.press("Control+Delete");
+        assert.equal(await text(), initial.replaceAll("кот", ""), "an explicit selection is deleted without expanding its word range");
+
+        await choose("lead\n  cat\nmid\n  cat", 7, 10);
+        await page.keyboard.press("ArrowLeft");
+        await page.keyboard.press("ArrowLeft");
+        await page.keyboard.press("ArrowLeft");
+        await page.keyboard.press("Control+Backspace");
+        assert.equal(await text(), "lead  cat\nmid  cat", "backward deletion at a line start joins lines without deleting the previous word");
+        await choose("cat\n  next\ncat\n  next", 0, 3);
+        await page.keyboard.press("ArrowRight");
+        await page.keyboard.press("Control+Delete");
+        assert.equal(await text(), "catnext\ncatnext", "forward deletion at a line end removes the newline and following indentation, not the next word");
+
+        await choose("aaaa", 0, 2);
+        await page.keyboard.press("ArrowRight");
+        await page.keyboard.press("Control+Backspace");
+        assert.equal(await text(), "aa", "overlapping word commands retain the original primary command rather than deleting their union");
+        await waitFor(async () => await count() === 1);
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), "aaaa");
+        assert.deepEqual(await primary(), [2, 2]);
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.type("X");
+        assert.equal(await text(), "aaXaaX", "undo restores both cursors after overlapping word deletions merge");
+        assert.deepEqual(errors, []);
+        console.log("synthetic translator multicursor word deletion smoke passed");
+        return;
+      }
       if (process.env.TRANSLATOR_MULTI_WORD_ONLY === "1") {
         const line = "😺 alpha.foo\t кот tail";
         const initial = `${line}\n${line}`;
@@ -698,6 +772,17 @@ async function main() {
         assert.equal(await text(), empty, "Backspace deletes both sides of every generated empty pair");
         await page.keyboard.press("Control+z");
         assert.equal(await text(), arrays);
+        assert.deepEqual(await primary(), [start + 1, start + 1]);
+        await emptyValues();
+        await page.keyboard.type("[");
+        await page.evaluate(() => navigator.clipboard.writeText("\nx"));
+        await page.keyboard.press("Control+v");
+        const mixedPairs = initial.replace("null", "[]").replace("null", "[x]");
+        await waitFor(async () => await text() === mixedPairs);
+        await page.keyboard.press("Control+Backspace");
+        assert.equal(await text(), initial.replace("null", "").replace("null", "[]"), "word deletion checks generated empty pairs independently at each cursor");
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), mixedPairs);
         assert.deepEqual(await primary(), [start + 1, start + 1]);
         await emptyValues();
         await page.keyboard.type('"');
