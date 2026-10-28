@@ -86,7 +86,7 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
-    if (process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1") {
+    if (process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1") {
       const index = process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" ? 0 : 1;
       if (index === 1) await page.getByRole("button", { name: /Provider Response/ }).click();
       if (reference) await page.locator(".monaco-editor .view-lines").nth(index).waitFor();
@@ -114,6 +114,49 @@ async function main() {
         else await input().evaluate((input, [start, end]) => { input.setSelectionRange(start, end); input.dispatchEvent(new Event("select", { bubbles: true })); }, [start, end]);
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       };
+      if (process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1") {
+        const initial = "alpha\n\nbeta😺\nomega";
+        await setText(initial, 2, 9);
+        if (reference) await page.evaluate(index => {
+          const e = window.monaco.editor.getEditors()[index];
+          const a = e.getModel().getPositionAt(9), b = e.getModel().getPositionAt(2);
+          e.setSelection(new window.monaco.Selection(a.lineNumber, a.column, b.lineNumber, b.column));
+        }, index);
+        else await input().evaluate(input => { input.setSelectionRange(2, 9, "backward"); input.dispatchEvent(new Event("select", { bubbles: true })); });
+        await page.keyboard.press("Shift+Alt+i");
+        await waitFor(async () => await count() === 3);
+        assert.deepEqual(await primary(), [5, 5], "the first selected line end becomes primary even for a backward selection");
+        await page.keyboard.type("X");
+        assert.equal(await text(), "alphaX\nX\nbeXta😺\nomega", "empty selected lines get a cursor and the last uses the selected endpoint");
+        await page.keyboard.press("Shift+Alt+i");
+        await page.keyboard.type("Y");
+        const edited = "alphaXY\nXY\nbeXYta😺\nomega";
+        assert.equal(await text(), edited);
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), initial, "the no-op shortcut at collapsed cursors does not split a typing undo group");
+        assert.deepEqual(await primary(), [5, 5]);
+        await waitFor(async () => await count() === 3);
+        await page.keyboard.press("Control+Shift+z");
+        assert.equal(await text(), edited);
+        await setText(initial, 2, 7);
+        await page.keyboard.press("Shift+Alt+i");
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.type("Y");
+        assert.equal(await text(), "alphaY\nY\nbeta😺\nomega", "a following line at column one is excluded");
+        await setText(initial, 2);
+        await page.keyboard.press("Shift+Alt+i");
+        assert.deepEqual(await primary(), [2, 2], "a collapsed selection is unchanged");
+        assert.equal(await count(), 1);
+        await setText("foo one\nfoo two", 0, 3);
+        await page.keyboard.press("Control+Shift+l");
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.press("Shift+Alt+i");
+        await page.keyboard.type("!");
+        assert.equal(await text(), "foo! one\nfoo! two", "every original selection is split, not just primary");
+        assert.deepEqual(errors, []);
+        console.log("synthetic translator line-end cursors smoke passed");
+        return;
+      }
       if (process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1") {
         const initial = '{"😺": null,"other": null}';
         const start = initial.indexOf("null");

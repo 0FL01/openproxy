@@ -99,6 +99,52 @@ impl Cursors {
         };
     }
 
+    pub fn line_ends(&mut self, input: &web_sys::HtmlTextAreaElement) -> bool {
+        let primary = selection(input);
+        let ranges = if self.ranges.first() == Some(&primary) {
+            self.ranges.clone()
+        } else {
+            vec![primary]
+        };
+        let units: Vec<_> = input.value().encode_utf16().collect();
+        let mut ends = Vec::new();
+        'selections: for (start, end, _) in ranges {
+            if start == end {
+                continue;
+            }
+            let mut offset = start as usize;
+            while let Some(next) = units[offset..end as usize].iter().position(|ch| *ch == 10) {
+                offset += next;
+                ends.push((offset as u32, offset as u32, "forward".into()));
+                if ends.len() == 10_000 {
+                    break 'selections;
+                }
+                offset += 1;
+            }
+            // The final line uses the selection endpoint, not its full length;
+            // column one on a following line is excluded.
+            if offset < end as usize {
+                ends.push((end, end, "forward".into()));
+                if ends.len() == 10_000 {
+                    break;
+                }
+            }
+        }
+        if !ends.is_empty() {
+            normalize(&mut ends);
+            self.ranges = ends;
+            self.query = None;
+            self.typing = false;
+            self.starts_typing = false;
+            self.validate_pairs(&units);
+            let primary = &self.ranges[0];
+            let _ = input.set_selection_range(primary.0, primary.1);
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn choose(
         &mut self,
         input: &web_sys::HtmlTextAreaElement,

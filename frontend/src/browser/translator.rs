@@ -3195,6 +3195,17 @@ fn Editor(
                             }
                             let modifiers = event.modifiers();
                             let control = modifiers.ctrl() || modifiers.meta();
+                            if modifiers.shift() && modifiers.alt() && !control && key.eq_ignore_ascii_case("i") {
+                                event.prevent_default();
+                                if let Some(input) = textarea.peek().as_ref() {
+                                    let changed = cursors.write().line_ends(input);
+                                    if changed {
+                                        command_selections.write().stop_typing();
+                                        update_cursor.call(());
+                                    }
+                                }
+                                return;
+                            }
                             if control && !modifiers.alt() && ((!modifiers.shift() && key.eq_ignore_ascii_case("d")) || (modifiers.shift() && key.eq_ignore_ascii_case("l"))) {
                                 event.prevent_default();
                                 command_selections.write().stop_typing();
