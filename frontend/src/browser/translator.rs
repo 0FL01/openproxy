@@ -3026,6 +3026,7 @@ fn Editor(
     let text_top = find_padding - scroll;
     let mut wrapping_indent = None::<f64>;
     let mut wrapping_width = editor_width() as f64;
+    let mut wrapping_words = true;
     if let Some(context) = ruler()
         .as_ref()
         .and_then(|canvas| canvas.get_context("2d").ok().flatten())
@@ -3048,6 +3049,11 @@ fn Editor(
                     .is_ok_and(|metrics| metrics.width() > wrapping_width)
                 {
                     let prefix = line.len() - line.trim_start_matches(' ').len();
+                    let word = &line[prefix..];
+                    wrapping_words &= !word.is_empty()
+                        && word
+                            .bytes()
+                            .all(|ch| ch.is_ascii_alphanumeric() || ch == b'_');
                     let indent = context
                         .measure_text(&line[..prefix])
                         .map_or(0.0, |metrics| (metrics.width() * 64.0).round() / 64.0);
@@ -3063,6 +3069,13 @@ fn Editor(
         }
     }
     let wrapping_indent = wrapping_indent.unwrap_or(0.0);
+    // An overlong indented word uses the first row, rather than wrapping
+    // immediately after its leading spaces. Keep ordinary word wrapping otherwise.
+    let word_break = if wrapping_indent > 0.0 && wrapping_words {
+        "break-all"
+    } else {
+        "normal"
+    };
     let right_padding = (editor_width() as f64 - wrapping_width).max(0.0);
     let wrapping_width = if wrapping_width > 0.0 {
         format!("{wrapping_width}px")
@@ -3179,7 +3192,7 @@ fn Editor(
                             div { key: "{index}", aria_hidden: "true", class: if rect.caret { "multicursor-cursor" } else { "multicursor-selection" }, style: "position:absolute;pointer-events:none;left:{rect.left}px;top:{rect.top}px;width:{width}px;height:{rect.height}px;background:{color};" }
                         } }
                     }
-                    pre { aria_hidden: "true", style: "position:absolute;top:{text_top}px;left:0;right:0;margin:0;white-space:pre-wrap;overflow-wrap:anywhere;pointer-events:none;font-family:'Droid Sans Mono',monospace;font-size:12px;line-height:16px;tab-size:4;",
+                    pre { aria_hidden: "true", style: "position:absolute;top:{text_top}px;left:0;right:0;margin:0;white-space:pre-wrap;overflow-wrap:anywhere;word-break:{word_break};pointer-events:none;font-family:'Droid Sans Mono',monospace;font-size:12px;line-height:16px;tab-size:4;",
                         onmounted: move |event| { if let Some(element) = event.data().downcast::<web_sys::Element>() && let Ok(element) = element.clone().dyn_into::<web_sys::HtmlElement>() { rendered.set(Some(element)); } },
                         for (line, segments) in lines.iter().enumerate() {
                             { let in_range = selected_lines.as_ref().is_some_and(|range| range.contains(&line)); let in_preview = preview_line == Some(line); let layer = if in_range || in_preview { "z-index:0;" } else { "" }; rsx! {
@@ -3209,7 +3222,7 @@ fn Editor(
                         oncopy: move |event| on_clipboard.call(event),
                         oncut: move |event| on_clipboard.call(event),
                         onpaste: move |event| on_clipboard.call(event),
-                        style: "position:absolute;inset:0 14px 0 0;width:calc(100% - 14px);height:100%;resize:none;border:0;outline:0;padding:{find_padding}px {right_padding}px 0 {wrapping_indent}px;text-indent:-{wrapping_indent}px each-line;background:transparent;color:transparent;caret-color:white;font-family:'Droid Sans Mono',monospace;font-size:12px;line-height:16px;white-space:pre-wrap;overflow-wrap:anywhere;tab-size:4;",
+                        style: "position:absolute;inset:0 14px 0 0;width:calc(100% - 14px);height:100%;resize:none;border:0;outline:0;padding:{find_padding}px {right_padding}px 0 {wrapping_indent}px;text-indent:-{wrapping_indent}px each-line;background:transparent;color:transparent;caret-color:white;font-family:'Droid Sans Mono',monospace;font-size:12px;line-height:16px;white-space:pre-wrap;overflow-wrap:anywhere;word-break:{word_break};tab-size:4;",
                         onmounted: move |event| {
                             if let Some(element) = event.data().downcast::<web_sys::Element>() && let Ok(input) = element.clone().dyn_into::<web_sys::HtmlTextAreaElement>() && let Some(container) = input.parent_element() {
                                 editor_width.set(container.client_width().saturating_sub(14));
@@ -3262,6 +3275,19 @@ fn Editor(
                                     cursor_announcement.with_mut(|(version, text)| { *version = version.wrapping_add(1); *text = message; });
                                 }
                                 update_cursor.call(());
+                                return;
+                            }
+                            if !control && !modifiers.alt() && matches!(event.key(), Key::Home | Key::End) && cursors.peek().ranges.len() > 1 {
+                                let changed = if let Some(input) = textarea.peek().as_ref()
+                                    && let Some(element) = rendered.peek().as_ref() {
+                                    cursors.write().home_end(input, element, event.key() == Key::Home, modifiers.shift())
+                                } else { None };
+                                if changed.is_some() {
+                                    event.prevent_default();
+                                    command_selections.write().stop_typing();
+                                    composition_extendable.set(false);
+                                    update_cursor.call(());
+                                }
                                 return;
                             }
                             if !control && !modifiers.alt() && matches!(event.key(), Key::ArrowUp | Key::ArrowDown) && cursors.peek().ranges.len() > 1 {

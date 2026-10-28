@@ -86,7 +86,7 @@ async function main() {
       } catch { return false; }
     });
     if (reference) await page.locator(".monaco-editor .view-lines").waitFor();
-    if (process.env.TRANSLATOR_GOTO_LINE_ONLY === "1" || process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1" || process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1" || process.env.TRANSLATOR_MULTI_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_VERTICAL_ONLY === "1" || process.env.TRANSLATOR_ADD_CURSORS_ONLY === "1") {
+    if (process.env.TRANSLATOR_GOTO_LINE_ONLY === "1" || process.env.TRANSLATOR_MULTICURSOR_ONLY === "1" || process.env.TRANSLATOR_MULTI_CLIPBOARD_ONLY === "1" || process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" || process.env.TRANSLATOR_LINE_END_CURSORS_ONLY === "1" || process.env.TRANSLATOR_MULTI_HORIZONTAL_ONLY === "1" || process.env.TRANSLATOR_MULTI_WORD_ONLY === "1" || process.env.TRANSLATOR_MULTI_HOME_END_ONLY === "1" || process.env.TRANSLATOR_MULTI_VERTICAL_ONLY === "1" || process.env.TRANSLATOR_ADD_CURSORS_ONLY === "1") {
       const index = process.env.TRANSLATOR_MULTI_ENTER_ONLY === "1" || process.env.TRANSLATOR_MULTI_SURROUND_ONLY === "1" || process.env.TRANSLATOR_MULTI_PAIRS_ONLY === "1" ? 0 : 1;
       if (index === 1) await page.getByRole("button", { name: /Provider Response/ }).click();
       if (reference) await page.locator(".monaco-editor .view-lines").nth(index).waitFor();
@@ -303,6 +303,72 @@ async function main() {
         assert.equal(await text(), `${editedLine}\n${editedLine}`);
         assert.deepEqual(errors, []);
         console.log("synthetic translator multicursor vertical navigation smoke passed");
+        return;
+      }
+      if (process.env.TRANSLATOR_MULTI_HOME_END_ONLY === "1") {
+        const line = " \t  😺 cat tail  ";
+        const initial = `${line}\n${line}`;
+        const selectCats = async () => {
+          const start = line.indexOf("cat");
+          await setText(initial, start, start + 3);
+          await page.keyboard.press("Control+Shift+l");
+          await waitFor(async () => await count() === 2);
+        };
+        await selectCats();
+        await page.keyboard.press("Home");
+        assert.deepEqual(await primary(), [4, 4], "Home moves every active endpoint to the first nonblank column");
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.press("Home");
+        assert.deepEqual(await primary(), [0, 0], "repeated Home toggles to the logical line start");
+        await page.keyboard.press("End");
+        assert.deepEqual(await primary(), [line.length, line.length], "End includes trailing whitespace");
+        await selectCats();
+        await page.keyboard.press("Shift+Home");
+        assert.deepEqual(await primary(), [4, 7]);
+        await page.keyboard.press("Shift+Home");
+        assert.deepEqual(await primary(), [0, 7]);
+        await page.keyboard.press("Shift+End");
+        assert.deepEqual(await primary(), [7, line.length], "Shift keeps the original anchor when reversing direction");
+        await page.keyboard.type("X");
+        const edited = `${line.slice(0, 7)}X`;
+        assert.equal(await text(), `${edited}\n${edited}`);
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), initial);
+        assert.deepEqual(await primary(), [7, line.length]);
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.press("Control+Shift+z");
+        assert.equal(await text(), `${edited}\n${edited}`);
+
+        await page.setViewportSize({ width: 390, height: 844 });
+        const wrapped = `  ${"x".repeat(60)}cat${"x".repeat(60)}`;
+        await setText(`${wrapped}\n${wrapped}`, 62, 65);
+        await page.keyboard.press("Control+Shift+l");
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.press("ArrowRight");
+        for (const offset of [62, 2, 0]) {
+          await page.keyboard.press("Home");
+          assert.deepEqual(await primary(), [offset, offset], "Home visits the wrapped start, first nonblank, then logical start");
+          await waitFor(async () => await count() === 2);
+        }
+        await page.keyboard.press("End");
+        assert.deepEqual(await primary(), [22, 22], "End first visits the current visual row end");
+        await page.keyboard.press("End");
+        assert.deepEqual(await primary(), [wrapped.length, wrapped.length], "a second End at the wrap boundary visits the logical line end");
+        for (const offset of [122, 2]) {
+          await page.keyboard.press("Shift+Home");
+          assert.deepEqual(await primary(), [offset, wrapped.length]);
+        }
+        await page.keyboard.type("Q");
+        assert.equal(await text(), "  Q\n  Q", "wrapped selections are replaced at both cursors");
+        await setText(wrapped, 0, 0);
+        await page.keyboard.press("End");
+        assert.deepEqual(await primary(), [22, 22], "native input and syntax share the first wrapped row");
+        await setText("  abcdefghij klmnopqrst cat uvwxyz", 0, 0);
+        await page.keyboard.press("End");
+        assert.deepEqual(await primary(), [13, 13], "ordinary wrapped text still breaks between words");
+        assert.deepEqual(errors, []);
+        console.log("synthetic translator multicursor Home/End smoke passed");
         return;
       }
       if (process.env.TRANSLATOR_MULTI_WORD_ONLY === "1") {

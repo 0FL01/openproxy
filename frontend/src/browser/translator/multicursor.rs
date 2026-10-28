@@ -136,6 +136,14 @@ pub(super) struct Cursors {
     auto_closed: Vec<Vec<ClosedPair>>,
     vertical: Option<Vertical>,
     added: Option<Added>,
+    line_edge: Option<LineEdge>,
+}
+
+#[derive(Clone)]
+struct LineEdge {
+    ranges: Vec<Selection>,
+    width: i32,
+    end_rows: Vec<Option<u32>>,
 }
 
 #[derive(Clone)]
@@ -332,6 +340,7 @@ impl Cursors {
             self.starts_typing = false;
             self.vertical = None;
             self.added = None;
+            self.line_edge = None;
             self.validate_pairs(&units);
             let primary = &self.ranges[0];
             let _ = input.set_selection_range(primary.0, primary.1);
@@ -350,6 +359,7 @@ impl Cursors {
     ) -> bool {
         self.vertical = None;
         self.added = None;
+        self.line_edge = None;
         let units: Vec<_> = input.value().encode_utf16().collect();
         let mut ranges: Vec<_> = self
             .ranges
@@ -398,6 +408,128 @@ impl Cursors {
         true
     }
 
+    pub fn home_end(
+        &mut self,
+        input: &web_sys::HtmlTextAreaElement,
+        rendered: &web_sys::HtmlElement,
+        home: bool,
+        extend: bool,
+    ) -> Option<bool> {
+        let text = input.value();
+        let units: Vec<_> = text.encode_utf16().collect();
+        let rows = view_rows(&text, rendered)?;
+        let previous = self
+            .line_edge
+            .as_ref()
+            .filter(|state| state.ranges == self.ranges && state.width == input.client_width());
+        let mut ranges = Vec::new();
+        let mut end_rows = Vec::new();
+        let (mut top, mut bottom) = (f64::MAX, f64::MIN);
+        for (index, &(start, end, ref direction)) in self.ranges.iter().enumerate() {
+            let (anchor, active) = if direction == "backward" {
+                (end, start)
+            } else {
+                (start, end)
+            };
+            // A wrap boundary belongs to either row. Keep the row selected by
+            // End so the next End visits the logical end instead of the next row.
+            let row_start = previous.and_then(|state| state.end_rows[index]);
+            let row = &rows[rows
+                .partition_point(|row| row.start <= row_start.unwrap_or(active))
+                .saturating_sub(1)];
+            let logical_end = units[row.line_start as usize..]
+                .iter()
+                .position(|unit| *unit == 10)
+                .map_or(units.len(), |length| row.line_start as usize + length)
+                as u32;
+            let first_nonblank = |start: u32, end: u32| {
+                units[start as usize..end as usize]
+                    .iter()
+                    .position(|unit| !matches!(*unit, 9 | 32))
+                    .map_or(start, |offset| start + offset as u32)
+            };
+            let next = if home {
+                let first = first_nonblank(row.start, row.end);
+                if row.start != row.line_start && active != first {
+                    first
+                } else {
+                    let first = first_nonblank(row.line_start, logical_end);
+                    if active == first {
+                        row.line_start
+                    } else {
+                        first
+                    }
+                }
+            } else if active == row.end || row.end == logical_end {
+                logical_end
+            } else {
+                row.end
+            };
+            let end_row = (!home && next == row.end && next < logical_end).then_some(row.start);
+            end_rows.push(end_row);
+            let cursor_top = position_top(input, rendered, end_row.unwrap_or(next))?;
+            let anchor_top = if extend {
+                position_top(input, rendered, anchor)?
+            } else {
+                cursor_top
+            };
+            top = top.min(cursor_top.min(anchor_top));
+            bottom = bottom.max(cursor_top.max(anchor_top) + 16.0);
+            ranges.push(if extend {
+                (
+                    anchor.min(next),
+                    anchor.max(next),
+                    if next < anchor { "backward" } else { "forward" }.into(),
+                )
+            } else {
+                (next, next, "forward".into())
+            });
+        }
+        let generated = ranges.clone();
+        let owners = normalize(&mut ranges);
+        self.line_edge = Some(LineEdge {
+            ranges: ranges.clone(),
+            width: input.client_width(),
+            end_rows: owners
+                .into_iter()
+                .enumerate()
+                .map(|(index, owner)| {
+                    (ranges[index] == generated[owner])
+                        .then_some(end_rows[owner])
+                        .flatten()
+                })
+                .collect(),
+        });
+        let changed = ranges != self.ranges;
+        self.ranges = ranges;
+        self.vertical = None;
+        self.added = None;
+        self.query = None;
+        self.typing = false;
+        self.starts_typing = false;
+        self.validate_pairs(&units);
+        let primary = &self.ranges[0];
+        let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
+        let padding = input
+            .style()
+            .get_property_value("padding-top")
+            .ok()
+            .and_then(|value| value.trim_end_matches("px").parse::<f64>().ok())
+            .unwrap_or_default();
+        // Like revealAllCursors, leave the viewport alone when the complete
+        // selection box cannot fit. Compute both bounds before scrolling once.
+        let height = f64::from(input.client_height());
+        if bottom - top <= height - padding {
+            let shift = if top < padding {
+                top - padding
+            } else {
+                (bottom + 16.0 - height).max(0.0)
+            };
+            input.set_scroll_top(input.scroll_top() + shift as i32);
+        }
+        Some(changed)
+    }
+
     pub fn vertical(
         &mut self,
         input: &web_sys::HtmlTextAreaElement,
@@ -408,6 +540,7 @@ impl Cursors {
         let text = input.value();
         let units: Vec<_> = text.encode_utf16().collect();
         let rows = view_rows(&text, rendered)?;
+        self.line_edge = None;
         let origin = rendered.get_bounding_client_rect().left();
         let previous = self
             .vertical
@@ -513,6 +646,7 @@ impl Cursors {
         rendered: Option<&web_sys::HtmlElement>,
         up: bool,
     ) -> bool {
+        self.line_edge = None;
         let primary = selection(input);
         let original = if self.ranges.first() == Some(&primary) {
             self.ranges.clone()
@@ -709,6 +843,7 @@ impl Cursors {
     ) {
         self.vertical = None;
         self.added = None;
+        self.line_edge = None;
         let primary = selection(input);
         if self.ranges.first() != Some(&primary) {
             self.ranges.clear();
@@ -1061,6 +1196,7 @@ impl Cursors {
     ) -> Option<NativeUndo> {
         self.vertical = None;
         self.added = None;
+        self.line_edge = None;
         let original = selection(input);
         if self.ranges.first() != Some(&original) || replacements.len() != self.ranges.len() {
             return None;
