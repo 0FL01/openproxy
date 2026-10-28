@@ -33,6 +33,7 @@
 .translator-find .find-row {
   display: flex;
   align-items: center;
+  overflow: hidden;
   height: 25px;
   margin: 3px 25px 0 17px;
 }
@@ -47,6 +48,7 @@
 }
 .translator-find .find-box:focus-within { outline: 1px solid #007fd4; outline-offset: -1px; }
 .translator-find .find-input {
+  position: relative;
   display: block;
   width: calc(100% - 66px);
   height: 23px;
