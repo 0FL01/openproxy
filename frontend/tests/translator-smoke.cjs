@@ -175,7 +175,7 @@ async function main() {
 
         const run = async label => {
           await open(label);
-          await page.keyboard.press("Enter");
+          await page.getByRole("option", { name: label }).click();
           await palette().waitFor({ state: "hidden" });
           await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
         };
@@ -416,6 +416,56 @@ async function main() {
           await page.keyboard.type("!");
           assert.equal(await text(), "cat! / cat!\nend", "Undo restores both merged cursors");
         }
+        for (const [original, start, end, expected, cursor] of [
+          ["alpha\n😺beta\nlast", 10, 10, "alpha\nlast", 10],
+          ["alpha\nbeta\ngamma", 14, 14, "alpha\nbeta", 9],
+          ["alpha\nbeta\ngamma", 1, 6, "beta\ngamma", 0],
+          ["alpha\nbeta\ngamma", 1, 8, "gamma", 2],
+        ]) {
+          await setText(original, start, end);
+          await run("Delete Line");
+          assert.equal(await text(), expected);
+          assert.deepEqual(await primary(), [cursor, cursor]);
+          await page.keyboard.press("Control+z");
+          assert.equal(await text(), original);
+          assert.deepEqual(await primary(), [start, end]);
+          await page.keyboard.press("Control+Shift+z");
+          assert.equal(await text(), expected);
+        }
+        const deletedLines = "aa cat tail\nkeep\nbb cat tail\nend";
+        await setText(deletedLines, 3, 6);
+        await page.keyboard.press("Control+Shift+l");
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.press("Control+Shift+k");
+        assert.equal(await text(), "keep\nend", "the shortcut deletes every selected logical line");
+        assert.deepEqual(await primary(), [4, 4]);
+        await page.keyboard.type("!");
+        assert.equal(await text(), "keep!\nend!");
+        await page.keyboard.press("Control+z");
+        await page.keyboard.press("Control+z");
+        assert.equal(await text(), deletedLines);
+        await page.keyboard.type("X");
+        assert.equal(await text(), deletedLines.replaceAll("cat", "X"), "Undo restores both deleted-line selections");
+        for (const original of ["cat\ncat\nend", "cat / cat\nend"]) {
+          await setText(original, 0, 3);
+          await page.keyboard.press("Control+Shift+l");
+          await waitFor(async () => await count() === 2);
+          await run("Delete Line");
+          assert.equal(await text(), "end", "adjacent or overlapping line operations merge");
+          assert.deepEqual(await primary(), [3, 3]);
+          assert.equal(await count(), 1);
+          await page.keyboard.press("Control+z");
+          await page.keyboard.type("X");
+          assert.equal(await text(), original.replaceAll("cat", "X"));
+        }
+        await setText("keep\ncat\ncat\n", 5, 8);
+        await page.keyboard.press("Control+Shift+l");
+        await waitFor(async () => await count() === 2);
+        await page.keyboard.press("ArrowRight");
+        await page.keyboard.press("Shift+Alt+ArrowDown");
+        await run("Delete Line");
+        assert.equal(await text(), "keep", "a merged deletion through the empty last line removes the preceding newline");
+        assert.deepEqual(await primary(), [3, 3]);
         assert.deepEqual(errors, []);
         console.log("synthetic Translator command palette, case and line transforms passed");
         return;

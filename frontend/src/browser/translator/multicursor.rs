@@ -1718,6 +1718,9 @@ impl Cursors {
         command: super::commands::Command,
         json: bool,
     ) -> Option<NativeUndo> {
+        if command == super::commands::Command::DeleteLine {
+            return self.delete_lines(input);
+        }
         if matches!(
             command,
             super::commands::Command::DeleteLeft | super::commands::Command::DeleteRight
@@ -1791,6 +1794,118 @@ impl Cursors {
         let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
         operation.after_selection = Some(primary);
         Some(operation)
+    }
+
+    fn delete_lines(&mut self, input: &web_sys::HtmlTextAreaElement) -> Option<NativeUndo> {
+        let original = selection(input);
+        if self.ranges.first() != Some(&original) {
+            return None;
+        }
+        let before = input.value();
+        if before.is_empty() {
+            return None;
+        }
+        let units: Vec<_> = before.encode_utf16().collect();
+        let mut starts = vec![0];
+        starts.extend(
+            units
+                .iter()
+                .enumerate()
+                .filter_map(|(index, unit)| (*unit == 10).then_some(index + 1)),
+        );
+        let line_at = |offset: u32| starts.partition_point(|start| *start <= offset as usize) - 1;
+        let mut operations: Vec<_> = self
+            .ranges
+            .iter()
+            .map(|range| {
+                let first = line_at(range.0);
+                let mut last = line_at(range.1);
+                if first < last && range.1 as usize == starts[last] {
+                    last -= 1;
+                }
+                let active = if range.2 == "backward" {
+                    range.0
+                } else {
+                    range.1
+                };
+                (first, last, active as usize - starts[line_at(active)])
+            })
+            .collect();
+        operations.sort_by_key(|op| (op.0, op.1));
+        let mut merged: Vec<(usize, usize, usize)> = Vec::new();
+        for operation in operations {
+            if let Some(previous) = merged.last_mut()
+                && previous.1 + 1 >= operation.0
+            {
+                previous.1 = operation.1;
+            } else {
+                merged.push(operation);
+            }
+        }
+        let mut output = Vec::with_capacity(units.len());
+        let mut positions = Vec::with_capacity(merged.len());
+        let mut destinations = Vec::with_capacity(merged.len());
+        let mut previous_end = 0;
+        let mut deleted_lines = 0;
+        for (first, last, column) in merged {
+            let (start, end, cursor_line) = if last + 1 < starts.len() {
+                (starts[first], starts[last + 1], first)
+            } else if first > 0 {
+                (starts[first] - 1, units.len(), first - 1)
+            } else {
+                (0, units.len(), 0)
+            };
+            output.extend_from_slice(&units[previous_end..start]);
+            positions.push((start as u32, end as u32, output.len() as u32));
+            destinations.push((cursor_line.saturating_sub(deleted_lines), column));
+            deleted_lines += last - first + 1;
+            previous_end = end;
+        }
+        output.extend_from_slice(&units[previous_end..]);
+        let after = String::from_utf16(&output).ok()?;
+        let mut after_starts = vec![0];
+        after_starts.extend(
+            output
+                .iter()
+                .enumerate()
+                .filter_map(|(index, unit)| (*unit == 10).then_some(index + 1)),
+        );
+        let mut ranges: Vec<_> = destinations
+            .into_iter()
+            .map(|(line, column)| {
+                let line = line.min(after_starts.len() - 1);
+                let end = after_starts
+                    .get(line + 1)
+                    .map_or(output.len(), |next| next - 1);
+                let offset = (after_starts[line] + column).min(end) as u32;
+                (offset, offset, "forward".into())
+            })
+            .collect();
+        let scroll = input.scroll_top();
+        if !insert_text(input, 0, units.len() as u32, &after) {
+            return None;
+        }
+        normalize(&mut ranges);
+        let primary = ranges[0].clone();
+        let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
+        input.set_scroll_top(scroll);
+        self.ranges = ranges;
+        self.vertical = None;
+        self.added = None;
+        self.line_edge = None;
+        self.query = None;
+        self.typing = false;
+        self.starts_typing = false;
+        self.map_auto_closed(&positions, &output);
+        Some(NativeUndo {
+            before,
+            after: input.value(),
+            start: original.0,
+            end: original.1,
+            direction: original.2,
+            after_selection: Some(primary),
+            edits: Vec::new(),
+        })
     }
 
     fn delete_to_boundary(
