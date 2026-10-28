@@ -56,7 +56,8 @@ pub(super) struct Cursors {
 }
 
 impl Cursors {
-    pub fn restore(&mut self, ranges: Vec<Selection>) {
+    pub fn restore(&mut self, mut ranges: Vec<Selection>) {
+        normalize(&mut ranges);
         *self = Self {
             ranges,
             ..Self::default()
@@ -180,23 +181,15 @@ impl Cursors {
             return None;
         }
         let units: Vec<u16> = before.encode_utf16().collect();
-        let mut edits: Vec<_> = self
-            .ranges
-            .iter()
-            .enumerate()
-            .map(|(index, range)| (range.0 as usize, range.1 as usize, index))
-            .collect();
-        edits.sort_unstable();
-        let inserted: Vec<u16> = match kind {
-            "insertText" => data.encode_utf16().collect(),
-            "insertLineBreak" | "insertParagraph" => vec![10],
-            "deleteContentBackward" | "deleteContentForward" => Vec::new(),
+        let inserted = match kind {
+            "insertText" => data,
+            "insertLineBreak" | "insertParagraph" => "\n",
+            "deleteContentBackward" | "deleteContentForward" => "",
             _ => return None,
         };
-        let mut output = Vec::new();
-        let mut last = 0;
-        let mut ranges = self.ranges.clone();
-        for (mut start, mut end, index) in edits {
+        let mut replacements = Vec::with_capacity(self.ranges.len());
+        for &(start, end, _) in &self.ranges {
+            let (mut start, mut end) = (start as usize, end as usize);
             if end > units.len() {
                 return None;
             }
@@ -217,14 +210,56 @@ impl Cursors {
                     end += 1;
                 }
             }
-            if start < last {
+            replacements.push((start as u32, end as u32, inserted.to_owned()));
+        }
+        let operation = self.replace(input, replacements, false)?;
+        self.typing = kind == "insertText" && !data.contains(char::is_whitespace);
+        Some(operation)
+    }
+
+    // Clipboard fragments can differ per cursor. Share the same atomic native
+    // edit and selection mapping with typing, rather than editing cursors in turn.
+    pub fn replace(
+        &mut self,
+        input: &web_sys::HtmlTextAreaElement,
+        replacements: Vec<(u32, u32, String)>,
+        document_order: bool,
+    ) -> Option<NativeUndo> {
+        let original = selection(input);
+        if self.ranges.first() != Some(&original) || replacements.len() != self.ranges.len() {
+            return None;
+        }
+        let before = input.value();
+        let units: Vec<_> = before.encode_utf16().collect();
+        let mut edits: Vec<_> = replacements.into_iter().enumerate().collect();
+        edits.sort_by_key(|(_, (start, end, _))| (*start, *end));
+        let mut output = Vec::new();
+        let mut last = 0;
+        let mut last_deleted = false;
+        let mut deletion_position = 0;
+        let mut ranges = self.ranges.clone();
+        for (index, (start, end, text)) in edits {
+            let (start, end) = (start as usize, end as usize);
+            if start > end || end > units.len() {
                 return None;
             }
+            if start < last {
+                if !text.is_empty() || !last_deleted {
+                    return None;
+                }
+                // Whole-line cuts from cursors on the same/adjacent lines can
+                // overlap. Remove the union once and merge the resulting carets.
+                last = last.max(end);
+                ranges[index] = (deletion_position, deletion_position, "forward".into());
+                continue;
+            }
             output.extend_from_slice(&units[last..start]);
-            output.extend_from_slice(&inserted);
+            output.extend(text.encode_utf16());
             let position = output.len() as u32;
             ranges[index] = (position, position, "forward".into());
             last = end;
+            last_deleted = text.is_empty();
+            deletion_position = position;
         }
         output.extend_from_slice(&units[last..]);
         let after = String::from_utf16(&output).ok()?;
@@ -232,13 +267,16 @@ impl Cursors {
         if !insert_text(input, 0, units.len() as u32, &after) {
             return None;
         }
+        if document_order {
+            ranges.sort_by_key(|range| (range.0, range.1));
+        }
         normalize(&mut ranges);
         let primary = ranges[0].clone();
         let _ = input.set_selection_range_with_direction(primary.0, primary.1, &primary.2);
         input.set_scroll_top(scroll);
         self.ranges = ranges;
         self.query = None;
-        self.typing = kind == "insertText" && !data.contains(char::is_whitespace);
+        self.typing = false;
         Some(NativeUndo {
             before,
             after: input.value(),

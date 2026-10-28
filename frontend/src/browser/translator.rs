@@ -2587,6 +2587,29 @@ fn Editor(
             active_visual_top.set(top);
         }
     });
+    let finish_multi_edit = use_callback(
+        move |(operation, ranges): (NativeUndo, Vec<multicursor::Selection>)| {
+            let after = operation.after.clone();
+            let next = cursors.peek().clone();
+            command_selections.write().record_multi(
+                operation,
+                ranges.into_iter().skip(1).collect(),
+                next.ranges.into_iter().skip(1).collect(),
+                next.typing,
+            );
+            let previous = last_input.peek().clone();
+            let scope = *find_scope.peek();
+            if let Some(scope) = scope {
+                find_scope.set(Some(adjust_find_scope(&previous, &after, scope)));
+            }
+            auto_indent.set(None);
+            composition_extendable.set(false);
+            current_find.set(None);
+            last_input.set(after.clone());
+            on_change.call(after);
+            update_cursor.call(());
+        },
+    );
     let before_input = use_callback(move |event: web_sys::InputEvent| {
         if *adjusting_history.peek() || event.is_composing() || !event.cancelable() {
             return;
@@ -2616,25 +2639,7 @@ fn Editor(
             .apply(&input, &kind, &event.data().unwrap_or_default());
         adjusting_history.set(false);
         if let Some(operation) = operation {
-            let after = operation.after.clone();
-            let next = cursors.peek().clone();
-            command_selections.write().record_multi(
-                operation,
-                ranges.into_iter().skip(1).collect(),
-                next.ranges.into_iter().skip(1).collect(),
-                next.typing,
-            );
-            let previous = last_input.peek().clone();
-            let scope = *find_scope.peek();
-            if let Some(scope) = scope {
-                find_scope.set(Some(adjust_find_scope(&previous, &after, scope)));
-            }
-            auto_indent.set(None);
-            composition_extendable.set(false);
-            current_find.set(None);
-            last_input.set(after.clone());
-            on_change.call(after);
-            update_cursor.call(());
+            finish_multi_edit.call((operation, ranges));
         }
     });
     use_effect(use_reactive((&value,), move |(value,)| {
@@ -2676,6 +2681,21 @@ fn Editor(
         let Some(input) = textarea.peek().clone() else {
             return;
         };
+        let ranges = cursors.peek().ranges.clone();
+        if ranges.len() > 1 && ranges.first() == Some(&multicursor::selection(&input)) {
+            adjusting_history.set(true);
+            let operation = match native.type_().as_str() {
+                "copy" => clipboard::copy_multiple(&input, native, false, &mut cursors.write()),
+                "cut" => clipboard::copy_multiple(&input, native, true, &mut cursors.write()),
+                "paste" => clipboard::paste_multiple(&input, native, &mut cursors.write()),
+                _ => None,
+            };
+            adjusting_history.set(false);
+            if let Some(operation) = operation {
+                finish_multi_edit.call((operation, ranges));
+            }
+            return;
+        }
         let undo = match native.type_().as_str() {
             "copy" => clipboard::copy(&input, native, false, json),
             "cut" => clipboard::copy(&input, native, true, json),
