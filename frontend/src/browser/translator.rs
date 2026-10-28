@@ -2340,6 +2340,34 @@ fn Editor(
     let mut ruler = use_signal(|| None::<web_sys::HtmlCanvasElement>);
     let mut has_changed = use_signal(|| !value.is_empty());
     let mut find_open = use_signal(|| false);
+    let mut find_width = use_signal(|| 419_f64);
+    let mut find_drag = use_signal(|| None::<(i32, f64, f64)>);
+    let mut find_sash = use_signal(|| None::<web_sys::Element>);
+    let mut layout = "";
+    let find_layout = use_memo(move || {
+        let width = editor_width() + 76;
+        let open = find_open();
+        // Like Monaco, clamp a user-sized panel before changing its controls.
+        let resized = open
+            && *find_width.peek() > 419.0
+            && find_sash
+                .peek()
+                .as_ref()
+                .and_then(|sash| sash.parent_element())
+                .is_some_and(|root| root.client_width() > 419);
+        if !resized {
+            layout = if width <= 328 {
+                "reduced narrow collapsed"
+            } else if width <= 378 {
+                "reduced narrow"
+            } else if width <= 447 {
+                "reduced"
+            } else {
+                ""
+            };
+        }
+        layout
+    });
     let mut goto_open = use_signal(|| false);
     let goto_preview = use_signal(|| None::<u32>);
     let mut replace_open = use_signal(|| false);
@@ -2920,6 +2948,14 @@ fn Editor(
     });
     let close_find = use_callback(move |_| {
         find_open.set(false);
+        let drag = *find_drag.peek();
+        let sash = find_sash.peek().clone();
+        if let Some((pointer, _, _)) = drag
+            && let Some(sash) = sash
+        {
+            let _ = sash.release_pointer_capture(pointer);
+        }
+        find_drag.set(None);
         find_scope.set(None);
         current_find.set(None);
         if let Some(input) = textarea.peek().as_ref() {
@@ -3187,15 +3223,7 @@ fn Editor(
         }
     }
     let root_width = editor_width() + 76;
-    let find_layout = if root_width <= 328 {
-        "reduced narrow collapsed"
-    } else if root_width <= 378 {
-        "reduced narrow"
-    } else if root_width <= 447 {
-        "reduced"
-    } else {
-        ""
-    };
+    let find_layout = find_layout();
     let replacing = if replace_open() { "replacing" } else { "" };
     let preview_line = goto_preview().map(|offset| {
         value
@@ -3821,7 +3849,38 @@ fn Editor(
                         }
                     }
                 }
-                if find_open() { div { role: "dialog", aria_label: "Find / Replace", class: "translator-find {find_layout} {replacing}",
+                if find_open() { div { role: "dialog", aria_label: "Find / Replace", class: "translator-find {find_layout} {replacing}", style: "width:{find_width}px;max-width:{(root_width - 43).max(0)}px;",
+                    div { aria_hidden: "true", class: if find_drag().is_some() { "find-resize active" } else { "find-resize" },
+                        onmounted: move |event| { if let Some(element) = event.data().downcast::<web_sys::Element>() { find_sash.set(Some(element.clone())); } },
+                        onpointerdown: move |event| {
+                            if event.trigger_button() != Some(dioxus::html::input_data::MouseButton::Primary) { return; }
+                            event.prevent_default();
+                            event.stop_propagation();
+                            let sash = find_sash.peek().clone();
+                            if let Some(sash) = sash && let Some(root) = sash.parent_element()
+                                && sash.set_pointer_capture(event.pointer_id()).is_ok() {
+                                find_drag.set(Some((event.pointer_id(), event.client_coordinates().x, f64::from(root.client_width()))));
+                            }
+                        },
+                        onpointermove: move |event| {
+                            let drag = *find_drag.peek();
+                            if let Some((pointer, start, original)) = drag && pointer == event.pointer_id() {
+                                event.prevent_default();
+                                let width = original + start - event.client_coordinates().x;
+                                if width >= 419.0 && width <= f64::from((root_width - 43).max(0)) { find_width.set(width); }
+                            }
+                        },
+                        onpointerup: move |_| find_drag.set(None),
+                        onpointercancel: move |_| find_drag.set(None),
+                        onlostpointercapture: move |_| find_drag.set(None),
+                        ondoubleclick: move |_| {
+                            let sash = find_sash.peek().clone();
+                            if let Some(root) = sash.and_then(|sash| sash.parent_element()) {
+                                let width = root.client_width();
+                                if width >= 419 { find_width.set(if width == 419 { f64::from((root_width - 43).max(0)) } else { 419.0 }); }
+                            }
+                        }
+                    }
                     button { r#type: "button", class: "find-icon find-toggle", aria_label: "Toggle Replace", aria_expanded: "{replace_open}", onclick: move |_| { let next = !*replace_open.peek(); replace_open.set(next); }, if replace_open() { "" } else { "" } }
                     div { class: "find-row",
                     div { class: "find-box",

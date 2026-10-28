@@ -18,8 +18,10 @@ section or screen when testing a partially migrated dashboard.
 
 ## Translator reference (work in progress)
 
-`UI_PARITY_SECTION=translator` includes empty, populated, wrapped, Find, Replace,
-Go to Line (`:3:2`) and Go to Offset (`::9`, zero-based) editor states.
+`UI_PARITY_SECTION=translator` includes empty, populated, wrapped, Find, resized
+Find, Replace, Go to Line (`:3:2`) and Go to Offset (`::9`, zero-based) editor states.
+The resized Find state uses the real left sash; desktop widens to 539px while
+the narrow mobile panel retains its 170px responsive width.
 Recording the Astro reference requires the locally installed Monaco 0.55.1
 `min/vs` directory mounted read-only at `/monaco-vs` (or set
 `UI_MONACO_VS_DIR`); the test fulfills its CDN URLs from those local files and

@@ -2014,7 +2014,7 @@ async function main() {
       console.log("synthetic translator preserve-case smoke passed");
       return;
     }
-    if (process.env.TRANSLATOR_FIND_VIEWZONE_ONLY === "1" || process.env.TRANSLATOR_FIND_PAINT_ONLY === "1") {
+    if (process.env.TRANSLATOR_FIND_VIEWZONE_ONLY === "1" || process.env.TRANSLATOR_FIND_PAINT_ONLY === "1" || process.env.TRANSLATOR_FIND_RESIZE_ONLY === "1") {
       const text = '{"message":"needle needle"}';
       const offset = text.indexOf("needle");
       if (reference) await page.evaluate(({ text, offset }) => { const e = window.monaco.editor.getEditors()[0]; e.setValue(text); e.setPosition(e.getModel().getPositionAt(offset)); e.focus(); }, { text, offset });
@@ -2028,6 +2028,61 @@ async function main() {
         const matches = [...document.querySelectorAll(reference ? ".monaco-editor .view-overlays .findMatch, .monaco-editor .view-overlays .currentFindMatch" : ".find-match")];
         return matches.length === 2 && matches.every(element => getComputedStyle(element).backgroundColor === "rgba(234, 92, 0, 0.33)");
       }, reference);
+      if (process.env.TRANSLATOR_FIND_RESIZE_ONLY === "1") {
+        await page.waitForFunction(() => {
+          const root = document.querySelector('[role="dialog"][aria-label="Find / Replace"]');
+          const transform = root && getComputedStyle(root).transform;
+          return transform === "none" || (transform && new DOMMatrix(transform).m42 === 0);
+        });
+        const find = dialog.getByLabel("Find", { exact: true });
+        const width = async () => Math.round((await dialog.boundingBox()).width);
+        const drag = async delta => {
+          const box = await dialog.boundingBox();
+          await page.mouse.move(box.x + 1, box.y + box.height / 2);
+          await page.mouse.down();
+          await page.mouse.move(box.x + 1 - delta, box.y + box.height / 2, { steps: 4 });
+          await page.mouse.up();
+        };
+        const reset = async () => {
+          const box = await dialog.boundingBox();
+          await page.mouse.dblclick(box.x + 1, box.y + box.height / 2);
+        };
+        assert.equal(await width(), 419);
+        await drag(120);
+        assert.equal(await width(), 539, "dragging the left sash widens Find without moving its right edge");
+        assert.equal(await find.evaluate(input => input === document.activeElement), true, "resizing keeps native query focus");
+        await page.setViewportSize({ width: 560, height: 844 });
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        assert.equal(await dialog.getByText("1 of 2", { exact: true }).isVisible(), true, "a resized panel keeps its controls while its maximum width changes");
+        await page.setViewportSize({ width: 1280, height: 720 });
+        await waitFor(async () => await width() === 539);
+        await drag(-60);
+        assert.equal(await width(), 479);
+        await dialog.getByRole("button", { name: "Toggle Replace" }).click();
+        const fieldWidths = await dialog.evaluate((root, reference) => ["Find", "Replace"].map(label => root.querySelector(`[aria-label="${label}"]`).closest(reference ? ".monaco-inputbox" : ".find-box").getBoundingClientRect().width), reference);
+        assert.equal(fieldWidths[0], fieldWidths[1], "Replace follows the resized query width");
+        await dialog.getByRole("button", { name: "Toggle Replace" }).click();
+        await reset();
+        assert.equal(await width(), 419, "double-click restores the initial width after a drag");
+        await reset();
+        const max = reference ? await page.evaluate(() => window.monaco.editor.getEditors()[0].getLayoutInfo().width - 43)
+          : await editor().evaluate(input => input.parentElement.parentElement.clientWidth - 43);
+        assert.equal(await width(), max, "double-click at initial width fills the available editor width with the reference margins");
+        await reset();
+        assert.equal(await width(), 419);
+        assert.equal(await find.inputValue(), "needle");
+        assert.equal(await value(), text, "resizing never edits document content");
+        await page.setViewportSize({ width: 390, height: 844 });
+        await waitFor(async () => await width() === 170);
+        await drag(80);
+        await reset();
+        assert.equal(await width(), 170, "a narrow editor keeps its responsive width");
+        await find.press("Escape");
+        assert.equal(await dialog.count(), 0);
+        assert.deepEqual(errors, []);
+        console.log("synthetic translator Find resize smoke passed");
+        return;
+      }
       if (process.env.TRANSLATOR_FIND_PAINT_ONLY === "1") {
         const optionPositions = await dialog.evaluate(root => {
           const left = root.getBoundingClientRect().left;

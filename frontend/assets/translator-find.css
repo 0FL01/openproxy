@@ -19,17 +19,21 @@
   font: 12px/19px -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", HelveticaNeue-Light, system-ui, Ubuntu, "Droid Sans", sans-serif;
 }
 .translator-find.replacing { height: 62px; }
-.translator-find.narrow { width: 257px; }
-.translator-find.collapsed { width: 170px; }
-.translator-find::before {
-  content: "";
+.translator-find.narrow { max-width: 257px !important; }
+.translator-find.collapsed { max-width: 170px !important; }
+.translator-find .find-resize {
   position: absolute;
   left: 0;
   top: 0;
   width: 2px;
   height: 100%;
   background: #454545;
+  z-index: 35;
+  cursor: ew-resize;
+  touch-action: none;
+  user-select: none;
 }
+.translator-find .find-resize.active { background: #007fd4; }
 .translator-find .find-row {
   display: flex;
   align-items: center;

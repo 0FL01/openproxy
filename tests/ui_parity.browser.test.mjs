@@ -22,6 +22,7 @@ const translatorFixtures = {
   populated: '{\n  "model": "fixture",\n  "count": 42,\n  "enabled": true\n}',
   wrapped: `{\n  "message": "${"x".repeat(200)}",\n  "count": 42\n}`,
   find: '{"message":"needle needle"}',
+  "find-resized": '{"message":"needle needle"}',
   replace: '{"message":"needle needle"}',
   "goto-line": '{\n  "model": "fixture",\n  "count": 42,\n  "enabled": true\n}',
   "goto-offset": '{\n  "model": "fixture",\n  "count": 42,\n  "enabled": true\n}',
@@ -160,6 +161,7 @@ const screens = [
   { section: "translator", name: "populated" },
   { section: "translator", name: "wrapped" },
   { section: "translator", name: "find" },
+  { section: "translator", name: "find-resized" },
   { section: "translator", name: "replace" },
   { section: "translator", name: "goto-line" },
   { section: "translator", name: "goto-offset" },
@@ -901,12 +903,12 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     }
                     await detection;
                   }
-                  if (["find", "replace"].includes(screen.name)) {
+                  if (["find", "find-resized", "replace"].includes(screen.name)) {
                     // Replace does not seed a word from an empty selection. Start
                     // outside "needle" so its asynchronous occurrence request
                     // cannot race the Find highlights in the pinned reference.
                     const offset = screen.name === "replace" ? 0 : translatorFixtures[screen.name].indexOf("needle");
-                    if (mode === "record" && screen.name === "find") {
+                    if (mode === "record" && screen.name !== "replace") {
                       // Run the normal Find action without a native-text focus
                       // detour that can seed asynchronous word highlights.
                       const textFocused = await page.evaluate(async offset => {
@@ -932,9 +934,24 @@ test("dashboard states match the synthetic visual reference", { skip: !enabled, 
                     await find.waitFor();
                     if (screen.name === "replace") await find.fill("needle");
                     await page.getByText("1 of 2", { exact: true }).waitFor({ state: "attached" });
-                    if (screen.name === "find") {
+                    if (screen.name !== "replace") {
                       assert.equal(await find.inputValue(), "needle");
                       assert.deepEqual(await find.evaluate(element => [element.selectionStart, element.selectionEnd]), [0, 6]);
+                    }
+                    if (screen.name === "find-resized") {
+                      const dialog = page.getByRole("dialog", { name: "Find / Replace" });
+                      await page.waitForFunction(() => {
+                        const root = document.querySelector('[role="dialog"][aria-label="Find / Replace"]');
+                        const transform = root && getComputedStyle(root).transform;
+                        return transform && (transform === "none" || new DOMMatrixReadOnly(transform).m42 === 0);
+                      });
+                      const box = await dialog.boundingBox();
+                      await page.mouse.move(box.x + 1, box.y + box.height / 2);
+                      await page.mouse.down();
+                      await page.mouse.move(box.x + 1 - (viewport.name === "desktop" ? 120 : 80), box.y + box.height / 2, { steps: 4 });
+                      await page.mouse.up();
+                      assert.equal(Math.round((await dialog.boundingBox()).width), viewport.name === "desktop" ? 539 : 170);
+                      assert.equal(await find.evaluate(element => element === document.activeElement), true);
                     }
                   }
                   if (screen.name.startsWith("goto-")) {
