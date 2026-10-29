@@ -323,6 +323,8 @@ async fn main() -> anyhow::Result<()> {
         .with_trace_log_counters(trace_log_guard.counters())
         .with_dashboard_sidecar_url(cli.dashboard_sidecar_url.clone())
         .with_web_dir(cli.web_dir.clone());
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    spawn_allocator_reclamation(state.shutdown_signal.clone());
     // Periodic cleanup of stale HTTP client connections.
     state.client_pool.start_periodic_cleanup();
     // Periodic cleanup of expired OAuth pending flows (every 5 minutes).
@@ -504,6 +506,37 @@ fn spawn_codex_catalog_refresh(state: AppState) {
                 // freshness interval. `refresh_active` makes no HTTP request
                 // for an unchanged fresh publication.
                 _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {}
+            }
+        }
+    });
+}
+
+/// Return fully free glibc pages after request bursts without putting allocator
+/// maintenance on a request or an async runtime worker. Await each pass so slow
+/// reclamation cannot queue overlapping jobs.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn spawn_allocator_reclamation(shutdown: Arc<tokio::sync::Notify>) {
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = shutdown.notified() => break,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+            }
+            if let Err(error) = tokio::task::spawn_blocking(|| {
+                let started = std::time::Instant::now();
+                // SAFETY: glibc serializes malloc_trim with allocation/free.
+                // It only releases whole free pages, never live allocations.
+                let released = unsafe { libc::malloc_trim(0) } != 0;
+                tracing::debug!(
+                    target: "openproxy::allocator",
+                    released,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "reclaimed free allocator pages"
+                );
+            })
+            .await
+            {
+                warn!(%error, "allocator reclamation task failed");
             }
         }
     });
