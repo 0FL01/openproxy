@@ -102,18 +102,6 @@ pub fn routes(state: AppState) -> Router<AppState> {
             post(compat::messages).options(compat::cors_options),
         )
         .route(
-            "/v1/messages/count_tokens",
-            post(compat::count_tokens).options(compat::cors_options),
-        )
-        .route(
-            "/messages/count_tokens",
-            post(compat::count_tokens).options(compat::cors_options),
-        )
-        .route(
-            "/v1/v1/messages/count_tokens",
-            post(compat::count_tokens).options(compat::cors_options),
-        )
-        .route(
             "/v1/responses",
             post(compat::responses).options(compat::cors_options),
         )
@@ -141,6 +129,24 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .route(
             "/v1/v1/responses/compact",
             post(compat::responses_compact).options(compat::cors_options),
+        )
+        // Only generation routes inherit API-key auth. Keep count_tokens
+        // outside this layer, but inside the existing shared admission/limit.
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            admission::authenticate_llm_request,
+        ))
+        .route(
+            "/v1/messages/count_tokens",
+            post(compat::count_tokens).options(compat::cors_options),
+        )
+        .route(
+            "/messages/count_tokens",
+            post(compat::count_tokens).options(compat::cors_options),
+        )
+        .route(
+            "/v1/v1/messages/count_tokens",
+            post(compat::count_tokens).options(compat::cors_options),
         )
         // C36: admission runs outside the body limit/handler so overload is
         // refused before JSON extraction; the permit is held for the whole
@@ -170,11 +176,8 @@ pub fn routes(state: AppState) -> Router<AppState> {
                 ),
         )
         .merge(web_fetch::routes());
-    // JS parity: /v1/* LLM routes have NO route-level auth — free
-    // (noAuth) providers must work without any key. Per-provider
-    // credential checks happen inside handlers/executors instead
-    // (chat.js only enforces keys when settings.requireApiKey is set,
-    // which openproxy does not implement).
+    // Generation API-key auth is conditional on settings.require_api_key;
+    // when disabled, noAuth providers still work without a client key.
 
     // ── ADMIN: dashboard session or management API key required ──
     let admin = Router::new()

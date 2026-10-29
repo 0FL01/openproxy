@@ -359,6 +359,189 @@ async fn require_api_key_is_independent_from_dashboard_login() {
     assert_eq!(disabled.status(), StatusCode::BAD_REQUEST);
 }
 
+mod generation_auth {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    const GENERATION_PATHS: &[&str] = &[
+        "/v1/chat/completions",
+        "/chat/completions",
+        "/v1/v1/chat/completions",
+        "/v1/messages",
+        "/messages",
+        "/v1/v1/messages",
+        "/v1/responses",
+        "/v1/v1/responses",
+        "/responses",
+        "/codex",
+        "/codex/nested/path",
+        "/v1/responses/compact",
+        "/v1/v1/responses/compact",
+        "/v1beta/models/openai/test:generateContent",
+        "/v1beta/models/openai/test:streamGenerateContent?alt=sse",
+        "/v1/api/chat",
+    ];
+
+    fn tracked_body() -> (Body, Arc<AtomicBool>) {
+        let polled = Arc::new(AtomicBool::new(false));
+        let body_polled = polled.clone();
+        let body = Body::from_stream(futures_util::stream::once(async move {
+            body_polled.store(true, Ordering::SeqCst);
+            // Malformed JSON stops authorized requests before any provider call.
+            Ok::<_, std::convert::Infallible>(bytes::Bytes::from_static(b"{"))
+        }));
+        (body, polled)
+    }
+
+    async fn post_tracked_body(
+        app: &axum::Router,
+        path: &str,
+        headers: &[(&str, &str)],
+    ) -> (axum::response::Response, bool) {
+        let (body, polled) = tracked_body();
+        let mut request = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("content-type", "application/json");
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(body).unwrap())
+            .await
+            .unwrap();
+        (response, polled.load(Ordering::SeqCst))
+    }
+
+    #[tokio::test]
+    async fn denied_generation_bodies_are_not_polled_on_any_alias() {
+        let state = app_state().await;
+        state
+            .db
+            .update(|db| db.settings.require_api_key = true)
+            .await
+            .unwrap();
+        let app = openproxy::build_app(state.clone());
+
+        for path in GENERATION_PATHS {
+            let (response, polled) = post_tracked_body(&app, path, &[]).await;
+            assert!(!polled, "{path}");
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+            assert_eq!(response.headers()["access-control-allow-origin"], "*");
+            assert!(response.headers().contains_key("x-openproxy-request-id"));
+            drop(response);
+            assert_eq!(state.llm_admission.active(), 0, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn valid_keys_and_disabled_auth_still_allow_body_extraction() {
+        for require_key in [true, false] {
+            let state = app_state().await;
+            state
+                .db
+                .update(|db| db.settings.require_api_key = require_key)
+                .await
+                .unwrap();
+            let app = openproxy::build_app(state);
+            let headers: &[(&str, &str)] = if require_key {
+                &[("authorization", "Bearer valid-bearer")]
+            } else {
+                &[]
+            };
+
+            let (response, polled) = post_tracked_body(&app, "/v1/chat/completions", headers).await;
+            assert!(polled, "require_api_key={require_key}");
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+    }
+
+    #[tokio::test]
+    async fn newly_persisted_keys_are_reloaded_before_body_extraction() {
+        let temp = tempdir().unwrap();
+        let db = Arc::new(Db::load_from(temp.path()).await.unwrap());
+        db.update(|db| db.settings.require_api_key = true)
+            .await
+            .unwrap();
+        let app = openproxy::build_app(AppState::new(db.clone()));
+        let writer = Db::load_from(temp.path()).await.unwrap();
+        writer
+            .update(|db| db.api_keys.push(active_key("new-generation-key")))
+            .await
+            .unwrap();
+        assert!(!db.snapshot().api_key_map.contains_key("new-generation-key"));
+
+        let (response, polled) = post_tracked_body(
+            &app,
+            "/v1/chat/completions",
+            &[("authorization", "Bearer new-generation-key")],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(polled);
+        assert!(db.snapshot().api_key_map.contains_key("new-generation-key"));
+    }
+
+    #[tokio::test]
+    async fn count_tokens_dashboard_and_preflight_keep_their_auth_contracts() {
+        let state = app_state().await;
+        state
+            .db
+            .update(|db| {
+                db.settings.require_api_key = true;
+                db.settings.require_login = false;
+            })
+            .await
+            .unwrap();
+        let app = openproxy::build_app(state);
+
+        for path in [
+            "/v1/messages/count_tokens",
+            "/messages/count_tokens",
+            "/v1/v1/messages/count_tokens",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(path)
+                        .header("content-type", "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+        }
+
+        // Dashboard auth remains independent from the generation API-key gate.
+        let (response, polled) =
+            post_tracked_body(&app, "/api/dashboard/chat/completions", &[]).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(polled);
+
+        for path in GENERATION_PATHS {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("OPTIONS")
+                        .uri(*path)
+                        .header("origin", "https://client.invalid")
+                        .header("access-control-request-method", "POST")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(response.status().is_success(), "{path}");
+            assert_eq!(response.headers()["access-control-allow-origin"], "*");
+        }
+    }
+}
+
 #[tokio::test]
 async fn bearer_takes_precedence_over_x_api_key() {
     let app = openproxy::build_app(app_state().await);

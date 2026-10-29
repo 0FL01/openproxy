@@ -23,6 +23,9 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+use crate::server::auth::require_api_key_with_reload;
+use crate::server::request_logger;
+
 /// Default cap on concurrently active LLM generations.
 pub const DEFAULT_MAX_ACTIVE_GENERATIONS: usize = 64;
 /// Default bounded wait for a permit (`0` = immediate controlled rejection).
@@ -168,6 +171,37 @@ pub(crate) fn admission_rejection() -> Response {
         HeaderValue::from_static("*"),
     );
     response
+}
+
+/// Authenticate public generation POSTs before JSON extraction/translation.
+/// Applied separately from admission: token counting and dashboard chat share
+/// admission but retain their existing authentication contracts.
+pub(super) async fn authenticate_llm_request(
+    State(state): State<crate::server::state::AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    if request.method() == axum::http::Method::POST && state.db.snapshot().settings.require_api_key
+    {
+        if let Err(error) = require_api_key_with_reload(request.headers(), &state.db).await {
+            // This response bypasses the handler, so keep its error correlation
+            // and single terminal log without reading the rejected body.
+            let request_id = request_logger::new_request_id();
+            let log = request_logger::RequestLog::start(
+                "POST",
+                request.uri().path(),
+                None,
+                Some(request_id.clone()),
+            );
+            let mut response = super::cors::with_cors_response(super::auth_error_response(error));
+            response.headers_mut().insert(
+                axum::http::header::ACCESS_CONTROL_EXPOSE_HEADERS,
+                HeaderValue::from_static(request_logger::REQUEST_ID_HEADER),
+            );
+            return log.watch(request_logger::attach_request_id(response, &request_id));
+        }
+    }
+    next.run(request).await
 }
 
 /// Axum middleware: admit POST generation requests before body extraction.
