@@ -44,20 +44,20 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: user: build and deploy production.
   - Acceptance: image contains Node, locked SDK/runtime and unmodified published Claude binary, retains existing data/encryption/config and native profile across recreation, passes isolated smoke before replacement; production health and deployed revision checked; previous image retained for rollback. No volume deletion or credential/config reset.
   - Primary evidence: Docker build, isolated container smoke and production image/revision/health observation.
-  - Status: in_progress
-  - Evidence: runtime stage built as openproxy:claude-agent-runtime-check (sha256:0d7004defd8d6357746b3162aa780710da3d3fabb88d09580cc31b3e1fce7a80), original CLI/SDK no-prompt initialization passed. Full image, isolated server smoke and production replacement remain next.
+  - Status: verified
+  - Evidence: full image openproxy:claude-agent-c7ea39be / sha256:9b42c4e5ded0f2814de4fd115aa86ea4b5ba71fdf7342fe3c7ee3e598b65af70 built from c7ea39bee029eb0958cab5e88309a3c9e7acf927. Isolated fresh-data container passed health, early 401, dashboard/key/models, original CLI 2.1.301 HTTPS login output, cancellation/reaping and zero unfinished connections; no production data used. Compose production recreated with --no-build and became healthy on that image/revision. The existing openproxy-prod-data mount, four connections (codex/glm/opencode-go/xai), configuration and secrets were retained. Previous image retained as openproxy:rollback-before-claude-c7ea39be. Actual authenticated native-profile persistence remains part of R7.
 - R6: Commit and push verified iterations, then incorporate the current branch in main and push.
   - Source: latest user instruction.
   - Acceptance: intended conventional commits on origin/feat/dioxus-dashboard, existing branch work retained, main includes this branch without force-push or discarded commits, origin/main SHA confirmed. Existing unfinished Dioxus work is merged as source, not falsely declared complete or switched into production packaging.
   - Primary evidence: clean status, reviewed staged diffs, remote SHAs and merge ancestry.
   - Status: in_progress
-  - Evidence: baseline is clean feat/dioxus-dashboard at 5f7660b1851b5674f49602a6b23c0efa1bf0b298; origin default is main at 82c48877fb2e4d802c86e68f3d5603d80b480f86.
+  - Evidence: goal 6bcaf126 and independently buildable runtime c7ea39be committed/pushed to origin/feat/dioxus-dashboard after staged privacy/diff checks. origin/main at 82c48877fb2e4d802c86e68f3d5603d80b480f86 is an ancestor; main integration remains next.
 - R7: Verify the owner's real subscription flow end to end.
   - Source: approved finish-line smoke: native personal login, generation, tool call, Stop, parallel sessions and persistence.
   - Acceptance: after the owner completes native browser sign-in, OpenCode can generate and execute a permitted client tool through the deployed proxy; subscription identity comes from native status/account metadata, not an assumed zero price.
   - Primary evidence: explicit owner-assisted native login and one small real request/tool smoke.
-  - Status: pending
-  - Evidence: production currently has no Claude connection; no personal native credentials inspected or used.
+  - Status: blocked
+  - Evidence: deployed production still has no Claude connection; no personal native credentials inspected or used. Owner must open /dashboard/providers/claude-agent, add an account and complete the original Anthropic browser login, then install/update the checked-in client plugin and restart OpenCode for the real generation/tool/Stop/parallel/persistence smoke. The agent cannot supply the owner's interactive authentication.
 
 ### Constraints
 
@@ -94,17 +94,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R5/R6 packaging, deployment and main integration.
-- Smallest next action: review/stage the verified implementation, commit/push the feature branch, build its full image, then run isolated server/native-login-start smoke before preserving the rollback image and replacing production.
-- Expected evidence: clean source commit; full Docker image/revision; isolated health/auth/native login cancellation; unchanged production volume and healthy deployed revision; then fast-forward main and push all existing branch work.
+- Closes: R6 main integration.
+- Smallest next action: commit/push deployment evidence, fast-forward main to the complete feature branch and push without rewriting existing history.
+- Expected evidence: clean status, remote main SHA and ancestry retaining every existing feature-branch commit. Runtime deployment already verified under R5; documentation-only commits need no image rebuild.
 - Stop or replan if: a required native behavior is unavailable in the official SDK/binary, the full PR behavior cannot be preserved by the transport, or a destructive/credential-changing action beyond this approved envelope is required. Record the exact blocker, not a substitute feature.
 
 ## Current State
 
-- Resolved: R1–R4 implementation and focused evidence; goal commit 6bcaf126 pushed to the feature branch. No production mutation or host/native credential use yet.
-- Last relevant evidence: final formatting and `cargo clippy --locked --jobs 2 --all-targets --all-features -- -D warnings` passed after profile synchronization; native Rust 2/2 and final 11 retirement/settings integration tests passed; dashboard rebuilt (66 pages). Production baseline remains image sha256:4807bf3a50e8d6d9f11e4cbf71bf933724e91fce74abbe829b1daa4317380b56, revision 5f7660b1, existing four connections.
+- Resolved: R1–R5 implementation, focused verification and production deployment. Runtime c7ea39be pushed to the feature branch; production image 9b42c4e5ded0 is healthy, existing volume/four connections retained, previous image tagged for rollback. No host/personal native credential use.
+- Last relevant evidence: final formatting/strict all-target/all-feature Clippy, native Rust 2/2, retirement/settings 11/11 and dashboard 66-page build passed; full Docker build, isolated original-login start/cancel/reap and production health/revision/data-preservation observations passed.
 - Blocker: R7 needs owner browser sign-in. An isolated host OpenCode CLI attempt was denied by the external-directory permission; no workaround accessed client config/credentials. This does not block the authorized packaging/deploy/merge checkpoint. The unrelated untouched date-sensitive `core::account_fallback::tests::github_402_monthly_reset_returns_next_month` fails its “should be in the future” assertion; delegated broad library evidence was 1,190 passed, one ignored, that one explicitly skipped—not an unfiltered full-suite pass.
-- Next: R5/R6 checkpoint above; use isolated data/test container until its smoke passes, then deploy and merge without deleting the production volume or resetting settings/secrets.
+- Next: finish R6 main integration, then record the R7 external blocker and stop pending owner-assisted login. No additional implementation or unrelated cleanup is needed.
 
 ## Material Decisions
 
@@ -118,6 +118,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 - 2026-10-31: goal frozen from the approved plan and amendments; old OAuth/mimicry goal superseded. No implementation or tests yet.
 - 2026-10-31: R1–R4 implemented and focused checks passed. Parent fixed the direct translator retirement bypass and preservation-compatible settings validation identified in handoff. Original published CLI+locked SDK initialize together in an isolated credential-free image. Next: verified runtime commit, full image/server smoke, production deploy, main push; owner-assisted R7 remains separate.
+- 2026-10-31: R5 verified: c7ea39be committed/pushed, full image built, isolated original native login reached HTTPS output and cancelled/reaped without saving an account, production replaced and healthy with the same volume/four providers. Rollback image retained. Next: main integration; real owner sign-in remains blocked under R7.
 
 ## Completion
 
