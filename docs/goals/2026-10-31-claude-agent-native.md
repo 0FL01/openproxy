@@ -1,6 +1,6 @@
 # Goal: Claude Agent native subscription
 
-Status: active
+Status: blocked
 Source: user-approved RECON plan; anomalyco/opencode PR #58782 at f29e281322b35b525e337d12e84aedc7e129fd6d; user amendments: remove the mask completely, offer native login from the dashboard, fully preserve PR/native behavior, implement iteratively, commit/push/build/deploy production, then merge the current branch into main and push.
 Last updated: 2026-10-31
 
@@ -50,14 +50,14 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: latest user instruction.
   - Acceptance: intended conventional commits on origin/feat/dioxus-dashboard, existing branch work retained, main includes this branch without force-push or discarded commits, origin/main SHA confirmed. Existing unfinished Dioxus work is merged as source, not falsely declared complete or switched into production packaging.
   - Primary evidence: clean status, reviewed staged diffs, remote SHAs and merge ancestry.
-  - Status: in_progress
-  - Evidence: goal 6bcaf126 and independently buildable runtime c7ea39be committed/pushed to origin/feat/dioxus-dashboard after staged privacy/diff checks. origin/main at 82c48877fb2e4d802c86e68f3d5603d80b480f86 is an ancestor; main integration remains next.
+  - Status: verified
+  - Evidence: goal 6bcaf126, independently buildable runtime c7ea39be and deployment evidence bca8ba51 committed/pushed after staged privacy/diff checks. main fast-forwarded from 82c48877fb2e4d802c86e68f3d5603d80b480f86 to bca8ba51516de7d19492ebd64b377218f4e08541 and pushed; ls-remote confirmed both branch tips at that SHA and merge-base confirmed every feature-branch commit retained. No force push or discarded history; the inactive Dioxus source was included without a packaging cutover.
 - R7: Verify the owner's real subscription flow end to end.
   - Source: approved finish-line smoke: native personal login, generation, tool call, Stop, parallel sessions and persistence.
   - Acceptance: after the owner completes native browser sign-in, OpenCode can generate and execute a permitted client tool through the deployed proxy; subscription identity comes from native status/account metadata, not an assumed zero price.
   - Primary evidence: explicit owner-assisted native login and one small real request/tool smoke.
   - Status: blocked
-  - Evidence: deployed production still has no Claude connection; no personal native credentials inspected or used. Owner must open /dashboard/providers/claude-agent, add an account and complete the original Anthropic browser login, then install/update the checked-in client plugin and restart OpenCode for the real generation/tool/Stop/parallel/persistence smoke. The agent cannot supply the owner's interactive authentication.
+  - Evidence: owner reports completing native login and adding the model in OpenCode. The first request failed because the installed discovery plugin was the old version: production logs show POST /v1/responses returning 400, and the installed plugin lacked the native v2 adapter. The repository plugin was copied to the client plugin directory after git pull --rebase; service restart and real generation/tool/Stop/parallel/persistence verification remain. Native subscription account metadata has not been independently inspected.
 
 ### Constraints
 
@@ -94,17 +94,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R6 main integration.
-- Smallest next action: commit/push deployment evidence, fast-forward main to the complete feature branch and push without rewriting existing history.
-- Expected evidence: clean status, remote main SHA and ancestry retaining every existing feature-branch commit. Runtime deployment already verified under R5; documentation-only commits need no image rebuild.
+- Closes: R7 owner-assisted subscription verification.
+- Smallest next action: restart the OpenCode service to load the updated client plugin, then verify one small generation/tool request, Stop, parallel sessions and native transcript persistence with the owner's account.
+- Expected evidence: native subscription account metadata and successful real client behavior, not synthetic SDK fixtures or an assumed zero price.
 - Stop or replan if: a required native behavior is unavailable in the official SDK/binary, the full PR behavior cannot be preserved by the transport, or a destructive/credential-changing action beyond this approved envelope is required. Record the exact blocker, not a substitute feature.
 
 ## Current State
 
-- Resolved: R1–R5 implementation, focused verification and production deployment. Runtime c7ea39be pushed to the feature branch; production image 9b42c4e5ded0 is healthy, existing volume/four connections retained, previous image tagged for rollback. No host/personal native credential use.
+- Resolved: R1–R6 implementation, focused verification, production deployment and full feature-branch integration into origin/main. Production runtime remains c7ea39be/image 9b42c4e5ded0; subsequent commits change only this goal document. Existing volume and previous providers retained, previous image tagged for rollback. Owner reports native login; no personal credentials were inspected.
 - Last relevant evidence: final formatting/strict all-target/all-feature Clippy, native Rust 2/2, retirement/settings 11/11 and dashboard 66-page build passed; full Docker build, isolated original-login start/cancel/reap and production health/revision/data-preservation observations passed.
-- Blocker: R7 needs owner browser sign-in. An isolated host OpenCode CLI attempt was denied by the external-directory permission; no workaround accessed client config/credentials. This does not block the authorized packaging/deploy/merge checkpoint. The unrelated untouched date-sensitive `core::account_fallback::tests::github_402_monthly_reset_returns_next_month` fails its “should be in the future” assertion; delegated broad library evidence was 1,190 passed, one ignored, that one explicitly skipped—not an unfiltered full-suite pass.
-- Next: finish R6 main integration, then record the R7 external blocker and stop pending owner-assisted login. No additional implementation or unrelated cleanup is needed.
+- Blocker: R7 needs the OpenCode service to reload the updated plugin and the owner-assisted real request smoke. An isolated host OpenCode CLI attempt was previously denied by the external-directory permission; no workaround accessed client config/credentials. The unrelated untouched date-sensitive `core::account_fallback::tests::github_402_monthly_reset_returns_next_month` fails its “should be in the future” assertion; delegated broad library evidence was 1,190 passed, one ignored, that one explicitly skipped—not an unfiltered full-suite pass.
+- Next: restart the OpenCode service and retry R7. Main CI run 41200873386 was in progress at the integration observation; no green remote-CI result is claimed.
 
 ## Material Decisions
 
@@ -119,10 +119,12 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-10-31: goal frozen from the approved plan and amendments; old OAuth/mimicry goal superseded. No implementation or tests yet.
 - 2026-10-31: R1–R4 implemented and focused checks passed. Parent fixed the direct translator retirement bypass and preservation-compatible settings validation identified in handoff. Original published CLI+locked SDK initialize together in an isolated credential-free image. Next: verified runtime commit, full image/server smoke, production deploy, main push; owner-assisted R7 remains separate.
 - 2026-10-31: R5 verified: c7ea39be committed/pushed, full image built, isolated original native login reached HTTPS output and cancelled/reaped without saving an account, production replaced and healthy with the same volume/four providers. Rollback image retained. Next: main integration; real owner sign-in remains blocked under R7.
+- 2026-10-31: R6 verified: main and the feature branch both pushed at bca8ba51; all existing branch history retained by fast-forward. Closure comparison leaves only R7 blocked on owner authentication/client setup. Stop without claiming real subscription inference or the unrelated Dioxus migration complete.
+- 2026-10-31: owner reports successful native login but first OpenCode request reached /v1/responses and failed 400. Installed plugin was confirmed outdated and lacked native transport; after git pull --rebase copied the repository plugin to ~/.config/opencode/plugins/openproxy-models.js and verified byte identity and JavaScript syntax. Restart service and retry; end-to-end inference remains unverified.
 
 ## Completion
 
-- Resolved outcomes: pending.
-- Commands and artifacts: pending.
-- Constraint and diff-scope check: pending.
-- Final status: active.
+- Resolved outcomes: R1–R6 verified; R7 blocked, not waived or complete.
+- Commands and artifacts: focused evidence under R1–R5; runtime commit c7ea39be and deployed image 9b42c4e5ded0; retained rollback tag; main/feature integration bca8ba51 with remote SHA/ancestry proof.
+- Constraint and diff-scope check: implementation stays within the frozen native/retirement envelope, other provider protocols preserved, no production config/secret reset or volume deletion, no client config or personal credential access. Final follow-up changes are this document only.
+- Final status: blocked on OpenCode plugin reload and owner-assisted R7; no claim of successful real subscription inference.
