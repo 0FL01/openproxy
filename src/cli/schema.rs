@@ -34,8 +34,8 @@ const RESOURCES: &[&str] = &[
 /// Once a CLI release ships with `openproxy.v1.*` envelopes, the shape of
 /// each successful envelope is frozen: existing fields keep their names,
 /// types, and meanings. New fields are additive only, and new schemas may
-/// be introduced but never renamed. The fork's explicit updater hard cut
-/// is the sole exception; other breaking changes require `openproxy.v2.*`.
+/// be introduced but never renamed. Explicit updater and Claude subscription
+/// hard cuts are declared exceptions; the native Claude transport is v2.
 pub const SCHEMA_NAMESPACE: &str = "openproxy.v1";
 
 /// Human-readable stability statement returned by `openproxy schema
@@ -67,12 +67,19 @@ pub fn run_stability(ctx: OutputCtx) -> anyhow::Result<()> {
     let data = json!({
         "namespace": SCHEMA_NAMESPACE,
         "stability": SCHEMA_STABILITY,
-        "policy": "Existing field names, types, and semantics in retained openproxy.v1.* envelopes are frozen. New fields are additive only. The fork's updater hard cut is the sole declared exception; other breaking changes require openproxy.v2.*.",
+        "policy": "Existing field names, types, and semantics in retained openproxy.v1.* envelopes are frozen. New fields are additive only. The fork's updater and Claude subscription hard cuts are declared exceptions; other breaking changes require openproxy.v2.*.",
         "exceptions": [{
             "id": "updater-hard-cut",
             "removedEnvelopes": ["openproxy.v1.settings.version", "openproxy.v1.settings.update.check", "openproxy.v1.settings.update.apply"],
             "removedRoutes": ["GET /api/version", "POST /api/version/update"],
             "removedCommands": ["settings version", "settings update"],
+        }, {
+            "id": "claude-subscription-hard-cut",
+            "retiredProviders": ["claude", "cc"],
+            "removedBehavior": ["proxy-owned Claude OAuth/import/refresh", "C46 identity/system/tool masking", "mask discovery/inference gate", "passive subscription quota"],
+            "legacyDataPreserved": true,
+            "anthropicApiKeyPreserved": true,
+            "replacementTransport": "/v2/claude-agent",
         }],
     });
     if ctx.is_robot() {
@@ -80,7 +87,7 @@ pub fn run_stability(ctx: OutputCtx) -> anyhow::Result<()> {
     } else {
         humanln(
             ctx,
-            format!("{SCHEMA_NAMESPACE}: {SCHEMA_STABILITY} (additive-only except the declared updater hard cut; other breaks require v2)"),
+            format!("{SCHEMA_NAMESPACE}: {SCHEMA_STABILITY} (additive-only except declared updater/Claude subscription hard cuts; other breaks require v2)"),
         );
     }
     Ok(())
@@ -374,7 +381,7 @@ fn example_for(resource: &str) -> Option<Value> {
             "cost": 0.0123
         }),
         "oauth-status" => json!({
-            "provider": "claude",
+            "provider": "codex",
             "status": "linked",
             "url": null,
             "expires_at": 1735689600

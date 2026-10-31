@@ -50,6 +50,7 @@ export const PROVIDER_ENDPOINTS = {
 export {
   FREE_PROVIDERS,
   OAUTH_PROVIDERS,
+  EXTERNAL_PROVIDERS,
   APIKEY_PROVIDERS,
   WEB_COOKIE_PROVIDERS,
   AI_PROVIDERS,
@@ -67,8 +68,8 @@ export {
  * Persistence: PATCH /api/settings { codexAutoPing | glmAutoPing }.
  * Scheduler: Rust POST /api/quota/auto-ping/tick (+ boot interval).
  * Warm-ping sends a tiny provider request after a quota reset.
- * Claude was removed: its quota is passively observed from
- * anthropic-ratelimit-unified-* headers on live traffic.
+ * Claude Agent delegates subscription state to its native runtime, not this
+ * API-key/OAuth warmup scheduler.
  */
 export const QUOTA_AUTOPING_CONFIG = {
   tickIntervalMs: 60_000,

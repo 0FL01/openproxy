@@ -38,10 +38,6 @@ static PROVIDER_CONFIGS: Lazy<BTreeMap<&'static str, ProviderConfig>> = Lazy::ne
             ProviderConfig::anthropic("https://api.anthropic.com/v1/messages"),
         ),
         (
-            "claude",
-            ProviderConfig::anthropic("https://api.anthropic.com/v1/messages"),
-        ),
-        (
             "gemini",
             ProviderConfig::gemini("https://generativelanguage.googleapis.com/v1beta/models"),
         ),
@@ -327,16 +323,11 @@ impl ProviderConfig {
     }
 
     fn anthropic(base_url: &str) -> Self {
-        Self::openai(base_url)
-            .with_header("anthropic-version", "2023-06-01")
-            .with_header(
-                "anthropic-beta",
-                "claude-code-20250219,interleaved-thinking-2025-05-14",
-            )
+        Self::openai(base_url).with_header("anthropic-version", "2023-06-01")
     }
 
     fn claude_compatible(base_url: &str) -> Self {
-        Self::anthropic(base_url)
+        Self::anthropic(base_url).with_header("anthropic-beta", "interleaved-thinking-2025-05-14")
     }
 
     fn with_header(mut self, name: &str, value: &str) -> Self {
@@ -344,50 +335,6 @@ impl ProviderConfig {
             .push((name.to_string(), value.to_string()));
         self
     }
-}
-
-/// Anthropic beta flags, ported from `selectAnthropicBeta` in
-/// `open-sse/providers/shared.js:51-69`. Heavy-agent flags are gated to
-/// opus/sonnet — cheaper models don't need them. `token-efficient-tools`
-/// is intentionally absent: the official Claude Code 2.1.289 binary does
-/// not reference it (binary-RECON), nor does it reference
-/// `fine-grained-tool-streaming`, which we therefore do not add.
-/// `redact-thinking-2026-02-12` is not in the shared base: MITM 2.1.289
-/// shows it only on haiku auxiliary traffic (see `select_anthropic_beta`).
-const ANTHROPIC_BETA_BASE: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,structured-outputs-2025-12-15,fast-mode-2026-02-01";
-const ANTHROPIC_BETA_HEAVY_AGENT: &str = "advanced-tool-use-2025-11-20,effort-2025-11-24";
-
-/// Beta selection mirrors the Claude Code 2.1.289 binary gates: the
-/// `claude-code-20250219` flag rides only non-haiku models
-/// (`!canonical.includes("haiku")`, matching `claude-3-5-haiku-*` and
-/// routed aliases), haiku keeps the MITM-observed aux flag
-/// `redact-thinking-2026-02-12` absent from the shared base, and
-/// `oauth-2025-04-20` rides only OAuth connections (binary gate on the
-/// auth/runtime predicate; API-key traffic never carries it).
-/// Heavy-agent flags stay gated to opus/sonnet.
-pub fn select_anthropic_beta(model: &str, is_oauth: bool) -> String {
-    let lower = model.to_lowercase();
-    let flags: Vec<&str> = if lower.contains("haiku") {
-        ANTHROPIC_BETA_BASE
-            .split(',')
-            .filter(|flag| {
-                *flag != "claude-code-20250219" && (is_oauth || *flag != "oauth-2025-04-20")
-            })
-            .chain(["redact-thinking-2026-02-12"])
-            .collect()
-    } else if lower.starts_with("claude-opus") || lower.starts_with("claude-sonnet") {
-        ANTHROPIC_BETA_BASE
-            .split(',')
-            .filter(|flag| is_oauth || *flag != "oauth-2025-04-20")
-            .chain(ANTHROPIC_BETA_HEAVY_AGENT.split(','))
-            .collect()
-    } else {
-        ANTHROPIC_BETA_BASE
-            .split(',')
-            .filter(|flag| is_oauth || *flag != "oauth-2025-04-20")
-            .collect()
-    };
-    flags.join(",")
 }
 
 /// Union of adapter base flags with client-supplied extras (dedup,
@@ -447,35 +394,13 @@ pub struct ExecutionRequest {
     pub client_headers: BTreeMap<String, String>,
 }
 
-/// Claude client identity and protocol metadata that may be forwarded from the
-/// current request. Authentication, cookies, forwarding headers, and arbitrary
-/// extension headers are intentionally excluded. Only the names live Claude
-/// Code 2.1.289 actually sends are listed (MITM census); the un-prefixed
-/// `os`/`arch`/`package-version`/`runtime-version` variants never appear on
-/// the wire and were dropped.
-const CLAUDE_REQUEST_HEADER_ALLOWLIST: &[&str] = &[
+/// Request-scoped Anthropic API protocol headers, never subscription identity.
+const ANTHROPIC_REQUEST_HEADER_ALLOWLIST: &[&str] = &[
     "user-agent",
     "anthropic-beta",
     "anthropic-version",
     "anthropic-dangerous-direct-browser-access",
-    "anthropic-dispatch-id",
-    "x-app",
     "x-client-request-id",
-    "x-stainless-helper-method",
-    "x-stainless-retry-count",
-    "x-stainless-runtime-version",
-    "x-stainless-package-version",
-    "x-stainless-runtime",
-    "x-stainless-lang",
-    "x-stainless-arch",
-    "x-stainless-os",
-    "x-stainless-timeout",
-    "x-claude-code-session-id",
-    "x-claude-code-prompt-id",
-    "x-claude-code-request-class",
-    "x-claude-code-agent-id",
-    "x-claude-code-agent-type",
-    "x-claude-code-prev-tool-durations",
 ];
 
 pub struct ExecutionResponse {
@@ -667,6 +592,20 @@ impl DefaultExecutor {
         provider_node: Option<ProviderNode>,
     ) -> Result<Self, ExecutorError> {
         let provider = provider.into();
+        // Check before compatible-node or unknown-provider fallback: saved
+        // retired records must remain inert regardless of their transport.
+        if matches!(provider.as_str(), "claude" | "cc") {
+            return Err(ExecutorError::UpstreamStatus(
+                http::StatusCode::GONE,
+                "Claude subscription provider retired; use claude-agent native login".into(),
+            ));
+        }
+        if provider == "claude-agent" {
+            return Err(ExecutorError::UpstreamStatus(
+                http::StatusCode::BAD_REQUEST,
+                "Claude Agent requires the native v2 client adapter".into(),
+            ));
+        }
         let config = if let Some(node) = &provider_node {
             if node.r#type == "openai-compatible" || node.r#type == "anthropic-compatible" {
                 ProviderConfig::openai("")
@@ -704,7 +643,7 @@ impl DefaultExecutor {
     fn provider_wants_claude_beta(provider: &str) -> bool {
         matches!(
             provider,
-            "claude" | "anthropic" | "glm" | "kimi" | "kimi-coding" | "minimax"
+            "anthropic" | "glm" | "kimi" | "kimi-coding" | "minimax"
         )
     }
 
@@ -781,8 +720,7 @@ impl DefaultExecutor {
                 }
                 if matches!(
                     self.provider.as_str(),
-                    "claude"
-                        | "anthropic"
+                    "anthropic"
                         | "glm"
                         | "kimi"
                         | "kimi-coding"
@@ -865,10 +803,7 @@ impl DefaultExecutor {
             return Ok(url);
         }
 
-        if matches!(
-            self.provider.as_str(),
-            "claude" | "kimi" | "minimax" | "kimi-coding"
-        ) {
+        if matches!(self.provider.as_str(), "kimi" | "minimax" | "kimi-coding") {
             return Ok(format!("{}?beta=true", self.config.base_url));
         }
 
@@ -886,11 +821,19 @@ impl DefaultExecutor {
 
     pub fn build_headers_for_request(
         &self,
-        model: &str,
+        _model: &str,
         credentials: &ProviderConnection,
         stream: bool,
         client_headers: &BTreeMap<String, String>,
     ) -> Result<HeaderMap, ExecutorError> {
+        if self.provider == "anthropic"
+            && !matches!(credentials.auth_type.as_str(), "apikey" | "api_key")
+        {
+            return Err(ExecutorError::UpstreamStatus(
+                http::StatusCode::GONE,
+                "Anthropic subscription OAuth retired; use an Anthropic API key or claude-agent native login".into(),
+            ));
+        }
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
@@ -912,7 +855,7 @@ impl DefaultExecutor {
             headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
             headers.insert(
                 "anthropic-beta",
-                HeaderValue::from_static("claude-code-20250219,interleaved-thinking-2025-05-14"),
+                HeaderValue::from_static("interleaved-thinking-2025-05-14"),
             );
         }
         let commandcode_messages_transport = self.provider == "commandcode"
@@ -941,24 +884,12 @@ impl DefaultExecutor {
             } else {
                 return Err(ExecutorError::MissingCredentials(self.provider.clone()));
             }
-        } else if matches!(self.provider.as_str(), "claude" | "anthropic")
-            && !is_anthropic_compatible
-            && credentials
-                .runtime_transport
-                .as_ref()
-                .and_then(|transport| transport.base_url.as_deref())
-                .is_none_or(|url| url.trim().is_empty())
-        {
-            // First-party Claude: canonical single scheme per credential
-            // type (C46) — API key via x-api-key, subscription OAuth via
-            // Bearer. Third-party transports keep the generic branch below.
+        } else if self.provider == "anthropic" {
+            // API-key Anthropic always uses x-api-key, including a configured
+            // transport override; a legacy access token is never a fallback.
+            headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
             if let Some(api_key) = credentials.api_key.as_deref() {
                 headers.insert("x-api-key", HeaderValue::from_str(api_key)?);
-            } else if let Some(access_token) = credentials.access_token.as_deref() {
-                headers.insert(
-                    AUTHORIZATION,
-                    HeaderValue::from_str(&format!("Bearer {access_token}"))?,
-                );
             } else {
                 return Err(ExecutorError::MissingCredentials(self.provider.clone()));
             }
@@ -1032,7 +963,7 @@ impl DefaultExecutor {
                 );
             }
 
-            // Header hooks: kimi / cline / claude overlay (9router default.js)
+            // Header hooks: kimi / cline overlay (9router default.js)
             if self.provider == "kimi" || self.provider == "kimi-coding" {
                 headers.insert(
                     "User-Agent",
@@ -1071,44 +1002,11 @@ impl DefaultExecutor {
             }
         }
 
-        // Per-model Anthropic-Beta flags (9router default.js:167-170 +
-        // shared.js selectAnthropicBeta). First-party guard mirrors the
-        // auth chain above: third-party transports and gateway nodes keep
-        // the generic/allowlist path (no harness-beta leak). Union with
-        // client extras (C04 passthrough); ours-first union — a client
-        // may only add flags. `oauth-2025-04-20` enters the base only
-        // for OAuth connections; an API-key client that sends it itself
-        // still passes it through the union.
-        // Overwrites the static default (which only had 2 flags).
-        if matches!(self.provider.as_str(), "claude" | "anthropic")
-            && !is_anthropic_compatible
-            && credentials
-                .runtime_transport
-                .as_ref()
-                .and_then(|transport| transport.base_url.as_deref())
-                .is_none_or(|url| url.trim().is_empty())
-        {
-            let merged = merge_anthropic_beta(
-                &select_anthropic_beta(model, credentials.auth_type == "oauth"),
-                client_headers.get("anthropic-beta").map(String::as_str),
-            );
-            if let Ok(val) = HeaderValue::from_str(&merged) {
-                headers.insert("anthropic-beta", val);
-            }
-        }
-
-        let claude_harness = crate::core::translator::request::claude_format::claude_harness_gated(
-            self.provider.as_str(),
-            credentials.auth_type.as_str(),
-            credentials
-                .runtime_transport
-                .as_ref()
-                .and_then(|transport| transport.base_url.as_deref()),
-            is_anthropic_compatible,
-        );
-
-        if matches!(self.provider.as_str(), "claude" | "anthropic") {
-            for name in CLAUDE_REQUEST_HEADER_ALLOWLIST {
+        if self.provider == "anthropic" {
+            for name in ANTHROPIC_REQUEST_HEADER_ALLOWLIST {
+                if *name == "anthropic-beta" {
+                    continue;
+                }
                 if !headers.contains_key(*name) {
                     let Some(value) = client_headers.get(*name) else {
                         continue;
@@ -1119,85 +1017,10 @@ impl DefaultExecutor {
                     );
                 }
             }
-            // Claude Code 2.1.289 hardcodes dangerouslyAllowBrowser for
-            // both its api-key and OAuth clients, so every first-party
-            // request carries the browser-access header. Default it only
-            // after the allowlist forward above (client value wins) and
-            // only under the first-party guard (third-party nodes and
-            // custom base URLs stay untouched, C46).
-            if !is_anthropic_compatible
-                && credentials
-                    .runtime_transport
-                    .as_ref()
-                    .and_then(|transport| transport.base_url.as_deref())
-                    .is_none_or(|url| url.trim().is_empty())
-                && !headers.contains_key("anthropic-dangerous-direct-browser-access")
-            {
-                headers.insert(
-                    "anthropic-dangerous-direct-browser-access",
-                    HeaderValue::from_static("true"),
-                );
-            }
-            // C46: CLI identity for subscription-OAuth traffic. Client
-            // values win for API-key/third-party paths (gates below), but
-            // on the harness path a CC-shaped spoofed body must ride a CC
-            // user agent: a forwarded `opencode/…` UA next to `x-app: cli`
-            // is a self-inflicted fingerprint mismatch, so a non-CLI UA is
-            // overridden with the pinned CLI UA. Genuine `claude-cli/…`
-            // user agents pass through untouched.
-            if claude_harness {
-                let client_ua = client_headers.get("user-agent").map(String::as_str);
-                let keep_client_ua =
-                    crate::core::translator::request::claude_format::is_claude_cli_user_agent(
-                        client_ua,
-                    );
-                if !keep_client_ua {
-                    if let Ok(ua) =
-                        HeaderValue::from_str(&crate::oauth::providers::claude_user_agent())
-                    {
-                        headers.insert("user-agent", ua);
-                    }
-                }
-                if !headers.contains_key("x-app") {
-                    headers.insert("x-app", HeaderValue::from_static("cli"));
-                }
-                // Fill the client-telemetry identity a non-CC client cannot
-                // supply: the SDK's x-stainless-* set, the CLI's
-                // request-class marker, and its constant dispatch tag. Every
-                // value is insert-if-missing, so a genuine CC client's own
-                // (allowlisted) values always win. Census CC 2.1.289:
-                // lang=js, package=0.128.0, runtime=node, retry=0, timeout=600,
-                // request-class main on every main-class request, dispatch-id
-                // the literal `v2d` (constant across both capture trees).
-                for (name, value) in [
-                    ("x-stainless-lang", "js"),
-                    (
-                        "x-stainless-package-version",
-                        crate::oauth::providers::CLAUDE_STAINLESS_PACKAGE_VERSION,
-                    ),
-                    ("x-stainless-runtime", "node"),
-                    (
-                        "x-stainless-runtime-version",
-                        crate::oauth::providers::CLAUDE_STAINLESS_RUNTIME_VERSION,
-                    ),
-                    ("x-stainless-retry-count", "0"),
-                    ("x-stainless-timeout", "600"),
-                    ("x-stainless-os", Self::stainless_os()),
-                    ("x-stainless-arch", Self::stainless_arch()),
-                    ("x-claude-code-request-class", "main"),
-                    ("anthropic-dispatch-id", "v2d"),
-                ] {
-                    if !headers.contains_key(name) {
-                        if let Ok(value) = HeaderValue::from_str(value) {
-                            headers.insert(name, value);
-                        }
-                    }
-                }
-                // Live CC sends `accept: application/json` on every request,
-                // streaming included (SSE is selected by the body `stream`
-                // field, not Accept; census 628/628). The generic
-                // text/event-stream insert below is skipped for this path.
-                headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+            let beta =
+                merge_anthropic_beta("", client_headers.get("anthropic-beta").map(String::as_str));
+            if !beta.is_empty() {
+                headers.insert("anthropic-beta", HeaderValue::from_str(&beta)?);
             }
         }
 
@@ -1207,32 +1030,11 @@ impl DefaultExecutor {
             headers.insert("x-cmd-zdr", HeaderValue::from_static("1"));
         }
 
-        if stream && !claude_harness {
+        if stream {
             headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
         }
 
         Ok(headers)
-    }
-
-    /// Host OS in the stainless convention the Anthropic SDK uses
-    /// (`normalizePlatform`): Linux/MacOS/Windows, `Other` for the rest.
-    /// `MacOS` spelling is SDK-inferred (the census machine was Linux).
-    fn stainless_os() -> &'static str {
-        match std::env::consts::OS {
-            "linux" => "Linux",
-            "macos" => "MacOS",
-            "windows" => "Windows",
-            _ => "Other",
-        }
-    }
-
-    /// Host arch in the stainless convention: x64/arm64, `Other` for the rest.
-    fn stainless_arch() -> &'static str {
-        match std::env::consts::ARCH {
-            "x86_64" => "x64",
-            "aarch64" => "arm64",
-            _ => "Other",
-        }
     }
 
     pub fn transform_request(&self, body: &Value, model: &str) -> Value {
@@ -2101,263 +1903,31 @@ mod tests {
     }
 
     #[test]
-    fn claude_oauth_overrides_non_cli_user_agent_on_harness_path() {
-        // Spoof invariant (MITM-audit M-A1): a CC-shaped spoofed body must
-        // ride a CC user agent. A forwarded `opencode/…` UA next to
-        // `x-app: cli` is a self-inflicted fingerprint mismatch; the
-        // harness path overrides it with the pinned CLI UA. Genuine
-        // `claude-cli/…` UAs pass through; API-key keeps the client UA.
-        let executor = DefaultExecutor::new("claude", Arc::new(ClientPool::new()), None).unwrap();
-        let mut oauth = ProviderConnection::default();
-        oauth.auth_type = "oauth".to_string();
-        oauth.access_token = Some("sk-ant-oat-test".to_string());
-        let mut apikey = ProviderConnection::default();
-        apikey.auth_type = "apikey".to_string();
-        apikey.api_key = Some("sk-ant-test".to_string());
-
-        let opencode_ua = BTreeMap::from([("user-agent".to_string(), "opencode/1.0".to_string())]);
-        let headers = executor
-            .build_headers_for_request("claude-sonnet-4-5", &oauth, false, &opencode_ua)
-            .unwrap();
-        assert_eq!(
-            headers["user-agent"],
-            crate::oauth::providers::claude_user_agent()
-        );
-        assert_eq!(headers["x-app"], "cli");
-
-        // Genuine CLI UA survives untouched.
-        let cli_ua = BTreeMap::from([(
-            "user-agent".to_string(),
-            "claude-cli/2.1.100 (external, cli)".to_string(),
-        )]);
-        let headers = executor
-            .build_headers_for_request("claude-sonnet-4-5", &oauth, false, &cli_ua)
-            .unwrap();
-        assert_eq!(headers["user-agent"], "claude-cli/2.1.100 (external, cli)");
-
-        // API-key path keeps the client UA (no harness gate).
-        let headers = executor
-            .build_headers_for_request("claude-sonnet-4-5", &apikey, false, &opencode_ua)
-            .unwrap();
-        assert_eq!(headers["user-agent"], "opencode/1.0");
-    }
-
-    #[test]
-    fn claude_first_party_defaults_browser_access_header() {
-        // Claude Code 2.1.289 hardcodes dangerouslyAllowBrowser for both
-        // auth types; first-party claude/anthropic requests default the
-        // header to true when the client sent none, client value wins,
-        // and custom base URLs / compatible nodes stay untouched.
-        let executor = DefaultExecutor::new("claude", Arc::new(ClientPool::new()), None).unwrap();
-        let mut oauth = ProviderConnection::default();
-        oauth.auth_type = "oauth".to_string();
-        oauth.access_token = Some("sk-ant-oat-test".to_string());
-        let mut apikey = ProviderConnection::default();
-        apikey.auth_type = "apikey".to_string();
-        apikey.api_key = Some("sk-ant-test".to_string());
-        let mut third_party = oauth.clone();
-        third_party.runtime_transport = Some(crate::types::RuntimeTransport {
-            base_url: Some("https://relay.example.com".to_string()),
-        });
-
-        for credentials in [&oauth, &apikey] {
-            let headers = executor
-                .build_headers_for_request(
-                    "claude-sonnet-4-5",
-                    credentials,
-                    false,
-                    &BTreeMap::new(),
-                )
-                .unwrap();
-            assert_eq!(headers["anthropic-dangerous-direct-browser-access"], "true");
-        }
-
-        // Client value wins over the default.
-        let client_headers = BTreeMap::from([(
-            "anthropic-dangerous-direct-browser-access".to_string(),
-            "false".to_string(),
-        )]);
-        let headers = executor
-            .build_headers_for_request("claude-sonnet-4-5", &oauth, false, &client_headers)
-            .unwrap();
-        assert_eq!(
-            headers["anthropic-dangerous-direct-browser-access"],
-            "false"
-        );
-
-        // Custom base URL keeps the generic path (C46).
-        let headers = executor
-            .build_headers_for_request("claude-sonnet-4-5", &third_party, false, &BTreeMap::new())
-            .unwrap();
-        assert!(!headers.contains_key("anthropic-dangerous-direct-browser-access"));
-    }
-
-    #[test]
-    fn claude_oauth_gets_default_cli_identity() {
-        // C46: subscription-OAuth traffic without client identity headers
-        // gets the canonical CLI defaults; client values always win and
-        // API-key connections keep their own identity.
-        let executor = DefaultExecutor::new("claude", Arc::new(ClientPool::new()), None).unwrap();
-        let mut oauth = ProviderConnection::default();
-        oauth.auth_type = "oauth".to_string();
-        oauth.access_token = Some("sk-ant-oat-test".to_string());
-
-        let headers = executor
-            .build_headers_for_request("claude-sonnet-4-5", &oauth, false, &BTreeMap::new())
-            .unwrap();
-        assert_eq!(
-            headers["user-agent"],
-            crate::oauth::providers::claude_user_agent().as_str()
-        );
-        assert_eq!(headers["x-app"], "cli");
-        assert!(headers
-            .get("anthropic-beta")
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|beta| beta.contains("oauth-2025-04-20")));
-
-        let client_headers = BTreeMap::from([(
-            "user-agent".to_string(),
-            "claude-cli/2.1.282 (external, cli)".to_string(),
-        )]);
-        let headers = executor
-            .build_headers_for_request("claude-sonnet-4-5", &oauth, false, &client_headers)
-            .unwrap();
-        assert_eq!(headers["user-agent"], "claude-cli/2.1.282 (external, cli)");
-
-        let mut apikey = ProviderConnection::default();
-        apikey.auth_type = "apikey".to_string();
-        apikey.api_key = Some("sk-ant-test".to_string());
-        let headers = executor
-            .build_headers_for_request("claude-sonnet-4-5", &apikey, false, &BTreeMap::new())
-            .unwrap();
-        assert!(!headers.contains_key("user-agent"));
-        assert!(!headers.contains_key("x-app"));
-        assert_eq!(headers["x-api-key"], "sk-ant-test");
-    }
-
-    #[test]
-    fn claude_oauth_synthesizes_pinned_cli_telemetry() {
-        // Harness path with a bare client: the full census CC 2.1.289 client
-        // identity is synthesized — SDK stainless set, request-class marker,
-        // constant dispatch tag. Everything is insert-if-missing, so genuine
-        // CC client values win (next case).
-        let executor = DefaultExecutor::new("claude", Arc::new(ClientPool::new()), None).unwrap();
-        let mut oauth = ProviderConnection::default();
-        oauth.auth_type = "oauth".to_string();
-        oauth.access_token = Some("sk-ant-oat-test".to_string());
-
-        let headers = executor
-            .build_headers_for_request("claude-sonnet-4-5", &oauth, true, &BTreeMap::new())
-            .unwrap();
-        assert_eq!(headers["x-stainless-lang"], "js");
-        assert_eq!(
-            headers["x-stainless-package-version"],
-            crate::oauth::providers::CLAUDE_STAINLESS_PACKAGE_VERSION
-        );
-        assert_eq!(headers["x-stainless-runtime"], "node");
-        assert_eq!(
-            headers["x-stainless-runtime-version"],
-            crate::oauth::providers::CLAUDE_STAINLESS_RUNTIME_VERSION
-        );
-        assert_eq!(headers["x-stainless-retry-count"], "0");
-        assert_eq!(headers["x-stainless-timeout"], "600");
-        assert_eq!(headers["x-stainless-os"], "Linux");
-        assert_eq!(headers["x-stainless-arch"], "x64");
-        assert_eq!(headers["x-claude-code-request-class"], "main");
-        assert_eq!(headers["anthropic-dispatch-id"], "v2d");
-        // Live CC sends application/json even while streaming.
-        assert_eq!(headers[reqwest::header::ACCEPT], "application/json");
-    }
-
-    #[test]
-    fn claude_harness_accept_json_on_both_stream_modes() {
-        // Census: accept is application/json on 628/628 requests, streaming
-        // included — SSE is chosen by the body stream field, not Accept.
-        let executor = DefaultExecutor::new("claude", Arc::new(ClientPool::new()), None).unwrap();
-        let mut oauth = ProviderConnection::default();
-        oauth.auth_type = "oauth".to_string();
-        oauth.access_token = Some("sk-ant-oat-test".to_string());
-
-        for stream in [true, false] {
-            let headers = executor
-                .build_headers_for_request("claude-sonnet-4-5", &oauth, stream, &BTreeMap::new())
-                .unwrap();
-            assert_eq!(headers[reqwest::header::ACCEPT], "application/json");
+    fn retired_and_native_sources_never_use_default_executor() {
+        for provider in ["claude", "cc", "claude-agent"] {
+            for node in [
+                None,
+                Some(ProviderNode {
+                    r#type: "anthropic-compatible".into(),
+                    ..Default::default()
+                }),
+            ] {
+                let error = match DefaultExecutor::new(provider, Arc::new(ClientPool::new()), node)
+                {
+                    Ok(_) => panic!("{provider} reached HTTP executor"),
+                    Err(error) => error.into_provider_attempt_error(),
+                };
+                assert_eq!(
+                    error.status,
+                    if provider == "claude-agent" { 400 } else { 410 }
+                );
+            }
+            assert!(provider_config_base_url(provider).is_none());
         }
     }
 
     #[test]
-    fn claude_harness_client_telemetry_wins_over_synthesis() {
-        // A genuine CC client's own allowlisted values are never replaced by
-        // the pinned synthesis, and previously-dropped CC telemetry headers
-        // (request-class, prompt-id, client-request-id, dispatch-id,
-        // prev-tool-durations, agent identity) now forward.
-        let executor = DefaultExecutor::new("claude", Arc::new(ClientPool::new()), None).unwrap();
-        let mut oauth = ProviderConnection::default();
-        oauth.auth_type = "oauth".to_string();
-        oauth.access_token = Some("sk-ant-oat-test".to_string());
-
-        let client_headers = BTreeMap::from([
-            (
-                "user-agent".to_string(),
-                "claude-cli/2.1.100 (external, cli)".to_string(),
-            ),
-            (
-                "x-stainless-package-version".to_string(),
-                "9.9.9".to_string(),
-            ),
-            ("x-stainless-retry-count".to_string(), "7".to_string()),
-            (
-                "x-claude-code-request-class".to_string(),
-                "subagent".to_string(),
-            ),
-            (
-                "x-claude-code-prompt-id".to_string(),
-                "d011f325-2670-47e1-994f-48e9d59801db".to_string(),
-            ),
-            (
-                "x-client-request-id".to_string(),
-                "0b6e6a5a-9d5e-4f3a-8c2b-1f0d2a3b4c5d".to_string(),
-            ),
-            (
-                "anthropic-dispatch-id".to_string(),
-                "client-value".to_string(),
-            ),
-            (
-                "x-claude-code-agent-id".to_string(),
-                "a13686a89fec8b643".to_string(),
-            ),
-            (
-                "x-claude-code-agent-type".to_string(),
-                "Explore".to_string(),
-            ),
-        ]);
-        let headers = executor
-            .build_headers_for_request("claude-sonnet-4-5", &oauth, true, &client_headers)
-            .unwrap();
-        assert_eq!(headers["x-stainless-package-version"], "9.9.9");
-        assert_eq!(headers["x-stainless-retry-count"], "7");
-        assert_eq!(headers["x-claude-code-request-class"], "subagent");
-        assert_eq!(
-            headers["x-claude-code-prompt-id"],
-            "d011f325-2670-47e1-994f-48e9d59801db"
-        );
-        assert_eq!(
-            headers["x-client-request-id"],
-            "0b6e6a5a-9d5e-4f3a-8c2b-1f0d2a3b4c5d"
-        );
-        assert_eq!(headers["anthropic-dispatch-id"], "client-value");
-        assert_eq!(headers["x-claude-code-agent-id"], "a13686a89fec8b643");
-        assert_eq!(headers["x-claude-code-agent-type"], "Explore");
-        // Non-provided identity fields still fill in around the client's.
-        assert_eq!(headers["x-stainless-lang"], "js");
-        assert_eq!(headers["x-stainless-os"], "Linux");
-    }
-
-    #[test]
-    fn non_claude_stream_accept_unchanged() {
-        // The generic text/event-stream accept stays for non-harness paths;
-        // the harness gate is claude/anthropic OAuth first-party only.
+    fn other_provider_stream_accept_unchanged() {
         let executor = DefaultExecutor::new("glm", Arc::new(ClientPool::new()), None).unwrap();
         let mut oauth = ProviderConnection::default();
         oauth.auth_type = "oauth".to_string();
@@ -2369,10 +1939,9 @@ mod tests {
     }
 
     #[test]
-    fn claude_apikey_stream_accept_unchanged() {
-        // API-key claude connections do not take the harness gate: the
-        // spoofed-CLI accept contract does not apply to them.
-        let executor = DefaultExecutor::new("claude", Arc::new(ClientPool::new()), None).unwrap();
+    fn anthropic_apikey_uses_api_protocol_without_synthetic_identity() {
+        let executor =
+            DefaultExecutor::new("anthropic", Arc::new(ClientPool::new()), None).unwrap();
         let mut apikey = ProviderConnection::default();
         apikey.auth_type = "apikey".to_string();
         apikey.api_key = Some("sk-ant-test".to_string());
@@ -2380,71 +1949,53 @@ mod tests {
             .build_headers_for_request("claude-sonnet-4-5", &apikey, true, &BTreeMap::new())
             .unwrap();
         assert_eq!(headers[reqwest::header::ACCEPT], "text/event-stream");
+        assert_eq!(headers["x-api-key"], "sk-ant-test");
+        assert!(!headers.contains_key(AUTHORIZATION));
+        for header in [
+            "user-agent",
+            "x-app",
+            "anthropic-beta",
+            "anthropic-dispatch-id",
+            "x-stainless-lang",
+            "x-claude-code-session-id",
+            "anthropic-dangerous-direct-browser-access",
+        ] {
+            assert!(!headers.contains_key(header), "{header}");
+        }
     }
 
     #[test]
-    fn claude_harness_id_headers_reach_upstream_map() {
-        // Plumbing lock: the chat-level harness ids (session, prompt,
-        // client-request) are inserted into the client header map and must
-        // survive the allowlist forward into the upstream request — this is
-        // the regression the prompt-id/client-request-id allowlist entries
-        // exist for.
-        let executor = DefaultExecutor::new("claude", Arc::new(ClientPool::new()), None).unwrap();
+    fn legacy_anthropic_oauth_never_reaches_http_even_with_custom_transport() {
+        let executor =
+            DefaultExecutor::new("anthropic", Arc::new(ClientPool::new()), None).unwrap();
         let mut oauth = ProviderConnection::default();
         oauth.auth_type = "oauth".to_string();
-        oauth.access_token = Some("sk-ant-oat-test".to_string());
-
-        let client_headers = BTreeMap::from([
-            (
-                "x-claude-code-session-id".to_string(),
-                "b4442fe8-a39b-4d05-906e-de046b708b1f".to_string(),
-            ),
-            (
-                "x-claude-code-prompt-id".to_string(),
-                "d011f325-2670-47e1-994f-48e9d59801db".to_string(),
-            ),
-            (
-                "x-client-request-id".to_string(),
-                "0b6e6a5a-9d5e-4f3a-8c2b-1f0d2a3b4c5d".to_string(),
-            ),
-        ]);
-        let headers = executor
-            .build_headers_for_request("claude-sonnet-4-5", &oauth, true, &client_headers)
-            .unwrap();
-        assert_eq!(
-            headers["x-claude-code-session-id"],
-            "b4442fe8-a39b-4d05-906e-de046b708b1f"
-        );
-        assert_eq!(
-            headers["x-claude-code-prompt-id"],
-            "d011f325-2670-47e1-994f-48e9d59801db"
-        );
-        assert_eq!(
-            headers["x-client-request-id"],
-            "0b6e6a5a-9d5e-4f3a-8c2b-1f0d2a3b4c5d"
-        );
-    }
-
-    #[test]
-    fn beta_base_has_no_non_cli_flags() {
-        // Binary-RECON: neither flag is referenced by the real CLI.
-        assert!(!ANTHROPIC_BETA_BASE.contains("token-efficient"));
-        assert!(!ANTHROPIC_BETA_BASE.contains("fine-grained"));
-        assert!(!select_anthropic_beta("claude-opus-5-5", true).contains("token-efficient"));
+        oauth.access_token = Some("legacy-subscription-token".into());
+        for base_url in [None, Some("https://relay.example.com/v1/messages".into())] {
+            oauth.runtime_transport = Some(crate::types::RuntimeTransport { base_url });
+            let error = executor
+                .build_headers("claude-sonnet-4-5", &oauth, true)
+                .unwrap_err()
+                .into_provider_attempt_error();
+            assert_eq!(error.status, 410);
+        }
     }
 
     #[test]
     fn merge_beta_unions_dedups_and_bounds() {
-        let base = "claude-code-20250219,oauth-2025-04-20";
+        let base = "feature-one-2026-01-01,feature-two-2026-01-01";
         // Client extras appended, duplicates dropped, ours-first.
-        let merged = merge_anthropic_beta(base, Some("oauth-2025-04-20,my-flag-2026-01-01"));
+        let merged = merge_anthropic_beta(base, Some("feature-two-2026-01-01,my-flag-2026-01-01"));
         assert_eq!(
             merged,
-            "claude-code-20250219,oauth-2025-04-20,my-flag-2026-01-01"
+            "feature-one-2026-01-01,feature-two-2026-01-01,my-flag-2026-01-01"
         );
         // Garbage dropped per-flag, request not failed.
         let merged = merge_anthropic_beta(base, Some("  ,,ok-flag-1,has space,bad下划线"));
-        assert_eq!(merged, "claude-code-20250219,oauth-2025-04-20,ok-flag-1");
+        assert_eq!(
+            merged,
+            "feature-one-2026-01-01,feature-two-2026-01-01,ok-flag-1"
+        );
         // Bound: extras beyond the cap are dropped, base survives.
         let many = (0..100)
             .map(|i| format!("f-{i:03}-2026-01-01"))

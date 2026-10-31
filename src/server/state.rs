@@ -15,6 +15,7 @@ use crate::server::api::admission::LlmAdmission;
 use crate::server::api::oauth::{CodexProxyState, XaiProxyState, ZedProxyState};
 use crate::server::api::quota_auto_ping::QuotaAutoPingLifecycle;
 use crate::server::auth::login_limiter::LoginLimiter;
+use crate::server::claude_agent::ClaudeAgent;
 use crate::server::codex_catalog::CodexModelCatalog;
 use crate::server::console_logs::{shared_console_log_buffer, ConsoleLogBuffer};
 use crate::server::quota_snapshots::QuotaSnapshots;
@@ -42,6 +43,7 @@ pub struct AppState {
     pub codex_proxy: Arc<CodexProxyState>,
     pub xai_proxy: Arc<XaiProxyState>,
     pub zed_proxy: Arc<ZedProxyState>,
+    pub(crate) claude_agent: Arc<ClaudeAgent>,
 
     /// Progressive lockout store for `POST /api/auth/login`. Tracks failed
     /// attempts per client IP and escalates lockout duration on repeat
@@ -108,6 +110,7 @@ impl AppState {
             codex_proxy: Arc::new(CodexProxyState::new()),
             xai_proxy: Arc::new(XaiProxyState::new()),
             zed_proxy: Arc::new(ZedProxyState::new()),
+            claude_agent: Arc::new(ClaudeAgent::new(db.clone())),
             login_limiter: Arc::new(LoginLimiter::new(&db.data_dir)),
             dashboard_sidecar_url: None,
             dashboard_client: None,
@@ -159,7 +162,13 @@ impl AppState {
     /// Trigger graceful shutdown. Notifies all waiters and
     /// signals axum to stop accepting new connections.
     pub fn signal_shutdown(&self) {
+        self.claude_agent.signal_shutdown();
         self.quota_snapshots.shutdown();
         self.shutdown_signal.notify_waiters();
+    }
+
+    /// Await owned native children before the executable drops its runtime.
+    pub async fn shutdown_claude_agent(&self) {
+        self.claude_agent.shutdown().await;
     }
 }

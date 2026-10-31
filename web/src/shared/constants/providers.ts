@@ -78,7 +78,6 @@ export const THINKING_CONFIG: Record<string, ThinkingConfig> = {
 
 // OAuth Providers
 export const OAUTH_PROVIDERS: Record<string, Provider> = {
-  claude: { id: "claude", alias: "cc", name: "Claude Code", icon: "smart_toy", color: "#D97757", website: "https://claude.ai", notice: { signupUrl: "https://claude.ai" }, priority: 10 },
   antigravity: { id: "antigravity", alias: "ag", name: "Antigravity CLI", icon: "rocket_launch", color: "#F59E0B", website: "https://antigravity.google", notice: { signupUrl: "https://antigravity.google" }, priority: 20 },
   codex: { id: "codex", alias: "cx", name: "OpenAI Codex", icon: "code", color: "#3B82F6", thinkingConfig: THINKING_CONFIG.effort, serviceKinds: ["llm"], website: "https://chatgpt.com/codex", notice: { signupUrl: "https://chatgpt.com/codex" }, priority: 15 },
   github: { id: "github", alias: "gh", name: "GitHub Copilot", icon: "code", color: "#333333", serviceKinds: ["llm"], website: "https://github.com/features/copilot", notice: { signupUrl: "https://github.com/features/copilot" }, priority: 25, authModes: ["device_code"] },
@@ -90,6 +89,12 @@ export const OAUTH_PROVIDERS: Record<string, Provider> = {
   // Dual auth (OAuth + API key) — also listed under APIKEY_PROVIDERS for key path.
   xai: { id: "xai", alias: "xai", name: "xAI (Grok)", icon: "auto_awesome", color: "#1DA1F2", textIcon: "XA", website: "https://x.ai", notice: { apiKeyUrl: "https://console.x.ai", signupUrl: "https://accounts.x.ai" }, serviceKinds: ["llm", "imageToText"], authModes: ["oauth", "apikey"], priority: 35 },
   // opencode: { id: "opencode", alias: "oc", name: "OpenCode", icon: "terminal", color: "#E87040", textIcon: "OC" },
+};
+
+// Native credentials belong to the original server-side application, not to
+// OpenProxy's OAuth or API-key forms.
+export const EXTERNAL_PROVIDERS: Record<string, Provider> = {
+  "claude-agent": { id: "claude-agent", alias: "claude-agent", name: "Claude Agent", icon: "terminal", color: "#D97757", textIcon: "CA", website: "https://claude.ai", notice: { text: "Use native Claude login on the OpenProxy server. OpenCode V2 executes your tools on the client; no client Claude installation is needed.", signupUrl: "https://claude.ai" }, authType: "external", authModes: ["external"], serviceKinds: ["llm"], priority: 10 },
 };
 
 export const APIKEY_PROVIDERS: Record<string, Provider> = {
@@ -151,7 +156,7 @@ export function isAnthropicCompatibleProvider(providerId: string): boolean {
 }
 
 // All providers (combined)
-export const AI_PROVIDERS: Record<string, Provider> = { ...FREE_PROVIDERS, ...FREE_TIER_PROVIDERS, ...OAUTH_PROVIDERS, ...APIKEY_PROVIDERS, ...WEB_COOKIE_PROVIDERS };
+export const AI_PROVIDERS: Record<string, Provider> = { ...FREE_PROVIDERS, ...FREE_TIER_PROVIDERS, ...OAUTH_PROVIDERS, ...EXTERNAL_PROVIDERS, ...APIKEY_PROVIDERS, ...WEB_COOKIE_PROVIDERS };
 
 // Free-tier limitations per provider. Sourced from the awesome-freellm-apis
 // directory (github.com/open-free-llm-api) and freellmapi.co, verified
@@ -448,7 +453,6 @@ export const ID_TO_ALIAS: Record<string, string> = Object.values(AI_PROVIDERS).r
 
 // Providers that support usage/quota API
 export const USAGE_SUPPORTED_PROVIDERS: string[] = [
-  "claude",
   "antigravity",
   "github",
   "codex",
@@ -482,7 +486,7 @@ export const SUPPORTS_MODELS_DISCOVERY: string[] = [
   "openai",
   "openrouter",
   "anthropic",
-  "claude",
+  "claude-agent",
   "gemini",
   "nvidia",
   "llm7",

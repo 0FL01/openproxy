@@ -31,10 +31,11 @@ import AddApiKeyModal from "./AddApiKeyModal";
 import EditCompatibleNodeModal from "./EditCompatibleNodeModal";
 import AddCustomModelModal from "./AddCustomModelModal";
 import BulkImportCodexModal from "./BulkImportCodexModal";
+import ClaudeNativeLoginModal from "./ClaudeNativeLoginModal";
 
 const ONE_BY_ONE_DELAY_MS = 1000;
 
-const CONTEXT_LIMIT_PROVIDERS = new Set(["opencode-zen", "opencode-go", "glm", "codex", "claude"]);
+const CONTEXT_LIMIT_PROVIDERS = new Set(["opencode-zen", "opencode-go", "glm", "codex"]);
 const DEFAULT_CONTEXT_LIMIT = 500000;
 const MAX_CONTEXT_LIMIT = 1000000;
 
@@ -77,6 +78,7 @@ export default function ProviderDetailPageClient() {
   const [providerNode, setProviderNode] = useState(null);
   const [proxyPools, setProxyPools] = useState([]);
   const [showOAuthModal, setShowOAuthModal] = useState(false);
+  const [showNativeLoginModal, setShowNativeLoginModal] = useState(false);
   const [showAddApiKeyModal, setShowAddApiKeyModal] = useState(false);
   const [addConnectionError, setAddConnectionError] = useState("");
   const [showEditModal, setShowEditModal] = useState(false);
@@ -126,7 +128,9 @@ export default function ProviderDetailPageClient() {
         baseUrl: providerNode.baseUrl,
         type: providerNode.type,
       }
-    : (OAUTH_PROVIDERS[providerId] || APIKEY_PROVIDERS[providerId] || FREE_PROVIDERS[providerId] || FREE_TIER_PROVIDERS[providerId] || WEB_COOKIE_PROVIDERS[providerId]);
+    : AI_PROVIDERS[providerId];
+  const isNative = providerId === "claude-agent";
+  const usesConnectionCatalog = ["codex", "commandcode", "a6api", "xai", "claude-agent"].includes(providerId);
   const authModes = (providerInfo as any)?.authModes || [];
   // Dual-auth providers (e.g. xAI) declare oauth in authModes even when they
   // also appear under APIKEY_PROVIDERS for the key path.
@@ -471,6 +475,10 @@ export default function ProviderDetailPageClient() {
   };
 
   const triggerAddConnection = () => {
+    if (isNative) {
+      setShowNativeLoginModal(true);
+      return;
+    }
     if (isOAuth) {
       triggerOAuthConnection();
       return;
@@ -673,7 +681,7 @@ export default function ProviderDetailPageClient() {
       const res = await fetch(`/api/providers/${target.id}`, { method: "DELETE" });
       if (res.ok) {
         setConnections((prev) => prev.filter((c) => c.id !== target.id));
-        if (providerId === "codex" || providerId === "commandcode" || providerId === "a6api" || providerId === "xai") await reloadProviderCatalog();
+        if (usesConnectionCatalog) await reloadProviderCatalog();
         notify.success("Connection deleted");
       } else {
         notify.error("Failed to delete connection");
@@ -689,8 +697,21 @@ export default function ProviderDetailPageClient() {
 
   const handleOAuthSuccess = async () => {
     await fetchConnections();
-    if (providerId === "codex" || providerId === "commandcode" || providerId === "a6api" || providerId === "xai") await reloadProviderCatalog();
+    if (usesConnectionCatalog) await reloadProviderCatalog();
     setShowOAuthModal(false);
+  };
+
+  const handleNativeSuccess = async (connectionId?: string) => {
+    await fetchConnections();
+    try {
+      if (connectionId) {
+        const response = await fetch(`/api/providers/${encodeURIComponent(connectionId)}/models`, { cache: "no-store" });
+        if (!response.ok) throw new Error("Native model refresh failed");
+      }
+    } finally {
+      await reloadProviderCatalog();
+      am.refresh();
+    }
   };
 
   const handleSaveApiKey = async (formData) => {
@@ -711,7 +732,7 @@ export default function ProviderDetailPageClient() {
 
       if (res.ok) {
         await fetchConnections();
-        if (providerId === "codex" || providerId === "commandcode" || providerId === "a6api" || providerId === "xai") await reloadProviderCatalog();
+        if (usesConnectionCatalog) await reloadProviderCatalog();
         setShowAddApiKeyModal(false);
         return;
       }
@@ -732,7 +753,7 @@ export default function ProviderDetailPageClient() {
       });
       if (res.ok) {
         await fetchConnections();
-        if (providerId === "codex" || providerId === "commandcode" || providerId === "a6api" || providerId === "xai") await reloadProviderCatalog();
+        if (usesConnectionCatalog) await reloadProviderCatalog();
         setShowEditModal(false);
       }
     } catch (error) {
@@ -749,7 +770,7 @@ export default function ProviderDetailPageClient() {
       });
       if (res.ok) {
         setConnections(prev => prev.map(c => c.id === id ? { ...c, isActive } : c));
-        if (providerId === "codex" || providerId === "commandcode" || providerId === "a6api" || providerId === "xai") {
+        if (usesConnectionCatalog) {
           if (providerId === "xai") await fetchConnections();
           await reloadProviderCatalog();
         }
@@ -1496,7 +1517,7 @@ export default function ProviderDetailPageClient() {
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-3">
                 <div className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-primary/10 text-primary shrink-0">
-                  <span className="material-symbols-outlined text-[18px]">{isOAuth ? "lock" : "key"}</span>
+                  <span className="material-symbols-outlined text-[18px]">{isNative ? "terminal" : isOAuth ? "lock" : "key"}</span>
                 </div>
                 <div className="min-w-0">
                   <p className="text-sm text-text-muted">No connections yet</p>
@@ -1529,7 +1550,7 @@ export default function ProviderDetailPageClient() {
                       icon="add"
                       onClick={triggerAddConnection}
                     >
-                      {isCompatible ? "Add API Key" : "Add Connection"}
+                      {isNative ? "Add Account" : isCompatible ? "Add API Key" : "Add Connection"}
                     </Button>
                   </>
                 )}
@@ -1609,7 +1630,7 @@ export default function ProviderDetailPageClient() {
                         onClick={triggerAddConnection}
                         className="w-full sm:w-auto"
                       >
-                        Add
+                        {isNative ? "Add Account" : "Add"}
                       </Button>
                     </>
                   )}
@@ -1702,7 +1723,9 @@ export default function ProviderDetailPageClient() {
       {bulkActionModal}
 
       {/* Modals */}
-      {providerId === "gitlab" ? (
+      {isNative && <ClaudeNativeLoginModal isOpen={showNativeLoginModal}
+        onSuccess={handleNativeSuccess} onClose={() => setShowNativeLoginModal(false)} />}
+      {isNative ? null : providerId === "gitlab" ? (
         <GitLabAuthModal
           isOpen={showOAuthModal}
           providerInfo={providerInfo}

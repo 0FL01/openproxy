@@ -176,14 +176,35 @@ impl ApiKeyExecutor {
         credentials: &ProviderConnection,
         stream: bool,
     ) -> Result<HeaderMap, ApiKeyExecutorError> {
+        if matches!(self.provider.as_str(), "claude" | "cc") {
+            return Err(ApiKeyExecutorError::UnsupportedProvider(
+                "Claude subscription retired; use claude-agent native login".into(),
+            ));
+        }
+        if self.provider == "claude-agent" {
+            return Err(ApiKeyExecutorError::UnsupportedProvider(
+                "Claude Agent requires the native v2 client adapter".into(),
+            ));
+        }
+        if self.provider == "anthropic"
+            && !matches!(credentials.auth_type.as_str(), "apikey" | "api_key")
+        {
+            return Err(ApiKeyExecutorError::UnsupportedProvider(
+                "Anthropic subscription OAuth retired; use an Anthropic API key".into(),
+            ));
+        }
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
-        let token = credentials
-            .api_key
-            .as_deref()
-            .or(credentials.access_token.as_deref())
-            .ok_or_else(|| ApiKeyExecutorError::MissingCredentials(self.provider.clone()))?;
+        let token = if self.provider == "anthropic" {
+            credentials.api_key.as_deref()
+        } else {
+            credentials
+                .api_key
+                .as_deref()
+                .or(credentials.access_token.as_deref())
+        }
+        .ok_or_else(|| ApiKeyExecutorError::MissingCredentials(self.provider.clone()))?;
 
         let header_name = reqwest::header::HeaderName::from_bytes(self.api_key_header.as_bytes())
             .map_err(|_| {

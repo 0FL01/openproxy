@@ -132,9 +132,9 @@ async fn chat_models_envelopes_v1_models() {
 async fn provider_oauth_status_envelopes() {
     let server = boot_server().await;
     Mock::given(method("GET"))
-        .and(path("/api/oauth/claude/status"))
+        .and(path("/api/oauth/codex/status"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "provider": "claude",
+            "provider": "codex",
             "status": "linked",
             "url": null,
             "expires_at": 1735689600u64,
@@ -144,7 +144,7 @@ async fn provider_oauth_status_envelopes() {
 
     let out = op(
         &server,
-        &["--robot", "provider", "oauth", "status", "claude"],
+        &["--robot", "provider", "oauth", "status", "codex"],
     );
     assert!(
         out.status.success(),
@@ -154,7 +154,7 @@ async fn provider_oauth_status_envelopes() {
     let env = parse_robot(&out.stdout);
     assert_eq!(env["schema"], "openproxy.v1.oauth.status");
     assert_eq!(env["data"]["status"], "linked");
-    assert_eq!(env["data"]["provider"], "claude");
+    assert_eq!(env["data"]["provider"], "codex");
 }
 
 #[tokio::test(flavor = "multi_thread")]

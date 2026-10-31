@@ -277,7 +277,7 @@ fn contract_freezes_preservation_and_removal_lists() {
     );
     assert_eq!(
         manifest["claude_quota_retrieval"]["owner"],
-        "passive_response_header_observation"
+        "retired_no_reader"
     );
     assert_eq!(
         manifest["claude_quota_retrieval"]["stale_success_returned_after_error"],
@@ -291,6 +291,43 @@ fn contract_freezes_preservation_and_removal_lists() {
         manifest["claude_quota_retrieval"]["dashboard_poll_interval_seconds"],
         60
     );
+    assert_eq!(manifest["retired_contracts"]["C46"]["status"], "retired");
+    assert_eq!(
+        manifest["retired_contracts"]["C46"]["dormant_fallback_allowed"],
+        false
+    );
+    assert_eq!(
+        manifest["retired_providers"]["claude"]["silent_conversion"],
+        false
+    );
+    assert_eq!(
+        manifest["claude_quota_retrieval"]["opencode_limits_route_serves_snapshot"],
+        false
+    );
+    let native = &manifest["claude_agent_native_exception"];
+    assert_eq!(native["transport_version"], 2);
+    assert_eq!(
+        native["authoritative_history_compaction_tools_permissions_owner"],
+        "client_harness"
+    );
+    for prohibited in [
+        "server_executes_general_client_tools",
+        "proxy_owned_subscription_http",
+        "proxy_owned_oauth_token_import_or_refresh",
+        "client_identity_spoofing",
+        "generic_default_executor_allowed",
+        "second_generation_retry_loop",
+        "content_auth_urls_codes_and_transcripts_logged",
+    ] {
+        assert_eq!(native[prohibited], false, "{prohibited}");
+    }
+    for required in [
+        "bounded_processes_queues_events",
+        "shutdown_and_cancellation_drain_children",
+        "login_credentials_remain_in_native_profile",
+    ] {
+        assert_eq!(native[required], true, "{required}");
+    }
     assert_eq!(
         manifest["provider_health_diagnostics"]["default_periodic_provider_probes"],
         false

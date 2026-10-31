@@ -1,7 +1,7 @@
 //! OAuth 2.0 flows implementation
 //!
 //! Supports:
-//! - PKCE Authorization Code Flow (claude, codex, gitlab)
+//! - PKCE Authorization Code Flow (codex, gitlab)
 //! - Device Code Flow (github, kimi-coding, kilocode, codebuddy)
 
 use base64::Engine;

@@ -145,77 +145,24 @@ impl QuotaSnapshots {
             }
             entry.limits.provider = clean_string(&connection.provider);
             entry.limits.label = format!("Account {index}");
-            // Claude/anthropic quota is passively observed from response
-            // headers on live generation traffic (see `quota_headers`) and
-            // persisted under `settings.extra["claudeQuotaSnapshot:<id>"]`.
-            // Mirror it here — the limits route serves it without ever
-            // spawning a usage-endpoint collector for these providers.
-            let passive_snapshot = if connection.auth_type == "oauth"
-                && matches!(connection.provider.as_str(), "claude" | "anthropic")
+            entry.limits.status = if !usage::supports_quota(connection) {
+                "unsupported"
+            } else if entry
+                .observed
+                .is_some_and(|time| now.duration_since(time) < Duration::from_secs(REFRESH_SECONDS))
             {
-                // Subscription tier (Pro / Max x5 / …) is captured at login
-                // from the profile payload the login already fetches — no
-                // extra upstream call — and lives in the connection
-                // settings. It renders beside the provider name regardless
-                // of whether a quota snapshot exists yet.
-                entry.limits.plan = connection
-                    .provider_specific_data
-                    .get("subscription")
-                    .and_then(Value::as_str)
-                    .map(clean_string)
-                    .filter(|plan| !plan.trim().is_empty());
-                snapshot
-                    .settings
-                    .extra
-                    .get(&format!("claudeQuotaSnapshot:{}", connection.id))
-                    .cloned()
-            } else {
-                None
-            };
-            if let Some(observed) = passive_snapshot {
-                let quotas = project_quotas(&observed, &connection.provider);
-                let observed_at = observed
-                    .get("observedAt")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                if quotas.as_object().is_some_and(|quotas| !quotas.is_empty()) {
-                    entry.limits.quotas = quotas;
-                    entry.limits.observed_at = observed_at;
-                    entry.limits.error = None;
-                    entry.limits.error_status = None;
-                    entry.limits.status = "fresh";
-                } else {
-                    // A snapshot without usable windows is no better than no
-                    // snapshot; keep waiting for live traffic.
-                    entry.limits.status = "loading";
-                }
-            } else {
-                entry.limits.status = if connection.auth_type == "oauth"
-                    && matches!(connection.provider.as_str(), "claude" | "anthropic")
-                {
-                    // No observed traffic yet: the snapshot appears after the
-                    // first request through the proxy. That is waiting, not
-                    // a failure — and never "unsupported", which would render
-                    // as "Limits unsupported" in clients.
-                    "loading"
-                } else if !usage::supports_quota(connection) {
-                    "unsupported"
-                } else if entry.observed.is_some_and(|time| {
-                    now.duration_since(time) < Duration::from_secs(REFRESH_SECONDS)
-                }) {
-                    if entry.limits.error.is_some() {
-                        "stale"
-                    } else {
-                        "fresh"
-                    }
-                } else if entry.observed.is_some() {
+                if entry.limits.error.is_some() {
                     "stale"
-                } else if entry.failures > 0 {
-                    "unavailable"
                 } else {
-                    "loading"
-                };
-            }
+                    "fresh"
+                }
+            } else if entry.observed.is_some() {
+                "stale"
+            } else if entry.failures > 0 {
+                "unavailable"
+            } else {
+                "loading"
+            };
         }
         // Oldest due accounts go first; a large configured set cannot starve
         // behind the same first four accounts on every read.
@@ -1137,29 +1084,21 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn claude_passive_snapshot_is_served_without_a_collector() {
+    async fn retired_claude_snapshot_is_preserved_but_not_served() {
         let (_directory, state, connection) =
             claude_state_with_plan(Some(passive_snapshot()), Some("Max x5")).await;
         let (accounts, _truncated) = state.quota_snapshots.read(&state);
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].provider, "claude");
-        assert_eq!(accounts[0].status, "fresh");
-        assert_eq!(accounts[0].plan.as_deref(), Some("Max x5"));
+        assert_eq!(accounts[0].status, "unsupported");
+        assert_eq!(accounts[0].plan, None);
+        assert_eq!(accounts[0].observed_at, None);
+        assert_eq!(accounts[0].quotas, json!({}));
         assert_eq!(
-            accounts[0].observed_at.as_deref(),
-            Some("2026-10-07T17:53:37Z")
+            state.db.snapshot().settings.extra["claudeQuotaSnapshot:claude-fixture"],
+            passive_snapshot()
         );
-        assert_eq!(accounts[0].quotas["session (5h)"]["used"], 0.0);
-        assert_eq!(accounts[0].quotas["weekly (7d)"]["used"], 22.0);
-        assert_eq!(
-            accounts[0].quotas["weekly (7d)"]["remainingPercentage"],
-            78.0
-        );
-        assert_eq!(
-            accounts[0].quotas["session (5h)"]["resetAt"],
-            "2026-10-07T22:50:00+00:00"
-        );
-        // Passive observation never spawns a usage-endpoint collector.
+        // The removed passive quota reader never starts a collector either.
         assert!(
             state.quota_snapshots.entries.lock().accounts[&connection.id]
                 .task
@@ -1174,11 +1113,11 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn claude_without_a_snapshot_waits_for_live_traffic() {
+    async fn retired_claude_without_snapshot_is_unsupported() {
         let (_directory, state, _connection) = claude_state(None).await;
         let (accounts, _truncated) = state.quota_snapshots.read(&state);
         assert_eq!(accounts.len(), 1);
-        assert_eq!(accounts[0].status, "loading");
+        assert_eq!(accounts[0].status, "unsupported");
         assert!(accounts[0]
             .quotas
             .as_object()
@@ -1196,7 +1135,7 @@ mod tests {
             .await
             .unwrap();
         let (accounts, _truncated) = state.quota_snapshots.read(&state);
-        assert_eq!(accounts[0].status, "loading");
+        assert_eq!(accounts[0].status, "unsupported");
         assert!(accounts[0]
             .quotas
             .as_object()
@@ -1205,13 +1144,15 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn claude_subscription_plan_renders_before_any_traffic() {
-        // The login-time profile tier must show up on the sidebar even when
-        // no quota snapshot exists yet — the plan does not depend on traffic.
+    async fn retired_claude_subscription_plan_is_inert() {
         let (_directory, state, _connection) = claude_state_with_plan(None, Some("Max x5")).await;
         let (accounts, _truncated) = state.quota_snapshots.read(&state);
-        assert_eq!(accounts[0].status, "loading");
-        assert_eq!(accounts[0].plan.as_deref(), Some("Max x5"));
+        assert_eq!(accounts[0].status, "unsupported");
+        assert_eq!(accounts[0].plan, None);
+        assert_eq!(
+            state.db.snapshot().provider_connections[0].provider_specific_data["subscription"],
+            "Max x5"
+        );
         state.signal_shutdown();
     }
 }

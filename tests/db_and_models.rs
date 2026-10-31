@@ -246,19 +246,19 @@ fn model_resolution_supports_aliases_and_nodes() {
     };
 
     let parsed = parse_model("cc/claude-opus-4-7");
-    assert_eq!(parsed.provider.as_deref(), Some("claude"));
+    assert_eq!(parsed.provider.as_deref(), Some("cc"));
     assert_eq!(parsed.provider_alias.as_deref(), Some("cc"));
 
     assert_eq!(resolve_provider_alias("kr"), "kiro");
     assert_eq!(resolve_provider_alias("custom"), "custom");
 
     let alias = resolve_model_alias_from_map("draft", &db.model_aliases).expect("resolve alias");
-    assert_eq!(alias.provider, "claude");
+    assert_eq!(alias.provider, "cc");
     assert_eq!(alias.model, "claude-sonnet-4-5");
 
     let routed_alias = get_model_info("draft", &db);
     assert_eq!(routed_alias.route_kind, ModelRouteKind::Direct);
-    assert_eq!(routed_alias.provider.as_deref(), Some("claude"));
+    assert_eq!(routed_alias.provider.as_deref(), Some("cc"));
     assert_eq!(routed_alias.model, "claude-sonnet-4-5");
 
     let compatible = get_model_info("custom/gpt-4.1", &db);
@@ -277,6 +277,6 @@ fn model_resolution_supports_aliases_and_nodes() {
     assert_eq!(empty.model, None);
 
     let missing_model = parse_model("cc/");
-    assert_eq!(missing_model.provider.as_deref(), Some("claude"));
+    assert_eq!(missing_model.provider.as_deref(), Some("cc"));
     assert_eq!(missing_model.model.as_deref(), Some(""));
 }

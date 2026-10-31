@@ -2,6 +2,7 @@ pub mod admin_items;
 pub mod admission;
 mod auth;
 pub mod chat;
+mod claude_agent;
 pub mod cloud_credentials;
 pub mod cloud_sync;
 pub mod codex_web_mcp;
@@ -161,6 +162,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
     // ── PROTECTED: valid API key required ──
     let protected = Router::new()
         .merge(llm)
+        .merge(claude_agent::generation_routes(state.clone()))
         .merge(v1_models::routes())
         .merge(usage::snapshot_routes())
         .nest(
@@ -181,6 +183,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
 
     // ── ADMIN: dashboard session or management API key required ──
     let admin = Router::new()
+        .merge(claude_agent::login_routes(state.clone()))
         .route("/api/build", get(api_build))
         .route("/api/catalog", get(api_catalog))
         // Credential management (admin-tier — dashboard or API key)
@@ -365,6 +368,30 @@ async fn api_catalog(State(state): State<AppState>) -> Response {
     }
 
     let db = state.db.snapshot();
+    if let Some(entries) = catalog
+        .get_mut("providerModels")
+        .and_then(Value::as_array_mut)
+    {
+        let models = db
+            .provider_connections
+            .iter()
+            .find(|connection| {
+                connection.provider == "claude-agent"
+                    && connection.auth_type == "external"
+                    && connection.is_active()
+            })
+            .map(crate::server::claude_agent::inventory)
+            .unwrap_or(&[])
+            .to_vec();
+        if let Some(entry) = entries
+            .iter_mut()
+            .find(|entry| entry["alias"] == "claude-agent")
+        {
+            entry["models"] = json!(models);
+        } else {
+            entries.push(json!({"alias":"claude-agent","models":models}));
+        }
+    }
     if let Some(entries) = catalog
         .get_mut("providerModels")
         .and_then(Value::as_array_mut)
@@ -891,6 +918,16 @@ async fn create_provider_api(
     }
 
     let provider = req.provider.trim();
+    if matches!(provider, "claude" | "cc") {
+        return (StatusCode::GONE, Json(json!({"error":"Claude subscription OAuth is retired; use native Claude Agent login"}))).into_response();
+    }
+    if provider == "claude-agent" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"Use native Claude Agent login to add this external connection"})),
+        )
+            .into_response();
+    }
     if provider.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -1693,8 +1730,11 @@ async fn update_settings_api(
             .into_response();
     }
     if let Some(limits) = &req.provider_context_limits {
+        let snapshot = state.db.snapshot();
         let invalid = limits.iter().find(|(provider, limit)| {
-            crate::core::context_limit::canonical_provider(provider).is_none()
+            (crate::core::context_limit::canonical_provider(provider).is_none()
+                && !(provider.as_str() == "claude"
+                    && snapshot.settings.provider_context_limits.get(*provider) == Some(*limit)))
                 || **limit == 0
                 || **limit > crate::core::context_limit::MAX_CONTEXT_LIMIT
         });
@@ -1703,7 +1743,7 @@ async fn update_settings_api(
                 StatusCode::BAD_REQUEST,
                 Json(json!({
                     "error": format!(
-                        "Invalid context limit for {provider}; supported providers are opencode-zen, opencode-go, glm, codex, claude and values must be 1..=1000000"
+                        "Invalid context limit for {provider}; supported providers are opencode-zen, opencode-go, glm, codex and values must be 1..=1000000; stored retired Claude values may only be preserved unchanged"
                     )
                 })),
             )

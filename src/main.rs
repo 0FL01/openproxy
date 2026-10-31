@@ -424,13 +424,34 @@ async fn main() -> anyhow::Result<()> {
         _ = shutdown_signal.notified() => {
             info!("Shutdown signal received — stopping server");
         }
+        _ = termination_signal() => {
+            info!("Termination signal received — stopping server");
+        }
     }
     // C22: stop admitting onboarding work and cancel/drain the bounded
     // per-connection lifecycle before the runtime is dropped.
     state.signal_shutdown();
     state.quota_auto_ping.shutdown().await;
     state.antigravity_onboarding.shutdown().await;
+    state.shutdown_claude_agent().await;
     Ok(())
+}
+
+async fn termination_signal() {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = terminate.recv() => {},
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 /// Refresh models.dev from one bounded process task. Generation requests never

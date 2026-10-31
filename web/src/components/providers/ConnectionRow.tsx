@@ -101,7 +101,8 @@ export default function ConnectionRow({
   const rowAuthType = (connection.authType || (isOAuth ? "oauth" : "apikey")).toLowerCase();
   const isRowOAuth = rowAuthType === "oauth" || rowAuthType === "device-code";
   const isRowCookie = rowAuthType === "cookie";
-  const authIcon = isRowOAuth ? "lock" : isRowCookie ? "cookie" : "key";
+  const isRowExternal = rowAuthType === "external";
+  const authIcon = isRowExternal ? "terminal" : isRowOAuth ? "lock" : isRowCookie ? "cookie" : "key";
 
   let maskedProxyUrl = "";
   if (boundProxyPool?.proxyUrl || connection.providerSpecificData?.connectionProxyUrl) {
@@ -152,7 +153,7 @@ export default function ConnectionRow({
     connection.name?.trim() ||
     connection.email?.trim() ||
     connection.displayName?.trim() ||
-    (isRowOAuth ? "OAuth Account" : isRowCookie ? "Cookie Account" : connection.id || "API Key");
+    (isRowExternal ? "Native Account" : isRowOAuth ? "OAuth Account" : isRowCookie ? "Cookie Account" : connection.id || "API Key");
   const secondaryDisplayName =
     connection.name?.trim() &&
     connection.email?.trim() &&

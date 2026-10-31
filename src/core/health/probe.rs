@@ -51,6 +51,14 @@ enum AuthDialect {
 /// Build the probe request for a connection, or `None` when the connection
 /// cannot be probed cheaply (unknown base URL or no API key).
 pub fn probe_target(connection: &ProviderConnection) -> Option<ProbeTarget> {
+    if matches!(
+        connection.provider.as_str(),
+        "claude" | "cc" | "claude-agent"
+    ) || (connection.provider == "anthropic"
+        && !matches!(connection.auth_type.as_str(), "apikey" | "api_key"))
+    {
+        return None;
+    }
     let api_key = api_key_for(connection)?;
     let base_url = base_url_for(connection)?;
     let dialect = auth_dialect(&connection.provider, &base_url);
@@ -140,7 +148,7 @@ fn auth_dialect(provider: &str, base_url: &str) -> AuthDialect {
     if base.contains("/anthropic") || base.ends_with("/messages") || base.contains("/v1/messages") {
         return AuthDialect::Anthropic;
     }
-    if provider.starts_with("anthropic") || provider == "claude" {
+    if provider.starts_with("anthropic") {
         return AuthDialect::Anthropic;
     }
     AuthDialect::Bearer

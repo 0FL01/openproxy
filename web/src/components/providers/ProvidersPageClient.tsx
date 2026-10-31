@@ -14,6 +14,7 @@ import ProviderIcon from "@/shared/components/ProviderIcon";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS } from "@/shared/constants/config";
 import {
   FREE_PROVIDERS,
+  EXTERNAL_PROVIDERS,
   FREE_TIER_PROVIDERS,
   WEB_COOKIE_PROVIDERS,
   OPENAI_COMPATIBLE_PREFIX,
@@ -442,6 +443,10 @@ export default function ProvidersPageClient() {
     ),
     "oauth",
   );
+  const externalEntries = filterFreeOnly ? [] : sortByPriority(
+    Object.entries(EXTERNAL_PROVIDERS).filter(([, info]) => !info.hidden && matchSearch(info.name)),
+    "external",
+  );
   const freeEntries = sortNoAuthFirst(
     Object.entries(FREE_PROVIDERS).filter(
       ([, info]) => !info.hidden && matchSearch(info.name),
@@ -507,6 +512,7 @@ export default function ProvidersPageClient() {
       ([, info]) => !info.hidden && matchSearch(info.name),
     ).length;
   const hasAnyResult =
+    externalEntries.length > 0 ||
     oauthEntries.length > 0 ||
     freeEntries.length > 0 ||
     freeTierEntries.length > 0 ||
@@ -584,6 +590,18 @@ export default function ProvidersPageClient() {
           </div>
         )}
       </div>
+      )}
+
+      {externalEntries.length > 0 && (
+        <section className="flex flex-col gap-4" aria-label="Native subscriptions">
+          <h2 className="text-lg sm:text-xl font-semibold">Native Subscriptions</h2>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4">
+            {externalEntries.map(([key, info]) => (
+              <ProviderCard key={key} providerId={key} provider={info} stats={getProviderStats(key, "external")}
+                authType="external" onToggle={(active) => handleToggleProvider(key, "external", active)} />
+            ))}
+          </div>
+        </section>
       )}
 
       {/* OAuth Providers */}
@@ -856,6 +874,7 @@ function ProviderCard({ providerId, provider, stats, authType, onToggle }) {
   const isNoAuth = !!provider.noAuth;
 
   const dotColors = {
+    external: "bg-violet-500",
     free: "bg-green-500",
     oauth: "bg-blue-500",
     apikey: "bg-amber-500",
@@ -863,6 +882,7 @@ function ProviderCard({ providerId, provider, stats, authType, onToggle }) {
     compatible: "bg-orange-500",
   };
   const dotLabels = {
+    external: "Native",
     free: "Free",
     oauth: "OAuth",
     apikey: "API Key",

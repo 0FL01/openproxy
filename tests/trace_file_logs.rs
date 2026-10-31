@@ -49,17 +49,17 @@ async fn claude_test_db(upstream: &MockUpstream) -> Arc<TempTestDb> {
         .update(|db| {
             db.api_keys = vec![test_api_key()];
             db.provider_nodes = vec![ProviderNode {
-                id: "claude".into(),
+                id: "anthropic".into(),
                 r#type: "anthropic-compatible".into(),
                 name: "Claude surfacing upstream".into(),
-                prefix: Some("claude".into()),
+                prefix: Some("anthropic".into()),
                 api_type: Some("messages".into()),
                 base_url: Some(upstream.url("/v1")),
                 ..Default::default()
             }];
             db.provider_connections = vec![ProviderConnection {
                 id: "claude-surfacing-account".into(),
-                provider: "claude".into(),
+                provider: "anthropic".into(),
                 auth_type: "apikey".into(),
                 is_active: Some(true),
                 priority: Some(1),
@@ -158,10 +158,9 @@ impl BinaryServer {
             .client
             .post(format!("{}/v1/responses", self.base_url))
             .bearer_auth("test-key")
-            .header("x-openproxy-claude-mask", "1")
             .header("x-trace-fixture-private", HEADER_MARKER)
             .json(&json!({
-                "model": "claude/claude-opus-5-5",
+                "model": "anthropic/claude-opus-5-5",
                 "input": [{"type":"message","role":"user","content":[{"type":"input_text","text":PROMPT_MARKER}]}],
                 "stream": true
             }))
@@ -426,7 +425,7 @@ fn assert_claude_file_trace(bytes: &[u8], expected_streams: usize) {
             }
         }
         assert_eq!(pair[0]["fields"]["message"], "stream_start");
-        assert_eq!(pair[0]["fields"]["provider"], "claude");
+        assert_eq!(pair[0]["fields"]["provider"], "anthropic");
         assert_eq!(pair[0]["fields"]["model"], "claude-opus-5-5");
         assert_eq!(pair[1]["fields"]["message"], "stream_end");
         assert_eq!(pair[1]["fields"]["reason"], "eof");
@@ -460,7 +459,7 @@ async fn assert_successful_attempts(server: &BinaryServer, expected: usize) {
         "one requestDetails row per provider attempt"
     );
     for row in rows {
-        assert_eq!(row.provider.as_deref(), Some("claude"));
+        assert_eq!(row.provider.as_deref(), Some("anthropic"));
         assert_eq!(row.model.as_deref(), Some("claude-opus-5-5"));
         assert_eq!(
             row.connection_id.as_deref(),
@@ -691,7 +690,7 @@ fn scoped_file_layer_accepts_exact_trace_target_for_claude_and_codex_without_spa
     tracing::subscriber::with_default(subscriber, || {
         let span = tracing::trace_span!(target: "openproxy::chat::stream", "fixture-span-private", authorization = "fixture-span-private");
         let _entered = span.enter();
-        for provider in ["claude", "codex"] {
+        for provider in ["anthropic", "codex"] {
             assert!(tracing::enabled!(target: "openproxy::chat::stream", tracing::Level::TRACE));
             tracing::trace!(target: "openproxy::chat::stream", provider, "stream_start");
             tracing::trace!(target: "openproxy::chat::stream", provider, "stream_end");
@@ -720,8 +719,8 @@ fn scoped_file_layer_accepts_exact_trace_target_for_claude_and_codex_without_spa
         "only exact-target TRACE events are accepted"
     );
     for (event, (provider, message)) in events.iter().zip([
-        ("claude", "stream_start"),
-        ("claude", "stream_end"),
+        ("anthropic", "stream_start"),
+        ("anthropic", "stream_end"),
         ("codex", "stream_start"),
         ("codex", "stream_end"),
     ]) {

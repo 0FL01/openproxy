@@ -56,9 +56,9 @@ pub use codex_search::{
     CODEX_STANDALONE_SEARCH_URL,
 };
 pub use default::{
-    provider_config_base_url, select_anthropic_beta, DefaultExecutor, ExecutionRequest,
-    ExecutionResponse, ExecutorError, PreparedUpstreamBody, ProviderConfig, TransportKind,
-    UpstreamResponse, MAX_PREPARED_UPSTREAM_BODY_BYTES,
+    provider_config_base_url, DefaultExecutor, ExecutionRequest, ExecutionResponse, ExecutorError,
+    PreparedUpstreamBody, ProviderConfig, TransportKind, UpstreamResponse,
+    MAX_PREPARED_UPSTREAM_BODY_BYTES,
 };
 pub use devin_cli::{DevinCliExecutor, DevinExecutionRequest, DevinExecutorResponse};
 pub use github::{

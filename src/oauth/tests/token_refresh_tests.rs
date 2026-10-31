@@ -1,4 +1,4 @@
-//! Tests for token refresh wire retries, REFRESH_LEAD_MS per provider, Claude
+//! Tests for token refresh wire retries, REFRESH_LEAD_MS per provider, retired Claude
 //! refresh body format, and GitHub Copilot token poll.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -100,9 +100,13 @@ fn test_refresh_lead_codex_is_5_days() {
 }
 
 #[test]
-fn test_refresh_lead_claude_is_4_hours() {
-    let lead = crate::core::config::app_constants::refresh_lead("claude");
-    assert_eq!(lead, Some(Duration::from_secs(4 * 60 * 60)));
+fn retired_claude_has_no_proactive_refresh_window() {
+    for provider in ["claude", "cc", "anthropic", "claude-agent"] {
+        assert_eq!(
+            crate::core::config::app_constants::refresh_lead(provider),
+            None
+        );
+    }
 }
 
 #[test]
@@ -165,12 +169,6 @@ fn codex_refresh_uses_age_only_without_jwt_expiry() {
     );
     assert!(crate::oauth::token_refresh::codex_refresh_due(&connection));
 }
-
-// ─── Claude refresh body format = JSON ───────────────────────────────────
-// Claude refresh wire body is pinned by the wiremock tripwire in
-// tests/oauth_claude_refresh_wire.rs (exact JSON body, no scope — RFC
-// 6749 §6 optional, live-verified). The old structural test here never
-// called production code and asserted a fictional body.
 
 // ─── GitHub Copilot token poll ───────────────────────────────────────────
 // exchange_github_copilot_token posts to github.com/copilot_internal/v1/token.
@@ -258,35 +256,17 @@ fn test_expires_at_from_seconds_is_rfc3339() {
     );
 }
 
-// ─── R6: permanent refresh-rejection classification (C46) ────────────────
-
-#[test]
-fn test_claude_permanent_refresh_rejection_classification() {
-    use crate::oauth::token_refresh::{
-        is_permanent_oauth_refresh_rejection, oauth_refresh_error_code,
-    };
-
-    assert_eq!(
-        oauth_refresh_error_code("Refresh request returned HTTP 400: invalid_grant"),
-        Some("invalid_grant")
-    );
-    assert_eq!(oauth_refresh_error_code("transport failure"), None);
-    assert!(is_permanent_oauth_refresh_rejection(
-        "Refresh request returned HTTP 400: invalid_grant"
-    ));
-    assert!(is_permanent_oauth_refresh_rejection(
-        "x: refresh_token_expired"
-    ));
-    assert!(is_permanent_oauth_refresh_rejection(
-        "x: refresh_token_invalidated"
-    ));
-    assert!(!is_permanent_oauth_refresh_rejection(
-        "Claude refresh request failed: connection reset"
-    ));
-    assert!(!is_permanent_oauth_refresh_rejection(
-        "Refresh request returned HTTP 500"
-    ));
-    assert!(!is_permanent_oauth_refresh_rejection(
-        "Refresh request returned HTTP 429: slow_down"
-    ));
+#[tokio::test]
+async fn retired_claude_refresh_dispatch_fails_without_token_io() {
+    for provider in ["claude", "cc", "anthropic", "claude-agent"] {
+        let error = crate::oauth::token_refresh::dispatch_oauth_refresh(
+            provider,
+            "sentinel-legacy-token",
+            &Default::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("retired"));
+        assert!(!error.contains("sentinel-legacy-token"));
+    }
 }

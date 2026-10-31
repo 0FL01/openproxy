@@ -2284,7 +2284,10 @@
     {
       "id": "C46",
       "title": "Claude subscription harness identity carve-out",
-      "status": "active",
+      "status": "retired",
+      "retired_at": "2026-10-31",
+      "superseded_by": "docs/goals/2026-10-31-claude-agent-native.md",
+      "retirement_contract": "Old claude/cc OAuth/import/refresh, synthetic Claude Code headers/system/tool aliases, mask discovery/inference gates and passive quota are removed. Saved records/settings round-trip unchanged but remain inert. Anthropic API-key and shared Messages/compatible-node behavior remain. New claude-agent uses dedicated v2 SDK/session/MCP transport; native transcript/checkpoint state is provider-scoped, while client history/compaction/tools/permissions remain client-owned. No second generation retry loop or token handling is introduced.",
       "depends_on": [
         "C09",
         "C45"

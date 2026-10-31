@@ -106,40 +106,6 @@ fn strip_forwarding_headers(headers: &mut HeaderMap) {
 /// Anthropic every ~60s, Gemini every ~30s — 180s is well past any of them).
 const SSE_STALL_TIMEOUT: Duration = Duration::from_secs(180);
 
-/// Persist a passively observed Claude quota snapshot for a connection.
-///
-/// Stored under `settings.extra["claudeQuotaSnapshot:<connectionId>"]` and
-/// read by the usage endpoint as the claude quota source (no upstream call).
-/// Fire-and-forget on the generation path: a persistence failure is logged
-/// and otherwise ignored — quota display must never affect generation.
-async fn observe_claude_quota_snapshot(
-    state: &AppState,
-    connection: &ProviderConnection,
-    snapshot: Value,
-) {
-    let key = format!("claudeQuotaSnapshot:{}", connection.id);
-    let was_new = {
-        let current = state.db.snapshot();
-        let unchanged = current.settings.extra.get(&key).is_some_and(|existing| {
-            // Skip the write when only the observation timestamp moved.
-            existing.get("quotas") == snapshot.get("quotas")
-        });
-        !unchanged
-    };
-    if !was_new {
-        return;
-    }
-    let db = state.db.clone();
-    let result = db
-        .update_settings(move |settings| {
-            settings.extra.insert(key, snapshot);
-        })
-        .await;
-    if let Err(error) = result {
-        tracing::debug!("claude quota snapshot persist failed: {error}");
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 pub(super) struct RoutedResponseFormats {
     pub client: Format,
@@ -492,19 +458,16 @@ async fn chat_completions_impl(
         return json_error_response(StatusCode::GONE, "provider retired");
     }
 
-    // Claude/Anthropic subscription accounts only serve traffic that already
-    // presents itself as Claude Code: either a genuine claude-cli client or
-    // an OpenCode client running the openproxy-claude-mask plugin (which
-    // pins the UA and sends the marker header). Unmasked clients must not
-    // burn OAuth quota with harness fingerprints scanners flag.
-    if matches!(
-        resolved.provider.as_deref(),
-        Some("claude") | Some("anthropic")
-    ) && !claude_mask_client_allowed(&headers)
-    {
+    if matches!(resolved.provider.as_deref(), Some("claude" | "cc")) {
         return json_error_response(
-            StatusCode::FORBIDDEN,
-            "claude models require the OpenCode mask plugin (openproxy-claude-mask.js) or a claude-cli client",
+            StatusCode::GONE,
+            "Claude subscription provider retired; use claude-agent native login",
+        );
+    }
+    if resolved.provider.as_deref() == Some("claude-agent") {
+        return json_error_response(
+            StatusCode::BAD_REQUEST,
+            "Claude Agent requires the native v2 client adapter",
         );
     }
 
@@ -1016,11 +979,19 @@ async fn forward_with_provider_fallback(
     client_tool: Option<ClientTool>,
     client_headers: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<Response, ProviderAttemptError> {
+    if matches!(provider, "claude" | "cc" | "claude-agent") {
+        return Err(ProviderAttemptError {
+            status: if provider == "claude-agent" { 400 } else { 410 },
+            message: if provider == "claude-agent" {
+                "Claude Agent requires the native v2 client adapter".into()
+            } else {
+                "Claude subscription provider retired; use claude-agent native login".into()
+            },
+            retry_after: None,
+            upstream_body: None,
+        });
+    }
     let mut excluded = HashSet::new();
-    // C46 reverse tool-name map (Claude Code → client), set when the
-    // harness spoof renamed tool declarations; threaded to the streaming
-    // response path so tool_calls return under the client's names.
-    let mut harness_tool_name_map: Option<serde_json::Map<String, serde_json::Value>> = None;
     let mut last_error: Option<ProviderAttemptError> = None;
     let mut reloaded = false;
     let mut auth_recovery_used = false;
@@ -1028,31 +999,6 @@ async fn forward_with_provider_fallback(
     // fields below are normalized. DefaultExecutor transforms and serializes it
     // once, then shares the bounded bytes across eligible account attempts.
     let mut default_prepared_body: Option<PreparedUpstreamBody> = None;
-    // C46 harness session: one per chat request, shared by all attempts.
-    // Deterministic per (api key, UTC date) — live CC keeps one session id
-    // for a whole CLI run (census: 3 unique ids across 628 requests); a
-    // fresh UUID per request was itself a fingerprint. Prompt-id is stable
-    // per hour (live: one per agent task, reused up to 167 requests), and
-    // client-request-id is unique per chat request like the live CLI.
-    // Without an authenticated key (require_api_key=false) each id falls
-    // back to a fresh v4 UUID — the pre-change behavior.
-    let harness_key_id =
-        log_context.map(crate::server::application_logs::RequestLogContext::api_key_id);
-    let claude_harness_session = match &harness_key_id {
-        Some(key_id) => derive_harness_uuid(&format!(
-            "openproxy:claude-harness:session:{key_id}:{}",
-            chrono::Utc::now().format("%Y-%m-%d")
-        )),
-        None => uuid::Uuid::new_v4().to_string(),
-    };
-    let claude_harness_prompt_id = match &harness_key_id {
-        Some(key_id) => derive_harness_uuid(&format!(
-            "openproxy:claude-harness:prompt:{key_id}:{}",
-            chrono::Utc::now().format("%Y-%m-%dT%H")
-        )),
-        None => uuid::Uuid::new_v4().to_string(),
-    };
-    let claude_harness_request_id = uuid::Uuid::new_v4().to_string();
     let codex_supporters = if provider == "codex" {
         Some(codex_supporters_after_cold_wait(state, model).await?)
     } else {
@@ -1120,9 +1066,18 @@ async fn forward_with_provider_fallback(
                 }
             }
 
+            let retired_anthropic = provider == "anthropic"
+                && snapshot.provider_connections.iter().any(|connection| {
+                    connection.provider == "anthropic"
+                        && !matches!(connection.auth_type.as_str(), "apikey" | "api_key")
+                });
             return Err(ProviderAttemptError {
-                status: 400,
-                message: format!("No credentials for provider: {provider}"),
+                status: if retired_anthropic { 410 } else { 400 },
+                message: if retired_anthropic {
+                    "No Anthropic API-key credentials; subscription OAuth retired".into()
+                } else {
+                    format!("No credentials for provider: {provider}")
+                },
                 retry_after: None,
                 upstream_body: None,
             });
@@ -1209,554 +1164,468 @@ async fn forward_with_provider_fallback(
             .map(AttemptLog::tps)
             .unwrap_or_default();
         exclude_synthetic_tps(provider, &tps);
-        let executor_result: Result<ProviderExecutionResponse, ProviderAttemptError> = tps.timing().scope(async {
-            if provider == "vertex" || provider == "vertex-partner" || provider == "vxp" {
-                let executor = VertexExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("Vertex executor creation failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                let result = executor
-                    .execute_request(VertexExecutionRequest {
-                        model: model.to_string(),
-                        body: request_body.clone(),
-                        stream,
-                        credentials: connection.clone(),
-                        proxy,
-                    })
-                    .await
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("Vertex execution failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                Ok(ProviderExecutionResponse {
-                    response: result.response,
-                    url: result.url,
-                    headers: result.headers,
-                    transport: result.transport,
-                })
-            } else if is_codex_model {
-                let executor = CodexExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("Codex executor creation failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                let result = executor
-                    .execute_prefetched(
-                        CodexExecutionRequest {
+        let executor_result: Result<ProviderExecutionResponse, ProviderAttemptError> = tps
+            .timing()
+            .scope(async {
+                if provider == "vertex" || provider == "vertex-partner" || provider == "vxp" {
+                    let executor = VertexExecutor::new(state.client_pool.clone(), provider_node)
+                        .map_err(|e| ProviderAttemptError {
+                            status: 500,
+                            message: format!("Vertex executor creation failed: {:?}", e),
+                            retry_after: None,
+                            upstream_body: None,
+                        })?;
+                    let result = executor
+                        .execute_request(VertexExecutionRequest {
                             model: model.to_string(),
                             body: request_body.clone(),
                             stream,
                             credentials: connection.clone(),
                             proxy,
-                        },
-                        attempt_log.as_ref().map(AttemptLog::codex_cache),
-                    )
-                    .await
-                    .map_err(|e| {
-                        let status = match &e {
+                        })
+                        .await
+                        .map_err(|e| ProviderAttemptError {
+                            status: 500,
+                            message: format!("Vertex execution failed: {:?}", e),
+                            retry_after: None,
+                            upstream_body: None,
+                        })?;
+                    Ok(ProviderExecutionResponse {
+                        response: result.response,
+                        url: result.url,
+                        headers: result.headers,
+                        transport: result.transport,
+                    })
+                } else if is_codex_model {
+                    let executor = CodexExecutor::new(state.client_pool.clone(), provider_node)
+                        .map_err(|e| ProviderAttemptError {
+                            status: 500,
+                            message: format!("Codex executor creation failed: {:?}", e),
+                            retry_after: None,
+                            upstream_body: None,
+                        })?;
+                    let result =
+                        executor
+                            .execute_prefetched(
+                                CodexExecutionRequest {
+                                    model: model.to_string(),
+                                    body: request_body.clone(),
+                                    stream,
+                                    credentials: connection.clone(),
+                                    proxy,
+                                },
+                                attempt_log.as_ref().map(AttemptLog::codex_cache),
+                            )
+                            .await
+                            .map_err(|e| {
+                                let status = match &e {
                             crate::core::executor::CodexExecutorError::ImagePrefetch(error) => {
                                 error.http_status()
                             }
                             crate::core::executor::CodexExecutorError::UnsupportedFormat(_) => 400,
                             _ => 500,
                         };
-                        ProviderAttemptError {
-                            status,
-                            message: format!("Codex execution failed: {:?}", e),
+                                ProviderAttemptError {
+                                    status,
+                                    message: format!("Codex execution failed: {:?}", e),
+                                    retry_after: None,
+                                    upstream_body: None,
+                                }
+                            })?;
+                    Ok(ProviderExecutionResponse {
+                        response: result.response,
+                        url: result.url,
+                        headers: result.headers,
+                        transport: result.transport,
+                    })
+                } else if provider == "github" {
+                    let executor = GithubExecutor::new(state.client_pool.clone(), provider_node)
+                        .map_err(|e| ProviderAttemptError {
+                            status: 500,
+                            message: format!("Github executor creation failed: {:?}", e),
                             retry_after: None,
                             upstream_body: None,
-                        }
-                    })?;
-                Ok(ProviderExecutionResponse {
-                    response: result.response,
-                    url: result.url,
-                    headers: result.headers,
-                    transport: result.transport,
-                })
-            } else if provider == "github" {
-                let executor = GithubExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("Github executor creation failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                let result = executor
-                    .execute_request(GithubExecutionRequest {
-                        model: model.to_string(),
-                        body: request_body.clone(),
-                        stream,
-                        credentials: connection.clone(),
-                        proxy,
+                        })?;
+                    let result = executor
+                        .execute_request(GithubExecutionRequest {
+                            model: model.to_string(),
+                            body: request_body.clone(),
+                            stream,
+                            credentials: connection.clone(),
+                            proxy,
+                        })
+                        .await
+                        .map_err(|e| ProviderAttemptError {
+                            status: 500,
+                            message: format!("Github execution failed: {:?}", e),
+                            retry_after: None,
+                            upstream_body: None,
+                        })?;
+                    Ok(ProviderExecutionResponse {
+                        response: result.response,
+                        url: result.url,
+                        headers: result.headers,
+                        transport: result.transport,
                     })
-                    .await
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("Github execution failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                Ok(ProviderExecutionResponse {
-                    response: result.response,
-                    url: result.url,
-                    headers: result.headers,
-                    transport: result.transport,
-                })
-            } else if provider == "azure" {
-                let executor = AzureExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("Azure executor creation failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                let result = executor
-                    .execute_request(AzureExecutionRequest {
-                        model: model.to_string(),
-                        body: request_body.clone(),
-                        stream,
-                        credentials: connection.clone(),
-                        proxy,
+                } else if provider == "azure" {
+                    let executor = AzureExecutor::new(state.client_pool.clone(), provider_node)
+                        .map_err(|e| ProviderAttemptError {
+                            status: 500,
+                            message: format!("Azure executor creation failed: {:?}", e),
+                            retry_after: None,
+                            upstream_body: None,
+                        })?;
+                    let result = executor
+                        .execute_request(AzureExecutionRequest {
+                            model: model.to_string(),
+                            body: request_body.clone(),
+                            stream,
+                            credentials: connection.clone(),
+                            proxy,
+                        })
+                        .await
+                        .map_err(|e| ProviderAttemptError {
+                            status: 500,
+                            message: format!("Azure execution failed: {:?}", e),
+                            retry_after: None,
+                            upstream_body: None,
+                        })?;
+                    Ok(ProviderExecutionResponse {
+                        response: result.response,
+                        url: result.url,
+                        headers: result.headers,
+                        transport: result.transport,
                     })
-                    .await
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("Azure execution failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                Ok(ProviderExecutionResponse {
-                    response: result.response,
-                    url: result.url,
-                    headers: result.headers,
-                    transport: result.transport,
-                })
-            } else if let Some(tier) = OpenCodeTier::from_provider(provider) {
-                let executor = OpenCodeExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("OpenCode executor creation failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                let result = executor
-                    .execute_request(OpenCodeExecutionRequest {
-                        model: model.to_string(),
-                        body: request_body.clone(),
-                        stream,
-                        credentials: connection.clone(),
-                        proxy,
-                        raw_headers: client_headers
-                            .into_iter()
-                            .flatten()
-                            .map(|(key, value)| (key.clone(), value.clone()))
-                            .collect(),
-                        tier,
-                        format: plan.target_format,
-                        family: plan.model_family.clone(),
+                } else if let Some(tier) = OpenCodeTier::from_provider(provider) {
+                    let executor = OpenCodeExecutor::new(state.client_pool.clone(), provider_node)
+                        .map_err(|e| ProviderAttemptError {
+                            status: 500,
+                            message: format!("OpenCode executor creation failed: {:?}", e),
+                            retry_after: None,
+                            upstream_body: None,
+                        })?;
+                    let result = executor
+                        .execute_request(OpenCodeExecutionRequest {
+                            model: model.to_string(),
+                            body: request_body.clone(),
+                            stream,
+                            credentials: connection.clone(),
+                            proxy,
+                            raw_headers: client_headers
+                                .into_iter()
+                                .flatten()
+                                .map(|(key, value)| (key.clone(), value.clone()))
+                                .collect(),
+                            tier,
+                            format: plan.target_format,
+                            family: plan.model_family.clone(),
+                        })
+                        .await
+                        .map_err(|e| ProviderAttemptError {
+                            status: 500,
+                            message: format!("OpenCode execution failed: {:?}", e),
+                            retry_after: None,
+                            upstream_body: None,
+                        })?;
+                    Ok(ProviderExecutionResponse {
+                        response: result.response,
+                        url: result.url,
+                        headers: result.headers,
+                        transport: result.transport,
                     })
-                    .await
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("OpenCode execution failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                Ok(ProviderExecutionResponse {
-                    response: result.response,
-                    url: result.url,
-                    headers: result.headers,
-                    transport: result.transport,
-                })
-            } else if provider == "antigravity" {
-                let executor = AntigravityExecutor::new(state.client_pool.clone(), provider_node)
-                    .map_err(|e| ProviderAttemptError {
-                    status: 500,
-                    message: format!("Antigravity executor creation failed: {:?}", e),
-                    retry_after: None,
-                    upstream_body: None,
-                })?;
-                let result = executor
-                    .execute_request(AntigravityExecutionRequest {
-                        model: model.to_string(),
-                        body: request_body.clone(),
-                        stream,
-                        credentials: connection.clone(),
-                        proxy,
+                } else if provider == "antigravity" {
+                    let executor =
+                        AntigravityExecutor::new(state.client_pool.clone(), provider_node)
+                            .map_err(|e| ProviderAttemptError {
+                                status: 500,
+                                message: format!("Antigravity executor creation failed: {:?}", e),
+                                retry_after: None,
+                                upstream_body: None,
+                            })?;
+                    let result = executor
+                        .execute_request(AntigravityExecutionRequest {
+                            model: model.to_string(),
+                            body: request_body.clone(),
+                            stream,
+                            credentials: connection.clone(),
+                            proxy,
+                        })
+                        .await
+                        .map_err(|e| ProviderAttemptError {
+                            status: 500,
+                            message: format!("Antigravity execution failed: {:?}", e),
+                            retry_after: None,
+                            upstream_body: None,
+                        })?;
+                    Ok(ProviderExecutionResponse {
+                        response: result.response,
+                        url: result.url,
+                        headers: result.headers,
+                        transport: result.transport,
                     })
-                    .await
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("Antigravity execution failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                Ok(ProviderExecutionResponse {
-                    response: result.response,
-                    url: result.url,
-                    headers: result.headers,
-                    transport: result.transport,
-                })
-            } else if provider == "zed" {
-                use crate::core::executor::{ZedExecutionRequest, ZedExecutor};
-                let executor = ZedExecutor::new(state.client_pool.clone())
-                    .unwrap_or_else(|e: std::convert::Infallible| match e {});
-                let result = executor
-                    .execute_request(ZedExecutionRequest {
-                        model: model.to_string(),
-                        body: request_body.clone(),
-                        stream,
-                        credentials: connection.clone(),
-                        proxy,
+                } else if provider == "zed" {
+                    use crate::core::executor::{ZedExecutionRequest, ZedExecutor};
+                    let executor = ZedExecutor::new(state.client_pool.clone())
+                        .unwrap_or_else(|e: std::convert::Infallible| match e {});
+                    let result = executor
+                        .execute_request(ZedExecutionRequest {
+                            model: model.to_string(),
+                            body: request_body.clone(),
+                            stream,
+                            credentials: connection.clone(),
+                            proxy,
+                        })
+                        .await
+                        .map_err(|e| ProviderAttemptError {
+                            status: 500,
+                            message: format!("Zed execution failed: {}", e),
+                            retry_after: None,
+                            upstream_body: None,
+                        })?;
+                    Ok(ProviderExecutionResponse {
+                        response: result.response,
+                        url: result.url,
+                        headers: result.headers,
+                        transport: result.transport,
                     })
-                    .await
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("Zed execution failed: {}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                Ok(ProviderExecutionResponse {
-                    response: result.response,
-                    url: result.url,
-                    headers: result.headers,
-                    transport: result.transport,
-                })
-            } else if provider == "trae" {
-                let executor = TraeExecutor::new(state.client_pool.clone());
-                let result = executor
-                    .execute_request(TraeExecutionRequest {
-                        model: model.to_string(),
-                        body: request_body.clone(),
-                        stream,
-                        credentials: connection.clone(),
-                        proxy,
+                } else if provider == "trae" {
+                    let executor = TraeExecutor::new(state.client_pool.clone());
+                    let result = executor
+                        .execute_request(TraeExecutionRequest {
+                            model: model.to_string(),
+                            body: request_body.clone(),
+                            stream,
+                            credentials: connection.clone(),
+                            proxy,
+                        })
+                        .await
+                        .map_err(|e| ProviderAttemptError {
+                            status: 500,
+                            message: format!("Trae execution failed: {:?}", e),
+                            retry_after: None,
+                            upstream_body: None,
+                        })?;
+                    Ok(ProviderExecutionResponse {
+                        response: result.response,
+                        url: result.url,
+                        headers: result.headers,
+                        transport: result.transport,
                     })
-                    .await
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("Trae execution failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                Ok(ProviderExecutionResponse {
-                    response: result.response,
-                    url: result.url,
-                    headers: result.headers,
-                    transport: result.transport,
-                })
-            } else if provider == "devin-cli" || provider == "dv" {
-                // ACP stdio executor — spawns `devin acp` (noAuth; the CLI
-                // carries its own credentials) and bridges session/update
-                // notifications to OpenAI SSE.
-                let executor = DevinCliExecutor::new(state.client_pool.clone()).map_err(|e| {
-                    ProviderAttemptError {
-                        status: 500,
-                        message: format!("Devin executor init failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    }
-                })?;
-                let result = executor
-                    .execute_request(DevinExecutionRequest {
-                        model: model.to_string(),
-                        body: request_body.clone(),
-                        stream,
+                } else if provider == "devin-cli" || provider == "dv" {
+                    // ACP stdio executor — spawns `devin acp` (noAuth; the CLI
+                    // carries its own credentials) and bridges session/update
+                    // notifications to OpenAI SSE.
+                    let executor =
+                        DevinCliExecutor::new(state.client_pool.clone()).map_err(|e| {
+                            ProviderAttemptError {
+                                status: 500,
+                                message: format!("Devin executor init failed: {:?}", e),
+                                retry_after: None,
+                                upstream_body: None,
+                            }
+                        })?;
+                    let result = executor
+                        .execute_request(DevinExecutionRequest {
+                            model: model.to_string(),
+                            body: request_body.clone(),
+                            stream,
+                        })
+                        .await
+                        .map_err(|e| ProviderAttemptError {
+                            status: 500,
+                            message: format!("Devin execution failed: {}", e),
+                            retry_after: None,
+                            upstream_body: None,
+                        })?;
+                    Ok(ProviderExecutionResponse {
+                        response: result.response,
+                        url: result.url.clone(),
+                        headers: HeaderMap::new(),
+                        transport: result.transport,
                     })
-                    .await
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("Devin execution failed: {}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                Ok(ProviderExecutionResponse {
-                    response: result.response,
-                    url: result.url.clone(),
-                    headers: HeaderMap::new(),
-                    transport: result.transport,
-                })
-            } else if provider == "kimchi" {
-                let executor = KimchiExecutor::new(state.client_pool.clone(), provider_node);
-                let result = executor
-                    .execute(ProviderExecutionRequest {
-                        model: model.to_string(),
-                        body: request_body.clone(),
-                        stream,
-                        credentials: connection.clone(),
-                        proxy,
-                        signal: None,
-                        log: None,
-                        proxy_options: None,
+                } else if provider == "kimchi" {
+                    let executor = KimchiExecutor::new(state.client_pool.clone(), provider_node);
+                    let result = executor
+                        .execute(ProviderExecutionRequest {
+                            model: model.to_string(),
+                            body: request_body.clone(),
+                            stream,
+                            credentials: connection.clone(),
+                            proxy,
+                            signal: None,
+                            log: None,
+                            proxy_options: None,
+                        })
+                        .await
+                        .map_err(|e| ProviderAttemptError {
+                            status: 500,
+                            message: format!("Kimchi execution failed: {:?}", e),
+                            retry_after: None,
+                            upstream_body: None,
+                        })?;
+                    Ok(ProviderExecutionResponse {
+                        response: result.response,
+                        url: result.url,
+                        headers: result.headers,
+                        transport: result.transport,
                     })
-                    .await
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("Kimchi execution failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                Ok(ProviderExecutionResponse {
-                    response: result.response,
-                    url: result.url,
-                    headers: result.headers,
-                    transport: result.transport,
-                })
-            } else if provider == "codebuddy-cn" || provider == "cbcn" {
-                use crate::core::executor::CodeBuddyCNExecutor;
-                let executor =
-                    CodeBuddyCNExecutor::new(state.client_pool.clone(), provider_node.clone());
-                let result = executor
-                    .execute(ProviderExecutionRequest {
-                        model: model.to_string(),
-                        body: request_body.clone(),
-                        stream: true, // force stream (9router)
-                        credentials: connection.clone(),
-                        proxy,
-                        signal: None,
-                        log: None,
-                        proxy_options: None,
+                } else if provider == "codebuddy-cn" || provider == "cbcn" {
+                    use crate::core::executor::CodeBuddyCNExecutor;
+                    let executor =
+                        CodeBuddyCNExecutor::new(state.client_pool.clone(), provider_node.clone());
+                    let result = executor
+                        .execute(ProviderExecutionRequest {
+                            model: model.to_string(),
+                            body: request_body.clone(),
+                            stream: true, // force stream (9router)
+                            credentials: connection.clone(),
+                            proxy,
+                            signal: None,
+                            log: None,
+                            proxy_options: None,
+                        })
+                        .await
+                        .map_err(|e| ProviderAttemptError {
+                            status: 500,
+                            message: format!("CodeBuddy CN execution failed: {:?}", e),
+                            retry_after: None,
+                            upstream_body: None,
+                        })?;
+                    Ok(ProviderExecutionResponse {
+                        response: result.response,
+                        url: result.url,
+                        headers: result.headers,
+                        transport: result.transport,
                     })
-                    .await
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("CodeBuddy CN execution failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                Ok(ProviderExecutionResponse {
-                    response: result.response,
-                    url: result.url,
-                    headers: result.headers,
-                    transport: result.transport,
-                })
-            } else if provider == "codebuddy-intl" || provider == "cbai" {
-                use crate::core::executor::CodeBuddyIntlExecutor;
-                let executor =
-                    CodeBuddyIntlExecutor::new(state.client_pool.clone(), provider_node.clone());
-                let result = executor
-                    .execute(ProviderExecutionRequest {
-                        model: model.to_string(),
-                        body: request_body.clone(),
-                        stream: true, // registry forceStream (JS #11101 fix)
-                        credentials: connection.clone(),
-                        proxy,
-                        signal: None,
-                        log: None,
-                        proxy_options: None,
-                    })
-                    .await
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("CodeBuddy intl execution failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                Ok(ProviderExecutionResponse {
-                    response: result.response,
-                    url: result.url,
-                    headers: result.headers,
-                    transport: result.transport,
-                })
-            } else if provider == "ollama" {
-                use crate::core::executor::{OllamaExecutionRequest, OllamaExecutor};
-                let executor = OllamaExecutor::new(state.client_pool.clone());
-                let result = executor
-                    .execute_request(OllamaExecutionRequest {
-                        model: model.to_string(),
-                        body: request_body.clone(),
-                        stream,
-                        credentials: connection.clone(),
-                        proxy,
-                    })
-                    .await
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("Ollama execution failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                Ok(ProviderExecutionResponse {
-                    response: result.response,
-                    url: result.url,
-                    headers: result.headers,
-                    transport: result.transport,
-                })
-            } else if provider == "mimo-free" || provider == "mmf" {
-                use crate::core::executor::{MimoFreeExecutionRequest, MimoFreeExecutor};
-                let executor = MimoFreeExecutor::new(state.client_pool.clone());
-                let result = executor
-                    .execute_request(MimoFreeExecutionRequest {
-                        model: model.to_string(),
-                        body: request_body.clone(),
-                        stream,
-                        credentials: connection.clone(),
-                        proxy,
-                    })
-                    .await
-                    .map_err(|e| ProviderAttemptError {
-                        status: 500,
-                        message: format!("MimoFree execution failed: {:?}", e),
-                        retry_after: None,
-                        upstream_body: None,
-                    })?;
-                Ok(ProviderExecutionResponse {
-                    response: result.response,
-                    url: result.url,
-                    headers: result.headers,
-                    transport: result.transport,
-                })
-            } else {
-                let gateway_node = provider_node
-                    .as_ref()
-                    .is_some_and(|node| node.r#type == "anthropic-compatible");
-                let executor = DefaultExecutor::new(
-                    provider.to_string(),
-                    state.client_pool.clone(),
-                    provider_node,
-                )
-                .map_err(|e| ProviderAttemptError {
-                    status: 500,
-                    message: format!("Default executor creation failed: {:?}", e),
-                    retry_after: None,
-                    upstream_body: None,
-                })?;
-                let mut request_headers: BTreeMap<String, String> = client_headers
-                    .into_iter()
-                    .flatten()
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect();
-                // C46: harness identity is connection-gated with a per-request
-                // session id. The gate is evaluated on every account attempt
-                // (cheap pure fn) and hoisted above the prepared-body reuse
-                // check, so attempts 2..N keep the session header even when
-                // the spoofed body bytes are shared. Live Claude Code always
-                // pairs the header with `metadata.user_id.session_id`.
-                let harness =
-                    if crate::core::translator::request::claude_format::claude_harness_gated(
-                        provider,
-                        connection.auth_type.as_str(),
-                        connection
-                            .runtime_transport
-                            .as_ref()
-                            .and_then(|transport| transport.base_url.as_deref()),
-                        gateway_node,
-                    ) {
-                        Some(
-                            crate::core::translator::request::claude_format::ClaudeHarnessIdentity {
-                                session_id: claude_harness_session.clone(),
-                                client_ua: request_headers
-                                    .iter()
-                                    .find(|(name, _)| name.eq_ignore_ascii_case("user-agent"))
-                                    .map(|(_, value)| value.clone()),
-                                trusted_mask: claude_mask_marker_present(&request_headers),
-                            },
-                        )
-                    } else {
-                        None
-                    };
-                apply_harness_session_header(
-                    &mut request_headers,
-                    harness.is_some(),
-                    &claude_harness_session,
-                );
-                apply_harness_prompt_id(
-                    &mut request_headers,
-                    harness.is_some(),
-                    &claude_harness_prompt_id,
-                );
-                apply_harness_request_id(
-                    &mut request_headers,
-                    harness.is_some(),
-                    &claude_harness_request_id,
-                );
-                if default_prepared_body
-                    .as_ref()
-                    .is_none_or(|prepared| !executor.can_reuse_prepared_body(prepared, model))
-                {
-                    // The harness identity (if any) applies to the
-                    // planning-fresh body clone before the executor prepares
-                    // (and shares) upstream bytes. Account-independent by
-                    // construction (fixed device id, per-request session), so
-                    // no per-account re-prepare.
-                    let scoped_body;
-                    let body_for_prepare = match harness.as_ref() {
-                        Some(identity) => {
-                            let mut spoofed = request_body.clone();
-                            crate::core::translator::request::claude_format::apply_claude_harness(
-                                &mut spoofed,
-                                identity,
-                            );
-                            // C46 tool aliasing: rename client tool names to
-                            // their Claude Code forms on the spoofed body and
-                            // remember the reverse map for the response path
-                            // (CC name → client name), so tool loops survive
-                            // the round trip. Unknown names pass through.
-                            harness_tool_name_map = crate::core::translator::request::claude_format::apply_claude_code_tool_aliases(&mut spoofed);
-                            scoped_body = spoofed;
-                            &scoped_body
-                        }
-                        None => &request_body,
-                    };
-                    default_prepared_body = Some(
-                        executor
-                            .prepare_upstream_body(body_for_prepare, model)
-                            .map_err(|err| err.into_provider_attempt_error())?,
+                } else if provider == "codebuddy-intl" || provider == "cbai" {
+                    use crate::core::executor::CodeBuddyIntlExecutor;
+                    let executor = CodeBuddyIntlExecutor::new(
+                        state.client_pool.clone(),
+                        provider_node.clone(),
                     );
-                }
-                let prepared = default_prepared_body
-                    .as_ref()
-                    .expect("prepared body was initialized");
-                let result = executor
-                    .execute_prepared(
-                        model,
-                        stream,
-                        &connection,
-                        proxy.as_ref(),
-                        &request_headers,
-                        prepared,
+                    let result = executor
+                        .execute(ProviderExecutionRequest {
+                            model: model.to_string(),
+                            body: request_body.clone(),
+                            stream: true, // registry forceStream (JS #11101 fix)
+                            credentials: connection.clone(),
+                            proxy,
+                            signal: None,
+                            log: None,
+                            proxy_options: None,
+                        })
+                        .await
+                        .map_err(|e| ProviderAttemptError {
+                            status: 500,
+                            message: format!("CodeBuddy intl execution failed: {:?}", e),
+                            retry_after: None,
+                            upstream_body: None,
+                        })?;
+                    Ok(ProviderExecutionResponse {
+                        response: result.response,
+                        url: result.url,
+                        headers: result.headers,
+                        transport: result.transport,
+                    })
+                } else if provider == "ollama" {
+                    use crate::core::executor::{OllamaExecutionRequest, OllamaExecutor};
+                    let executor = OllamaExecutor::new(state.client_pool.clone());
+                    let result = executor
+                        .execute_request(OllamaExecutionRequest {
+                            model: model.to_string(),
+                            body: request_body.clone(),
+                            stream,
+                            credentials: connection.clone(),
+                            proxy,
+                        })
+                        .await
+                        .map_err(|e| ProviderAttemptError {
+                            status: 500,
+                            message: format!("Ollama execution failed: {:?}", e),
+                            retry_after: None,
+                            upstream_body: None,
+                        })?;
+                    Ok(ProviderExecutionResponse {
+                        response: result.response,
+                        url: result.url,
+                        headers: result.headers,
+                        transport: result.transport,
+                    })
+                } else if provider == "mimo-free" || provider == "mmf" {
+                    use crate::core::executor::{MimoFreeExecutionRequest, MimoFreeExecutor};
+                    let executor = MimoFreeExecutor::new(state.client_pool.clone());
+                    let result = executor
+                        .execute_request(MimoFreeExecutionRequest {
+                            model: model.to_string(),
+                            body: request_body.clone(),
+                            stream,
+                            credentials: connection.clone(),
+                            proxy,
+                        })
+                        .await
+                        .map_err(|e| ProviderAttemptError {
+                            status: 500,
+                            message: format!("MimoFree execution failed: {:?}", e),
+                            retry_after: None,
+                            upstream_body: None,
+                        })?;
+                    Ok(ProviderExecutionResponse {
+                        response: result.response,
+                        url: result.url,
+                        headers: result.headers,
+                        transport: result.transport,
+                    })
+                } else {
+                    let executor = DefaultExecutor::new(
+                        provider.to_string(),
+                        state.client_pool.clone(),
+                        provider_node,
                     )
-                    .await
-                    .map_err(|err| err.into_provider_attempt_error())?;
-                Ok(ProviderExecutionResponse {
-                    response: result.response,
-                    url: result.url,
-                    headers: result.headers,
-                    transport: result.transport,
-                })
-            }
-        })
-        .await;
+                    .map_err(|error| error.into_provider_attempt_error())?;
+                    let request_headers: BTreeMap<String, String> = client_headers
+                        .into_iter()
+                        .flatten()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect();
+                    if default_prepared_body
+                        .as_ref()
+                        .is_none_or(|prepared| !executor.can_reuse_prepared_body(prepared, model))
+                    {
+                        default_prepared_body = Some(
+                            executor
+                                .prepare_upstream_body(&request_body, model)
+                                .map_err(|err| err.into_provider_attempt_error())?,
+                        );
+                    }
+                    let prepared = default_prepared_body
+                        .as_ref()
+                        .expect("prepared body was initialized");
+                    let result = executor
+                        .execute_prepared(
+                            model,
+                            stream,
+                            &connection,
+                            proxy.as_ref(),
+                            &request_headers,
+                            prepared,
+                        )
+                        .await
+                        .map_err(|err| err.into_provider_attempt_error())?;
+                    Ok(ProviderExecutionResponse {
+                        response: result.response,
+                        url: result.url,
+                        headers: result.headers,
+                        transport: result.transport,
+                    })
+                }
+            })
+            .await;
 
         let execution = executor_result;
 
         match execution {
             Ok(result) => {
                 let status = result.response.status();
-                // Passive Claude quota observation (donor parity): every
-                // upstream /v1/messages response carries
-                // `anthropic-ratelimit-unified-*` utilization watermarks.
-                // Riding the existing traffic replaces usage-endpoint
-                // polling entirely — scope-limited grants (setup tokens)
-                // can never authorize the usage endpoint anyway. Runs on
-                // success and error statuses alike (429s still carry the
-                // windows); failures never break generation.
-                if matches!(provider, "claude" | "anthropic") {
-                    if let Some(snapshot) =
-                        crate::core::usage::quota_headers::claude_quota_snapshot_from_headers(
-                            result.response.headers(),
-                        )
-                    {
-                        observe_claude_quota_snapshot(state, &connection, snapshot).await;
-                    }
-                }
                 if status.is_success() {
                     if dashboard_stream {
                         let response =
@@ -1791,7 +1660,6 @@ async fn forward_with_provider_fallback(
                         normalize_for_dashboard,
                         plan,
                         custom_tool_names.clone(),
-                        harness_tool_name_map.clone(),
                         attempt_log,
                     )
                     .await;
@@ -1802,22 +1670,7 @@ async fn forward_with_provider_fallback(
                 // 9router parity: retryAfter may come from the Retry-After header
                 // OR the error JSON body (errorBody.retryAfter). Header wins; the
                 // body is the fallback when a provider returns it only in JSON.
-                // Anthropic unified rate-limit windows (Claude OAuth traffic): the
-                // reset instant rides `anthropic-ratelimit-unified-*-reset` headers
-                // that exist on every /v1/messages response, but a reset only means
-                // "the client must wait" when the corresponding window is actually
-                // rejected — allowed/overage windows on 200s must not synthesize a
-                // Retry-After. Mirrors the donor's ParseClaudeRateLimitReset gate,
-                // reduced to the decision we actually make (advisory client header
-                // only; the planner never sleeps — C13).
-                let header_retry_after = retry_after_from_headers(result.response.headers())
-                    .or_else(|| {
-                        if status.as_u16() == 429 {
-                            unified_reset_retry_after(result.response.headers())
-                        } else {
-                            None
-                        }
-                    });
+                let header_retry_after = retry_after_from_headers(result.response.headers());
                 let (message, upstream_body) =
                     extract_upstream_error_with_body(result.response).await;
                 let body_retry_after = upstream_body
@@ -1826,17 +1679,8 @@ async fn forward_with_provider_fallback(
                 let retry_after = header_retry_after.or(body_retry_after);
                 let (diagnostic_code, diagnostic_message) =
                     upstream_error_diagnostic(status.as_u16(), upstream_body.as_deref());
-                let policy_rejection =
-                    crate::core::translator::request::claude_format::is_claude_oauth_policy_rejection(
-                        status.as_u16(),
-                        upstream_body.as_deref(),
-                    );
                 let refreshable_auth_failure =
                     is_refreshable_auth_failure(status, upstream_body.as_deref());
-                let oauth_error_code =
-                    crate::core::translator::request::claude_format::claude_oauth_error_code(
-                        upstream_body.as_deref(),
-                    );
                 last_error = Some(ProviderAttemptError {
                     status: status.as_u16(),
                     message: message.clone(),
@@ -1845,9 +1689,8 @@ async fn forward_with_provider_fallback(
                 });
                 if let Some(mut attempt_log) = attempt_log {
                     // C43: explicit error-kind literal per branch — never
-                    // inferred from the status code. Policy rejections stay
-                    // AUTH_FAILURE: classification is by body text, not status.
-                    let error_kind = if policy_rejection || refreshable_auth_failure {
+                    // inferred from the status code.
+                    let error_kind = if refreshable_auth_failure {
                         error_kind::AUTH_FAILURE
                     } else if matches!(status.as_u16(), 429) {
                         error_kind::RATE_LIMITED
@@ -1865,77 +1708,9 @@ async fn forward_with_provider_fallback(
 
                 // A body-invalid request is account-independent. Replaying it
                 // across every configured credential only multiplies an
-                // already-known client failure. Carve-out (C13 amend): a 400
-                // carrying a Claude OAuth policy-rejection text is an
-                // auth-failure, not a body failure — advance, don't terminate.
-                if matches!(status.as_u16(), 400 | 413 | 422)
-                    && !(status.as_u16() == 400 && policy_rejection)
-                {
+                // already-known client failure.
+                if matches!(status.as_u16(), 400 | 413 | 422) {
                     return Err(last_error.expect("upstream error recorded"));
-                }
-                // F3: persist policy rejections to the existing diagnostic
-                // fields only. No new columns, no routing suppression (C14).
-                if policy_rejection {
-                    let policy_db = state.db.clone();
-                    let policy_connection_id = connection.id.clone();
-                    let policy_provider = connection.provider.clone();
-                    let now = Utc::now().to_rfc3339();
-                    let _ = policy_db
-                        .update(move |snapshot| {
-                            let Some(stored) = snapshot
-                                .provider_connections
-                                .iter_mut()
-                                .find(|candidate| {
-                                    candidate.id == policy_connection_id
-                                        && candidate.provider == policy_provider
-                                })
-                            else {
-                                return;
-                            };
-                            stored.last_error = Some(
-                                "Claude OAuth credential was rejected by upstream policy. Please re-authorize the connection."
-                                    .to_string(),
-                            );
-                            stored.last_error_at = Some(now);
-                            stored.error_code =
-                                Some("claude_oauth_policy_rejection".to_string());
-                        })
-                        .await;
-                }
-                // Structured `details.error_code` rejections (live fixture:
-                // 403 oauth_scope_insufficient) cannot be fixed by a token
-                // refresh; record them on the credential so the dashboard
-                // shows why. Routing is untouched (C14).
-                if status == StatusCode::FORBIDDEN {
-                    if let Some(code) = oauth_error_code
-                        .as_deref()
-                        .filter(|code| code.starts_with("oauth_"))
-                    {
-                        let scope_db = state.db.clone();
-                        let scope_connection_id = connection.id.clone();
-                        let scope_provider = connection.provider.clone();
-                        let scope_code = code.to_string();
-                        let now = Utc::now().to_rfc3339();
-                        let _ = scope_db
-                            .update(move |snapshot| {
-                                let Some(stored) = snapshot
-                                    .provider_connections
-                                    .iter_mut()
-                                    .find(|candidate| {
-                                        candidate.id == scope_connection_id
-                                            && candidate.provider == scope_provider
-                                    })
-                                else {
-                                    return;
-                                };
-                                stored.last_error = Some(format!(
-                                    "Claude OAuth credential was rejected upstream: {scope_code}. Re-authorize the connection with the required scopes."
-                                ));
-                                stored.last_error_at = Some(now);
-                                stored.error_code = Some(scope_code);
-                            })
-                            .await;
-                    }
                 }
 
                 // C17A: the request-scoped planner is the sole foreground
@@ -2046,71 +1821,11 @@ async fn codex_supporters_after_cold_wait(
     }
 }
 
-/// C46 harness session header: live Claude Code always pairs
-/// `x-claude-code-session-id` with `metadata.user_id.session_id`. When the
-/// harness transform is active for this connection and the client sent no
-/// session header of its own, inject the request-scoped session id so the
-/// header matches the spoofed body metadata on every account attempt.
-/// Client value wins; no-op for non-harness traffic.
-fn apply_harness_session_header(
-    request_headers: &mut BTreeMap<String, String>,
-    harness_active: bool,
-    session: &str,
-) {
-    if harness_active && !request_headers.contains_key("x-claude-code-session-id") {
-        request_headers.insert("x-claude-code-session-id".to_string(), session.to_string());
-    }
-}
-
-/// Deterministic, v4-shaped UUID for harness identities. Live Claude Code
-/// session/prompt ids are UUIDv4 (census 625/625); a plain UUIDv5 would show
-/// a version-5 nibble on every spoofed request, so the derived bytes are
-/// re-stamped to the v4 version/variant layout.
-fn derive_harness_uuid(seed: &str) -> String {
-    let mut bytes = *uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, seed.as_bytes()).as_bytes();
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    uuid::Uuid::from_bytes(bytes).to_string()
-}
-
-/// C46 harness prompt-id: live CC pairs a stable per-task prompt UUID with
-/// its requests (612/628, reused up to 167 times); insert-if-missing keeps
-/// a genuine client's own value.
-fn apply_harness_prompt_id(
-    request_headers: &mut BTreeMap<String, String>,
-    harness_active: bool,
-    prompt_id: &str,
-) {
-    if harness_active && !request_headers.contains_key("x-claude-code-prompt-id") {
-        request_headers.insert("x-claude-code-prompt-id".to_string(), prompt_id.to_string());
-    }
-}
-
-/// C46 harness client-request-id: unique per chat request (live 628/628),
-/// stable across account-fallback attempts; insert-if-missing.
-fn apply_harness_request_id(
-    request_headers: &mut BTreeMap<String, String>,
-    harness_active: bool,
-    request_id: &str,
-) {
-    if harness_active && !request_headers.contains_key("x-client-request-id") {
-        request_headers.insert("x-client-request-id".to_string(), request_id.to_string());
-    }
-}
-
 /// A 401 is an explicit authentication failure. A 403 can also be returned for
 /// authorization policy and quota failures, so it triggers credential rotation
 /// only when the provider supplies a structured token/authentication code.
-/// Free-text messages are intentionally not classified — except for the narrow
-/// Claude OAuth policy-rejection predicate, where a refresh provably cannot
-/// help (policy/transport/ban, not expiry).
+/// Free-text messages are intentionally not classified.
 fn is_refreshable_auth_failure(status: StatusCode, body: Option<&[u8]>) -> bool {
-    if crate::core::translator::request::claude_format::is_claude_oauth_policy_rejection(
-        status.as_u16(),
-        body,
-    ) {
-        return false;
-    }
     if status == StatusCode::UNAUTHORIZED {
         return true;
     }
@@ -2474,6 +2189,14 @@ fn virtual_no_auth_connection(provider: &str) -> ProviderConnection {
 }
 
 fn connection_has_credentials(connection: &ProviderConnection) -> bool {
+    if matches!(
+        connection.provider.as_str(),
+        "claude" | "cc" | "claude-agent"
+    ) || (connection.provider == "anthropic"
+        && !matches!(connection.auth_type.as_str(), "apikey" | "api_key"))
+    {
+        return false;
+    }
     connection
         .api_key
         .as_deref()
@@ -3100,7 +2823,6 @@ async fn proxy_response_with_pending_tracking(
     normalize_for_dashboard: bool,
     plan: &RequestPlan,
     custom_tool_names: Option<String>,
-    tool_name_map: Option<serde_json::Map<String, serde_json::Value>>,
     mut attempt_log: Option<AttemptLog>,
 ) -> Response {
     // Extract formats before stream closure to avoid lifetime issues
@@ -3187,7 +2909,6 @@ async fn proxy_response_with_pending_tracking(
             let provider = provider.clone();
             let model = model.clone();
             let custom_tool_names = custom_tool_names.clone();
-            let tool_name_map = tool_name_map.clone();
             let mut attempt_log = attempt_log;
             let stream = async_stream::stream! {
                 let mut upstream = response.bytes_stream();
@@ -3197,7 +2918,6 @@ async fn proxy_response_with_pending_tracking(
                     &ct,
                     transformer,
                     custom_tool_names.as_deref(),
-                    tool_name_map,
                     stop_on_response_completed,
                 );
                 dispatch.configure_xai_chat(&provider);
@@ -3337,7 +3057,6 @@ async fn proxy_response_with_pending_tracking(
             let provider = provider.clone();
             let model = model.clone();
             let custom_tool_names2 = custom_tool_names.clone();
-            let tool_name_map2 = tool_name_map.clone();
             let mut attempt_log = attempt_log;
             let stream = async_stream::stream! {
                 let mut dispatch = StreamDispatch::new(
@@ -3346,7 +3065,6 @@ async fn proxy_response_with_pending_tracking(
                     &ct,
                     transformer,
                     custom_tool_names2.as_deref(),
-                    tool_name_map2,
                     stop_on_response_completed,
                 );
                 dispatch.configure_xai_chat(&provider);
@@ -3550,7 +3268,6 @@ impl StreamDispatch {
             Box<dyn crate::core::translator::response_transform::StreamingTransformer>,
         >,
         custom_tool_names: Option<&str>,
-        tool_name_map: Option<serde_json::Map<String, serde_json::Value>>,
         stop_on_response_completed: bool,
     ) -> Self {
         let mut translation_state = (dashboard_transformer.is_none() && source != target)
@@ -3561,18 +3278,6 @@ impl StreamDispatch {
                     "customToolNames".to_string(),
                     Value::String(names.to_string()),
                 );
-            }
-        }
-        // C46 harness reverse tool-name map: Claude Code name → client
-        // name. The Claude→OpenAI response transform reads this as
-        // `toolNameMap` in the per-stream Claude state, restoring the
-        // client's tool names on tool_calls.
-        if let (Some(state), Some(map)) = (translation_state.as_mut(), tool_name_map) {
-            if !map.is_empty() {
-                state
-                    .anthropic
-                    .claude_state
-                    .insert("toolNameMap".to_string(), Value::Object(map));
             }
         }
         let translation_active = translation_state.is_some();
@@ -4853,66 +4558,6 @@ fn retry_after_from_headers(headers: &HeaderMap) -> Option<DateTime<Utc>> {
     None
 }
 
-/// Anthropic unified rate-limit reset: derive the advisory retry-after
-/// instant from `anthropic-ratelimit-unified-*` headers, but only for a
-/// window that is actually rejected. Candidates (latest wins):
-/// - `5h-Status: rejected` → `5h-Reset`
-/// - `7d-Status: rejected` → `7d-Reset`
-/// - `Unified-Status: rejected` → `Unified-Reset` (even when the 5h/7d
-///   windows read allowed — live captures show a rejected unified status
-///   with per-window statuses still allowed)
-///
-/// Reset values parse as a unix epoch (float tolerated) or RFC 3339;
-/// past instants are ignored. Callers gate this on HTTP 429 — window
-/// headers are present on successful responses too, where they describe
-/// utilization, not a wait requirement.
-fn unified_reset_retry_after(headers: &HeaderMap) -> Option<DateTime<Utc>> {
-    // The unified window has no window token in its header names:
-    // `anthropic-ratelimit-unified-status` / `-reset`, while 5h/7d carry
-    // `-5h-`/`-7d-` between `unified` and the field.
-    let header_name = |window: &str, field: &str| -> String {
-        if window == "unified" {
-            format!("anthropic-ratelimit-unified-{field}")
-        } else {
-            format!("anthropic-ratelimit-unified-{window}-{field}")
-        }
-    };
-    let status_is_rejected = |window: &str| -> bool {
-        headers
-            .get(header_name(window, "status"))
-            .and_then(|value| value.to_str().ok())
-            .map(|value| value.trim().eq_ignore_ascii_case("rejected"))
-            .unwrap_or(false)
-    };
-
-    let parse_reset = |window: &str| -> Option<DateTime<Utc>> {
-        let raw = headers
-            .get(header_name(window, "reset"))
-            .and_then(|value| value.to_str().ok())?
-            .trim()
-            .to_string();
-        let parsed = raw
-            .parse::<f64>()
-            .ok()
-            .and_then(|epoch| DateTime::<Utc>::from_timestamp(epoch as i64, 0))
-            .or_else(|| {
-                DateTime::parse_from_rfc3339(&raw)
-                    .ok()
-                    .map(|t| t.with_timezone(&Utc))
-            })?;
-        let now = Utc::now();
-        (parsed > now).then_some(parsed)
-    };
-
-    let mut candidates = Vec::with_capacity(3);
-    for window in ["5h", "7d", "unified"] {
-        if status_is_rejected(window) {
-            candidates.extend(parse_reset(window));
-        }
-    }
-    candidates.into_iter().max()
-}
-
 fn is_hop_by_hop_header(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
@@ -4997,30 +4642,6 @@ fn json_error_response(status: StatusCode, message: &str) -> Response {
     with_cors_response((status, Json(body)).into_response())
 }
 
-/// Claude subscription traffic must present as Claude Code: either a
-/// genuine `claude-cli/…` client or the OpenCode mask plugin's marker
-/// header. Presence-based on purpose — the API key still authenticates.
-pub(crate) fn claude_mask_client_allowed(headers: &HeaderMap) -> bool {
-    if headers.contains_key("x-openproxy-claude-mask") {
-        return true;
-    }
-    headers
-        .get("user-agent")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|ua| ua.starts_with("claude-cli/"))
-}
-
-/// Presence (not value) of the mask-plugin marker in the already-collected
-/// client headers. Case-insensitive: the normalized map lookup is
-/// case-sensitive but keys are only lowercase by upstream convention
-/// (`headers_map` lowercases at ingress), so scan explicitly. Pure
-/// function — same input, same verdict. No UA logic here.
-fn claude_mask_marker_present(headers: &BTreeMap<String, String>) -> bool {
-    headers
-        .keys()
-        .any(|name| name.eq_ignore_ascii_case("x-openproxy-claude-mask"))
-}
-
 fn with_cors_response(mut response: Response) -> Response {
     response.headers_mut().insert(
         header::ACCESS_CONTROL_ALLOW_ORIGIN,
@@ -5073,12 +4694,10 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::{
-        apply_harness_prompt_id, apply_harness_request_id, apply_harness_session_header,
         attempt_error_response, build_dashboard_sse_response, build_proxied_response,
-        claude_mask_marker_present, derive_harness_uuid, extract_token_usage_from_value,
-        has_native_codex_web_search, is_refreshable_auth_failure, select_connection,
-        select_connection_with_supporters, should_prefetch_message_images, tool_image_support,
-        unified_reset_retry_after, upstream_error_diagnostic, StreamDispatch,
+        extract_token_usage_from_value, has_native_codex_web_search, is_refreshable_auth_failure,
+        select_connection, select_connection_with_supporters, should_prefetch_message_images,
+        tool_image_support, upstream_error_diagnostic, StreamDispatch,
     };
     use crate::core::account_fallback::ProviderAttemptError;
     use crate::core::chat::RequestPlan;
@@ -5145,7 +4764,6 @@ mod tests {
             &plan,
             None,
             None,
-            None,
         )
         .await;
         let bytes = tokio::time::timeout(
@@ -5180,7 +4798,6 @@ mod tests {
                     "text/event-stream",
                     None,
                     None,
-                    None,
                     false,
                 );
                 dispatch.configure_xai_chat("xai");
@@ -5213,7 +4830,7 @@ mod tests {
         let plan = RequestPlan::new(
             Some("/v1/messages"),
             &json!({"messages": [], "max_tokens": 64, "stream": false}),
-            "claude",
+            "anthropic",
             "claude-opus-5-5",
         );
         assert!(!plan.needs_translation());
@@ -5253,7 +4870,6 @@ mod tests {
             Format::OpenAiResponses,
             Format::OpenAiResponses,
             "text/event-stream",
-            None,
             None,
             None,
             false,
@@ -5365,7 +4981,6 @@ mod tests {
             "fixture".into(),
             false,
             &plan,
-            None,
             None,
             Some(attempt),
         )
@@ -5512,7 +5127,6 @@ mod tests {
                 false,
                 &plan,
                 None,
-                None,
                 Some(attempt),
             )
             .await;
@@ -5562,7 +5176,6 @@ mod tests {
             "text/event-stream",
             None,
             None,
-            None,
             false,
         );
         dispatch.start_runtime_trace(&provider, &model, "reqwest", None);
@@ -5605,7 +5218,6 @@ mod tests {
             "text/event-stream",
             None,
             None,
-            None,
             false,
         );
         native.start_runtime_trace("codex", "fixture", "reqwest", None);
@@ -5622,10 +5234,9 @@ mod tests {
             "text/event-stream",
             None,
             None,
-            None,
             false,
         );
-        claude.start_runtime_trace("claude", "fixture", "reqwest", None);
+        claude.start_runtime_trace("anthropic", "fixture", "reqwest", None);
         claude.feed(b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_fixture\",\"model\":\"fixture\",\"role\":\"assistant\"}}\n\n");
         assert_eq!(
             claude.trace.as_ref().unwrap().snapshot().unwrap()["upstreamEvents"]["message_start"],
@@ -5701,7 +5312,6 @@ mod tests {
             &plan,
             None,
             None,
-            None,
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -5736,7 +5346,6 @@ mod tests {
                 Format::OpenAiResponses,
                 Format::Claude,
                 "text/event-stream",
-                None,
                 None,
                 None,
                 true,
@@ -5847,7 +5456,6 @@ mod tests {
                             None
                         },
                         None,
-                        None,
                         false,
                     );
                     dispatch.tps = Some(consumer);
@@ -5946,7 +5554,6 @@ mod tests {
                     "text/event-stream",
                     None,
                     None,
-                    None,
                     false,
                 );
                 dispatch.tps = Some(observation.clone());
@@ -5997,7 +5604,6 @@ mod tests {
                 "text/event-stream",
                 transformer,
                 None,
-                None,
                 false,
             );
             dispatch.tps = Some(observation.clone());
@@ -6015,101 +5621,6 @@ mod tests {
                 json!({"version":1,"generatedOutputTokens":7,"elapsedMicros":2_000_000,"endKind":"protocol_terminal"})
             );
         }
-    }
-
-    #[test]
-    fn claude_mask_marker_present_matches_gate_presence_semantics() {
-        // Presence, not value: empty counts (parity with
-        // `claude_mask_client_allowed` contains_key).
-        assert!(claude_mask_marker_present(&BTreeMap::from([(
-            "x-openproxy-claude-mask".to_string(),
-            "1".to_string(),
-        )])));
-        assert!(claude_mask_marker_present(&BTreeMap::from([(
-            "x-openproxy-claude-mask".to_string(),
-            String::new(),
-        )])));
-        // Normalized-map lookup is case-sensitive by type: scan
-        // case-insensitively so a mixed-case insert still matches.
-        assert!(claude_mask_marker_present(&BTreeMap::from([(
-            "X-OpenProxy-Claude-Mask".to_string(),
-            "1".to_string(),
-        )])));
-        assert!(!claude_mask_marker_present(&BTreeMap::new()));
-    }
-
-    #[test]
-    fn harness_session_header_injects_when_active_and_client_wins() {
-        // Active harness + no client header → inject the request session.
-        let mut headers = BTreeMap::new();
-        apply_harness_session_header(&mut headers, true, "sess-1");
-        assert_eq!(headers["x-claude-code-session-id"], "sess-1");
-        // Client header wins — never overwritten.
-        let mut headers = BTreeMap::from([(
-            "x-claude-code-session-id".to_string(),
-            "client-sess".to_string(),
-        )]);
-        apply_harness_session_header(&mut headers, true, "sess-2");
-        assert_eq!(headers["x-claude-code-session-id"], "client-sess");
-        // Inactive harness (apikey/third-party) → untouched.
-        let mut headers = BTreeMap::new();
-        apply_harness_session_header(&mut headers, false, "sess-3");
-        assert!(!headers.contains_key("x-claude-code-session-id"));
-    }
-
-    #[test]
-    fn harness_prompt_and_request_id_headers_inject_when_active() {
-        // Same insert-if-missing contract as the session header: inject on
-        // the harness path, client value wins, no-op otherwise.
-        let mut headers = BTreeMap::new();
-        apply_harness_prompt_id(&mut headers, true, "prompt-1");
-        apply_harness_request_id(&mut headers, true, "request-1");
-        assert_eq!(headers["x-claude-code-prompt-id"], "prompt-1");
-        assert_eq!(headers["x-client-request-id"], "request-1");
-
-        let mut headers = BTreeMap::from([
-            (
-                "x-claude-code-prompt-id".to_string(),
-                "client-p".to_string(),
-            ),
-            ("x-client-request-id".to_string(), "client-r".to_string()),
-        ]);
-        apply_harness_prompt_id(&mut headers, true, "prompt-2");
-        apply_harness_request_id(&mut headers, true, "request-2");
-        assert_eq!(headers["x-claude-code-prompt-id"], "client-p");
-        assert_eq!(headers["x-client-request-id"], "client-r");
-
-        let mut headers = BTreeMap::new();
-        apply_harness_prompt_id(&mut headers, false, "prompt-3");
-        apply_harness_request_id(&mut headers, false, "request-3");
-        assert!(!headers.contains_key("x-claude-code-prompt-id"));
-        assert!(!headers.contains_key("x-client-request-id"));
-    }
-
-    #[test]
-    fn harness_uuid_derivation_is_deterministic_and_v4_shaped() {
-        // Same seed → same id; different seed → different id; the output is
-        // a v4-shaped UUID (version nibble 4, RFC-4122 variant) like every
-        // live CC session/prompt id, hiding the deterministic derivation.
-        let a = derive_harness_uuid("openproxy:claude-harness:session:key-1:2026-10-06");
-        let b = derive_harness_uuid("openproxy:claude-harness:session:key-1:2026-10-06");
-        assert_eq!(a, b);
-        assert_eq!(a.len(), 36);
-        let other_key = derive_harness_uuid("openproxy:claude-harness:session:key-2:2026-10-06");
-        let other_day = derive_harness_uuid("openproxy:claude-harness:session:key-1:2026-10-07");
-        assert_ne!(a, other_key);
-        assert_ne!(a, other_day);
-        for id in [a, other_key, other_day] {
-            let uuid = uuid::Uuid::parse_str(&id).expect("valid uuid");
-            assert_eq!(uuid.get_version_num(), 4, "version nibble must be 4");
-            assert_eq!(uuid.get_variant(), uuid::Variant::RFC4122);
-        }
-        // Prompt seeds derive independently from session seeds.
-        let prompt = derive_harness_uuid("openproxy:claude-harness:prompt:key-1:2026-10-06T22");
-        assert_ne!(
-            prompt,
-            derive_harness_uuid("openproxy:claude-harness:session:key-1:2026-10-06")
-        );
     }
 
     #[test]
@@ -6140,113 +5651,18 @@ mod tests {
     }
 
     #[test]
-    fn refresh_guard_skips_claude_policy_rejections() {
-        let policy = r#"{"error":{"message":"OAuth authentication is currently not allowed for this organization."}}"#;
-        assert!(!is_refreshable_auth_failure(
-            StatusCode::UNAUTHORIZED,
-            Some(policy.as_bytes())
-        ));
-        // Structured 403 codes now include error.details.error_code; the
-        // live scope fixture must not classify as refreshable (permission,
-        // not expiry — a refresh cannot add scopes).
-        let scope = br#"{"error":{"type":"permission_error","message":"OAuth token does not meet scope requirement any_of(user:ccr_inference, user:profile)","details":{"error_code":"oauth_scope_insufficient"}}}"#;
+    fn refresh_guard_requires_authentication_not_permission_failure() {
+        let scope = br#"{"error":{"type":"permission_error","details":{"error_code":"scope_insufficient"}}}"#;
         assert!(!is_refreshable_auth_failure(
             StatusCode::FORBIDDEN,
             Some(scope)
         ));
-        // Plain 401 without policy text still refreshes.
+        // Plain 401 still permits the bounded generic recovery.
         let plain = r#"{"error":{"message":"invalid token"}}"#;
         assert!(is_refreshable_auth_failure(
             StatusCode::UNAUTHORIZED,
             Some(plain.as_bytes())
         ));
-    }
-
-    #[test]
-    fn unified_reset_headers_yield_retry_after_only_when_rejected() {
-        // 5h window rejected with a future epoch → advisory reset instant.
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            "anthropic-ratelimit-unified-5h-status",
-            reqwest::header::HeaderValue::from_static("rejected"),
-        );
-        headers.insert(
-            "anthropic-ratelimit-unified-5h-reset",
-            reqwest::header::HeaderValue::from_str(
-                &(Utc::now() + ChronoDuration::seconds(1800))
-                    .timestamp()
-                    .to_string(),
-            )
-            .unwrap(),
-        );
-        let reset = unified_reset_retry_after(&headers).expect("rejected 5h yields a reset");
-        assert!(reset > Utc::now());
-
-        // 7d window rejected → also yields, RFC 3339 form tolerated.
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            "anthropic-ratelimit-unified-7d-status",
-            reqwest::header::HeaderValue::from_static("Rejected"),
-        );
-        headers.insert(
-            "anthropic-ratelimit-unified-7d-reset",
-            reqwest::header::HeaderValue::from_str(
-                &(Utc::now() + ChronoDuration::seconds(3600))
-                    .to_rfc3339()
-                    .to_string(),
-            )
-            .unwrap(),
-        );
-        assert!(unified_reset_retry_after(&headers).is_some());
-
-        // Allowed / absent-status / past-reset headers never synthesize.
-        let allowed = reqwest::header::HeaderMap::from_iter([(
-            reqwest::header::HeaderName::from_static("anthropic-ratelimit-unified-5h-status"),
-            reqwest::header::HeaderValue::from_static("allowed"),
-        )]);
-        assert!(unified_reset_retry_after(&allowed).is_none());
-
-        let mut past = reqwest::header::HeaderMap::new();
-        past.insert(
-            "anthropic-ratelimit-unified-5h-status",
-            reqwest::header::HeaderValue::from_static("rejected"),
-        );
-        past.insert(
-            "anthropic-ratelimit-unified-5h-reset",
-            reqwest::header::HeaderValue::from_str(
-                &(Utc::now() - ChronoDuration::seconds(60))
-                    .timestamp()
-                    .to_string(),
-            )
-            .unwrap(),
-        );
-        assert!(unified_reset_retry_after(&past).is_none());
-
-        // Unified rejected while both windows read allowed (live capture
-        // shape): the unified reset still yields.
-        let mut unified_only = reqwest::header::HeaderMap::new();
-        unified_only.insert(
-            "anthropic-ratelimit-unified-status",
-            reqwest::header::HeaderValue::from_static("rejected"),
-        );
-        unified_only.insert(
-            "anthropic-ratelimit-unified-5h-status",
-            reqwest::header::HeaderValue::from_static("allowed"),
-        );
-        unified_only.insert(
-            "anthropic-ratelimit-unified-7d-status",
-            reqwest::header::HeaderValue::from_static("allowed"),
-        );
-        unified_only.insert(
-            "anthropic-ratelimit-unified-reset",
-            reqwest::header::HeaderValue::from_str(
-                &(Utc::now() + ChronoDuration::seconds(900))
-                    .timestamp()
-                    .to_string(),
-            )
-            .unwrap(),
-        );
-        assert!(unified_reset_retry_after(&unified_only).is_some());
     }
 
     #[test]
@@ -6379,7 +5795,7 @@ mod tests {
         let claude = RequestPlan::new(
             Some("/v1/messages"),
             &claude_body,
-            "claude",
+            "anthropic",
             "claude-sonnet-4",
         );
         assert!(claude.passthrough);
@@ -6787,7 +6203,6 @@ mod tests {
             "text/event-stream",
             None,
             None,
-            None,
             true,
         );
         assert!(!observer.feed(b"event: response.compl").response_completed);
@@ -6813,7 +6228,6 @@ mod tests {
                 Format::OpenAiResponses,
                 target,
                 "text/event-stream",
-                None,
                 None,
                 None,
                 false,
@@ -6878,7 +6292,6 @@ mod tests {
                 "text/event-stream",
                 None,
                 None,
-                None,
                 false,
             );
             usage.feed(&fixture[..split]);
@@ -6893,7 +6306,6 @@ mod tests {
                 Format::OpenAi,
                 "text/event-stream",
                 Some(Box::new(OpenAiTransformer::new())),
-                None,
                 None,
                 false,
             );
@@ -6917,7 +6329,6 @@ mod tests {
             Format::OpenAi,
             Format::Gemini,
             "text/event-stream",
-            None,
             None,
             None,
             false,
@@ -6956,7 +6367,6 @@ mod tests {
                 "application/x-ndjson",
                 super::transformer_for_provider("ollama"),
                 None,
-                None,
                 false,
             );
             let mut output = dashboard.feed(&fixture.as_bytes()[..split]).output;
@@ -6979,7 +6389,6 @@ mod tests {
                 Format::OpenAi,
                 "text/event-stream",
                 super::dashboard_transformer_for_format(source),
-                None,
                 None,
                 false,
             );

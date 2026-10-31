@@ -81,7 +81,7 @@ async fn get_settings_requires_auth_and_redacts_password() {
     assert_eq!(json["providerContextLimits"]["opencode-go"], 500000);
     assert_eq!(json["providerContextLimits"]["glm"], 500000);
     assert_eq!(json["providerContextLimits"]["codex"], 500000);
-    assert_eq!(json["providerContextLimits"]["claude"], 500000);
+    assert!(json["providerContextLimits"].get("claude").is_none());
     assert!(json.get("password").is_none());
     assert!(json.get("clientSecret").is_none());
 }
@@ -110,8 +110,7 @@ async fn patch_settings_updates_values_and_rejects_password_fields() {
                             "opencode-zen": 450000,
                             "opencode-go": 500000,
                             "glm": 200000,
-                            "codex": 500000,
-                            "claude": 300000
+                            "codex": 500000
                         },
                     })
                     .to_string(),
@@ -133,7 +132,7 @@ async fn patch_settings_updates_values_and_rejects_password_fields() {
     assert_eq!(json["glmAutoPing"]["connections"]["glm-1"], true);
     assert_eq!(json["providerContextLimits"]["opencode-zen"], 450000);
     assert_eq!(json["providerContextLimits"]["glm"], 200000);
-    assert_eq!(json["providerContextLimits"]["claude"], 300000);
+    assert!(json["providerContextLimits"].get("claude").is_none());
     assert_eq!(json["hasPassword"], true);
 
     let rejected_context_limit = app
@@ -264,4 +263,63 @@ async fn settings_database_import_and_require_login_round_trip() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["requireLogin"], false);
+}
+
+#[tokio::test]
+async fn unrelated_context_update_preserves_the_unchanged_retired_claude_value() {
+    let temporary = tempdir().unwrap();
+    let db = Arc::new(Db::load_from(temporary.path()).await.unwrap());
+    db.update(|db| {
+        db.api_keys = vec![active_key()];
+        db.settings
+            .provider_context_limits
+            .insert("claude".into(), 700_000);
+    })
+    .await
+    .unwrap();
+    let state = AppState::new(db.clone());
+    let app = openproxy::build_app(state.clone());
+    let mut limits = db.snapshot().settings.provider_context_limits.clone();
+    limits.insert("glm".into(), 200_000);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::patch("/api/settings")
+                .header("authorization", format!("Bearer {TEST_KEY}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"providerContextLimits":limits}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        db.snapshot().settings.provider_context_limits["claude"],
+        700_000
+    );
+    assert_eq!(
+        db.snapshot().settings.provider_context_limits["glm"],
+        200_000
+    );
+    limits.insert("claude".into(), 800_000);
+    let response = app
+        .oneshot(
+            Request::patch("/api/settings")
+                .header("authorization", format!("Bearer {TEST_KEY}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"providerContextLimits":limits}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        db.snapshot().settings.provider_context_limits["claude"],
+        700_000
+    );
+    state.signal_shutdown();
 }

@@ -178,13 +178,7 @@ impl ProviderExecutorConfig {
             base_url: base_url.to_string(),
             format: ProviderFormat::Anthropic,
             api_key_header: "x-api-key",
-            default_headers: vec![
-                ("anthropic-version".to_string(), "2023-06-01".to_string()),
-                (
-                    "anthropic-beta".to_string(),
-                    "claude-code-20250219,interleaved-thinking-2025-05-14".to_string(),
-                ),
-            ],
+            default_headers: vec![("anthropic-version".to_string(), "2023-06-01".to_string())],
             stream_path: "/v1/messages".to_string(),
             chat_path: "/v1/messages".to_string(),
         }
@@ -199,7 +193,7 @@ impl ProviderExecutorConfig {
                 ("anthropic-version".to_string(), "2023-06-01".to_string()),
                 (
                     "anthropic-beta".to_string(),
-                    "claude-code-20250219,interleaved-thinking-2025-05-14".to_string(),
+                    "interleaved-thinking-2025-05-14".to_string(),
                 ),
             ],
             stream_path: "/v1/messages".to_string(),
@@ -355,6 +349,23 @@ impl UnifiedExecutor {
         credentials: &ProviderConnection,
         stream: bool,
     ) -> Result<HeaderMap, ProviderExecutorError> {
+        if matches!(self.provider.as_str(), "claude" | "cc") {
+            return Err(ProviderExecutorError::UnsupportedProvider(
+                "Claude subscription retired; use claude-agent native login".into(),
+            ));
+        }
+        if self.provider == "claude-agent" {
+            return Err(ProviderExecutorError::UnsupportedProvider(
+                "Claude Agent requires the native v2 client adapter".into(),
+            ));
+        }
+        if self.provider == "anthropic"
+            && !matches!(credentials.auth_type.as_str(), "apikey" | "api_key")
+        {
+            return Err(ProviderExecutorError::UnsupportedProvider(
+                "Anthropic subscription OAuth retired; use an Anthropic API key".into(),
+            ));
+        }
         let mut headers = HeaderMap::new();
         headers.insert(
             reqwest::header::CONTENT_TYPE,
@@ -370,11 +381,15 @@ impl UnifiedExecutor {
             );
         }
 
-        let token = credentials
-            .api_key
-            .as_deref()
-            .or(credentials.access_token.as_deref())
-            .ok_or_else(|| ProviderExecutorError::MissingCredentials(self.provider.clone()))?;
+        let token = if self.provider == "anthropic" {
+            credentials.api_key.as_deref()
+        } else {
+            credentials
+                .api_key
+                .as_deref()
+                .or(credentials.access_token.as_deref())
+        }
+        .ok_or_else(|| ProviderExecutorError::MissingCredentials(self.provider.clone()))?;
 
         let header_name =
             reqwest::header::HeaderName::from_bytes(self.config.api_key_header.as_bytes())

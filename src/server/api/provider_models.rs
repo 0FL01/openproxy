@@ -135,7 +135,16 @@ pub(super) async fn import_provider_models(
     };
 
     let provider = connection.provider.clone();
-    if provider == "commandcode" || provider == "a6api" {
+    if matches!(provider.as_str(), "claude" | "cc")
+        || (provider == "anthropic"
+            && !matches!(connection.auth_type.as_str(), "apikey" | "api_key"))
+    {
+        return json_error(
+            StatusCode::GONE,
+            "Claude subscription OAuth retired; use native claude-agent login",
+        );
+    }
+    if matches!(provider.as_str(), "commandcode" | "a6api" | "claude-agent") {
         return json_error(
             StatusCode::BAD_REQUEST,
             "Provider models are synchronized per connection and are not imported as custom models",
@@ -326,8 +335,8 @@ pub(super) fn supports_models_discovery(provider: &str) -> bool {
         || is_anthropic_compatible_provider(provider)
         || matches!(
             provider,
-            "claude"
-                | "anthropic"
+            "anthropic"
+                | "claude-agent"
                 | "gemini"
                 | "codex"
                 | "glm"
@@ -411,6 +420,15 @@ async fn fetch_provider_models_response(
     state: &AppState,
     connection: &ProviderConnection,
 ) -> Result<ProviderModelsResponse, RouteError> {
+    if matches!(connection.provider.as_str(), "claude" | "cc")
+        || (connection.provider == "anthropic"
+            && !matches!(connection.auth_type.as_str(), "apikey" | "api_key"))
+    {
+        return Err(RouteError::new(
+            StatusCode::GONE,
+            "Claude subscription OAuth retired; use native claude-agent login",
+        ));
+    }
     if is_openai_compatible_provider(&connection.provider) {
         return fetch_openai_compatible_models(connection, None).await;
     }
@@ -420,13 +438,30 @@ async fn fetch_provider_models_response(
     }
 
     match connection.provider.as_str() {
-        "claude" | "anthropic" => {
-            let token = primary_token(connection)
-                .ok_or_else(|| RouteError::unauthorized("No valid token found"))?;
+        "claude-agent" => {
+            if connection.auth_type != "external" {
+                return Err(RouteError::bad_request(
+                    "Claude Agent requires a native-login external connection",
+                ));
+            }
+            // Discovery reads the last native login/probe result; it must not
+            // start Claude Code or invent models when inventory is absent.
+            let models = crate::server::claude_agent::inventory(connection)
+                .iter()
+                .take(1024)
+                .filter_map(native_claude_provider_model)
+                .collect();
+            Ok(response_with_models(connection, models, None))
+        }
+        "anthropic" => {
+            let token = connection
+                .api_key
+                .as_deref()
+                .ok_or_else(|| RouteError::unauthorized("No Anthropic API key found"))?;
             fetch_anthropic_models(
                 connection,
                 "https://api.anthropic.com/v1/models",
-                &token,
+                token,
                 Some("2023-06-01"),
             )
             .await
@@ -1043,17 +1078,10 @@ async fn fetch_anthropic_models(
     version: Option<&str>,
 ) -> Result<ProviderModelsResponse, RouteError> {
     let client = http_client()?;
-    // C46/R7: one credential, one scheme. Subscription OAuth tokens travel
-    // Bearer-only with the OAuth beta surface; API keys travel x-api-key.
-    // Sending an OAuth token as x-api-key is a false auth branch upstream.
-    let mut request = client.get(url).header(CONTENT_TYPE, "application/json");
-    if connection.auth_type == "oauth" {
-        request = request
-            .header(AUTHORIZATION, format!("Bearer {token}"))
-            .header("anthropic-beta", "oauth-2025-04-20");
-    } else {
-        request = request.header("x-api-key", token);
-    }
+    let mut request = client
+        .get(url)
+        .header(CONTENT_TYPE, "application/json")
+        .header("x-api-key", token);
     if let Some(version) = version {
         request = request.header("anthropic-version", version);
     }
@@ -1496,6 +1524,49 @@ fn normalize_anthropic_models_base_url(base_url: &str) -> String {
         normalized.truncate(normalized.len() - "/messages".len());
     }
     format!("{normalized}/models")
+}
+
+fn native_claude_provider_model(model: &Value) -> Option<ProviderModel> {
+    let id = model.get("id")?.as_str().filter(|id| {
+        !id.is_empty()
+            && id.len() <= 256
+            && !id.chars().any(|ch| ch.is_whitespace() || ch.is_control())
+    })?;
+    let name = model
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.is_empty() && name.len() <= 512 && !name.chars().any(char::is_control))
+        .unwrap_or(id);
+    let efforts = model
+        .get("efforts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .take(5)
+        .filter(|value| {
+            matches!(
+                value.as_str(),
+                Some("low" | "medium" | "high" | "xhigh" | "max")
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut extra = BTreeMap::from([
+        ("kind".into(), json!("llm")),
+        ("efforts".into(), json!(efforts)),
+    ]);
+    if let Some(context) = model
+        .get("contextWindow")
+        .and_then(Value::as_u64)
+        .filter(|context| *context > 0 && *context <= u32::MAX as u64)
+    {
+        extra.insert("contextWindow".into(), json!(context));
+    }
+    Some(ProviderModel {
+        id: id.into(),
+        name: name.into(),
+        extra,
+    })
 }
 
 fn response_with_models(

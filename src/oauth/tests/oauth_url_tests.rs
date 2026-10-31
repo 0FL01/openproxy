@@ -3,7 +3,6 @@ use crate::oauth::providers;
 
 fn expected_auth_url_prefix(provider: &str) -> &'static str {
     match provider {
-        "claude" => "https://claude.com/cai/oauth/authorize",
         "codex" => "https://auth.openai.com/oauth/authorize",
         "gitlab" => "https://gitlab.com/oauth/authorize",
         "xai" => "https://auth.x.ai/oauth2/authorize",
@@ -18,14 +17,6 @@ fn expected_auth_url_prefix(provider: &str) -> &'static str {
 
 fn expected_scopes(provider: &str) -> &'static [&'static str] {
     match provider {
-        "claude" => &[
-            "org:create_api_key",
-            "user:profile",
-            "user:inference",
-            "user:sessions:claude_code",
-            "user:mcp_servers",
-            "user:file_upload",
-        ],
         "codex" => &["openid", "profile", "email", "offline_access"],
         "gitlab" => &["api", "read_user"],
         "github" => &["read:user"],
@@ -45,17 +36,6 @@ fn assert_scopes_match(cfg: &crate::oauth::OAuthProviderConfig, expected: &[&str
 fn test_scopes_match_provider_data() {
     // Verify actual scope strings from providers.rs match expected
     let tests: &[(&str, &[&str])] = &[
-        (
-            "claude",
-            &[
-                "org:create_api_key",
-                "user:profile",
-                "user:inference",
-                "user:sessions:claude_code",
-                "user:mcp_servers",
-                "user:file_upload",
-            ],
-        ),
         ("codex", &["openid", "profile", "email", "offline_access"]),
         ("gitlab", &["api", "read_user"]),
         ("github", &["read:user"]),
@@ -99,7 +79,6 @@ fn assert_scopes_in_url(url: &str, scopes: &[&str]) {
 }
 
 const ALL_PROVIDERS: &[&str] = &[
-    "claude",
     "codex",
     "gitlab",
     "github",
@@ -112,24 +91,10 @@ const ALL_PROVIDERS: &[&str] = &[
 // ─── PKCE provider auth URL tests ──────────────────────────────────────────
 
 #[test]
-fn test_claude_auth_url() {
-    let cfg = providers::claude();
-    assert_scopes_match(&cfg, expected_scopes("claude"));
-    assert!(cfg.uses_pkce);
-    let url = cfg.build_auth_url(
-        "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
-        "http://localhost:4623/oauth/callback",
-        "st",
-        "ch",
-    );
-    assert_auth_url_shape(
-        &url,
-        expected_auth_url_prefix("claude"),
-        "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
-    );
-    assert_scopes_in_url(&url, expected_scopes("claude"));
-    assert!(url.contains("code_challenge=ch"));
-    assert!(url.contains("code_challenge_method=S256"));
+fn retired_claude_subscription_has_no_authorize_url() {
+    for provider in ["claude", "cc", "anthropic", "claude-agent"] {
+        assert!(providers::get_config(provider).is_none());
+    }
 }
 
 #[test]
@@ -261,8 +226,8 @@ fn test_pkce_verifier_xai_is_96_bytes() {
 
 #[test]
 fn test_pkce_verifier_lengths() {
-    // Standard providers (claude, codex, gitlab) use 32 bytes
-    for provider in &["claude", "codex", "gitlab"] {
+    // Standard PKCE providers use 32 bytes.
+    for provider in &["codex", "gitlab"] {
         let cfg = providers::get_config(provider).unwrap();
         if cfg.uses_pkce {
             let v = pkce::generate_code_verifier();

@@ -4,6 +4,7 @@ import { Card, Button, Input, Select } from "@/shared/components";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import {
   OAUTH_PROVIDERS,
+  EXTERNAL_PROVIDERS,
   APIKEY_PROVIDERS,
   FREE_PROVIDERS,
   FREE_TIER_PROVIDERS,
@@ -13,6 +14,7 @@ import type { Provider } from "@/types";
 import { useNotificationStore } from "@/store/notificationStore";
 
 type GroupId =
+  | "external"
   | "oauth"
   | "free"
   | "freeTier"
@@ -35,6 +37,10 @@ type Selectable =
     };
 
 const GROUP_META: Record<GroupId, { label: string; hint: string }> = {
+  external: {
+    label: "Native subscription",
+    hint: "Open the provider page to relay the original server-side native login. No tokens or passwords are entered in OpenProxy.",
+  },
   oauth: {
     label: "OAuth",
     hint: "Connect with your subscription account via browser OAuth.",
@@ -96,6 +102,7 @@ export default function ProvidersNewPageClient() {
   const selectables = useMemo<Selectable[]>(() => {
     return [
       ...toOptions("oauth", OAUTH_PROVIDERS),
+      ...toOptions("external", EXTERNAL_PROVIDERS),
       ...toOptions("free", FREE_PROVIDERS),
       ...toOptions("freeTier", FREE_TIER_PROVIDERS),
       ...toOptions("apikey", APIKEY_PROVIDERS),
@@ -242,6 +249,7 @@ export default function ProvidersNewPageClient() {
   const primaryLabel = (() => {
     if (!selected) return "Connect Provider";
     if (selected.kind === "compatible") return "Open Compatible Setup";
+    if (selected.group === "external") return "Open Native Setup";
     if (isOAuthLike) return "Start OAuth";
     if (isNoAuth) return "Open Provider";
     if (isApiKeyGroup && apiKey.trim()) {
@@ -271,7 +279,7 @@ export default function ProvidersNewPageClient() {
           Add New Provider
         </h1>
         <p className="mt-2 text-sm text-text-muted">
-          Pick a provider, then connect with OAuth, an API key, a free tier, a
+          Pick a provider, then connect with native login, OAuth, an API key, a free tier, a
           web cookie, or a custom compatible endpoint.
         </p>
       </div>
@@ -291,7 +299,7 @@ export default function ProvidersNewPageClient() {
               setApiKey("");
               setDisplayName("");
             }}
-            hint="Grouped as OAuth · Free · Free Tier · API Key · Web Cookie · Compatible"
+            hint="Grouped as Native subscription · OAuth · Free · Free Tier · API Key · Web Cookie · Compatible"
           />
 
           {selected?.kind === "provider" && (

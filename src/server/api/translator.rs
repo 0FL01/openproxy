@@ -16,6 +16,7 @@ use crate::core::model::get_model_info;
 use crate::core::translator::registry::{self, Format};
 use crate::server::console_logs::ConsoleLogEvent;
 use crate::server::state::AppState;
+use crate::types::ProviderConnection;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -202,6 +203,10 @@ async fn step_to_target(body: &Value, state: &AppState) -> Response {
         .iter()
         .find(|c| c.provider == provider && c.is_active.unwrap_or(true));
 
+    if let Some(response) = claude_transport_error(provider, connection) {
+        return response;
+    }
+
     let (url, headers) = match connection {
         Some(conn) => {
             let base_url = conn
@@ -248,7 +253,7 @@ async fn step_to_target(body: &Value, state: &AppState) -> Response {
 fn default_provider_url(provider: &str) -> String {
     match provider {
         "openai" => "https://api.openai.com/v1/chat/completions".to_string(),
-        "anthropic" | "claude" => "https://api.anthropic.com/v1/messages".to_string(),
+        "anthropic" => "https://api.anthropic.com/v1/messages".to_string(),
         "gemini" => {
             "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions".to_string()
         }
@@ -256,6 +261,29 @@ fn default_provider_url(provider: &str) -> String {
         "openrouter" => "https://openrouter.ai/api/v1/chat/completions".to_string(),
         _ => format!("https://api.{provider}.com/v1/chat/completions"),
     }
+}
+
+fn claude_transport_error(
+    provider: &str,
+    connection: Option<&ProviderConnection>,
+) -> Option<Response> {
+    let (status, message) = if matches!(provider, "claude" | "cc")
+        || (provider == "anthropic"
+            && connection.is_some_and(|connection| connection.auth_type == "oauth"))
+    {
+        (
+            StatusCode::GONE,
+            "Claude subscription OAuth is retired; use native Claude Agent login",
+        )
+    } else if provider == "claude-agent" {
+        (
+            StatusCode::BAD_REQUEST,
+            "Claude Agent requires the native v2 client adapter",
+        )
+    } else {
+        return None;
+    };
+    Some((status, Json(json!({"success":false,"error":message}))).into_response())
 }
 
 // === Send to Provider ===
@@ -280,6 +308,10 @@ async fn send_to_provider(State(state): State<AppState>, Json(body): Json<Value>
         .provider_connections
         .iter()
         .find(|c| c.provider == provider && c.is_active.unwrap_or(true));
+
+    if let Some(response) = claude_transport_error(provider, connection) {
+        return response;
+    }
 
     let Some(connection) = connection else {
         return Json(json!({ "success": false, "error": format!("No active connection for provider: {provider}") })).into_response();

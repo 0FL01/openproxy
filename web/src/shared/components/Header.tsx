@@ -3,7 +3,7 @@ import { useMemo, useState, useEffect } from "react";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import HeaderMenu from "@/shared/components/HeaderMenu";
 import ThemeToggle from "@/shared/components/ThemeToggle";
-import { OAUTH_PROVIDERS, APIKEY_PROVIDERS } from "@/shared/constants/config";
+import { AI_PROVIDERS } from "@/shared/constants/config";
 import { translate } from "@/i18n/runtime";
 import { useHeaderSearchStore } from "@/store/headerSearchStore";
 
@@ -33,7 +33,7 @@ const getPageInfo = (pathname: string): PageInfo => {
   if (providerMatch) {
     const providerId = providerMatch[1];
     const providerInfo =
-      OAUTH_PROVIDERS[providerId] || APIKEY_PROVIDERS[providerId];
+      AI_PROVIDERS[providerId];
     if (providerInfo) {
       return {
         title: providerInfo.name,

@@ -66,7 +66,7 @@ test("V2 setup authenticates catalog discovery and registers one safe model tran
     assert.equal(req.url, "/v1/models")
     assert.equal(req.headers.authorization, "Bearer fixture-key")
     assert.equal(req.headers.accept, "application/json")
-    assert.equal(req.headers["x-openproxy-claude-mask"], "1")
+    assert.equal(req.headers["x-openproxy-claude-mask"], undefined)
     res.writeHead(200, { "Content-Type": "application/json" })
     res.end(JSON.stringify({ object: "list", data: [{
       id: "not-codex/glm-5.3",

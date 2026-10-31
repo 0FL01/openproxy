@@ -5,7 +5,7 @@
 [quangdang46/openproxy](https://github.com/quangdang46/openproxy). It keeps
 provider credentials and OAuth in the proxy, routes configured models to
 eligible accounts, translates the required API formats, and serves a dashboard
-from the same Rust binary. It is not an agent runtime: the client owns history,
+from the same Rust binary. Except for the explicit native Claude provider, it is not an agent runtime: the client owns history,
 compaction, general tool execution, semantic repair, and timed generation
 retries. See the [lean proxy contract](contracts/lean-proxy.md) for the exact
 boundary.
@@ -37,7 +37,7 @@ do not use `--volumes` if you want to retain its configuration.
 
 ### Build from source
 
-Requires Rust **1.85+**, a working C compiler/linker, Node **20.3+**, and
+Requires Rust **1.85+**, a working C compiler/linker, Node **22+**, and
 pnpm **10.33.2**. From the checkout:
 
 ```bash
@@ -83,6 +83,57 @@ Other clients that accept an OpenAI-compatible endpoint can use
 model ID from `/v1/models` after configuring a provider; a catalog entry alone
 does not guarantee a working upstream connection.
 
+### Claude Pro / Max: original native login
+
+The **Claude Agent** provider replaces the retired `claude`/`cc` subscription
+OAuth and identity-mask path. The separate **Anthropic** API-key provider and
+Messages protocol remain supported. Existing retired settings are retained as
+data, not silently converted into a native login.
+
+Compose includes the original published Claude Code **2.1.301**, official Agent
+SDK **0.3.301** and Node. For a source install, install the original `claude`
+executable (at least 2.1.248), then install the locked runtime dependencies:
+
+```sh
+pnpm --dir runtime/claude-agent install --frozen-lockfile --no-optional
+# Set OPENPROXY_CLAUDE_PATH to an absolute executable path if not on PATH.
+# For an installed binary outside this checkout, set OPENPROXY_CLAUDE_RUNTIME
+# to the absolute path of runtime/claude-agent/bridge.mjs.
+```
+
+1. Sign in to the dashboard, open **Providers → Claude Agent → Add account**,
+   and start native login. Dashboard login must be enabled for this operation.
+2. Open/copy the HTTPS link printed by the **real** `claude auth login` process.
+   Enter your password only on Anthropic's website. If native login asks for a
+   browser-returned code, paste that code into **Native login input** and Send.
+   There is no OpenProxy OAuth callback, token-import field or rewritten login URL.
+3. After native authentication and a prompt-free SDK probe succeed, choose models
+   in **Available Models**. Install/update the single-file
+   [OpenCode V2 plugin](plugins/README.md), restart OpenCode's service with the
+   proxy URL/key in its environment, and select a `claude-agent/*` model under
+   `ludka2`. Claude does **not** need to be installed or signed in on the client.
+
+Native models require that V2 adapter, not ordinary Chat Completions, Messages,
+or Responses calls from arbitrary clients. OpenCode executes tools with its own
+permissions; only the original server-side Claude Code sends Anthropic requests,
+owns retries/usage and refreshes its own credentials. Native chat persistence,
+resume/fork and disposable auxiliary calls follow
+[OpenCode PR #58782](https://github.com/anomalyco/opencode/pull/58782). OpenCode
+keeps authoritative history and compaction. Native built-in workspace tools,
+settings/hooks, memory and auto-compaction are disabled, as in that integration.
+
+One personal native profile lives in `$DATA_DIR/claude-agent`, outside SQLite,
+with a private isolated home. Preserve this directory across updates; application
+DB exports/backups do **not** contain its native credentials or transcripts.
+Whole-volume backups do: treat them as secrets. No app code reads credential
+files, and native terminal output/codes are neither logged nor saved in the app DB.
+Cancel closes the fixed native login process, not a general shell. Runtime limits
+include eight live Claude processes and a five-minute idle timeout; waiting for
+an OpenCode tool/permission is not idle. There is no paid-API fallback. Native
+auth/account metadata, not a displayed zero cost, establishes subscription usage.
+This implementation does not claim a separate Anthropic approval of OpenProxy or
+transfer OpenCode's published permission to this fork.
+
 ## Routes and routing behavior
 
 | Interface | Route |
@@ -95,11 +146,12 @@ does not guarantee a working upstream connection.
 | Model discovery | `GET /v1/models` |
 | One-shot URL extraction | `POST /v1/web/fetch` |
 | One-shot Codex indexed web search (MCP) | `POST /v1/mcp` |
+| Native Claude Agent (OpenCode V2 adapter) | `POST /v2/claude-agent/stream`, `POST /v2/claude-agent/idle` |
 | Liveness (no auth) | `GET /health` |
 
 Fresh installs require an API key for chat and model discovery. Export a key
 from the dashboard as `OPENPROXY_API_KEY` in your shell. For example, with a
-configured Claude Code connection:
+configured Anthropic API-key connection (native subscriptions use the V2 plugin above):
 
 ```bash
 curl -fsS http://127.0.0.1:4623/v1/models \
@@ -107,7 +159,7 @@ curl -fsS http://127.0.0.1:4623/v1/models \
 curl -fsS http://127.0.0.1:4623/v1/chat/completions \
   -H "Authorization: Bearer $OPENPROXY_API_KEY" \
   -H 'Content-Type: application/json' \
-  -d '{"model":"cc/claude-opus-4-7","messages":[{"role":"user","content":"Hi"}]}'
+  -d '{"model":"anthropic/claude-sonnet-4-5-20250929","messages":[{"role":"user","content":"Hi"}]}'
 ```
 
 Routing uses the selected provider/model. If an upstream attempt fails, the

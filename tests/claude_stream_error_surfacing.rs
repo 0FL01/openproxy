@@ -1,7 +1,7 @@
 //! Claude→Responses stream failure surfacing (production incident follow-up).
 //!
-//! A masked OpenCode session delegating to a subagent retried forever on
-//! "Server error": the proxy swallowed Anthropic mid-stream `error` events
+//! A client retried forever on "Server error": the proxy swallowed
+//! Anthropic mid-stream `error` events
 //! (200 headers, in-band failure) and logged truncated streams as success.
 //! These tests pin the three contract points: upstream error events surface
 //! as `upstream_error_event` with an upstream error kind, truncated Claude
@@ -27,17 +27,17 @@ async fn app_for(upstream: &MockUpstream) -> (axum::Router, TempTestDb) {
         .update(|db| {
             db.api_keys = vec![test_api_key()];
             db.provider_nodes = vec![ProviderNode {
-                id: "claude".into(),
+                id: "anthropic".into(),
                 r#type: "anthropic-compatible".into(),
                 name: "Claude surfacing upstream".into(),
-                prefix: Some("claude".into()),
+                prefix: Some("anthropic".into()),
                 api_type: Some("messages".into()),
                 base_url: Some(upstream.url("/v1")),
                 ..Default::default()
             }];
             db.provider_connections = vec![ProviderConnection {
                 id: "claude-surfacing-account".into(),
-                provider: "claude".into(),
+                provider: "anthropic".into(),
                 auth_type: "apikey".into(),
                 is_active: Some(true),
                 priority: Some(1),
@@ -60,10 +60,9 @@ fn responses_request() -> Request<Body> {
         .uri("/v1/responses")
         .header("authorization", "Bearer test-key")
         .header("content-type", "application/json")
-        .header("x-openproxy-claude-mask", "1")
         .body(Body::from(
             json!({
-                "model": "claude/claude-opus-5-5",
+                "model": "anthropic/claude-opus-5-5",
                 "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
                 "stream": true
             })
@@ -78,10 +77,9 @@ fn responses_tool_request() -> Request<Body> {
         .uri("/v1/responses")
         .header("authorization", "Bearer test-key")
         .header("content-type", "application/json")
-        .header("x-openproxy-claude-mask", "1")
         .body(Body::from(
             json!({
-                "model": "claude/claude-opus-5-5",
+                "model": "anthropic/claude-opus-5-5",
                 "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Read the file"}]}],
                 "tools": [{
                     "type": "function",
@@ -125,13 +123,13 @@ const REFUSAL_MESSAGE: &str = "Claude refused to respond (stop_reason=refusal)."
 fn claude_request(route: &str, stream: bool) -> Request<Body> {
     let body = if route == "/v1/responses" {
         json!({
-            "model": "claude/claude-opus-5-5",
+            "model": "anthropic/claude-opus-5-5",
             "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
             "stream": stream
         })
     } else {
         json!({
-            "model": "claude/claude-opus-5-5",
+            "model": "anthropic/claude-opus-5-5",
             "messages": [{"role": "user", "content": "hi"}],
             "max_tokens": 64,
             "stream": stream
@@ -142,7 +140,6 @@ fn claude_request(route: &str, stream: bool) -> Request<Body> {
         .uri(route)
         .header("authorization", "Bearer test-key")
         .header("content-type", "application/json")
-        .header("x-openproxy-claude-mask", "1")
         .body(Body::from(body.to_string()))
         .unwrap()
 }

@@ -11,7 +11,7 @@ use crate::types::{AppDb, ModelAliasTarget, ProviderConnection, ProviderModelRef
 
 static ALIAS_TO_PROVIDER_ID: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
     HashMap::from([
-        ("cc", "claude"),
+        ("claude-agent", "claude-agent"),
         ("cx", "codex"),
         ("ag", "antigravity"),
         ("gh", "github"),
@@ -240,7 +240,9 @@ pub fn get_model_info(model_str: &str, db: &AppDb) -> ResolvedModel {
             parsed.provider_alias.clone(),
             parsed.model.clone(),
         ) {
-            if provider == provider_alias {
+            if provider == provider_alias
+                && !matches!(provider.as_str(), "claude" | "cc" | "claude-agent")
+            {
                 for node_type in ["openai-compatible", "anthropic-compatible"] {
                     if let Some(node) = db.provider_nodes.iter().find(|node| {
                         node.r#type == node_type
@@ -347,6 +349,25 @@ mod tests {
         a6api_enabled_model_ids,
     };
     use crate::types::{AppDb, ProviderConnection};
+
+    #[test]
+    fn retired_and_native_provider_names_cannot_be_reinterpreted_as_compatible_prefixes() {
+        for provider in ["claude", "cc", "claude-agent"] {
+            let mut db = AppDb::default();
+            db.provider_nodes.push(crate::types::ProviderNode {
+                id: "unrelated-node".into(),
+                r#type: "anthropic-compatible".into(),
+                prefix: Some(provider.into()),
+                ..Default::default()
+            });
+            assert_eq!(
+                super::get_model_info(&format!("{provider}/model"), &db)
+                    .provider
+                    .as_deref(),
+                Some(provider)
+            );
+        }
+    }
 
     fn connection_with_inventory(inventory: serde_json::Value) -> ProviderConnection {
         let mut connection = ProviderConnection {

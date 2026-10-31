@@ -2,9 +2,8 @@
 
 use crate::oauth::OAuthProviderConfig;
 
-/// The 8 providers known to `providers::get_config`: PKCE + device-code.
+/// Providers under test in `providers::get_config`: PKCE + device-code.
 pub const ALL_PROVIDERS: &[&str] = &[
-    "claude",
     "codex",
     "gitlab",
     "xai",
@@ -17,7 +16,6 @@ pub const ALL_PROVIDERS: &[&str] = &[
 /// Provider -> expected scopes (as sorted space-separated string).
 pub fn expected_scopes(provider: &str) -> &'static str {
     match provider {
-        "claude" => "read connect",
         "codex" => "openid profile email",
         "gitlab" => "api read_user",
         "xai" => "openid profile email openai:write:grok-cli:access",
@@ -32,7 +30,6 @@ pub fn expected_scopes(provider: &str) -> &'static str {
 /// Provider -> expected authorize URL prefix.
 pub fn expected_auth_url_prefix(provider: &str) -> &'static str {
     match provider {
-        "claude" => "https://auth.claude.ai/authorize",
         "codex" => "https://codex.ai/oauth/authorize",
         "gitlab" => "https://gitlab.com/oauth/authorize",
         "xai" => "https://auth.x.ai/oauth2/authorize",

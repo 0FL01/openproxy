@@ -63,6 +63,9 @@ export default function Modal({
 
       {/* Modal content */}
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={typeof title === "string" ? title : undefined}
         className={cn(
           "relative w-full bg-surface",
           "border border-border-subtle",
@@ -83,6 +86,7 @@ export default function Modal({
             {showCloseButton && (
               <button
                 onClick={onClose}
+                aria-label="Close dialog"
                 className="p-1.5 rounded-[10px] text-text-muted hover:bg-surface-2 hover:text-text-main transition-colors"
               >
                 <span className="material-symbols-outlined text-[20px]">close</span>

@@ -520,6 +520,15 @@ async fn schema_stability_emits_v1_promise() {
         exception["removedRoutes"],
         json!(["GET /api/version", "POST /api/version/update"])
     );
+    let claude_exception = &v["data"]["exceptions"][1];
+    assert_eq!(claude_exception["id"], "claude-subscription-hard-cut");
+    assert_eq!(
+        claude_exception["retiredProviders"],
+        json!(["claude", "cc"])
+    );
+    assert_eq!(claude_exception["legacyDataPreserved"], true);
+    assert_eq!(claude_exception["anthropicApiKeyPreserved"], true);
+    assert_eq!(claude_exception["replacementTransport"], "/v2/claude-agent");
 }
 
 #[tokio::test(flavor = "multi_thread")]

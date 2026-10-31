@@ -20,32 +20,32 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: user: breaking change; remove the deprecated Claude contract at the root; delete openproxy-claude-mask.js completely.
   - Acceptance: no operational claude/cc OAuth, import-token, refresh, C46 identity/system/tool-name masking, mask discovery/inference gate, V1 mask plugin or its obsolete tests/instructions. Legacy stored values remain preserved but inert, never silently converted. Anthropic API-key and shared Messages support remain.
   - Primary evidence: targeted retirement/API tests plus affected library tests.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: `cargo test --locked --jobs 2 --test claude_subscription_retirement --test settings_api`: 7 retirement + 4 settings tests passed, including zero outbound execution/header preview through the direct translator and unchanged retired context round-trip. Delegated shared contract/header/OAuth/schema/model/TRACE checks passed (101 integration tests); retained Anthropic passthrough assertion passed unchanged.
 - R2: Dashboard account addition relays original native login.
   - Source: user: authorization through the web interface when adding a subscription account; full native forwarding, not our OAuth implementation.
   - Acceptance: Add Claude Agent starts only the fixed original claude auth login process; dashboard displays its output and forwards interactive input, including a browser-returned code when native login requests it. Native Claude Code constructs the URL, exchanges/refreshes credentials and stores them in the persistent native profile. App records only external connection and safe metadata after native status/SDK probe succeed. No passwords or Anthropic tokens in app DB or logs.
   - Primary evidence: fake native process integration and dashboard test; real binary login is verified separately under R7.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: final `cargo test --locked --jobs 2 --lib claude_agent`: 2 passed, covering native PTY/API early auth, attempt ownership, raw input, metadata-only persistence, scoped sessions, cancellation/reaping, account-change/startup exclusion and same-origin scheme/HTTP2 authority. Dashboard controller/SSR checks passed in the 19-test final client/UI run. Real personal sign-in remains R7, not claimed by these fixtures.
 - R3: Server runtime preserves the supported behavior of PR #58782.
   - Source: user: fully repeat PR/Claude Code implementation; approved final amendment withdraws persistSession:false for chats.
   - Acceptance: original installed binary through public SDK; native base prompt plus client role/instructions; only OpenCode tools through MCP, native built-in tools/config/hooks/memory/compaction disabled as in PR; fail closed on MCP failure; correct tool IDs/results/media, sequential tools, interruption/drain, persistent chat sessions, resume/fork/checkpoints, partial reply continuation, separate title/generate/compaction calls, model/effort selection, deduplicated usage and native retries without a second generation retry loop. Five-minute idle never interrupts an executing client tool. Only behavior supported by the PR is required, not every standalone Claude Code feature.
   - Primary evidence: actual SDK with a fake claude transport exercising tool continuation, cancellation, resume/fork and side-call isolation.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: actual SDK/MCP runtime tests passed 22/22 (21 in the final full run plus the corrected frame-bound case rerun). Covered persistent/resume/fork, tools, >5min waits, media/error/abort, drains, auxiliary calls, limits and deduplicated usage. Isolated network-disabled image initialized the original Claude Code 2.1.301 through SDK 0.3.301: tokenSource=none, 5 models, no prompt submitted. Native real-account transcript/inference verification remains R7.
 - R4: Existing provider/model controls and OpenCode V2 aggregate discovery work with the native runtime.
   - Source: approved plan and repository core product surfaces.
   - Acceptance: new provider/source claude-agent; native inventory and saved user custom/enabled/disabled models feed Available Models and /v1/models. Existing ludka2 V2 plugin selects a locally defined remote adapter only for canonical claude-agent source. No client-side Claude install/login needed, no arbitrary SDK/URL/header overrides from the catalog, unrelated providers unchanged. OpenCode executes tools/permissions and reports terminal execution events to arm idle.
   - Primary evidence: focused model API/plugin tests and isolated client/transport smoke.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: native/retired model library assertions passed; saved native model API/disabled/custom-data preservation passed. Final discovery/native/dashboard JS run: 19 passed; Available Models suite previously 3 passed. Real loopback NDJSON transport is tested; public OpenCode hooks use mocked fixtures, not a claim of a running authenticated OpenCode session. Native context is uncapped, output=0 unknown, cost=[]; remote package/URL/header overrides remain rejected.
 - R5: Package and deploy the verified implementation to the existing production Compose service.
   - Source: user: build and deploy production.
   - Acceptance: image contains Node, locked SDK/runtime and unmodified published Claude binary, retains existing data/encryption/config and native profile across recreation, passes isolated smoke before replacement; production health and deployed revision checked; previous image retained for rollback. No volume deletion or credential/config reset.
   - Primary evidence: Docker build, isolated container smoke and production image/revision/health observation.
-  - Status: pending
-  - Evidence:
+  - Status: in_progress
+  - Evidence: runtime stage built as openproxy:claude-agent-runtime-check (sha256:0d7004defd8d6357746b3162aa780710da3d3fabb88d09580cc31b3e1fce7a80), original CLI/SDK no-prompt initialization passed. Full image, isolated server smoke and production replacement remain next.
 - R6: Commit and push verified iterations, then incorporate the current branch in main and push.
   - Source: latest user instruction.
   - Acceptance: intended conventional commits on origin/feat/dioxus-dashboard, existing branch work retained, main includes this branch without force-push or discarded commits, origin/main SHA confirmed. Existing unfinished Dioxus work is merged as source, not falsely declared complete or switched into production packaging.
@@ -94,27 +94,30 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R1/R2/R3/R4 foundation.
-- Smallest next action: commit this frozen goal; implement independent native SDK runtime and old-path retirement/client UI while integrating the Rust supervisor and native-login transport.
-- Expected evidence: focused SDK/retirement/auth/model/plugin tests before the first runtime commit.
+- Closes: R5/R6 packaging, deployment and main integration.
+- Smallest next action: review/stage the verified implementation, commit/push the feature branch, build its full image, then run isolated server/native-login-start smoke before preserving the rollback image and replacing production.
+- Expected evidence: clean source commit; full Docker image/revision; isolated health/auth/native login cancellation; unchanged production volume and healthy deployed revision; then fast-forward main and push all existing branch work.
 - Stop or replan if: a required native behavior is unavailable in the official SDK/binary, the full PR behavior cannot be preserved by the transport, or a destructive/credential-changing action beyond this approved envelope is required. Record the exact blocker, not a substitute feature.
 
 ## Current State
 
-- Resolved: read-only RECON; user authorized implementation, pushes, production deployment and final main merge. Origin main identified; working tree clean.
-- Last relevant evidence: production healthy at image sha256:4807bf3a50e8d6d9f11e4cbf71bf933724e91fce74abbe829b1daa4317380b56 with revision 5f7660b1. Installed host Claude Code 2.1.300 exposes native auth login/status, but no host profile was opened. Production connections are codex/glm/opencode-go/xai, not Claude.
-- Blocker: none for implementation. R7 will require the owner's interactive browser sign-in; do not substitute unrelated host credentials.
-- Next: implementation checkpoint above; isolated DATA_DIR and port 4625/test container only until deployment gates pass.
+- Resolved: R1–R4 implementation and focused evidence; goal commit 6bcaf126 pushed to the feature branch. No production mutation or host/native credential use yet.
+- Last relevant evidence: final formatting and `cargo clippy --locked --jobs 2 --all-targets --all-features -- -D warnings` passed after profile synchronization; native Rust 2/2 and final 11 retirement/settings integration tests passed; dashboard rebuilt (66 pages). Production baseline remains image sha256:4807bf3a50e8d6d9f11e4cbf71bf933724e91fce74abbe829b1daa4317380b56, revision 5f7660b1, existing four connections.
+- Blocker: R7 needs owner browser sign-in. An isolated host OpenCode CLI attempt was denied by the external-directory permission; no workaround accessed client config/credentials. This does not block the authorized packaging/deploy/merge checkpoint. The unrelated untouched date-sensitive `core::account_fallback::tests::github_402_monthly_reset_returns_next_month` fails its “should be in the future” assertion; delegated broad library evidence was 1,190 passed, one ignored, that one explicitly skipped—not an unfiltered full-suite pass.
+- Next: R5/R6 checkpoint above; use isolated data/test container until its smoke passes, then deploy and merge without deleting the production volume or resetting settings/secrets.
 
 ## Material Decisions
 
 - 2026-10-31: user requires complete old-path removal, not a compatibility shim. Native server login and unchanged Claude Code outbound behavior replace token-based impersonation.
 - 2026-10-31: native persistence/resume/fork are required; earlier persistSession:false-for-chats proposal is superseded. Browser dashboard is an I/O wrapper around native login; the upstream PR itself uses a terminal external-login method.
 - 2026-10-31: preserve the current feature branch and merge its existing work into main after verified deployment. Do not complete the unrelated Dioxus migration or silently change the production frontend.
+- 2026-10-31: R3/R5 require the smallest shutdown integration in `src/main.rs`: the existing entrypoint only awaited API shutdown, not SIGTERM/SIGINT, and did not await native child cleanup before dropping Tokio. Catch those signals, await the native owner, and give Compose a bounded native-drain grace period. Login creation may wait for the old native worker to drain; its client request budget must cover that phase without losing the returned attempt ID.
+- 2026-10-31: native credential changes exclude concurrent SDK startup/probes at the profile owner. Concurrent connection checks reuse the SDK's bounded authenticated probe instead of spawning extra status CLIs; original status JSON remains mandatory when completing native login. Already-started generations are drained before the fixed login command starts.
 
 ## Checkpoint History
 
 - 2026-10-31: goal frozen from the approved plan and amendments; old OAuth/mimicry goal superseded. No implementation or tests yet.
+- 2026-10-31: R1–R4 implemented and focused checks passed. Parent fixed the direct translator retirement bypass and preservation-compatible settings validation identified in handoff. Original published CLI+locked SDK initialize together in an isolated credential-free image. Next: verified runtime commit, full image/server smoke, production deploy, main push; owner-assisted R7 remains separate.
 
 ## Completion
 

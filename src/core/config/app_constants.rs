@@ -79,7 +79,6 @@ pub fn load_code_assist_metadata() -> serde_json::Value {
 pub fn refresh_lead(provider: &str) -> Option<Duration> {
     match provider {
         "codex" => Some(Duration::from_secs(5 * 24 * 60 * 60)),
-        "claude" => Some(Duration::from_secs(4 * 60 * 60)),
         "kimi-coding" => Some(Duration::from_secs(5 * 60)),
         "antigravity" => Some(Duration::from_secs(5 * 60)),
         _ => None,
@@ -108,8 +107,6 @@ pub fn oauth_endpoint(provider: &str) -> Option<OAuthEndpoint> {
             auth: "https://auth.openai.com/oauth/authorize",
             device_code: None,
         },
-        // NOTE: no "anthropic" arm — Claude OAuth identity is owned by
-        // crate::oauth::providers (C46 single source), not this dead map.
         "github" => OAuthEndpoint {
             token: "https://github.com/login/oauth/access_token",
             auth: "https://github.com/login/oauth/authorize",

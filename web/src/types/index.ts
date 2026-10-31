@@ -40,13 +40,13 @@ export interface Provider {
   hidden?: boolean;
   /** Display sort weight (lower first). Mirrors 9router registry priority. */
   priority?: number;
-  authType?: "oauth" | "apikey" | "cookie";
+  authType?: "oauth" | "apikey" | "cookie" | "external";
   /**
    * When a provider supports more than one auth path (e.g. xAI OAuth + API key),
    * list every allowed mode. Dual providers also appear in OAUTH_PROVIDERS and
    * may still live in APIKEY_PROVIDERS for catalog/list grouping.
    */
-  authModes?: Array<"oauth" | "apikey" | "cookie">;
+  authModes?: Array<"oauth" | "apikey" | "cookie" | "external">;
   hasOAuth?: boolean;
   oauth?: {
     clientId?: string;

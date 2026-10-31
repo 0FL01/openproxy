@@ -89,19 +89,7 @@ async fn list_models_for_kinds(
         }
     }
 
-    let mut data = build_models_list(&state, &snapshot, kind_filter).await;
-
-    // Claude/Anthropic subscription models are served only to clients that
-    // present as Claude Code: the mask plugin's marker header or a genuine
-    // claude-cli UA. Unmasked clients never even see the catalog rows.
-    if !super::chat::claude_mask_client_allowed(&headers) {
-        data.retain(|model| {
-            !matches!(
-                model.opencode.as_ref().and_then(|o| o.source.as_deref()),
-                Some("claude") | Some("anthropic")
-            )
-        });
-    }
+    let data = build_models_list(&state, &snapshot, kind_filter).await;
 
     with_cors_response(
         Json(ModelListResponse {
@@ -145,6 +133,10 @@ async fn build_models_list(
         .provider_connections
         .iter()
         .filter(|connection| connection.is_active())
+        .filter(|connection| !matches!(connection.provider.as_str(), "claude" | "cc"))
+        .filter(|connection| {
+            !(connection.provider == "anthropic" && connection.auth_type == "oauth")
+        })
         .collect();
     let codex_inventory = if kind_filter.contains(&LLM_KIND) {
         Some(state.codex_models.union_active(snapshot))
@@ -257,7 +249,12 @@ async fn build_models_list(
                 .collect();
 
             let (mut raw_model_ids, had_enabled_models) = enabled_model_ids(connection);
-            if provider_id == "codex" {
+            if provider_id == "claude-agent" && !had_enabled_models {
+                raw_model_ids = crate::server::claude_agent::inventory(connection)
+                    .iter()
+                    .filter_map(|model| model["id"].as_str().map(str::to_string))
+                    .collect();
+            } else if provider_id == "codex" {
                 raw_model_ids = provider_models
                     .iter()
                     .filter(|model| model.kind != LLM_KIND)
@@ -401,7 +398,13 @@ async fn build_models_list(
                 }
 
                 // Look up context_window from catalog for this model.
-                let ctx_len = if provider_id == "xai" {
+                let ctx_len = if provider_id == "claude-agent" {
+                    crate::server::claude_agent::inventory(connection)
+                        .iter()
+                        .find(|model| model["id"] == model_id)
+                        .and_then(|model| model["contextWindow"].as_u64())
+                        .and_then(|context| u32::try_from(context).ok())
+                } else if provider_id == "xai" {
                     xai_model
                         .and_then(|model| model.context_window)
                         .or_else(|| {
@@ -520,6 +523,16 @@ async fn build_models_list(
             let static_alias = catalog
                 .static_alias_for_provider(provider_id)
                 .unwrap_or(alias);
+            if matches!(provider_id, "claude" | "cc") || matches!(alias, "claude" | "cc") {
+                continue;
+            }
+            if provider_id == "claude-agent"
+                && !active_connections.iter().any(|connection| {
+                    connection.provider == "claude-agent" && connection.auth_type == "external"
+                })
+            {
+                continue;
+            }
             if [alias, provider_id, static_alias].iter().any(|key| {
                 disabled_map
                     .get(*key)
@@ -625,13 +638,43 @@ async fn build_models_list(
             {
                 metadata.overlay(xai_opencode_metadata(entry));
             }
-            // C46/R7: static `cc` catalog rows carry no limits; overlay the
-            // capabilities table so the OpenCode plugin keeps
-            // `limit{context,output}`. `overlay` fills gaps only, so catalog
-            // values win where present. Unknown models get nothing — floor
-            // defaults are never fabricated (`known_max_output` is the
-            // known-model signal).
-            if matches!(provider_id, "claude" | "anthropic") {
+            if let Some(entry) = connection
+                .filter(|connection| connection.provider == "claude-agent")
+                .and_then(|connection| {
+                    crate::server::claude_agent::inventory(connection)
+                        .iter()
+                        .find(|entry| entry["id"] == model_id)
+                })
+            {
+                let efforts = entry["efforts"]
+                    .as_array()
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(|value| value.as_str().map(str::to_string))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                metadata.overlay(OpenCodeModelConfig::from_facts(ModelMetadataFacts {
+                    name: entry["name"].as_str().map(str::to_string),
+                    context: entry["contextWindow"]
+                        .as_u64()
+                        .and_then(|value| u32::try_from(value).ok()),
+                    input: None,
+                    output: None,
+                    capabilities: &[],
+                    modalities: Some((
+                        &["text".into(), "image".into(), "pdf".into()],
+                        &["text".into()],
+                    )),
+                    attachment: Some(true),
+                    reasoning: Some(true),
+                    tool_call: Some(true),
+                    efforts: Some(&efforts),
+                }));
+            }
+            // Known Anthropic API models retain their ordinary API metadata.
+            if provider_id == "anthropic" {
                 let caps = crate::core::model::capabilities::get_capabilities_for_model(
                     provider_id,
                     model_id,
@@ -790,7 +833,7 @@ fn provider_matches_kinds(
         .any(|candidate| service_kinds.iter().any(|kind| kind == candidate))
 }
 
-fn output_alias(
+pub(super) fn output_alias(
     catalog: &crate::core::model::catalog::ProviderCatalog,
     connection: &ProviderConnection,
     provider_id: &str,
@@ -1214,165 +1257,111 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claude_static_models_carry_capabilities_limits() {
-        // C46/R7: static `cc` catalog rows carry no limits; the capabilities
-        // overlay must supply limit{context,output} + source for the
-        // OpenCode plugin (which drops `limit` unless both are present).
-        // 2026-10-07: claude joined providerContextLimits, so 1M-native rows
-        // are advertised at the standard 500k cap with output preserved.
+    async fn native_claude_inventory_preserves_user_models_and_native_metadata() {
+        let state = test_state().await;
         let snapshot = AppDb {
             provider_connections: vec![ProviderConnection {
-                id: "conn-claude".into(),
-                provider: "claude".into(),
-                auth_type: "oauth".into(),
-                access_token: Some("sk-ant-oat-test".into()),
+                id: "native-claude".into(),
+                provider: "claude-agent".into(),
+                auth_type: "external".into(),
                 is_active: Some(true),
+                provider_specific_data: BTreeMap::from([
+                    ("prefix".into(), json!("personal")),
+                    ("enabledModels".into(), json!(["opus", "hidden"])),
+                    (
+                        "claudeAgentModels".into(),
+                        json!([
+                            {"id":"opus","name":"Native Opus","contextWindow":1000000,"efforts":["low","max"]},
+                            {"id":"hidden","name":"Hidden native model"}
+                        ]),
+                    ),
+                ]),
                 ..Default::default()
             }],
-            ..Default::default()
-        };
-
-        let models = build_models_list(&test_state().await, &snapshot, &[LLM_KIND]).await;
-        for id in [
-            "cc/claude-sonnet-5",
-            "cc/claude-opus-4-8",
-            "cc/claude-opus-5-5",
-        ] {
-            let model = models
-                .iter()
-                .find(|m| m.id == id)
-                .unwrap_or_else(|| panic!("static cc model {id} should appear in /v1/models"));
-            let metadata = model
-                .opencode
-                .as_ref()
-                .expect("opencode metadata should be present");
-            assert_eq!(metadata.source.as_deref(), Some("claude"));
-            let limit = metadata.limit.as_ref().expect("limit should be present");
-            assert!(
-                limit.context.is_some() && limit.output.is_some(),
-                "limit needs context AND output for the plugin: {id}"
-            );
-            assert_eq!(
-                limit.context.map(std::num::NonZeroU32::get),
-                Some(500_000),
-                "1M-native cc rows advertise the standard 500k cap: {id}"
-            );
-            assert_eq!(
-                limit.output.map(std::num::NonZeroU32::get),
-                Some(128_000),
-                "cap must not drop the output limit: {id}"
-            );
-        }
-
-        // 4.5 family keeps its exact native windows (200k/64k, sonnet 4.5 1M
-        // capped to 500k) instead of the fabricated 500k/128k pair.
-        for (id, context) in [
-            ("cc/claude-opus-4-5-20251101", 200_000),
-            ("cc/claude-sonnet-4-5-20250929", 500_000),
-            ("cc/claude-haiku-4-5-20251001", 200_000),
-        ] {
-            let model = models
-                .iter()
-                .find(|m| m.id == id)
-                .unwrap_or_else(|| panic!("4.5 cc model {id} should appear in /v1/models"));
-            let limit = model
-                .opencode
-                .as_ref()
-                .and_then(|metadata| metadata.limit.as_ref())
-                .expect("4.5 limit should be present");
-            assert_eq!(
-                limit.context.map(std::num::NonZeroU32::get),
-                Some(context),
-                "4.5 native context must survive the cap: {id}"
-            );
-            assert_eq!(
-                limit.output.map(std::num::NonZeroU32::get),
-                Some(64_000),
-                "4.5 output must be the native 64k: {id}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn claude_opus_5_5_advertises_reasoning_effort_variants() {
-        // Opus 5.5 has no models.dev entry, so the catalog row is the only
-        // authoritative effort source for the OpenCode plugin. Without
-        // `reasoningEfforts` the row ships without `opencode.variants` and
-        // xhigh never appears in the client's effort picker.
-        let snapshot = AppDb {
-            provider_connections: vec![ProviderConnection {
-                id: "conn-claude".into(),
-                provider: "claude".into(),
-                auth_type: "oauth".into(),
-                access_token: Some("sk-ant-oat-test".into()),
-                is_active: Some(true),
-                ..Default::default()
+            custom_models: vec![CustomModel {
+                provider_alias: "claude-agent".into(),
+                id: "custom".into(),
+                name: Some("User model".into()),
+                r#type: "llm".into(),
+                extra: BTreeMap::new(),
             }],
+            extra: BTreeMap::from([("disabledModels".into(), json!({"claude-agent":["hidden"]}))]),
             ..Default::default()
         };
-
-        let models = build_models_list(&test_state().await, &snapshot, &[LLM_KIND]).await;
+        let original = serde_json::to_value(&snapshot).unwrap();
+        let models = build_models_list(&state, &snapshot, &[LLM_KIND]).await;
+        assert!(!models.iter().any(|model| model.id.ends_with("/hidden")));
         let model = models
             .iter()
-            .find(|m| m.id == "cc/claude-opus-5-5")
-            .expect("cc/claude-opus-5-5 should appear in /v1/models");
-        let metadata = model
-            .opencode
-            .as_ref()
-            .expect("opencode metadata should be present");
-        let expected: BTreeMap<_, _> = ["low", "medium", "high", "xhigh", "max"]
-            .iter()
-            .map(|effort| ((*effort).to_string(), json!({"reasoningEffort": effort})))
-            .collect();
-        assert_eq!(
-            serde_json::to_value(&metadata.variants).expect("variants serialize"),
-            json!(expected),
-            "opus 5.5 must advertise low/medium/high/xhigh/max variants"
+            .find(|model| model.id == "personal/opus")
+            .unwrap();
+        let metadata = model.opencode.as_ref().unwrap();
+        assert_eq!(metadata.source.as_deref(), Some("claude-agent"));
+        assert_eq!(metadata.name.as_deref(), Some("Native Opus"));
+        let limit = metadata.limit.as_ref().unwrap();
+        assert_eq!(limit.context.unwrap().get(), 1_000_000);
+        assert!(
+            limit.output.is_none(),
+            "unknown native output is not fabricated"
         );
+        assert_eq!(
+            metadata
+                .variants
+                .as_ref()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["low", "max"]
+        );
+        assert_eq!(metadata.tool_call, Some(true));
         assert_eq!(metadata.reasoning, Some(true));
+        assert!(models.iter().any(|model| model.id == "personal/custom"
+            && model.opencode.as_ref().unwrap().name.as_deref() == Some("User model")));
+        assert_eq!(serde_json::to_value(&snapshot).unwrap(), original);
+        assert!(
+            !state.db.data_dir.join("claude-agent").exists(),
+            "discovery must not launch Claude Code"
+        );
     }
 
     #[tokio::test]
-    async fn claude_cc_catalog_has_no_duplicate_rows() {
-        // 2026-10-07: b89f3bb8 added both dashed and dotted opus spellings
-        // (claude-opus-4-8 + claude-opus-4.8, claude-opus-5-5 + 5.5), which
-        // surfaced as two indistinguishable picker rows. The dashed id is the
-        // canonical live one (CC traffic 620/620, signed Anthropic catalog).
+    async fn retired_claude_rows_are_inert_but_anthropic_api_models_remain_visible() {
         let snapshot = AppDb {
-            provider_connections: vec![ProviderConnection {
-                id: "conn-claude".into(),
-                provider: "claude".into(),
-                auth_type: "oauth".into(),
-                access_token: Some("sk-ant-oat-test".into()),
-                is_active: Some(true),
-                ..Default::default()
+            provider_connections: vec![
+                ProviderConnection {
+                    id: "retired".into(),
+                    provider: "claude".into(),
+                    auth_type: "oauth".into(),
+                    is_active: Some(true),
+                    ..Default::default()
+                },
+                ProviderConnection {
+                    id: "api".into(),
+                    provider: "anthropic".into(),
+                    auth_type: "apikey".into(),
+                    is_active: Some(true),
+                    ..Default::default()
+                },
+            ],
+            custom_models: vec![CustomModel {
+                provider_alias: "cc".into(),
+                id: "legacy-custom".into(),
+                name: None,
+                r#type: "llm".into(),
+                extra: BTreeMap::new(),
             }],
             ..Default::default()
         };
-
         let models = build_models_list(&test_state().await, &snapshot, &[LLM_KIND]).await;
-        let cc_rows: Vec<&ModelCard> = models.iter().filter(|m| m.id.starts_with("cc/")).collect();
-        assert!(!cc_rows.is_empty(), "cc rows should be listed");
-
-        let mut names = std::collections::HashMap::new();
-        for row in &cc_rows {
-            assert!(
-                !row.id.contains('.'),
-                "dotted cc model id must not be listed: {}",
-                row.id
-            );
-            let name = row
-                .opencode
-                .as_ref()
-                .and_then(|metadata| metadata.name.clone())
-                .unwrap_or_else(|| row.id.clone());
-            assert!(
-                names.insert(name.clone(), row.id.clone()).is_none(),
-                "duplicate cc display name {name:?}: {:?} and {:?}",
-                names.get(&name),
-                row.id
-            );
-        }
+        assert!(!models
+            .iter()
+            .any(|model| model.id.starts_with("cc/") || model.id.starts_with("claude/")));
+        assert!(models
+            .iter()
+            .any(|model| model.opencode.as_ref().unwrap().source.as_deref() == Some("anthropic")));
+        assert_eq!(snapshot.provider_connections[0].provider, "claude");
+        assert_eq!(snapshot.custom_models[0].id, "legacy-custom");
     }
 
     #[tokio::test]

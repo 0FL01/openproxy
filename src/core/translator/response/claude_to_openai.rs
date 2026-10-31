@@ -84,13 +84,6 @@ pub fn claude_to_openai_response(chunk: &Value, state: &mut Map<String, Value>) 
                         .pointer("/content_block/name")
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
-                    // Honour an optional tool-name remap from request translation.
-                    let mapped = state
-                        .get("toolNameMap")
-                        .and_then(|m| m.get(raw_name))
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string)
-                        .unwrap_or_else(|| raw_name.to_string());
                     let tool_id = chunk
                         .pointer("/content_block/id")
                         .and_then(|v| v.as_str())
@@ -101,7 +94,7 @@ pub fn claude_to_openai_response(chunk: &Value, state: &mut Map<String, Value>) 
                         "index": tool_call_index,
                         "id": tool_id,
                         "type": "function",
-                        "function": {"name": mapped, "arguments": ""}
+                        "function": {"name": raw_name, "arguments": ""}
                     });
 
                     // Stash the in-progress tool call by Claude block index.
@@ -768,14 +761,8 @@ mod tests {
     }
 
     #[test]
-    fn tool_name_map_remaps_response_name() {
+    fn response_preserves_caller_tool_name() {
         let mut state = Map::new();
-        let mut tool_map = Map::new();
-        tool_map.insert(
-            "WebSearch_ide".to_string(),
-            Value::String("WebSearch".to_string()),
-        );
-        state.insert("toolNameMap".to_string(), Value::Object(tool_map));
 
         let events = [
             json!({"type": "message_start", "message": {"id": "m", "model": "claude"}}),
@@ -788,7 +775,7 @@ mod tests {
             out.extend(claude_to_openai_response(ev, &mut state));
         }
         let call = &out[1]["choices"][0]["delta"]["tool_calls"][0];
-        assert_eq!(call["function"]["name"], "WebSearch");
+        assert_eq!(call["function"]["name"], "WebSearch_ide");
     }
 
     #[test]

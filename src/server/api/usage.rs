@@ -49,9 +49,6 @@ pub(crate) fn supports_quota(connection: &ProviderConnection) -> bool {
             connection.provider.as_str(),
             "github"
                 | "github-copilot"
-                // claude/anthropic quota is passively observed from
-                // response headers on live traffic (quota_headers); it is
-                // never fetched from the usage endpoint.
                 | "codex"
                 | "antigravity"
                 | "ollama"
@@ -129,11 +126,6 @@ pub async fn fetch_oauth_quota(connection: &ProviderConnection) -> Value {
     let psd = &connection.provider_specific_data;
     match provider {
         "github" | "github-copilot" => fetch_github_quota(token, provider).await,
-        "claude" | "anthropic" => {
-            // Claude quota is passively observed from response headers on
-            // live traffic; the usage endpoint is never polled here.
-            serde_json::json!({})
-        }
         "codex" => {
             let account_id = codex_account_id(psd);
             fetch_codex_quota(token, account_id.as_deref()).await
@@ -197,6 +189,16 @@ async fn get_connection_usage(
             .into_response();
     };
 
+    if matches!(connection.provider.as_str(), "claude" | "cc")
+        || (connection.provider == "anthropic" && connection.auth_type == "oauth")
+    {
+        return (
+            axum::http::StatusCode::GONE,
+            Json(json!({"error": "Claude subscription integration retired"})),
+        )
+            .into_response();
+    }
+
     let is_oauth = connection.auth_type == "oauth";
     // Generic apikey providers persist "apikey" — accept both spellings.
     let is_apikey_eligible = (connection.auth_type == "apikey"
@@ -240,48 +242,20 @@ async fn get_connection_usage(
     let mut live_plan: Option<Value> = None;
     let mut live_reset_credits: Option<Value> = None;
     if is_oauth {
-        if matches!(connection.provider.as_str(), "claude" | "anthropic") {
-            // Claude quota is passively observed from
-            // `anthropic-ratelimit-unified-*` headers on live generation
-            // traffic (see `quota_headers`) — no upstream call here. The
-            // usage endpoint cannot serve scope-limited grants (setup
-            // tokens) anyway, and polling it from the dashboard leaves a
-            // standing failing-request footprint.
-            let key = format!("claudeQuotaSnapshot:{}", connection.id);
-            if let Some(observed) = snapshot.settings.extra.get(&key) {
-                if let Some(quotas) = observed.get("quotas") {
-                    live_quotas = quotas.clone();
-                }
-                if let Some(at) = observed.get("observedAt").and_then(Value::as_str) {
-                    live_message = Some(format!("Observed from live traffic at {at}"));
-                }
-            } else {
-                live_message = Some(
-                    "Quota appears here after the first request through the proxy".to_string(),
-                );
-            }
-            // Subscription tier (Pro / Max x5 / …) is captured at login from
-            // the profile payload; surface it on the dashboard card.
-            live_plan = connection
-                .provider_specific_data
-                .get("subscription")
-                .cloned();
-        } else {
-            // 9router route.js:158-183 — refresh credentials before the quota
-            // call and force-retry once on an auth-expired message.
-            let result = fetch_oauth_quota_with_refresh(&state, connection).await;
-            if let Some(quotas) = result.get("quotas") {
-                live_quotas = quotas.clone();
-            }
-            if let Some(msg) = result.get("message").and_then(|v| v.as_str()) {
-                live_message = Some(msg.to_string());
-            }
-            if let Some(plan) = result.get("plan") {
-                live_plan = Some(plan.clone());
-            }
-            if let Some(reset_credits) = result.get("resetCredits") {
-                live_reset_credits = Some(reset_credits.clone());
-            }
+        // Refresh credentials before the quota call and force-retry once on
+        // an auth-expired message. Native Claude never enters this path.
+        let result = fetch_oauth_quota_with_refresh(&state, connection).await;
+        if let Some(quotas) = result.get("quotas") {
+            live_quotas = quotas.clone();
+        }
+        if let Some(msg) = result.get("message").and_then(|v| v.as_str()) {
+            live_message = Some(msg.to_string());
+        }
+        if let Some(plan) = result.get("plan") {
+            live_plan = Some(plan.clone());
+        }
+        if let Some(reset_credits) = result.get("resetCredits") {
+            live_reset_credits = Some(reset_credits.clone());
         }
     }
 

@@ -185,10 +185,10 @@ fn model_alias_prefix_resolves_to_provider() {
     // Wall-clock base: `is_model_degraded` compares against `Utc::now()`, so the
     // degrade window has to extend into the real future.
     let now = Utc::now();
-    registry.record_probe_at("a", "claude", Some(503), None, now);
+    registry.record_probe_at("a", "codex", Some(503), None, now);
 
-    assert!(registry.is_model_degraded("cc/claude-opus-4-8"));
-    assert!(registry.is_model_degraded("claude/claude-opus-4-8"));
+    assert!(registry.is_model_degraded("cx/gpt-6"));
+    assert!(registry.is_model_degraded("codex/gpt-6"));
     assert!(!registry.is_model_degraded(""));
 }
 
@@ -227,6 +227,17 @@ fn probe_target_requires_api_key_and_known_base_url() {
 
     let unknown = connection("conn", "definitely-not-a-provider");
     assert!(probe_target(&unknown).is_none());
+}
+
+#[test]
+fn retired_and_native_connections_never_use_generic_health_http() {
+    for provider in ["claude", "cc", "claude-agent", "anthropic"] {
+        let mut conn = connection("retired", provider);
+        conn.auth_type = "oauth".into();
+        conn.provider_specific_data
+            .insert("baseUrl".into(), json!("http://127.0.0.1:1/v1"));
+        assert!(probe_target(&conn).is_none());
+    }
 }
 
 #[test]

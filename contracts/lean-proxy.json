@@ -43,6 +43,31 @@
     "POST /v1/web/fetch",
     "POST /v1/mcp"
   ],
+  "native_provider_routes": [
+    "POST /v2/claude-agent/stream",
+    "POST /v2/claude-agent/idle"
+  ],
+  "claude_agent_native_exception": {
+    "source": "claude-agent",
+    "transport_version": 2,
+    "authentication_and_outbound_requests_owner": "original_claude_code_via_official_agent_sdk",
+    "authoritative_history_compaction_tools_permissions_owner": "client_harness",
+    "native_transcript_checkpoint_resume_fork": "provider_scoped_exception_only",
+    "tool_transport": "MCP_to_client_tools_fail_closed",
+    "server_executes_general_client_tools": false,
+    "proxy_owned_subscription_http": false,
+    "proxy_owned_oauth_token_import_or_refresh": false,
+    "client_identity_spoofing": false,
+    "generic_default_executor_allowed": false,
+    "native_retry_owner": "original_claude_code",
+    "second_generation_retry_loop": false,
+    "session_isolation": "authenticated_key_and_client_session",
+    "bounded_processes_queues_events": true,
+    "shutdown_and_cancellation_drain_children": true,
+    "login_credentials_remain_in_native_profile": true,
+    "content_auth_urls_codes_and_transcripts_logged": false,
+    "native_sdk_does_not_imply_anthropic_approval": true
+  },
   "public_model_routes": [
     "GET /v1/models",
     "GET /v1/models/info",
@@ -52,7 +77,7 @@
   ],
   "provider_target_formats": {
     "openai": "openai",
-    "anthropic|claude|kimi|minimax|kimi-coding": "claude",
+    "anthropic|kimi|minimax|kimi-coding": "claude",
     "glm": "openai",
     "gemini": "gemini",
     "vertex|vertex-partner": "vertex",
@@ -98,6 +123,16 @@
     "antigravity->openai"
   ],
   "retired_providers": {
+    "claude": {
+      "status": "retired",
+      "aliases": ["cc"],
+      "historical_target_format": "claude",
+      "history_preserved": true,
+      "stored_credentials_preserved_but_inert": true,
+      "replacement": "claude-agent",
+      "silent_conversion": false,
+      "note": "Claude subscription hard cut; Anthropic API-key provider and shared Messages protocol remain"
+    },
     "kiro": {
       "status": "retired",
       "provider_target_format": "kiro",
@@ -178,7 +213,8 @@
   },
   "context_limit_transition": {
     "setting": "settings.providerContextLimits",
-    "missing_or_empty_meaning": "default_500000_for_five_legacy_providers",
+    "missing_or_empty_meaning": "default_500000_for_four_retained_legacy_providers",
+    "retired_claude_override_preserved_but_inert": true,
     "context_management_owner": "client",
     "proxy_memory_limit_unit": "bytes",
     "default_rejection_reader_removed_by": "C08",
@@ -195,19 +231,20 @@
     "native_messages_preconversion": false,
     "routed_model_replacement_preserved": true,
     "documented_adapter_wire_guards_preserved": true,
-    "claude_oauth_harness_identity_carve_out": "C46",
     "incompatible_formats_use_registered_translator": true
   },
-  "claude_oauth_harness_identity": {
-    "checkpoint": "C46",
-    "scope": "first_party_claude_anthropic_oauth_only",
-    "reference_system_substitution": true,
-    "instruction_relocation_to_messages": true,
-    "stable_device_session_metadata": true,
-    "api_key_connections_unchanged": true,
-    "third_party_nodes_unchanged": true,
-    "client_cache_markers_relocated_with_content": true,
-    "synthetic_blocks_carry_no_markers": true
+  "retired_contracts": {
+    "C46": {
+      "status": "retired",
+      "reason": "owner_approved_claude_subscription_hard_cut_2026_10_31",
+      "oauth_identity_system_and_tool_masking_removed": true,
+      "mask_discovery_and_inference_gate_removed": true,
+      "authorize_exchange_import_and_refresh_removed": true,
+      "policy_text_generation_carveout_removed": true,
+      "dormant_fallback_allowed": false,
+      "anthropic_api_key_and_shared_messages_preserved": true,
+      "stored_values_preserved_without_reinterpretation": true
+    }
   },
   "generation_retry_policy": {
     "temporal_retry_owner": "client_or_harness",
@@ -230,7 +267,6 @@
     "retries_after_downstream_commitment": false,
     "raw_error_status_body_and_retry_after_preserved": true,
     "error_message_reset_suffix_429_carve_out": "on_429_with_provider_declared_reset_instant_only",
-    "oauth_policy_rejection_400_carve_out": "auth_failure_skip_refresh_advance_account",
     "distinct_configured_url_fallback_preserved": true,
     "pooled_transport_reuse_preserved": true,
     "transitional_401_403_credential_recovery": "replaced_by_C13_request_scoped_planner"
@@ -352,19 +388,20 @@
   },
   "claude_quota_retrieval": {
     "checkpoint": "C23",
-    "owner": "passive_response_header_observation",
+    "status": "retired",
+    "owner": "retired_no_reader",
     "usage_endpoint_polled": false,
-    "observation_source": "anthropic-ratelimit-unified-* response headers on live generation traffic",
-    "snapshot_semantics": "replace_on_new_observation",
+    "observation_source": "none",
+    "snapshot_semantics": "saved_legacy_values_preserved_but_inert",
     "stale_success_returned_after_error": false,
     "singleflight_enabled": false,
     "concurrent_request_behavior": "not_applicable_no_upstream_call",
-    "refresh_owner": "connection_refresh_coordinator",
+    "refresh_owner": "none",
     "dashboard_poll_interval_seconds": 60,
     "dashboard_hidden_page_polling": false,
     "quota_auto_ping_requires_connection_opt_in": true,
     "claude_auto_ping_removed": true,
-    "opencode_limits_route_serves_snapshot": true,
+    "opencode_limits_route_serves_snapshot": false,
     "hot_path_chat_ram_reduction_claimed": false
   },
   "opencode_quota_observations": {

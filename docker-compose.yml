@@ -2,6 +2,8 @@ name: openproxy-prod
 
 services:
   openproxy:
+    # Native SDK interruption drains transcripts before owned children exit.
+    stop_grace_period: 120s
     build:
       context: .
       args:

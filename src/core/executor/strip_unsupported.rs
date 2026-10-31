@@ -57,10 +57,7 @@ fn should_strip(provider: &str, model: &str, field: &str) -> bool {
 }
 
 fn is_anthropic_compatible(provider: &str) -> bool {
-    matches!(
-        provider,
-        "claude" | "glm" | "kimi" | "kimi-coding" | "minimax"
-    )
+    matches!(provider, "glm" | "kimi" | "kimi-coding" | "minimax")
 }
 
 /// Remove unsupported fields from `body` for the given `provider` and `model`.
@@ -131,12 +128,12 @@ mod tests {
     #[test]
     fn strips_max_completion_tokens_for_anthropic_compatible() {
         let mut body = json!({
-            "model": "claude-sonnet-4-20250514",
+            "model": "kimi-k2",
             "max_completion_tokens": 8192,
             "max_tokens": 4096,
             "messages": [{"role": "user", "content": "hi"}]
         });
-        strip_unsupported_params("claude", "claude-sonnet-4-20250514", &mut body);
+        strip_unsupported_params("kimi", "kimi-k2", &mut body);
         assert!(body.get("max_completion_tokens").is_none());
         assert!(body.get("max_tokens").is_some());
     }

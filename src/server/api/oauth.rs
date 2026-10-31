@@ -39,7 +39,6 @@ use crate::core::utils::antigravity_project::extract_google_project_id;
 
 const PKCE_FLOW_TTL_SECS: i64 = 600;
 const DEVICE_FLOW_TTL_SECS: i64 = 900;
-// Claude OAuth identity: crate::oauth::providers (C46 single source).
 const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CODEX_AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
 const CODEX_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
@@ -415,7 +414,6 @@ struct OAuthExchangeCompatBody {
     code: Option<String>,
     redirect_uri: Option<String>,
     code_verifier: Option<String>,
-    state: Option<String>,
     meta: Option<Value>,
 }
 
@@ -1085,12 +1083,6 @@ fn internal_error_response(message: String) -> Response {
         .into_response()
 }
 
-/// 400 for caller-side problems (malformed body, bad params): the client
-/// can fix these, so they must not surface as 5xx.
-fn bad_request_response(message: String) -> Response {
-    (StatusCode::BAD_REQUEST, Json(json!({ "error": message }))).into_response()
-}
-
 fn next_provider_priority(connections: &[ProviderConnection], provider: &str) -> u32 {
     connections
         .iter()
@@ -1143,17 +1135,6 @@ async fn create_imported_oauth_connection(
                     // the binding. An import that DOES carry data wins.
                     if !connection.provider_specific_data.is_empty() {
                         existing.provider_specific_data = connection.provider_specific_data.clone();
-                    }
-                    // The claude login path manages `scopeWarning` itself
-                    // (set on a scope-limited grant, absent on a full one);
-                    // a fresh full-grant login must clear a stale warning
-                    // from a previous limited login instead of keeping it.
-                    if connection.provider == "claude"
-                        && !connection
-                            .provider_specific_data
-                            .contains_key("scopeWarning")
-                    {
-                        existing.provider_specific_data.remove("scopeWarning");
                     }
                     existing.updated_at = Some(now.clone());
                     tracing::info!(
@@ -1373,22 +1354,6 @@ async fn gitlab_pat_auth(
         Ok(_) => Json(json!({ "success": true })).into_response(),
         Err(error) => internal_error_response(error.to_string()),
     }
-}
-
-fn build_claude_auth_url(redirect_uri: &str, state: &str, code_challenge: &str) -> String {
-    build_query_url(
-        &providers::claude_authorize_url(),
-        &[
-            ("code", "true".to_string()),
-            ("client_id", providers::CLAUDE_CLIENT_ID.to_string()),
-            ("response_type", "code".to_string()),
-            ("redirect_uri", redirect_uri.to_string()),
-            ("scope", providers::CLAUDE_SCOPES.join(" ")),
-            ("code_challenge", code_challenge.to_string()),
-            ("code_challenge_method", "S256".to_string()),
-            ("state", state.to_string()),
-        ],
-    )
 }
 
 fn build_codex_auth_url(redirect_uri: &str, state: &str, code_challenge: &str) -> String {
@@ -1701,14 +1666,11 @@ async fn authorize_oauth_compat(
     let state = generate_state();
 
     match provider.as_str() {
-        "claude" => build_auth_compat_response(
+        "claude" | "cc" | "anthropic" | "claude-agent" => make_error_response(
+            StatusCode::GONE,
+            "Proxy-owned Claude subscription OAuth retired; use native claude-agent login",
+            "provider_retired",
             &provider,
-            "authorization_code_pkce",
-            build_claude_auth_url(&redirect_uri, &state, &code_challenge),
-            state,
-            code_verifier,
-            code_challenge,
-            redirect_uri,
         ),
         "codex" => build_auth_compat_response(
             &provider,
@@ -1783,311 +1745,6 @@ async fn authorize_oauth_compat(
     }
 }
 
-async fn exchange_claude_compat(
-    code: &str,
-    redirect_uri: &str,
-    code_verifier: &str,
-    state: Option<&str>,
-) -> Result<ProviderConnection, String> {
-    let (auth_code, code_state) = if let Some((before, after)) = code.split_once('#') {
-        (before, after)
-    } else {
-        (code, "")
-    };
-
-    let response = reqwest::Client::new()
-        .post(providers::claude_token_url())
-        .header("Content-Type", "application/json")
-        // Live CLI OAuth stack (MITM 2026-10-06): axios UA + axios accept
-        // on platform.claude.com; reqwest's default identity would stand out.
-        .header("User-Agent", providers::CLAUDE_OAUTH_EXCHANGE_UA)
-        .header("Accept", providers::CLAUDE_OAUTH_ACCEPT)
-        .json(&json!({
-            "code": auth_code,
-            "state": if code_state.is_empty() { state.unwrap_or_default() } else { code_state },
-            "grant_type": "authorization_code",
-            "client_id": providers::CLAUDE_CLIENT_ID,
-            "redirect_uri": redirect_uri,
-            "code_verifier": code_verifier,
-        }))
-        .send()
-        .await
-        .map_err(|error| error.to_string())?;
-
-    if !response.status().is_success() {
-        let status = response.status().as_u16();
-        let error = response.text().await.unwrap_or_default();
-        // The token endpoint error body is Anthropic's own response (no
-        // client secrets echo back); keep a truncated form for the log.
-        tracing::warn!(
-            target: "openproxy::oauth",
-            status,
-            body = %truncate_for_log(&error, 300),
-            "claude token exchange rejected"
-        );
-        return Err(format!("Token exchange failed: {error}"));
-    }
-
-    let token_response: TokenResponse = response
-        .json()
-        .await
-        .map_err(|error| format!("Token exchange failed: {error}"))?;
-
-    tracing::info!(
-        target: "openproxy::oauth",
-        granted_scope = token_response.scope.as_deref().unwrap_or_default(),
-        expires_in = ?token_response.expires_in,
-        has_refresh_token = token_response.refresh_token.is_some(),
-        "claude token exchange succeeded"
-    );
-
-    // Best-effort enrichment: email feeds the upsert in
-    // `create_imported_oauth_connection` so repeat logins update the same
-    // connection instead of duplicating it. Any failure resolves to
-    // `(None, None)` — login never fails because enrichment did.
-    let profile = fetch_claude_profile_detailed(&token_response.access_token).await;
-    let (email, display_name, subscription) = match &profile {
-        ClaudeProfileStatus::Ok((email, display_name, subscription)) => {
-            tracing::info!(
-                target: "openproxy::oauth",
-                email = email.as_deref().map(mask_email).unwrap_or_default(),
-                display_name = display_name.as_deref().unwrap_or_default(),
-                subscription = subscription.as_deref().unwrap_or_default(),
-                "claude profile enrichment succeeded"
-            );
-            (email.clone(), display_name.clone(), subscription.clone())
-        }
-        ClaudeProfileStatus::ScopeLimited => {
-            // Expected for inference-only grants (e.g. setup tokens): the
-            // profile endpoint needs its own scopes. Without an email the
-            // upsert below cannot match, so repeat logins create a new
-            // connection — say so instead of failing silently.
-            tracing::warn!(
-                target: "openproxy::oauth",
-                "claude profile fetch refused with oauth_scope_insufficient; email enrichment unavailable, repeat logins will not upsert by email"
-            );
-            (None, None, None)
-        }
-        ClaudeProfileStatus::Rejected => {
-            tracing::warn!(
-                target: "openproxy::oauth",
-                "claude profile fetch rejected the token; email enrichment unavailable"
-            );
-            (None, None, None)
-        }
-        ClaudeProfileStatus::Unreachable => {
-            tracing::warn!(
-                target: "openproxy::oauth",
-                "claude profile fetch unreachable; email enrichment unavailable"
-            );
-            (None, None, None)
-        }
-    };
-
-    // Surface a scope-limited grant at login instead of letting it surface
-    // as a runtime 403. The authorize URL requests all CLAUDE_SCOPES; the
-    // server may still issue fewer (consent checkboxes, subscription-gated
-    // scopes). Persist the warning so it survives refreshes (an inert data
-    // key — it never feeds error/degrade mechanics).
-    let granted_scope = token_response.scope.clone();
-    let missing = providers::missing_claude_scopes(granted_scope.as_deref());
-    let mut provider_specific_data = std::collections::BTreeMap::new();
-    if !missing.is_empty() {
-        let missing_joined = missing.join(" ");
-        tracing::warn!(
-            target: "openproxy::oauth",
-            granted = granted_scope.as_deref().unwrap_or_default(),
-            missing = %missing_joined,
-            "claude login received a scope-limited grant; inference and quota calls will 403 until re-authorized with all consent scopes"
-        );
-        provider_specific_data.insert(
-            "scopeWarning".to_string(),
-            json!({
-                "granted": granted_scope,
-                "missing": missing,
-                "message": "Re-authorize the connection and approve all requested scopes; refresh cannot widen a grant."
-            }),
-        );
-    } else {
-        tracing::info!(
-            target: "openproxy::oauth",
-            "claude login received the full requested grant"
-        );
-    }
-    if let Some(subscription) = subscription {
-        provider_specific_data.insert("subscription".to_string(), json!(subscription));
-    }
-
-    Ok(ProviderConnection {
-        provider: "claude".to_string(),
-        auth_type: "oauth".to_string(),
-        access_token: Some(token_response.access_token),
-        refresh_token: token_response.refresh_token,
-        expires_at: token_response
-            .expires_in
-            .map(crate::oauth::expires_at_from_seconds),
-        scope: token_response.scope,
-        display_name,
-        email,
-        test_status: Some("active".to_string()),
-        provider_specific_data,
-        ..Default::default()
-    })
-}
-
-/// Profile lookup outcome for import validation.
-///
-/// * `Ok(profile)` — the endpoint accepted the token; profile fields may
-///   still be absent if the payload did not carry them.
-/// * `ScopeLimited` — the token is real but its grant lacks the profile
-///   scopes (live `claude setup-token` flow: every setup token returns
-///   403 `oauth_scope_insufficient`; the CLI tolerates this and logs in).
-///   No email/display_name is obtainable with this token.
-/// * `Rejected` — the endpoint refused the token itself (401 invalid,
-///   404, non-scope 403, …): treat the token as dead.
-/// * `Unreachable` — transport failure: we could not reach Anthropic to
-///   tell valid from invalid.
-enum ClaudeProfileStatus {
-    Ok((Option<String>, Option<String>, Option<String>)),
-    ScopeLimited,
-    Rejected,
-    Unreachable,
-}
-
-/// Human subscription label from a profile payload (live CLI
-/// `fetchProfileInfo` mapping): `organization.organization_type` picks the
-/// plan and `organization.rate_limit_tier` may carry the Max multiplier
-/// (donor examples like `default_max_20x` → `Max x20`). Short labels: the
-/// provider name already precedes them in every surface (`Claude · Pro`,
-/// dashboard badge next to the "Claude" heading).
-fn claude_subscription_label(body: &Value) -> Option<String> {
-    let organization = body.get("organization")?;
-    let tier = organization
-        .get("rate_limit_tier")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|tier| !tier.is_empty());
-    let base = match organization
-        .get("organization_type")
-        .and_then(Value::as_str)?
-    {
-        "claude_pro" => "Pro".to_string(),
-        "claude_max" => {
-            let multiplier = tier.and_then(tier_multiplier);
-            multiplier
-                .map(|multiplier| format!("Max x{multiplier}"))
-                .unwrap_or_else(|| "Max".to_string())
-        }
-        "claude_enterprise" => "Enterprise".to_string(),
-        "claude_team" => "Team".to_string(),
-        _ => return None,
-    };
-    Some(base)
-}
-
-/// First `<digits>x` sequence in a rate-limit tier string
-/// (`default_max_20x` → 20, `max_5x` → 5).
-fn tier_multiplier(tier: &str) -> Option<u32> {
-    let bytes = tier.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index].is_ascii_digit() {
-            let start = index;
-            while index < bytes.len() && bytes[index].is_ascii_digit() {
-                index += 1;
-            }
-            if index < bytes.len() && bytes[index].eq_ignore_ascii_case(&b'x') {
-                return tier[start..index].parse().ok();
-            }
-        } else {
-            index += 1;
-        }
-    }
-    None
-}
-
-/// Fetch the OAuth account profile for `access_token`.
-///
-/// Wire shape mirrors the live CLI validation call (MITM 2026-10-06,
-/// capture c3e429f1): `claude-code/<version>` UA, axios accept form,
-/// `Content-Type: application/json` + `Cache-Control: no-cache`, and no
-/// anthropic-version/anthropic-beta headers.
-async fn fetch_claude_profile_detailed(access_token: &str) -> ClaudeProfileStatus {
-    let response = match reqwest::Client::new()
-        .get(providers::claude_profile_url())
-        .timeout(std::time::Duration::from_secs(10))
-        // Live CLI (MITM 2026-10-06): the fresh-token validation call runs
-        // as `claude-code/<version>` with the axios accept form.
-        .header("User-Agent", providers::claude_profile_user_agent())
-        .header("Accept", providers::CLAUDE_OAUTH_ACCEPT)
-        .header("Content-Type", "application/json")
-        .header("Cache-Control", "no-cache")
-        .header("authorization", format!("Bearer {access_token}"))
-        .send()
-        .await
-    {
-        Ok(response) => response,
-        Err(_) => return ClaudeProfileStatus::Unreachable,
-    };
-
-    if response.status() == reqwest::StatusCode::FORBIDDEN {
-        // A 403 with `oauth_scope_insufficient` means the token itself
-        // authenticated fine but its grant cannot read the profile —
-        // exactly what every scope-limited setup token does live. Any
-        // other 403 body is a policy refusal we cannot distinguish
-        // cheaply; treat 403 without a parseable body as rejected only
-        // when it is not the scope error.
-        let body_text = response.text().await.unwrap_or_default();
-        if let Ok(body) = serde_json::from_str::<Value>(&body_text) {
-            let error_code = body
-                .get("error")
-                .and_then(|error| error.get("details"))
-                .and_then(|details| details.get("error_code"))
-                .and_then(Value::as_str);
-            if error_code == Some("oauth_scope_insufficient") {
-                return ClaudeProfileStatus::ScopeLimited;
-            }
-        }
-        return ClaudeProfileStatus::Rejected;
-    }
-    if !response.status().is_success() {
-        return ClaudeProfileStatus::Rejected;
-    }
-
-    let body: Value = match response.json().await {
-        Ok(value) => value,
-        Err(_) => return ClaudeProfileStatus::Rejected,
-    };
-    let non_empty = |value: Option<&str>| {
-        value
-            .filter(|text| !text.trim().is_empty())
-            .map(str::to_string)
-    };
-    let email = non_empty(
-        body.get("user")
-            .and_then(|user| user.get("email"))
-            .or_else(|| body.get("email"))
-            .or_else(|| body.get("account").and_then(|account| account.get("email")))
-            .and_then(Value::as_str),
-    );
-    let display_name = non_empty(
-        body.get("user")
-            .and_then(|user| user.get("name"))
-            .or_else(|| body.get("name"))
-            .or_else(|| body.get("display_name"))
-            .or_else(|| {
-                body.get("account")
-                    .and_then(|account| account.get("display_name"))
-            })
-            .or_else(|| {
-                body.get("account")
-                    .and_then(|account| account.get("full_name"))
-            })
-            .and_then(Value::as_str),
-    );
-    ClaudeProfileStatus::Ok((email, display_name, claude_subscription_label(&body)))
-}
-
 /// Mask an email for logs: keep the first character of the local part and
 /// the domain (`andrej***@gmail.com`). Logs must not carry full PII.
 fn mask_email(email: &str) -> String {
@@ -2101,15 +1758,6 @@ fn mask_email(email: &str) -> String {
         }
         _ => "***".to_string(),
     }
-}
-
-/// Truncate an upstream error body for log output (char boundary safe).
-fn truncate_for_log(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        return text.to_string();
-    }
-    let truncated: String = text.chars().take(max_chars).collect();
-    format!("{truncated}…[truncated]")
 }
 
 fn extract_codex_account_info(
@@ -2726,6 +2374,17 @@ async fn exchange_oauth_compat(
     Path(provider): Path<String>,
     request: axum::extract::Request,
 ) -> Response {
+    if matches!(
+        provider.as_str(),
+        "claude" | "cc" | "anthropic" | "claude-agent"
+    ) {
+        return make_error_response(
+            StatusCode::GONE,
+            "Proxy-owned Claude subscription OAuth retired; use native claude-agent login",
+            "provider_retired",
+            &provider,
+        );
+    }
     let body = match axum::body::to_bytes(request.into_body(), 64 * 1024).await {
         Ok(bytes) => bytes,
         Err(_) => {
@@ -2773,14 +2432,6 @@ async fn exchange_oauth_compat(
     }
 
     let connection = match provider.as_str() {
-        "claude" => {
-            match exchange_claude_compat(code, redirect_uri, code_verifier, body.state.as_deref())
-                .await
-            {
-                Ok(value) => value,
-                Err(error) => return internal_error_response(error),
-            }
-        }
         "codex" => match exchange_codex_compat(code, redirect_uri, code_verifier).await {
             Ok(value) => value,
             Err(error) => return internal_error_response(error),
@@ -2844,16 +2495,6 @@ async fn exchange_oauth_compat(
     if let Some(display_name) = saved.display_name {
         response_connection.insert("displayName".to_string(), Value::String(display_name));
     }
-    // Additive (frozen v1 envelope): surface a scope-limited claude grant
-    // in the login response so the dashboard/user sees it immediately.
-    if let Some(warning) = saved
-        .provider_specific_data
-        .get("scopeWarning")
-        .cloned()
-        .filter(|value| !value.is_null())
-    {
-        response_connection.insert("scopeWarning".to_string(), warning);
-    }
 
     Json(json!({
         "success": true,
@@ -2875,6 +2516,18 @@ pub async fn start_oauth_flow(
     };
     let account_id = &api_key.id;
 
+    if matches!(
+        provider.as_str(),
+        "claude" | "cc" | "anthropic" | "claude-agent"
+    ) {
+        return make_error_response(
+            StatusCode::GONE,
+            "Proxy-owned Claude subscription OAuth retired; use native claude-agent login",
+            "provider_retired",
+            &provider,
+        );
+    }
+
     let provider_config = match get_provider_config(&provider) {
         Some(config) => config,
         None => {
@@ -2886,19 +2539,6 @@ pub async fn start_oauth_flow(
             )
         }
     };
-
-    // C46: Claude uses only the dashboard authorize+exchange flow (PKCE with
-    // the Claude Code client id and JSON token exchange). The generic
-    // start/callback path cannot serve it (unregistered client id and
-    // form-encoded exchange), so it is explicitly unsupported, not broken.
-    if provider == "claude" {
-        return make_error_response(
-            StatusCode::BAD_REQUEST,
-            "Claude login uses GET /api/oauth/claude/authorize + POST /api/oauth/claude/exchange",
-            "unsupported_flow",
-            &provider,
-        );
-    }
 
     let code_verifier = if provider == "xai" {
         generate_code_verifier_with_len(96)
@@ -2958,12 +2598,14 @@ pub async fn oauth_callback(
     Path(provider): Path<String>,
     Query(query): Query<CallbackQuery>,
 ) -> Response {
-    // C46: see start_oauth_flow — Claude has no generic callback path.
-    if provider == "claude" {
+    if matches!(
+        provider.as_str(),
+        "claude" | "cc" | "anthropic" | "claude-agent"
+    ) {
         return make_error_response(
-            StatusCode::BAD_REQUEST,
-            "Claude login uses GET /api/oauth/claude/authorize + POST /api/oauth/claude/exchange",
-            "unsupported_flow",
+            StatusCode::GONE,
+            "Proxy-owned Claude subscription OAuth retired; use native claude-agent login",
+            "provider_retired",
             &provider,
         );
     }
@@ -3378,6 +3020,18 @@ pub async fn refresh_token(
     };
     let account_id = api_key.id;
 
+    if matches!(
+        provider.as_str(),
+        "claude" | "cc" | "anthropic" | "claude-agent"
+    ) {
+        return make_error_response(
+            StatusCode::GONE,
+            "Proxy-owned Claude subscription OAuth retired; use native claude-agent login",
+            "provider_retired",
+            &provider,
+        );
+    }
+
     let body_bytes = match axum::body::to_bytes(request.into_body(), 1024).await {
         Ok(bytes) => bytes,
         Err(_) => {
@@ -3425,9 +3079,7 @@ pub async fn refresh_token(
         );
     }
 
-    // 9router parity (tokenRefresh/providers.js REFRESH_PROFILES): every
-    // provider has its own refresh wire format — claude posts JSON to
-    // api.anthropic.com, codex via refreshCodexToken. The generic
+    // Each supported provider has its own refresh wire format. The generic
     // form-encoded grant with client_id "openproxy" only ever worked for
     // Auth0-style endpoints, so route through the per-provider dispatcher.
     let provider_specific_data = connection
@@ -3523,6 +3175,18 @@ pub async fn oauth_status(
         Err(e) => return crate::server::api::auth_error_response(e),
     };
     let account_id = api_key.id;
+
+    if matches!(
+        provider.as_str(),
+        "claude" | "cc" | "anthropic" | "claude-agent"
+    ) {
+        return make_error_response(
+            StatusCode::GONE,
+            "Proxy-owned Claude subscription OAuth retired; use native claude-agent login",
+            "provider_retired",
+            &provider,
+        );
+    }
 
     let snapshot = state.db.snapshot();
     let connection = snapshot
@@ -3964,137 +3628,6 @@ async fn codex_import_token(
             }))
             .into_response()
         }
-        Err(error) => internal_error_response(error.to_string()),
-    }
-}
-
-/// Connection payload for an imported `claude setup-token`: subscription
-/// OAuth auth, no refresh token (the 1-year token is used until it dies),
-/// no expiry the background refresher could act on, active from birth.
-fn build_imported_claude_connection(
-    token: &str,
-    name: &str,
-    email: Option<String>,
-    display_name: Option<String>,
-) -> ProviderConnection {
-    ProviderConnection {
-        provider: "claude".to_string(),
-        auth_type: "oauth".to_string(),
-        name: Some(name.to_string()),
-        email,
-        display_name,
-        access_token: Some(token.to_string()),
-        refresh_token: None,
-        expires_at: None,
-        test_status: Some("active".to_string()),
-        ..Default::default()
-    }
-}
-
-/// POST /api/oauth/claude/import-token
-/// Import a long-lived (1-year) Claude OAuth token created by
-/// `claude setup-token` as a provider connection.
-///
-/// The token is validated against the OAuth profile endpoint before
-/// anything is stored: a typo must fail loudly, not silently create a
-/// dead connection. Validation mirrors the live CLI flow (MITM
-/// 2026-10-06): a 2xx profile response validates and enriches; a 403
-/// `oauth_scope_insufficient` validates WITHOUT enrichment — every
-/// genuine `claude setup-token` token is scope-limited to inference and
-/// gets exactly this 403, and the CLI logs in anyway; a 401/other
-/// refusal rejects the import; a transport failure is a 502 so the
-/// caller can retry rather than re-paste the token. Valid tokens are
-/// upserted by account email via the shared imported-connection path
-/// (scope-limited imports carry no email and create a fresh connection);
-/// no refresh token exists, so the refresh gates (background skip +
-/// reactive `is_some()`) keep this connection on the access token alone
-/// until it expires or is revoked.
-///
-/// Body: { accessToken: string, name?: string }
-async fn claude_import_token(
-    State(state): State<AppState>,
-    request: axum::extract::Request,
-) -> Response {
-    let body = match axum::body::to_bytes(request.into_body(), 64 * 1024).await {
-        Ok(bytes) => bytes,
-        Err(error) => return bad_request_response(error.to_string()),
-    };
-    let body: Value = match serde_json::from_slice(&body) {
-        Ok(value) => value,
-        Err(error) => return bad_request_response(error.to_string()),
-    };
-
-    let Some(access_token) = body.get("accessToken").and_then(Value::as_str) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "Access token is required" })),
-        )
-            .into_response();
-    };
-    let token = access_token.trim().to_string();
-    if token.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "Access token is required" })),
-        )
-            .into_response();
-    }
-
-    // Strict validation: the profile endpoint must accept the token.
-    let (email, display_name, subscription) = match fetch_claude_profile_detailed(&token).await {
-        ClaudeProfileStatus::Ok(profile) => profile,
-        ClaudeProfileStatus::ScopeLimited => (None, None, None),
-        ClaudeProfileStatus::Rejected => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": "Anthropic rejected this token (profile validation failed). Check the token and try again."
-                })),
-            )
-                .into_response();
-        }
-        ClaudeProfileStatus::Unreachable => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({
-                    "error": "Could not reach Anthropic to validate this token. Try again."
-                })),
-            )
-                .into_response();
-        }
-    };
-
-    let name = body
-        .get("name")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| {
-            display_name
-                .clone()
-                .or_else(|| email.clone())
-                .unwrap_or_else(|| "Claude Setup Token".to_string())
-        });
-
-    let mut connection = build_imported_claude_connection(&token, &name, email, display_name);
-    if let Some(subscription) = subscription {
-        connection
-            .provider_specific_data
-            .insert("subscription".to_string(), json!(subscription));
-    }
-
-    match create_imported_oauth_connection(&state, connection).await {
-        Ok(connection) => Json(json!({
-            "success": true,
-            "connection": {
-                "id": connection.id,
-                "provider": connection.provider,
-                "email": connection.email,
-                "name": connection.name,
-            }
-        }))
-        .into_response(),
         Err(error) => internal_error_response(error.to_string()),
     }
 }
@@ -4667,7 +4200,6 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/oauth/codex/bulk-import", post(codex_bulk_import))
         .route("/api/oauth/codex/import-token", post(codex_import_token))
-        .route("/api/oauth/claude/import-token", post(claude_import_token))
         .route("/api/oauth/xai/manual-code", post(xai_manual_code))
         .route(
             "/api/oauth/xiaomi-mimo/api-key",
@@ -5139,94 +4671,12 @@ mod tests {
         assert!(paths.iter().any(|p| p.contains("mimocode")));
     }
 
-    #[test]
-    fn imported_claude_connection_shape_matches_refresh_gates() {
-        // The setup-token connection must ride the existing refresh gates:
-        // oauth auth_type for the Bearer path, no refresh token (background
-        // skip + reactive `is_some()` both decline), no expires_at the
-        // refresher could schedule on, active test status from birth.
-        let connection = build_imported_claude_connection(
-            "sk-ant-oat01-test",
-            "Work token",
-            Some("owner@example.com".to_string()),
-            Some("Owner".to_string()),
-        );
-        assert_eq!(connection.provider, "claude");
-        assert_eq!(connection.auth_type, "oauth");
-        assert_eq!(
-            connection.access_token.as_deref(),
-            Some("sk-ant-oat01-test")
-        );
-        assert_eq!(connection.refresh_token, None);
-        assert_eq!(connection.expires_at, None);
-        assert_eq!(connection.email.as_deref(), Some("owner@example.com"));
-        assert_eq!(connection.display_name.as_deref(), Some("Owner"));
-        assert_eq!(connection.test_status.as_deref(), Some("active"));
-    }
-
-    #[test]
-    fn claude_import_token_route_is_registered() {
-        // Smoke: the router (with the claude import route) constructs. Axum
-        // fails to compile/route on duplicate paths, so construction is the
-        // registration proof; the wire behavior is covered by the handler
-        // shape test above and the dashboard's direct fetch.
-        let _router = super::routes();
-    }
-
-    #[test]
-    fn claude_subscription_label_maps_live_profile_shapes() {
-        // Live CLI fetchProfileInfo mapping: organization_type picks the
-        // plan; rate_limit_tier carries the Max multiplier.
-        let profile = |org_type: &str, tier: Option<&str>| {
-            let mut organization = json!({ "organization_type": org_type });
-            if let Some(tier) = tier {
-                organization["rate_limit_tier"] = json!(tier);
-            }
-            json!({ "organization": organization })
-        };
-        assert_eq!(
-            claude_subscription_label(&profile("claude_pro", None)).as_deref(),
-            Some("Pro")
-        );
-        assert_eq!(
-            claude_subscription_label(&profile("claude_max", Some("default_max_5x"))).as_deref(),
-            Some("Max x5")
-        );
-        assert_eq!(
-            claude_subscription_label(&profile("claude_max", Some("MAX_10X"))).as_deref(),
-            Some("Max x10")
-        );
-        assert_eq!(
-            claude_subscription_label(&profile("claude_max", Some("max"))).as_deref(),
-            Some("Max")
-        );
-        assert_eq!(
-            claude_subscription_label(&profile("claude_max", None)).as_deref(),
-            Some("Max")
-        );
-        assert_eq!(
-            claude_subscription_label(&profile("claude_enterprise", None)).as_deref(),
-            Some("Enterprise")
-        );
-        assert_eq!(
-            claude_subscription_label(&profile("claude_team", None)).as_deref(),
-            Some("Team")
-        );
-        assert_eq!(
-            claude_subscription_label(&profile("claude_unknown_tier", None)),
-            None
-        );
-        // No organization block at all (legacy/foreign shapes): no label.
-        assert_eq!(claude_subscription_label(&json!({"account": {}})), None);
-    }
-
-    #[test]
-    fn tier_multiplier_parses_digits_before_x() {
-        assert_eq!(tier_multiplier("default_max_20x"), Some(20));
-        assert_eq!(tier_multiplier("max_5x"), Some(5));
-        assert_eq!(tier_multiplier("MAX_10X"), Some(10));
-        assert_eq!(tier_multiplier("x"), None);
-        assert_eq!(tier_multiplier("max_"), None);
-        assert_eq!(tier_multiplier(""), None);
+    #[tokio::test]
+    async fn retired_claude_authorize_returns_no_auth_url() {
+        for provider in ["claude", "cc", "anthropic", "claude-agent"] {
+            let response =
+                authorize_oauth_compat(Path(provider.into()), Query(Default::default())).await;
+            assert_eq!(response.status(), StatusCode::GONE);
+        }
     }
 }

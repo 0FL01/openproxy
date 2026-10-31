@@ -35,7 +35,7 @@ pub struct TransportMatch {
 /// `modelTargetFormat || resolveTransport(provider, sourceFormat)?.format || getTargetFormat(provider)`
 #[derive(Debug, Clone)]
 pub struct RequestPlan {
-    /// The provider name (e.g. "openai", "claude", "codex")
+    /// The provider name (e.g. "openai", "anthropic", "codex")
     pub provider: String,
     /// The resolved model name (alias / client-facing id)
     pub model: String,
@@ -357,7 +357,7 @@ mod tests {
             Format::OpenAi
         );
         assert_eq!(
-            registry::get_target_format_for_provider("claude"),
+            registry::get_target_format_for_provider("anthropic"),
             Format::Claude
         );
         assert_eq!(
@@ -404,10 +404,10 @@ mod tests {
         let plan = RequestPlan::new(
             Some("/v1/chat/completions"),
             &body,
-            "claude",
+            "anthropic",
             "claude-sonnet-4",
         );
-        // OpenAI body to Claude provider — needs translation
+        // OpenAI body to Anthropic API-key provider — needs translation
         assert!(!plan.passthrough);
         assert!(plan.needs_translation());
     }

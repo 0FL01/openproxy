@@ -1,6 +1,7 @@
 pub mod api;
 pub mod application_logs;
 pub mod auth;
+pub(crate) mod claude_agent;
 pub mod codex_catalog;
 pub(crate) mod codex_search;
 pub mod console_logs;

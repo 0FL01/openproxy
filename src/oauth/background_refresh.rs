@@ -31,7 +31,6 @@ fn provider_lead_ms(provider: &str) -> Option<u64> {
     let lead = match provider {
         "opencode" | "cx" => tr::REFRESH_LEAD_CODEX_MS,
         "openai" => tr::REFRESH_LEAD_OPENAI_MS,
-        "claude" | "anthropic" => tr::REFRESH_LEAD_CLAUDE_MS,
         "kimi-coding" | "kimi" => tr::REFRESH_LEAD_KIMI_CODING_MS,
         "antigravity" | "gemini" => tr::REFRESH_LEAD_ANTIGRAVITY_MS,
         "xai" => tr::REFRESH_LEAD_XAI_MS,
@@ -50,7 +49,10 @@ pub fn select_connections_needing_refresh(
     connections
         .iter()
         .filter(|conn| {
-            if conn.provider == "codex" {
+            if matches!(
+                conn.provider.as_str(),
+                "codex" | "claude" | "cc" | "anthropic" | "claude-agent"
+            ) {
                 return false;
             }
             if !conn.is_active() {
@@ -172,14 +174,14 @@ mod tests {
     #[test]
     fn selects_oauth_conn_expiring_within_30min() {
         let conns = vec![
-            conn("claude", "oauth", Some("rt"), 10 * 60), // 10 min → due
-            conn("claude", "oauth", Some("rt"), 6 * 60 * 60), // 6 h → not due
-            conn("claude", "apikey", Some("rt"), 10 * 60), // wrong auth type
-            conn("claude", "oauth", None, 10 * 60),       // no refresh token
+            conn("kimi", "oauth", Some("rt"), 10 * 60), // 10 min → due
+            conn("kimi", "oauth", Some("rt"), 6 * 60 * 60), // 6 h → not due
+            conn("kimi", "apikey", Some("rt"), 10 * 60), // wrong auth type
+            conn("kimi", "oauth", None, 10 * 60),       // no refresh token
         ];
         let due = select_connections_needing_refresh(&conns, now_ms());
         assert_eq!(due.len(), 1);
-        assert_eq!(due[0].provider, "claude");
+        assert_eq!(due[0].provider, "kimi");
     }
 
     #[test]
@@ -187,24 +189,31 @@ mod tests {
         // Codex refreshes on request, never on a background tick.
         let conns = vec![conn("codex", "oauth", Some("rt"), 60)];
         assert!(select_connections_needing_refresh(&conns, now_ms()).is_empty());
-        // claude lead is 4h > the 30-min floor → max() wins; a connection
-        // expiring in 2h IS due (window = max(lead, floor)).
-        let conns = vec![conn("claude", "oauth", Some("rt"), 2 * 60 * 60)];
+        // OpenAI's five-day lead exceeds the scheduler's 30-minute floor.
+        let conns = vec![conn("openai", "oauth", Some("rt"), 2 * 60 * 60)];
         assert_eq!(
             select_connections_needing_refresh(&conns, now_ms()).len(),
             1
         );
-        // A connection expiring beyond claude's 4h lead is NOT due.
-        let conns = vec![conn("claude", "oauth", Some("rt"), 6 * 60 * 60)];
+        let conns = vec![conn("openai", "oauth", Some("rt"), 6 * 24 * 60 * 60)];
+        assert!(select_connections_needing_refresh(&conns, now_ms()).is_empty());
+    }
+
+    #[test]
+    fn retired_subscription_credentials_are_never_scheduled() {
+        let conns: Vec<_> = ["claude", "cc", "anthropic", "claude-agent"]
+            .into_iter()
+            .map(|provider| conn(provider, "oauth", Some("rt"), -60))
+            .collect();
         assert!(select_connections_needing_refresh(&conns, now_ms()).is_empty());
     }
 
     #[test]
     fn inactive_or_missing_expiry_skipped() {
-        let mut inactive = conn("claude", "oauth", Some("rt"), 60);
+        let mut inactive = conn("kimi", "oauth", Some("rt"), 60);
         inactive.is_active = Some(false);
         let no_expiry = ProviderConnection {
-            provider: "claude".into(),
+            provider: "kimi".into(),
             auth_type: "oauth".into(),
             refresh_token: Some("rt".into()),
             expires_at: None,

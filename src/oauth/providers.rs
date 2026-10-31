@@ -96,148 +96,6 @@ impl OAuthProviderConfig {
 // Provider definitions
 // ---------------------------------------------------------------------------
 
-/// Claude (Anthropic subscription OAuth, C46): single source of truth.
-/// Identity values verified against the live Claude Code 2.1.289 bundle
-/// (built 2026-10-03; MITM-verified 2026-10-05):
-/// `claude-cli/${VERSION} (external, cli)`,
-/// `x-app: cli`, beta `claude-code-20250219` + `oauth-2025-04-20`.
-///
-/// Bump procedure for [`CLAUDE_CLI_VERSION`]: `npm view @anthropic-ai/claude-code version`.
-/// Official Claude Code OAuth client id.
-pub const CLAUDE_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-/// Subscription OAuth authorize endpoint (CC 2.1.289 binary
-/// `CLAUDE_AI_AUTHORIZE_URL`; the live CLI posts Max/Pro subscription
-/// logins here — anthropics/claude-code#58020 shows the current wire).
-/// `platform.claude.com/oauth/authorize` is the CONSOLE flow
-/// (`CONSOLE_AUTHORIZE_URL`): it honors only console scopes
-/// (`org:create_api_key user:profile`) and silently drops subscription
-/// scopes, which stranded the 2026-10-07 grant without `user:inference`.
-/// Env override keeps the escape hatch.
-pub const CLAUDE_AUTHORIZE_URL: &str = "https://claude.com/cai/oauth/authorize";
-/// Subscription token endpoint (relay-parity default; env-overridable).
-pub const CLAUDE_TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
-/// Account profile endpoint for email/display-name enrichment (fail-open).
-pub const CLAUDE_PROFILE_URL: &str = "https://api.anthropic.com/api/oauth/profile";
-/// Registered redirect: shows the code for manual copy (`code=true`).
-pub const CLAUDE_REDIRECT_URI: &str = "https://platform.claude.com/oauth/code/callback";
-/// Subscription scopes (CC 2.1.289 binary `tno()` = console `c` +
-/// subscription `r`; live wire in anthropics/claude-code#58020). The
-/// subscription half carries `user:inference`, without which every
-/// generation call 403s with `oauth_scope_insufficient`.
-pub const CLAUDE_SCOPES: &[&str] = &[
-    "org:create_api_key",
-    "user:profile",
-    "user:inference",
-    "user:sessions:claude_code",
-    "user:mcp_servers",
-    "user:file_upload",
-];
-/// Pinned Claude Code CLI version (single source; see bump procedure above).
-pub const CLAUDE_CLI_VERSION: &str = "2.1.289";
-/// `@anthropic-ai/sdk` version that Claude Code `CLAUDE_CLI_VERSION` bundles
-/// (`x-stainless-package-version`; MITM census 628/628). Bump together with
-/// the CLI pin: `npm view @anthropic-ai/sdk version` inside the pinned CLI.
-pub const CLAUDE_STAINLESS_PACKAGE_VERSION: &str = "0.128.0";
-/// Node runtime version the pinned CLI reports (`x-stainless-runtime-version`;
-/// census 628/628). Bump when re-mining the CLI pin from a live capture.
-pub const CLAUDE_STAINLESS_RUNTIME_VERSION: &str = "v26.3.0";
-/// User-Agent the CLI's OAuth stack sends to `platform.claude.com` during
-/// code/token exchange and refresh (live MITM 2026-10-06: `axios/1.15.2`).
-/// Bump together with the CLI pin.
-pub const CLAUDE_OAUTH_EXCHANGE_UA: &str = "axios/1.15.2";
-/// User-Agent the CLI sends when validating a fresh token against the
-/// profile endpoint (live MITM: `claude-code/<version>`).
-pub fn claude_profile_user_agent() -> String {
-    format!("claude-code/{CLAUDE_CLI_VERSION}")
-}
-/// Accept header the CLI's OAuth requests carry (axios default form;
-/// exchange/refresh captured live, refresh body shape verified against
-/// the CLI binary — no refresh capture exists in the corpus).
-pub const CLAUDE_OAUTH_ACCEPT: &str = "application/json, text/plain, */*";
-
-/// Scopes a **subscription** grant must carry for the proxy to work.
-///
-/// The authorize URL requests the full CLI set ([`CLAUDE_SCOPES`] =
-/// console `c` + subscription `r`), but the two halves come from
-/// mutually exclusive flows: the console flow never issues subscription
-/// scopes and vice versa (CC 2.1.289 binary; live 2026-10-07 re-login
-/// granted the full subscription set with no `org:create_api_key`).
-/// Warning on a half that a flow can never issue is noise. The CLI's own
-/// switch is `user:inference` (`Dxn` = scopes includes `user:inference`)
-/// — without it every generation call 403s with
-/// `oauth_scope_insufficient`.
-pub const CLAUDE_SUBSCRIPTION_REQUIRED_SCOPES: &[&str] = &[
-    "user:inference",
-    "user:profile",
-    "user:sessions:claude_code",
-];
-
-/// Scopes the issued grant is missing, judged against the required set of
-/// the flow that issued it. See [`CLAUDE_SUBSCRIPTION_REQUIRED_SCOPES`]:
-/// a grant carrying `user:inference` is judged against the subscription
-/// set; anything else (console grants) falls back to the full requested
-/// set so the warning still fires loudly for the 2026-10-07 incident
-/// shape (`org:create_api_key user:profile` only).
-pub fn missing_claude_scopes(granted: Option<&str>) -> Vec<&'static str> {
-    let granted_scopes: Vec<&str> = granted
-        .unwrap_or_default()
-        .split_whitespace()
-        .collect::<Vec<_>>();
-    let required: &[&str] = if granted_scopes.contains(&"user:inference") {
-        CLAUDE_SUBSCRIPTION_REQUIRED_SCOPES
-    } else {
-        CLAUDE_SCOPES
-    };
-    let granted_set: std::collections::HashSet<&str> = granted_scopes.iter().copied().collect();
-    required
-        .iter()
-        .filter(|scope| !granted_set.contains(*scope))
-        .copied()
-        .collect()
-}
-
-/// Canonical Claude Code CLI User-Agent: `claude-cli/<VERSION> (external, cli)`.
-pub fn claude_user_agent() -> String {
-    format!("claude-cli/{CLAUDE_CLI_VERSION} (external, cli)")
-}
-
-/// Authorize URL (allows `OPENPROXY_CLAUDE_AUTHORIZE_URL` override).
-pub fn claude_authorize_url() -> String {
-    std::env::var("OPENPROXY_CLAUDE_AUTHORIZE_URL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| CLAUDE_AUTHORIZE_URL.to_string())
-}
-
-/// Token URL (allows `OPENPROXY_CLAUDE_TOKEN_URL` override).
-pub fn claude_token_url() -> String {
-    std::env::var("OPENPROXY_CLAUDE_TOKEN_URL")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| CLAUDE_TOKEN_URL.to_string())
-}
-
-/// Profile URL (allows `OPENPROXY_CLAUDE_PROFILE_URL` override).
-pub fn claude_profile_url() -> String {
-    std::env::var("OPENPROXY_CLAUDE_PROFILE_URL")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| CLAUDE_PROFILE_URL.to_string())
-}
-
-pub fn claude() -> OAuthProviderConfig {
-    OAuthProviderConfig {
-        id: "claude",
-        client_id: CLAUDE_CLIENT_ID,
-        authorize_url: CLAUDE_AUTHORIZE_URL,
-        token_url: CLAUDE_TOKEN_URL,
-        scopes: CLAUDE_SCOPES,
-        uses_pkce: true,
-        extra_params: &[("code", "true")],
-        refresh_lead_ms: 4 * 60 * 60 * 1000,
-    }
-}
-
 pub fn codex() -> OAuthProviderConfig {
     OAuthProviderConfig {
         id: "codex",
@@ -553,7 +411,6 @@ fn alloc_string(s: &str) -> &'static str {
 
 pub fn get_config(provider: &str) -> Option<OAuthProviderConfig> {
     match provider {
-        "claude" => Some(claude()),
         "codex" => Some(codex()),
         "github" => Some(github()),
         "kimi" => Some(kimi()),
@@ -594,60 +451,10 @@ mod tests {
     }
 
     #[test]
-    fn claude_oauth_identity_pins_match_live_cli() {
-        // Live MITM 2026-10-06 (`claude setup-token` flow, CC 2.1.289):
-        // platform.claude.com exchange/refresh rides axios/1.15.2 with the
-        // axios accept form; the fresh-token profile validation runs as
-        // claude-code/<CLI version>. These pins are consumed by
-        // exchange_claude_compat, refresh_claude_oauth_token,
-        // fetch_claude_profile, and the dashboard-test refresh copy.
-        assert_eq!(CLAUDE_OAUTH_EXCHANGE_UA, "axios/1.15.2");
-        assert_eq!(CLAUDE_OAUTH_ACCEPT, "application/json, text/plain, */*");
-        assert_eq!(
-            claude_profile_user_agent(),
-            format!("claude-code/{CLAUDE_CLI_VERSION}")
-        );
-    }
-
-    #[test]
-    fn missing_claude_scopes_diffs_requested_vs_granted() {
-        // Full grant (live tno() set) → nothing missing.
-        assert!(missing_claude_scopes(Some(
-            "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
-        ))
-        .is_empty());
-        // The live 2026-10-07 re-login shape: the subscription flow grants
-        // its full set and NEVER the console half — a working grant must
-        // not warn (the CLI's own switch is user:inference).
-        let missing = missing_claude_scopes(Some(
-            "user:file_upload user:inference user:mcp_servers user:profile user:sessions:claude_code",
-        ));
-        assert!(
-            missing.is_empty(),
-            "subscription grant must not warn about console-only scopes: {missing:?}"
-        );
-        // The live 2026-10-07 incident shape: the CONSOLE authorize flow
-        // issued only its own two scopes, stranding the grant without
-        // `user:inference` (every generation call 403s).
-        let missing = missing_claude_scopes(Some("org:create_api_key user:profile"));
-        assert_eq!(
-            missing,
-            vec![
-                "user:inference",
-                "user:sessions:claude_code",
-                "user:mcp_servers",
-                "user:file_upload"
-            ]
-        );
-        // A subscription grant missing the CLI session scope still warns.
-        let missing = missing_claude_scopes(Some("user:inference user:profile"));
-        assert_eq!(missing, vec!["user:sessions:claude_code"]);
-        // Order-insensitive / extra granted scopes tolerated.
-        let missing = missing_claude_scopes(Some(
-            "user:file_upload user:sessions:claude_code user:inference org:create_api_key user:profile user:mcp_servers user:office",
-        ));
-        assert!(missing.is_empty());
-        // Absent scope string = nothing granted.
-        assert_eq!(missing_claude_scopes(None), CLAUDE_SCOPES.to_vec());
+    fn retired_subscription_has_no_proxy_oauth_config() {
+        for provider in ["claude", "cc", "anthropic", "claude-agent"] {
+            assert!(get_config(provider).is_none(), "{provider}");
+        }
+        assert!(get_config("codex").is_some());
     }
 }

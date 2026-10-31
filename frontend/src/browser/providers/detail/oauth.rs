@@ -797,7 +797,7 @@ pub(super) fn OAuthFlow(
                 Button { label: if submitting() { "Connecting...".to_owned() } else { "Connect".to_owned() }, full_width: true, disabled: submitting() || state().is_null() || js_trim(&callback()).is_empty(), onclick: { let provider = provider.clone(); let claimed = claimed.clone(); move |_| {
                     if submitting() || claimed.get() { return; }
                     let input = js_trim(&callback()); let auth = state(); let provider = provider.clone();
-                    let raw = input.starts_with("eyJ") && input.contains('.') || provider == "claude" && !input.contains("://");
+                    let raw = input.starts_with("eyJ") && input.contains('.');
                     let xai_raw = provider == "xai" && !input.contains("://") && !input.contains('?') && !input.contains("code=");
                     let parsed = if raw || xai_raw { Some((input, Value::Null)) } else if let Ok(url) = web_sys::Url::new(&input) {
                         let params = url.search_params();

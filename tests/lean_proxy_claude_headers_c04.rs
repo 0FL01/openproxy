@@ -12,10 +12,10 @@ use tokio::sync::Barrier;
 
 fn anthropic_node(base_url: String) -> ProviderNode {
     ProviderNode {
-        id: "claude".into(),
+        id: "anthropic".into(),
         r#type: "anthropic-compatible".into(),
         name: "Claude test upstream".into(),
-        prefix: Some("claude".into()),
+        prefix: Some("anthropic".into()),
         api_type: Some("messages".into()),
         base_url: Some(base_url),
         ..Default::default()
@@ -25,7 +25,7 @@ fn anthropic_node(base_url: String) -> ProviderNode {
 fn connection(id: &str, key: &str) -> ProviderConnection {
     ProviderConnection {
         id: id.into(),
-        provider: "claude".into(),
+        provider: "anthropic".into(),
         auth_type: "apikey".into(),
         api_key: Some(key.into()),
         is_active: Some(true),
@@ -67,20 +67,21 @@ fn ok_response() -> ScriptedResponse {
 }
 
 #[tokio::test]
-async fn alternating_claude_and_opencode_clients_never_inherit_headers() {
+async fn alternating_anthropic_clients_never_inherit_headers_or_subscription_identity() {
     let upstream = MockUpstream::start([ok_response(), ok_response(), ok_response()]).await;
     let executor = DefaultExecutor::new(
-        "claude",
+        "anthropic",
         Arc::new(ClientPool::new()),
         Some(anthropic_node(upstream.url("/v1"))),
     )
-    .expect("Claude executor");
+    .expect("Anthropic API-key executor");
 
-    let claude_cli = headers(&[
-        ("user-agent", "claude-cli/2.1.282"),
+    let first_client = headers(&[
+        ("user-agent", "client-a/1.0"),
         ("x-app", "cli"),
         ("x-claude-code-session-id", "session-a"),
         ("x-stainless-retry-count", "7"),
+        ("x-client-request-id", "request-a"),
         ("anthropic-version", "2024-01-01"),
         ("anthropic-beta", "current-request-beta"),
         ("authorization", "Bearer must-not-forward"),
@@ -88,9 +89,9 @@ async fn alternating_claude_and_opencode_clients_never_inherit_headers() {
         ("x-forwarded-for", "203.0.113.7"),
     ]);
     executor
-        .execute(request(connection("account-a", "key-a"), claude_cli))
+        .execute(request(connection("account-a", "key-a"), first_client))
         .await
-        .expect("Claude CLI request");
+        .expect("first API-key request");
 
     let opencode = headers(&[("user-agent", "opencode/1.18.31")]);
     executor
@@ -108,11 +109,13 @@ async fn alternating_claude_and_opencode_clients_never_inherit_headers() {
 
     let first = &requests[0].headers;
     assert_eq!(first["x-api-key"], "key-a");
-    assert_eq!(first["x-claude-code-session-id"], "session-a");
-    assert_eq!(first["x-stainless-retry-count"], "7");
+    assert!(first.get("x-claude-code-session-id").is_none());
+    assert!(first.get("x-stainless-retry-count").is_none());
+    assert!(first.get("x-app").is_none());
+    assert_eq!(first["x-client-request-id"], "request-a");
     assert_eq!(first["anthropic-version"], "2023-06-01");
     assert_eq!(first["anthropic-beta"], "current-request-beta");
-    assert_eq!(first["authorization"], "Bearer key-a");
+    assert!(first.get("authorization").is_none());
     assert!(first.get("cookie").is_none());
     assert!(first.get("x-forwarded-for").is_none());
 
@@ -123,16 +126,20 @@ async fn alternating_claude_and_opencode_clients_never_inherit_headers() {
     assert!(second.get("x-claude-code-session-id").is_none());
     assert!(second.get("x-stainless-retry-count").is_none());
     assert!(second.get("anthropic-beta").is_none());
+    assert!(second.get("x-client-request-id").is_none());
+    assert!(second.get("authorization").is_none());
 
     let third = &requests[2].headers;
     assert_eq!(third["x-api-key"], "key-c");
     assert_eq!(third["anthropic-version"], "2023-06-01");
     assert!(third.get("x-claude-code-session-id").is_none());
+    assert!(third.get("x-client-request-id").is_none());
+    assert!(third.get("authorization").is_none());
     assert_ne!(
         third
             .get("user-agent")
             .and_then(|value| value.to_str().ok()),
-        Some("claude-cli/2.1.282")
+        Some("client-a/1.0")
     );
     assert_ne!(
         third
@@ -145,17 +152,17 @@ async fn alternating_claude_and_opencode_clients_never_inherit_headers() {
 }
 
 #[tokio::test]
-async fn concurrent_accounts_keep_claude_session_headers_request_scoped() {
+async fn concurrent_anthropic_accounts_keep_request_ids_scoped() {
     const REQUESTS: usize = 24;
 
     let upstream = MockUpstream::start((0..REQUESTS).map(|_| ok_response())).await;
     let executor = Arc::new(
         DefaultExecutor::new(
-            "claude",
+            "anthropic",
             Arc::new(ClientPool::new()),
             Some(anthropic_node(upstream.url("/v1"))),
         )
-        .expect("Claude executor"),
+        .expect("Anthropic API-key executor"),
     );
     let barrier = Arc::new(Barrier::new(REQUESTS));
     let mut tasks = Vec::with_capacity(REQUESTS);
@@ -165,18 +172,18 @@ async fn concurrent_accounts_keep_claude_session_headers_request_scoped() {
         let barrier = barrier.clone();
         tasks.push(tokio::spawn(async move {
             let key = format!("key-{index}");
-            let session = format!("session-{index}");
+            let request_id = format!("request-{index}");
             barrier.wait().await;
             executor
                 .execute(request(
                     connection(&format!("account-{index}"), &key),
                     headers(&[
-                        ("user-agent", "claude-code/2.1.92"),
-                        ("x-claude-code-session-id", &session),
+                        ("user-agent", "client-a/1.0"),
+                        ("x-client-request-id", &request_id),
                     ]),
                 ))
                 .await
-                .expect("concurrent Claude request");
+                .expect("concurrent API-key request");
         }));
     }
 
@@ -192,9 +199,11 @@ async fn concurrent_accounts_keep_claude_session_headers_request_scoped() {
             .expect("ASCII account key");
         let index = key.strip_prefix("key-").expect("key prefix");
         assert_eq!(
-            recorded.headers["x-claude-code-session-id"],
-            format!("session-{index}")
+            recorded.headers["x-client-request-id"],
+            format!("request-{index}")
         );
+        assert!(recorded.headers.get("x-claude-code-session-id").is_none());
+        assert!(recorded.headers.get("authorization").is_none());
     }
 
     upstream.shutdown().await;

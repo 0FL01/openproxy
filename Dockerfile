@@ -1,16 +1,14 @@
 # syntax=docker/dockerfile:1.7
 #
-# OpenProxy — single-binary Docker image
+# OpenProxy — Rust router plus the native Claude Agent runtime
 #
-# Five-stage build:
+# Six-stage build:
 #   1. web    — pnpm install + astro build → web/dist/
 #   2. chef   — shared Rust build environment with cargo-chef
 #   3. planner — dependency recipe generated from Cargo metadata
 #   4. rust   — cached dependencies + binary with embedded web/dist
-#   5. runtime — debian:trixie-slim + the binary + ca-certificates
-#
-# Final image is ~80 MB (debian-slim base + the openproxy binary, which
-# already contains the dashboard via rust-embed).
+#   5. claude-agent — locked SDK and unmodified published Claude Code
+#   6. runtime — Node/Debian + Rust binary with embedded dashboard
 #
 # Build:    docker build --build-arg OPENPROXY_BUILD_COMMIT="$(git rev-parse HEAD)" -t openproxy .
 # The build context excludes .git; omit the argument for unknown (null) metadata.
@@ -114,9 +112,23 @@ RUN OPENPROXY_BUILD_COMMIT="${OPENPROXY_BUILD_COMMIT}" cargo build --release --l
 RUN strip /src/target/release/openproxy
 
 # ──────────────────────────────────────────────────────────────────────────
-# Stage 5: minimal runtime
+# Stage 5: official native Claude runtime (no extra service or public port)
 # ──────────────────────────────────────────────────────────────────────────
-FROM debian:trixie-slim AS runtime
+FROM node:24-trixie-slim AS claude-agent
+WORKDIR /opt/openproxy/claude-agent
+COPY runtime/claude-agent/package.json runtime/claude-agent/pnpm-lock.yaml ./
+# The SDK's optional bundled binary is deliberately not installed or selected.
+# Every query uses the separately installed, original published CLI below.
+RUN corepack enable && pnpm install --prod --frozen-lockfile --no-optional
+RUN npm install --global @anthropic-ai/claude-code@2.1.301 \
+    && claude --version \
+    && npm cache clean --force
+COPY runtime/claude-agent/ ./
+
+# ──────────────────────────────────────────────────────────────────────────
+# Stage 6: runtime
+# ──────────────────────────────────────────────────────────────────────────
+FROM claude-agent AS runtime
 
 # ca-certificates: required for outbound HTTPS to provider APIs.
 # tini: clean signal handling for ctrl+c / SIGTERM in the container.
@@ -131,7 +143,9 @@ COPY --from=rust /src/target/release/openproxy /usr/local/bin/openproxy
 # keep state under /app/data which is mounted as a volume.
 ENV HOSTNAME=0.0.0.0 \
     PORT=4623 \
-    DATA_DIR=/app/data
+    DATA_DIR=/app/data \
+    OPENPROXY_CLAUDE_PATH=/usr/local/bin/claude \
+    OPENPROXY_CLAUDE_RUNTIME=/opt/openproxy/claude-agent/bridge.mjs
 
 WORKDIR /app
 VOLUME ["/app/data"]

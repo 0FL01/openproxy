@@ -16,7 +16,6 @@ use uuid::Uuid;
 
 use crate::core::model::catalog::provider_catalog;
 use crate::core::usage::quota_fetcher::fetch_commandcode_quota;
-use crate::oauth::providers::{claude_token_url, CLAUDE_CLIENT_ID};
 use crate::oauth::token_refresh::{
     connection_credential_generation, CONNECTION_REFRESH_COORDINATOR,
 };
@@ -27,7 +26,6 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
 const PROXY_TEST_TIMEOUT: Duration = Duration::from_secs(8);
 const TOKEN_EXPIRY_BUFFER_SECS: i64 = 5 * 60;
 
-// Claude OAuth identity: crate::oauth::providers (C46 single source).
 const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CODEX_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const ANTIGRAVITY_CLIENT_ID: &str =
@@ -103,6 +101,34 @@ pub(super) async fn test_provider_connection(
         )
             .into_response();
     };
+
+    if matches!(connection.provider.as_str(), "claude" | "cc")
+        || (connection.provider == "anthropic"
+            && !matches!(connection.auth_type.as_str(), "apikey" | "api_key"))
+    {
+        return (StatusCode::GONE, Json(json!({"error": "Claude subscription OAuth retired; use native claude-agent login"}))).into_response();
+    }
+
+    if connection.provider == "claude-agent" {
+        if connection.auth_type != "external" {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "Claude Agent requires a native-login external connection"})),
+            )
+                .into_response();
+        }
+        // Explicit native auth/SDK probe only. Never test a generic proxy,
+        // issue inference, or refresh proxy-owned OAuth credentials here.
+        let result = match state.claude_agent.refresh_inventory().await {
+            Ok(_) => ConnectionTestResult {
+                valid: true,
+                error: None,
+                refreshed: false,
+            },
+            Err(error) => invalid(&error.message),
+        };
+        return persist_test_result(&state, &connection.id, result, None).await;
+    }
 
     let effective_proxy = resolve_effective_proxy(&state, &connection);
     if effective_proxy.connection_proxy_enabled
@@ -1157,23 +1183,6 @@ async fn refresh_oauth_token(
                     "refresh_token": refresh_token,
                 }),
                 effective_proxy,
-                None,
-            )
-            .await
-        }
-        "claude" => {
-            refresh_json_token(
-                &claude_token_url(),
-                json!({
-                    "grant_type": "refresh_token",
-                    "refresh_token": refresh_token,
-                    "client_id": CLAUDE_CLIENT_ID,
-                }),
-                effective_proxy,
-                Some((
-                    crate::oauth::providers::CLAUDE_OAUTH_EXCHANGE_UA,
-                    crate::oauth::providers::CLAUDE_OAUTH_ACCEPT,
-                )),
             )
             .await
         }
@@ -1275,23 +1284,11 @@ async fn refresh_json_token(
     url: &str,
     body: Value,
     effective_proxy: &EffectiveProxy,
-    claude_identity: Option<(&'static str, &'static str)>,
 ) -> Result<RefreshResult, String> {
-    // The claude branch pins the live CLI OAuth identity (axios UA +
-    // axios accept, MITM 2026-10-06); other providers keep the plain JSON
-    // headers. The axios accept REPLACES the default (headers are applied
-    // with append semantics downstream — a second push would put two
-    // Accept values on the wire).
-    let mut headers = vec![
+    let headers = vec![
         ("Content-Type".to_string(), "application/json".to_string()),
         ("Accept".to_string(), "application/json".to_string()),
     ];
-    if let Some((user_agent, accept)) = claude_identity {
-        headers.push(("User-Agent".to_string(), user_agent.to_string()));
-        if let Some(accept_header) = headers.iter_mut().find(|(name, _)| name == "Accept") {
-            accept_header.1 = accept.to_string();
-        }
-    }
     let request = PreparedRequest {
         method: Method::POST,
         url: url.to_string(),
@@ -1670,11 +1667,11 @@ fn is_token_expired(connection: &ProviderConnection) -> bool {
 }
 
 fn is_refreshable_provider(provider: &str) -> bool {
-    matches!(provider, "claude" | "codex" | "antigravity" | "cline")
+    matches!(provider, "codex" | "antigravity" | "cline")
 }
 
 fn is_check_expiry_provider(provider: &str) -> bool {
-    matches!(provider, "claude" | "kimi-coding" | "kimi")
+    matches!(provider, "kimi-coding" | "kimi")
 }
 
 fn cline_headers(token: &str, extra_headers: Vec<(String, String)>) -> Vec<(String, String)> {

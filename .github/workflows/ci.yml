@@ -64,6 +64,22 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  claude-agent:
+    name: Native Claude Agent (real SDK, fake CLI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.31.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: runtime/claude-agent/pnpm-lock.yaml
+      - run: pnpm --dir runtime/claude-agent install --frozen-lockfile --no-optional
+      - run: pnpm --dir runtime/claude-agent test
+
   # ──────────────────────────────────────────────────────────────────────
   # NOTE: tests/unit/ previously held 17 legacy JS test files imported
   # from upstream decolua/9router.  The JS source (open-sse/) has been
@@ -102,6 +118,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
+      - name: Node for native process-boundary fixtures
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2

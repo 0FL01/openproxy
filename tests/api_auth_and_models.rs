@@ -1492,18 +1492,20 @@ async fn models_availability_post_rejects_invalid_request() {
     assert_eq!(json, json!({ "error": "Invalid request" }));
 }
 
-async fn claude_gate_state() -> AppState {
+async fn retired_subscription_state() -> AppState {
     let temp = tempdir().expect("tempdir");
     let db = Arc::new(Db::load_from(temp.path()).await.expect("db"));
     db.update(|state| {
         state.api_keys = vec![active_key("valid-bearer")];
         state.provider_connections = vec![
             connection("claude", None, &[], true),
+            connection("cc", None, &[], true),
+            connection("anthropic", Some("claude-sonnet-4-20250514"), &[], true),
             connection("openai", Some("gpt-4.1"), &[], true),
         ];
     })
     .await
-    .expect("seed claude gate db");
+    .expect("seed retired subscription db");
     AppState::new(db)
 }
 
@@ -1530,8 +1532,8 @@ async fn model_ids(app: axum::Router, uri: &str, extra_headers: &[(&str, &str)])
 }
 
 #[tokio::test]
-async fn models_endpoint_hides_claude_rows_from_unmasked_clients() {
-    let app = openproxy::build_app(claude_gate_state().await);
+async fn models_endpoint_never_revives_retired_rows_for_old_mask_or_cli_headers() {
+    let app = openproxy::build_app(retired_subscription_state().await);
 
     let plain = model_ids(
         app.clone(),
@@ -1540,10 +1542,13 @@ async fn models_endpoint_hides_claude_rows_from_unmasked_clients() {
     )
     .await;
     assert!(
-        plain.iter().all(|id| !id.starts_with("cc/")),
-        "claude rows must be hidden without the mask marker"
+        plain
+            .iter()
+            .all(|id| !id.starts_with("cc/") && !id.starts_with("claude/")),
+        "retired subscription rows never enter discovery"
     );
     assert!(plain.contains(&"openai/gpt-4.1".to_string()));
+    assert!(plain.contains(&"anthropic/claude-sonnet-4-20250514".to_string()));
 
     let marked = model_ids(
         app.clone(),
@@ -1554,10 +1559,7 @@ async fn models_endpoint_hides_claude_rows_from_unmasked_clients() {
         ],
     )
     .await;
-    assert!(
-        marked.iter().any(|id| id.starts_with("cc/")),
-        "masked clients see claude rows"
-    );
+    assert_eq!(marked, plain);
 
     let cli = model_ids(
         app,
@@ -1568,87 +1570,30 @@ async fn models_endpoint_hides_claude_rows_from_unmasked_clients() {
         ],
     )
     .await;
-    assert!(
-        cli.iter().any(|id| id.starts_with("cc/")),
-        "claude-cli clients see claude rows"
-    );
+    assert_eq!(cli, plain);
 }
 
 #[tokio::test]
-async fn claude_inference_requires_mask_or_cli_client() {
-    let app = openproxy::build_app(claude_gate_state().await);
-
-    let unmasked = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/chat/completions")
-                .header("authorization", "Bearer valid-bearer")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({"model": "cc/claude-sonnet-4-5", "messages": [], "stream": false})
-                        .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(unmasked.status(), StatusCode::FORBIDDEN);
-
-    let marked = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/messages")
-                .header("authorization", "Bearer valid-bearer")
-                .header("content-type", "application/json")
-                .header("x-openproxy-claude-mask", "1")
-                .body(Body::from(
-                    json!({"model": "cc/claude-sonnet-4-5", "messages": []}).to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    // Past the gate; without a live upstream the request fails downstream,
-    // never with 403.
-    assert_ne!(marked.status(), StatusCode::FORBIDDEN);
-
-    let cli = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/chat/completions")
-                .header("authorization", "Bearer valid-bearer")
-                .header("content-type", "application/json")
-                .header("user-agent", "claude-cli/2.1.289 (external, cli)")
-                .body(Body::from(
-                    json!({"model": "cc/claude-sonnet-4-5", "messages": [], "stream": false})
-                        .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_ne!(cli.status(), StatusCode::FORBIDDEN);
-
-    // Non-claude models never hit the gate.
-    let openai = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/chat/completions")
-                .header("authorization", "Bearer valid-bearer")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({"model": "openai/gpt-4.1", "messages": [], "stream": false}).to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_ne!(openai.status(), StatusCode::FORBIDDEN);
+async fn subscription_inference_is_retired_regardless_of_client_identity() {
+    let app = openproxy::build_app(retired_subscription_state().await);
+    for provider in ["claude", "cc", "claude-agent"] {
+        for route in ["/v1/chat/completions", "/v1/messages"] {
+            let response = app.clone().oneshot(
+                Request::builder().method("POST").uri(route)
+                    .header("authorization", "Bearer valid-bearer")
+                    .header("content-type", "application/json")
+                    .header("x-openproxy-claude-mask", "1")
+                    .header("user-agent", "claude-cli/2.1.289 (external, cli)")
+                    .body(Body::from(json!({"model": format!("{provider}/claude-sonnet-4-5"), "messages": [], "stream": false}).to_string())).unwrap()
+            ).await.unwrap();
+            assert_eq!(
+                response.status(),
+                if provider == "claude-agent" {
+                    StatusCode::BAD_REQUEST
+                } else {
+                    StatusCode::GONE
+                }
+            );
+        }
+    }
 }

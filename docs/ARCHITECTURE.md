@@ -33,6 +33,38 @@ protocol-pair inventory is machine-readable in
   `codex_web_search`, which calls Codex's standalone index rather than a
   Responses generation model. Neither owns history, sessions, or a tool loop.
 
+## Native Claude Agent exception
+
+`claude-agent` replaces the retired `claude`/`cc` subscription OAuth/C46
+impersonation path; Anthropic API-key and shared Messages transports are unchanged.
+Only this provider bypasses the ordinary HTTP executor pipeline. The authenticated
+OpenCode V2 adapter sends LanguageModelV3 input to `/v2/claude-agent/stream`;
+`/idle` forwards terminal client-execution events. Authentication precedes JSON
+parsing, generation reuses the 32 MiB limit and lifetime admission permit, and
+session/fork IDs are HMAC-scoped to the authenticated key before entering a child.
+
+`server/claude_agent.rs` lazily supervises one Node bridge on bounded JSONL stdio.
+`runtime/claude-agent` uses the official SDK with an explicit original installed
+Claude executable. Native Claude owns credentials, HTTP, retry policy and saved
+transcripts. OpenCode owns authoritative history, tools/permissions and compaction;
+the proxy only transports MCP tool calls/results, never executes client tools.
+Native-session checkpoints contain hashes/UUIDs, not another message database.
+Persistent primary sessions resume/fork; auxiliary calls use disposable branches.
+Eight processes are allowed; tool waits do not arm five-minute idle. Cancellation
+interrupts/drains native work before releasing parked callbacks; shutdown reaps
+the owned process group. There is no second generation retry or API-key fallback.
+
+The dashboard relays one fixed `claude auth login` PTY, with same-origin/identity
+checks, a ten-minute deadline and at most 64 KiB of terminal output. Only native
+status JSON and a prompt-free SDK probe can complete login. The app DB stores an
+external marker and safe inventory/account metadata, never native tokens.
+`$DATA_DIR/claude-agent` isolates native HOME/config from host and API/cloud
+overrides and persists in the existing volume. Native credentials/transcripts
+are not included in SQLite JSON backups; volume backups must be protected.
+Child stderr, SDK debug capture and login URL/code/transcripts are not logged.
+Catalog reads use saved inventory without starting Claude; native process starts
+refresh that inventory while preserving previously probed context windows.
+
 ## xAI model discovery
 
 xAI chat/vision inventory comes from authenticated `/v1/language-models`;

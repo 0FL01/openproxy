@@ -124,7 +124,7 @@ mod tests {
         PendingOAuthFlow {
             state: state.to_string(),
             code_verifier: "test_verifier".to_string(),
-            provider: "claude".to_string(),
+            provider: "codex".to_string(),
             account_id: "account_123".to_string(),
             redirect_uri: None,
             device_code: None,

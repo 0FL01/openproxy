@@ -18,7 +18,6 @@ use serde_json::{json, Value};
 use std::{collections::HashMap, rc::Rc};
 
 const SUPPORTED: &[&str] = &[
-    "claude",
     "antigravity",
     "github",
     "codex",
@@ -164,11 +163,7 @@ async fn refresh_all(
 
 fn quota_entries(provider: &str, data: &Value, catalog: &Value) -> Vec<Value> {
     let Some(entries) = data["quotas"].as_object() else {
-        return if provider == "claude" && data["message"].is_string() {
-            vec![json!({"name":"error","used":0,"total":0})]
-        } else {
-            Vec::new()
-        };
+        return Vec::new();
     };
     let alias = catalog["providerIdToAlias"][provider]
         .as_str()
@@ -223,7 +218,7 @@ fn quota_entries(provider: &str, data: &Value, catalog: &Value) -> Vec<Value> {
             quota.insert("name".into(), json!(label));
             if !matches!(
                 provider,
-                "antigravity" | "kimi" | "deepseek" | "commandcode" | "a6api" | "claude"
+                "antigravity" | "kimi" | "deepseek" | "commandcode" | "a6api"
             ) {
                 quota.remove("remainingPercentage");
             }

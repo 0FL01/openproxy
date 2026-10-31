@@ -1,6 +1,6 @@
 {
  "providerIdToAlias": {
-  "claude": "cc",
+  "claude-agent": "claude-agent",
   "gemini": "gemini",
   "codex": "cx",
   "antigravity": "ag",
@@ -103,66 +103,8 @@
   },
  "providerModels": [
   {
-   "alias": "cc",
-   "models": [
-    {
-     "id": "claude-opus-4-7",
-     "name": "Claude Opus 4.7",
-     "kind": "llm"
-    },
-    {
-     "id": "claude-opus-4-6",
-     "name": "Claude Opus 4.6",
-     "kind": "llm"
-    },
-    {
-     "id": "claude-sonnet-4-6",
-     "name": "Claude Sonnet 4.6",
-     "kind": "llm"
-    },
-    {
-     "id": "claude-opus-4-5-20251101",
-     "name": "Claude 4.5 Opus",
-     "kind": "llm"
-    },
-    {
-     "id": "claude-sonnet-4-5-20250929",
-     "name": "Claude 4.5 Sonnet",
-     "kind": "llm"
-    },
-    {
-     "id": "claude-haiku-4-5-20251001",
-     "name": "Claude 4.5 Haiku",
-     "kind": "llm"
-    },
-    {
-     "id": "claude-opus-4-8",
-     "name": "Claude Opus 4.8",
-     "kind": "llm"
-    },
-    {
-     "id": "claude-opus-5",
-     "name": "Claude Opus 5",
-     "kind": "llm"
-    },
-    {
-     "id": "claude-opus-5-5",
-     "name": "Claude Opus 5.5",
-     "capabilities": ["tools", "reasoning"],
-     "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"],
-     "kind": "llm"
-    },
-    {
-     "id": "claude-fable-5",
-     "name": "Claude Fable 5",
-     "kind": "llm"
-    },
-    {
-     "id": "claude-sonnet-5",
-     "name": "Claude Sonnet 5",
-     "kind": "llm"
-    }
-   ]
+   "alias": "claude-agent",
+   "models": []
   },
   {
    "alias": "cx",
@@ -4295,8 +4237,8 @@
    "hasFetch": false
   },
   {
-   "id": "claude",
-   "alias": "cc",
+   "id": "claude-agent",
+   "alias": "claude-agent",
    "serviceKinds": [
     "llm"
    ],

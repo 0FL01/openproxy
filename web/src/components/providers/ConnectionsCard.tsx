@@ -4,7 +4,8 @@ import { Card, Badge, Button, Modal, Select, Toggle, EditConnectionModal } from 
 import { getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/connectionStatus";
 import { ConfirmModal } from "@/shared/components/Modal";
 import { useNotificationStore } from "@/store/notificationStore";
-import ImportClaudeTokenModal from "./ImportClaudeTokenModal";
+import ClaudeNativeLoginModal from "./ClaudeNativeLoginModal";
+import { useCatalogStore } from "@/store/catalogStore";
 
 // ── ConnectionRow ──────────────────────────────────────────────
 interface ProxyPool {
@@ -282,12 +283,13 @@ export default function ConnectionsCard({ providerId, isOAuth = false }: Connect
   const [proxyPools, setProxyPools] = useState<ProxyPool[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [showAddModal, setShowAddModal] = useState<boolean>(false);
-  const [showImportTokenModal, setShowImportTokenModal] = useState<boolean>(false);
   const [showEditModal, setShowEditModal] = useState<boolean>(false);
   const [selectedConnection, setSelectedConnection] = useState<Connection | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Connection | null>(null);
   const [deleting, setDeleting] = useState<boolean>(false);
   const notify = useNotificationStore();
+  const reloadCatalog = useCatalogStore((state) => state.reload);
+  const isNative = providerId === "claude-agent";
 
   const fetch_ = useCallback(async () => {
     try {
@@ -376,15 +378,12 @@ export default function ConnectionsCard({ providerId, isOAuth = false }: Connect
       <Card>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
           <h2 className="text-lg font-semibold">Connections</h2>
-          {providerId === "claude" && (
-            <Button size="sm" icon="key" onClick={() => setShowImportTokenModal(true)}>Import Setup Token</Button>
-          )}
         </div>
 
         {connections.length === 0 ? (
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm text-text-muted">No connections yet</p>
-            <Button size="sm" icon="add" onClick={() => setShowAddModal(true)}>Add Connection</Button>
+            <Button size="sm" icon="add" onClick={() => setShowAddModal(true)}>{isNative ? "Add Account" : "Add Connection"}</Button>
           </div>
         ) : (
           <>
@@ -394,7 +393,7 @@ export default function ConnectionsCard({ providerId, isOAuth = false }: Connect
                   key={conn.id}
                   connection={conn}
                   proxyPools={proxyPools}
-                  isOAuth={isOAuth}
+                  isOAuth={isOAuth || isNative}
                   isFirst={idx === 0}
                   isLast={idx === connections.length - 1}
                   onMoveUp={() => handleSwapPriority(idx, idx - 1)}
@@ -407,13 +406,27 @@ export default function ConnectionsCard({ providerId, isOAuth = false }: Connect
               ))}
             </div>
             <div className="mt-4 flex justify-stretch sm:justify-start">
-              <Button size="sm" icon="add" onClick={() => setShowAddModal(true)}>Add</Button>
+              <Button size="sm" icon="add" onClick={() => setShowAddModal(true)}>{isNative ? "Add Account" : "Add"}</Button>
             </div>
           </>
         )}
       </Card>
 
-      <AddApiKeyModal
+      {isNative ? <ClaudeNativeLoginModal
+        isOpen={showAddModal}
+        onSuccess={async (connectionId) => {
+          await fetch_();
+          try {
+            if (connectionId) {
+              const response = await fetch(`/api/providers/${encodeURIComponent(connectionId)}/models`, { cache: "no-store" });
+              if (!response.ok) throw new Error("Native model refresh failed");
+            }
+          } finally {
+            await reloadCatalog();
+          }
+        }}
+        onClose={() => setShowAddModal(false)}
+      /> : <AddApiKeyModal
         isOpen={showAddModal}
         provider={providerId}
         proxyPools={proxyPools}
@@ -424,12 +437,7 @@ export default function ConnectionsCard({ providerId, isOAuth = false }: Connect
           // and never goes through handleSaveApiKey.
           void fetch_();
         }}
-      />
-      <ImportClaudeTokenModal
-        isOpen={showImportTokenModal}
-        onSuccess={() => void fetch_()}
-        onClose={() => setShowImportTokenModal(false)}
-      />
+      />}
       <EditConnectionModal
         isOpen={showEditModal}
         connection={selectedConnection}

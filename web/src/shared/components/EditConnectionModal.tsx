@@ -94,6 +94,7 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
   }, [connection]);
 
   const isOAuth = connection?.authType === "oauth";
+  const isExternal = connection?.authType === "external" || connection?.provider === "claude-agent";
   const isAzure = connection?.provider === "azure";
   const isCloudflareAi = connection?.provider === "cloudflare-ai";
   const isCompatible = connection
@@ -153,7 +154,7 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
         proxyPoolId:
           formData.proxyPoolId === NONE_PROXY_POOL_VALUE ? null : formData.proxyPoolId,
       };
-      if (!isOAuth && formData.apiKey) {
+      if (!isOAuth && !isExternal && formData.apiKey) {
         updates.apiKey = formData.apiKey;
         let isValid = connection.provider === "a6api" || validationResult === "success";
         if (!isValid) {
@@ -213,7 +214,7 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
           label="Name"
           value={formData.name}
           onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-          placeholder={isOAuth ? "Account name" : "Production Key"}
+          placeholder={isOAuth || isExternal ? "Account name" : "Production Key"}
         />
         <Input
           label="Display Name"
@@ -252,7 +253,8 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
           </p>
         )}
 
-        {!isOAuth && (
+        {isExternal && <p className="text-sm text-text-muted">Credentials are managed only by native Claude on the server. Use Add Account to sign in again; no token or API-key import is supported.</p>}
+        {!isOAuth && !isExternal && (
           <>
             <div className="flex gap-2">
               <Input

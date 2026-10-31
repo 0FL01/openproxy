@@ -9,7 +9,6 @@ use std::collections::HashMap;
 /// Identifier for a recognised CLI client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientTool {
-    Claude,
     Antigravity,
     Codex,
     GithubCopilot,
@@ -19,7 +18,6 @@ pub enum ClientTool {
 impl ClientTool {
     pub fn as_str(self) -> &'static str {
         match self {
-            ClientTool::Claude => "claude",
             ClientTool::Antigravity => "antigravity",
             ClientTool::Codex => "codex",
             ClientTool::GithubCopilot => "github-copilot",
@@ -35,10 +33,6 @@ impl ClientTool {
 pub fn detect_client_tool(headers: &HashMap<String, String>, body: &Value) -> Option<ClientTool> {
     let ua = headers
         .get("user-agent")
-        .map(|s| s.to_lowercase())
-        .unwrap_or_default();
-    let x_app = headers
-        .get("x-app")
         .map(|s| s.to_lowercase())
         .unwrap_or_default();
     let openai_intent = headers
@@ -66,10 +60,6 @@ pub fn detect_client_tool(headers: &HashMap<String, String>, body: &Value) -> Op
         || initiator == "user"
     {
         return Some(ClientTool::GithubCopilot);
-    }
-
-    if ua.contains("claude-cli") || ua.contains("claude-code") || x_app == "cli" {
-        return Some(ClientTool::Claude);
     }
 
     // 9router clientDetector.js:43-44 — match codex-tui, codex-cli,
@@ -105,12 +95,9 @@ mod tests {
     }
 
     #[test]
-    fn detects_claude_via_user_agent() {
-        let headers = h(&[("user-agent", "claude-cli/2.1.282")]);
-        assert_eq!(
-            detect_client_tool(&headers, &json!({})),
-            Some(ClientTool::Claude)
-        );
+    fn retired_claude_identity_does_not_select_a_client_mode() {
+        let headers = h(&[("user-agent", "claude-cli/2.1.282"), ("x-app", "cli")]);
+        assert_eq!(detect_client_tool(&headers, &json!({})), None);
     }
 
     #[test]

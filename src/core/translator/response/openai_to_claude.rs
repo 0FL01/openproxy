@@ -11,11 +11,6 @@ use crate::core::translator::limits::{
     wire_index, StreamLimitError, MAX_STREAM_TOOL_ARGUMENT_BYTES,
 };
 
-/// Tool-name prefix the request side uses when masking proxy-injected
-/// tools to keep them distinct from caller tool names. Stripped on the
-/// way back so the response surfaces the caller's original name.
-const CLAUDE_OAUTH_TOOL_PREFIX: &str = "proxy_";
-
 // ── tool-argument sanitization ─────────────────────────────────────────
 
 /// Sanitize tool call arguments to fix bad params from non-Anthropic models.
@@ -24,10 +19,7 @@ fn sanitize_tool_args(tool_name: &str, args_json: &str) -> String {
     let Ok(mut args) = serde_json::from_str::<Value>(args_json) else {
         return args_json.to_string();
     };
-    let name = tool_name
-        .strip_prefix(CLAUDE_OAUTH_TOOL_PREFIX)
-        .unwrap_or(tool_name);
-    if name == "Read" {
+    if tool_name == "Read" {
         sanitize_read_args(&mut args);
     }
     serde_json::to_string(&args).unwrap_or_else(|_| args_json.to_string())
@@ -414,10 +406,6 @@ pub fn openai_to_claude_response(
                         message: "OpenAI tool call declaration is missing a function name"
                             .to_string(),
                     })?;
-                let mut tool_name = raw_name.to_string();
-                if let Some(rest) = tool_name.strip_prefix(CLAUDE_OAUTH_TOOL_PREFIX) {
-                    tool_name = rest.to_string();
-                }
                 if let Some(map) = state.get_mut("toolCalls").and_then(|v| v.as_object_mut()) {
                     map.insert(
                         idx.to_string(),
@@ -434,7 +422,7 @@ pub fn openai_to_claude_response(
                     "content_block": {
                         "type": "tool_use",
                         "id": id,
-                        "name": tool_name,
+                        "name": raw_name,
                         "input": {}
                     }
                 }));
@@ -795,7 +783,7 @@ mod tests {
     }
 
     #[test]
-    fn proxy_prefix_is_stripped_from_tool_name() {
+    fn caller_proxy_prefix_is_preserved_in_tool_name() {
         let events = [json!({
             "id": "chatcmpl-a", "model": "gpt-5",
             "choices": [{"index": 0, "delta": {
@@ -813,7 +801,7 @@ mod tests {
                 v["type"] == "content_block_start" && v["content_block"]["type"] == "tool_use"
             })
             .expect("tool start");
-        assert_eq!(tool_start["content_block"]["name"], "my_tool");
+        assert_eq!(tool_start["content_block"]["name"], "proxy_my_tool");
     }
 
     // ── sanitize_tool_args tests ────────────────────────────────────────
@@ -905,10 +893,10 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_read_with_proxy_prefix() {
+    fn caller_proxy_prefix_does_not_alias_read() {
         let result = sanitize_tool_args("proxy_Read", r#"{"limit":"50","file_path":"/tmp/f.txt"}"#);
         let parsed: Value = serde_json::from_str(&result).unwrap();
-        assert_eq!(parsed["limit"], 50);
+        assert_eq!(parsed["limit"], "50");
     }
 
     // ── is_valid_pdf_pages_arg tests ────────────────────────────────────

@@ -308,7 +308,7 @@ export function calculatePercentage(used: number, total: number): number {
 
 /**
  * Parse provider-specific quota structures into normalized array
- * @param provider - Provider name (github, antigravity, codex, claude)
+ * @param provider - Provider name (github, antigravity, codex)
  * @param data - Raw quota data from provider
  * @returns Normalized quota objects with { name, used, total, resetAt }
  */
@@ -439,35 +439,6 @@ export function parseQuotaData(provider: string, data: RawQuotaData | null | und
               unit: quota.unit || "USD",
               unlimited: false,
             });
-          });
-        }
-        break;
-
-      case "claude":
-        // Passive header snapshots (quota_headers.rs) always pair quotas with
-        // an informational message ("Observed from live traffic at <ts>").
-        // Parse the quota windows first; the message renders as context text
-        // above the table, and an empty snapshot falls back to the
-        // message-only card via the empty quotas path.
-        if (data.quotas) {
-          Object.entries(data.quotas).forEach(([name, quota]: [string, QuotaEntry]) => {
-            normalizedQuotas.push({
-              name,
-              used: quota.used || 0,
-              total: quota.total || 0,
-              resetAt: quota.resetAt || null,
-              remainingPercentage: quota.remainingPercentage,
-              recurring: (quota as any).recurring !== false,
-            });
-          });
-        } else if (data.message) {
-          // No snapshot yet — surface the informational message.
-          normalizedQuotas.push({
-            name: "error",
-            used: 0,
-            total: 0,
-            resetAt: null,
-            message: data.message,
           });
         }
         break;
